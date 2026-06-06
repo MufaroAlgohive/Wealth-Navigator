@@ -43,7 +43,7 @@ export default function MacroPage() {
 
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4 lg:grid-cols-6">
         {indicatorsQ.isLoading ? (
-          Array.from({ length: 6 }).map((_, i) => <KpiTileSkeleton key={i} />)
+          [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`macro-kpi-${n}`} />)
         ) : (
           indicators.slice(0, 6).map((m) => (
             <KpiTile

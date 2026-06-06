@@ -187,7 +187,6 @@
     outline-offset: 2px;
     border-radius: 4px;
   }
-}
 
   /* Loading skeleton shimmer — single keyframe shared by all
      `PanelSkeleton` / `KpiTileSkeleton` / `TableRowSkeleton` bars. The

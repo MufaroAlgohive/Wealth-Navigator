@@ -122,8 +122,8 @@ export default function BlotterPage() {
       <Panel title={`Orders · ${filtered.length}`} endpoint="GET /v1/orders" density="scroll" className="h-[calc(100vh-260px)]">
         {ordersQ.isLoading ? (
           <div className="space-y-1.5 px-3.5 py-2.5" aria-busy="true" aria-live="polite">
-            {Array.from({ length: 10 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-3">
+            {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+              <div key={`blotter-row-${n}`} className="flex items-center gap-3">
                 <span className="shimmer h-2.5 w-20 rounded" />
                 <span className="shimmer h-2.5 w-14 rounded" />
                 <span className="shimmer h-2.5 w-24 rounded" />

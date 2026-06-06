@@ -43,8 +43,8 @@ export default function StrategiesPage() {
       {strategiesQ.isLoading ? (
         <div className="grid grid-cols-12 gap-3">
           <div className="col-span-12 lg:col-span-5 space-y-2">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="rounded-lg border border-border bg-card p-3">
+            {[0, 1, 2, 3, 4, 5].map((n) => (
+              <div key={`strategies-row-${n}`} className="rounded-lg border border-border bg-card p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 space-y-1.5">
                     <span className="shimmer block h-3 w-2/3 rounded" />
@@ -53,8 +53,8 @@ export default function StrategiesPage() {
                   <span className="shimmer h-4 w-16 rounded" />
                 </div>
                 <div className="mt-3 grid grid-cols-4 gap-2">
-                  {Array.from({ length: 4 }).map((__, j) => (
-                    <div key={j} className="space-y-1">
+                  {[0, 1, 2, 3].map((m) => (
+                    <div key={`strategies-cell-${m}`} className="space-y-1">
                       <span className="shimmer block h-2 w-3/4 rounded" />
                       <span className="shimmer block h-3 w-1/2 rounded" />
                     </div>

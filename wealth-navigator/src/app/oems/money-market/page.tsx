@@ -39,7 +39,7 @@ export default function MoneyMarketPage() {
 
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
         {strategiesQ.isLoading || jibarQ.isLoading ? (
-          Array.from({ length: 5 }).map((_, i) => <KpiTileSkeleton key={i} />)
+          [0, 1, 2, 3, 4].map((n) => <KpiTileSkeleton key={`mm-kpi-${n}`} />)
         ) : (
           <>
             <KpiTile icon={<Banknote className="h-3.5 w-3.5" />} label="MM AUM" value={formatZAR(totalAum)} sub={`${mm.length} mandates`} />

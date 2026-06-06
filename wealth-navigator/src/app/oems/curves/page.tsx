@@ -55,7 +55,7 @@ export default function CurvesPage() {
 
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         {goviQ.isLoading ? (
-          Array.from({ length: 4 }).map((_, i) => <KpiTileSkeleton key={i} />)
+          [0, 1, 2, 3].map((n) => <KpiTileSkeleton key={`curves-kpi-${n}`} />)
         ) : (
           <>
             <KpiTile label="ZAR govi 10Y" value={`${latestGovi.toFixed(2)}%`} sub={formatBps(move.level)} tone={move.level > 0 ? "warning" : "positive"} />

@@ -36,7 +36,7 @@ export default function EquitiesPage() {
 
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         {strategiesQ.isLoading ? (
-          Array.from({ length: 4 }).map((_, i) => <KpiTileSkeleton key={i} />)
+          [0, 1, 2, 3].map((n) => <KpiTileSkeleton key={`equity-kpi-${n}`} />)
         ) : (
           <>
             <KpiTile icon={<TrendingUp className="h-3.5 w-3.5" />} label="Equity AUM" value={formatZAR(totalAum)} sub={`${strategies.length} mandates`} />
@@ -55,8 +55,8 @@ export default function EquitiesPage() {
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         {strategiesQ.isLoading ? (
-          Array.from({ length: 3 }).map((_, i) => (
-            <PanelSkeleton key={i} rows={6} />
+          [0, 1, 2].map((n) => (
+            <PanelSkeleton key={`equity-card-${n}`} rows={6} />
           ))
         ) : (
           strategies.map((s) => {
@@ -102,8 +102,8 @@ export default function EquitiesPage() {
       >
         {equitiesQ.isLoading ? (
           <div className="space-y-1.5" aria-busy="true" aria-live="polite">
-            {Array.from({ length: 10 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-3 px-2.5 py-1.5">
+            {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+              <div key={`equity-row-${n}`} className="flex items-center gap-3 px-2.5 py-1.5">
                 <span className="shimmer h-2.5 w-12 rounded" />
                 <span className="shimmer h-2.5 w-28 rounded" />
                 <span className="shimmer h-2.5 w-20 rounded" />

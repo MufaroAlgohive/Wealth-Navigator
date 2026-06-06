@@ -137,8 +137,8 @@ export default function SecurityPage() {
       >
         {equitiesQ.isLoading ? (
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-busy="true" aria-live="polite">
-            {Array.from({ length: 18 }).map((_, i) => (
-              <div key={i} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+            {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17].map((n) => (
+              <div key={`security-row-${n}`} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
                 <span className="shimmer block h-2 w-3/4 rounded" />
                 <span className="shimmer mt-1.5 block h-3 w-1/2 rounded" />
               </div>

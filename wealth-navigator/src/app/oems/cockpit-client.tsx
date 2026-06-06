@@ -139,7 +139,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       {/* KPI strip */}
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 lg:grid-cols-6">
         {strategiesQ.isLoading || jibarQ.isLoading ? (
-          Array.from({ length: 6 }).map((_, i) => <KpiTileSkeleton key={i} />)
+          [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`cockpit-kpi-${n}`} />)
         ) : (
           <>
             <KpiTile

@@ -31,6 +31,14 @@ export function PanelSkeleton({
   className,
   rowWidths,
 }: PanelSkeletonProps) {
+  // Pre-resolve each row's width + stable key. The key is derived from the
+  // resolved width string (not the array index) so the same row across
+  // renders is matched by React, even though the index would change if
+  // `rows` ever changed mid-render.
+  const resolvedRows = Array.from({ length: Math.max(1, rows) }, (_, n) => {
+    const width = rowWidths?.[n] ?? defaultWidths(n);
+    return { key: `panel-row-${n}-${width}`, width };
+  });
   return (
     <section
       aria-busy="true"
@@ -49,11 +57,11 @@ export function PanelSkeleton({
         </header>
       )}
       <div className="flex flex-1 flex-col gap-1.5 p-3.5">
-        {Array.from({ length: Math.max(1, rows) }).map((_, i) => (
+        {resolvedRows.map((row) => (
           <span
-            key={i}
+            key={row.key}
             className="shimmer h-2 rounded"
-            style={rowWidths?.[i] ? undefined : { width: defaultWidths(i) }}
+            style={{ width: row.width }}
           />
         ))}
       </div>

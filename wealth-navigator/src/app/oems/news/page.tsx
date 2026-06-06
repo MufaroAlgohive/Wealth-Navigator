@@ -58,8 +58,8 @@ export default function NewsPage() {
       <Panel title={`News tape · ${filtered.length} items`} endpoint="GET /v1/news" density="scroll" className="h-[calc(100vh-220px)]">
         {newsQ.isLoading || sensQ.isLoading ? (
           <div className="space-y-1.5 px-4 py-3" aria-busy="true" aria-live="polite">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="space-y-1.5 border-b border-border/60 pb-3 last:border-0">
+            {[0, 1, 2, 3, 4, 5, 6, 7].map((n) => (
+              <div key={`news-item-${n}`} className="space-y-1.5 border-b border-border/60 pb-3 last:border-0">
                 <div className="flex items-center gap-2">
                   <span className="shimmer h-3 w-12 rounded" />
                   <span className="shimmer h-3 w-10 rounded" />
@@ -71,8 +71,8 @@ export default function NewsPage() {
           </div>
         ) : (
           <ul className="divide-y divide-border/60">
-            {filtered.map((a, i) => (
-              <li key={i} className="px-4 py-3 hover:bg-muted/30">
+            {filtered.map((a) => (
+              <li key={`${a.kind}-${a.ts}-${a.source}-${a.headline.slice(0, 24)}`} className="px-4 py-3 hover:bg-muted/30">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Pill
                     tone={a.kind === "sens" ? "primary" : "info"}
