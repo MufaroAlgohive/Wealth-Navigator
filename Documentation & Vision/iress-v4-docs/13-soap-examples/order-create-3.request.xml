@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OrderCreate3 — request payload
+  See ../05-services/iosplus/01-order-create-amend-cancel.md
+-->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <OrderCreate3 xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>ef0123ab-...@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>ord-1</RequestID>
+          <Updates>false</Updates>
+          <Timeout>25</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <Order>
+            <AccountCode>MINT-LIVE-001</AccountCode>
+            <SecurityCode>SHP</SecurityCode>
+            <Exchange>JSE</Exchange>
+            <BuySell>1</BuySell>
+            <OrderType>LMT</OrderType>
+            <Volume>1000</Volume>
+            <Price>250.50</Price>
+            <Destination>JSE</Destination>
+            <TimeInForce>DAY</TimeInForce>
+            <OrderTag>mint-ord-9f8e7d6c-b5a4-4916</OrderTag>
+          </Order>
+        </Parameters>
+      </Input>
+    </OrderCreate3>
+  </soap:Body>
+</soap:Envelope>

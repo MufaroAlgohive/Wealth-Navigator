@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OrderPadGetByAccount — response payload
+-->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <OrderPadGetByAccountResponse xmlns="http://webservices.iress.com.au/v4/">
+      <Output>
+        <Result>
+          <Header>
+            <RequestID>R-orders-1</RequestID>
+            <StatusCode>2</StatusCode>
+            <WebServiceTimeStamp>2025-01-15T09:30:15</WebServiceTimeStamp>
+            <PagingBookmark/>
+          </Header>
+          <DataRows>
+            <DataRow>
+              <OrderNumber>JSE-20250115-0001</OrderNumber>
+              <AccountCode>MINT-LIVE-001</AccountCode>
+              <SecurityCode>SHP</SecurityCode>
+              <Exchange>JSE</Exchange>
+              <BuySell>1</BuySell>
+              <OrderType>LMT</OrderType>
+              <Volume>1000</Volume>
+              <Price>250.50</Price>
+              <Destination>JSE</Destination>
+              <TimeInForce>DAY</TimeInForce>
+              <OrderState>WORKING</OrderState>
+              <OrderTag>mint-ord-9f8e7d6c-b5a4-4916</OrderTag>
+              <ErrorNumber>0</ErrorNumber>
+            </DataRow>
+          </DataRows>
+        </Result>
+      </Output>
+    </OrderPadGetByAccountResponse>
+  </soap:Body>
+</soap:Envelope>

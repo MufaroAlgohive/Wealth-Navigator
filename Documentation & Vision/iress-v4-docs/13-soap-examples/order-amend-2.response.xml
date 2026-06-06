@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OrderAmend2 — response payload
+-->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <OrderAmend2Response xmlns="http://webservices.iress.com.au/v4/">
+      <Output>
+        <Result>
+          <Header>
+            <RequestID>amd-1</RequestID>
+            <StatusCode>2</StatusCode>
+            <WebServiceTimeStamp>2025-01-15T09:31:05</WebServiceTimeStamp>
+            <PagingBookmark/>
+          </Header>
+          <DataRows>
+            <DataRow>
+              <OrderNumber>JSE-20250115-0001</OrderNumber>
+              <ErrorNumber>0</ErrorNumber>
+            </DataRow>
+          </DataRows>
+        </Result>
+      </Output>
+    </OrderAmend2Response>
+  </soap:Body>
+</soap:Envelope>

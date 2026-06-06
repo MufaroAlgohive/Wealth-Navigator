@@ -1,0 +1,25 @@
+Hi Charles,
+
+Hope you're well.
+
+Ahead of our upcoming session, please find attached the IRESS API Requirements Specification for the Mint OEMS (v1.0);  both the Word and Markdown versions. Could you forward this to your implementation team so they can review it in detail before we sit down?
+
+The intent is simple: we want to hit the ground running with our dev team the moment the session ends. The document is structured as a tick-box manifest covering reference data, equities (L1/L2), fixed income (clean/dirty pricing, Greeks), money market (JIBAR/ZARONIA/NCDs), fitted yield curves (NSS), macro (SARB, StatsSA, G10), SENS and wires, plus the auth, streaming, SLA and reconciliation requirements we'll hold the integration to.
+
+A few asks for your team ahead of the call:
+
+Walk through the spec endpoint-by-endpoint and confirm what IRESS supports natively today, off the shelf.
+
+Where a specific endpoint, field, or behaviour is not a direct match to what you have, please propose the closest alternative that achieves the same outcome (e.g. a different endpoint shape, a derived field, a batch vs. streaming trade-off, a different curve methodology). We're pragmatic — we care about the end result, not the exact path.
+
+Flag anything that is entitlement-gated, additional cost, or requires a separate contract so we can line up commercials in parallel.
+
+Confirm the environments, sandbox credentials, and rate limits you can provision for our dev team on day one.
+
+If your team can come to the session with the spec already marked up — green for "have it", amber for "have an equivalent", red for "gap, here's our suggestion" — we'll be able to scope the integration, lock the sequencing, and get our engineers building against IRESS endpoints the same week.
+
+Appreciate your help getting this in front of the right people early.
+
+Any low hanging  fruits we left behind, please flag. 
+
+Best,

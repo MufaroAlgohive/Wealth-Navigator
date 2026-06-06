@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OrderPadGetByAccount — request payload (snapshot + updates)
+  See ../05-services/iosplus/02-order-pad.md
+-->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <OrderPadGetByAccount xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>ef0123ab-...@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>R-orders-1</RequestID>
+          <Updates>true</Updates>
+          <Timeout>25</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <AccountCode>MINT-LIVE-001</AccountCode>
+          <OrderFilter>5</OrderFilter>
+        </Parameters>
+      </Input>
+    </OrderPadGetByAccount>
+  </soap:Body>
+</soap:Envelope>

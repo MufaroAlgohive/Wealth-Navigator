@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mint.local/schemas/iress-v4/request-header.json",
+  "title": "Iress V4 Common Request Header",
+  "description": "Logical view of the Header block carried by every V4 method. The actual SOAP is Document/Literal — elements are flattened into the message rather than wrapped in a complex type.",
+  "type": "object",
+  "properties": {
+    "SessionKey":        { "type": "string", "description": "Iress session token (for Iress Pro / WebAdmin)." },
+    "ServiceSessionKey": { "type": "string", "description": "Service session token (for IOS+ / IPS / FIX+)." },
+    "WaitForResponse":   { "type": "boolean", "default": true,  "description": "If false, server returns immediately with StatusCode=1." },
+    "PageSize":          { "type": "integer", "default": 1000,   "description": "Max rows per page. Server may cap per method." },
+    "RequestID":         { "type": "string",  "description": "GUID. Unique per active request. Used for paging and updates." },
+    "Timeout":           { "type": "integer", "default": 25,     "description": "Seconds. 55 for IRESSSessionStart." },
+    "Updates":           { "type": "boolean", "default": false,  "description": "If true, the request subscribes to updates after the snapshot." },
+    "PagingBookmark":    { "type": "object",  "additionalProperties": true, "description": "Opaque cursor from the previous page's response." },
+    "PagingDirection":   { "type": "integer", "default": 0,      "description": "0 = forward. Backward is not implemented." },
+    "InputLocalizationType":  { "type": "integer", "default": 0 },
+    "OutputLocalizationType": { "type": "integer", "default": 0 }
+  },
+  "oneOf": [
+    { "required": ["SessionKey"] },
+    { "required": ["ServiceSessionKey"] }
+  ]
+}

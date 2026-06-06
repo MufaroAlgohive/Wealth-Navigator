@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BookingGetByOrganisation2 — response excerpt showing the <MiscFees> block.
+  See ../05-services/iosplus/03-bookings.md and ../05-services/iosplus/05-misc-fees-reference.md
+-->
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <BookingGetByOrganisation2Response xmlns="http://webservices.iress.com.au/v4/">
+      <Output>
+        <Result>
+          <Header>
+            <RequestID>bk-1</RequestID>
+            <StatusCode>2</StatusCode>
+            <WebServiceTimeStamp>2025-01-15T09:35:00</WebServiceTimeStamp>
+            <PagingBookmark/>
+          </Header>
+          <DataRows>
+            <DataRow>
+              <BookingNumber>BK-20250115-0001</BookingNumber>
+              <OrderNumber>JSE-20250115-0001</OrderNumber>
+              <TradeNumber>TR-20250115-0001</TradeNumber>
+              <AccountCode>MINT-LIVE-001</AccountCode>
+              <SecurityCode>SHP</SecurityCode>
+              <Exchange>JSE</Exchange>
+              <BuySell>1</BuySell>
+              <Volume>1000</Volume>
+              <Price>250.50</Price>
+              <TradeDate>2025-01-15</TradeDate>
+              <SettlementDate>2025-01-17</SettlementDate>
+              <NetAmount>250500.00</NetAmount>
+              <Currency>ZAR</Currency>
+              <Commission>125.25</Commission>
+              <MiscFees>
+                <MiscFee>
+                  <Set>1</Set>
+                  <FeeType>4</FeeType>
+                  <FeeBasis>2</FeeBasis>
+                  <Properties>1</Properties>
+                  <FeeAmount>25.05</FeeAmount>
+                  <Currency>ZAR</Currency>
+                  <Display>1</Display>
+                  <SWIFTQualifier>REGF</SWIFTQualifier>
+                </MiscFee>
+                <MiscFee>
+                  <Set>1</Set>
+                  <FeeType>2</FeeType>
+                  <FeeBasis>2</FeeBasis>
+                  <Properties>0</Properties>
+                  <FeeAmount>3.76</FeeAmount>
+                  <Currency>ZAR</Currency>
+                  <Display>1</Display>
+                  <SWIFTQualifier>VATA</SWIFTQualifier>
+                </MiscFee>
+                <MiscFee>
+                  <Set>1</Set>
+                  <FeeType>3</FeeType>
+                  <FeeBasis>0</FeeBasis>
+                  <FeeAmount>50.00</FeeAmount>
+                  <Currency>ZAR</Currency>
+                  <Display>1</Display>
+                  <SWIFTQualifier>LOCO</SWIFTQualifier>
+                </MiscFee>
+              </MiscFees>
+              <ErrorNumber>0</ErrorNumber>
+            </DataRow>
+          </DataRows>
+        </Result>
+      </Output>
+    </BookingGetByOrganisation2Response>
+  </soap:Body>
+</soap:Envelope>

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IRESSSessionStart — request payload
+  Source: Iress Web Services V4 Programmer's Guide (PDF), reproduced and adapted.
+  See ../04-sessions/01-iress-sessions.md and ../05-services/market-data/01-iress-session-start.md
+-->
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <IRESSSessionStart xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <SessionKey></SessionKey>
+          <RequestID>init-1</RequestID>
+          <Updates>false</Updates>
+          <Timeout>55</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark></PagingBookmark>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <UserName>username</UserName>
+          <CompanyName>Company</CompanyName>
+          <Password>Password</Password>
+          <ApplicationID>Mint-OEMS-f9b1c2a3-...</ApplicationID>
+          <ApplicationLabel>Mint-OEMS-Production</ApplicationLabel>
+          <PreviousSessionKey></PreviousSessionKey>
+          <SessionTimeout>120</SessionTimeout>
+          <AuthenticationType></AuthenticationType>
+          <SessionNumberToKick></SessionNumberToKick>
+          <KickLikeSessions></KickLikeSessions>
+          <Locale>en-ZA</Locale>
+          <LocalePrivateUseSubtags></LocalePrivateUseSubtags>
+        </Parameters>
+      </Input>
+    </IRESSSessionStart>
+  </soap:Body>
+</soap:Envelope>

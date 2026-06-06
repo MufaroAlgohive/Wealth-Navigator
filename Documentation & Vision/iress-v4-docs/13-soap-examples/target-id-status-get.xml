@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  TargetIDStatusGet — request and response payloads
+  See ../05-services/fixplus/01-fixplus.md
+-->
+
+<!-- Request -->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <TargetIDStatusGet xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>fix-session-key-...@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>fix-1</RequestID>
+          <Updates>false</Updates>
+          <Timeout>25</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <TargetID>DROP-COPY-1</TargetID>
+        </Parameters>
+      </Input>
+    </TargetIDStatusGet>
+  </soap:Body>
+</soap:Envelope>
+
+<!-- Response (illustrative; exact field set is WSDL-dependent) -->
+<!--
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <TargetIDStatusGetResponse xmlns="http://webservices.iress.com.au/v4/">
+      <Output>
+        <Result>
+          <Header>
+            <RequestID>fix-1</RequestID>
+            <StatusCode>2</StatusCode>
+            <WebServiceTimeStamp>2025-01-15T09:30:00</WebServiceTimeStamp>
+            <PagingBookmark/>
+          </Header>
+          <DataRows>
+            <DataRow>
+              <TargetID>DROP-COPY-1</TargetID>
+              <Status>LoggedIn</Status>
+            </DataRow>
+          </DataRows>
+        </Result>
+      </Output>
+    </TargetIDStatusGetResponse>
+  </soap:Body>
+</soap:Envelope>
+-->

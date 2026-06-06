@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IRESSSessionStart — response payload
+  Source: Iress Web Services V4 Programmer's Guide (PDF).
+-->
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <IRESSSessionStartResponse xmlns="http://webservices.iress.com.au/v4/">
+      <Output>
+        <Input xmlns:v4="http://webservices.iress.com.au/v4/">
+          <!-- echoed input -->
+        </Input>
+        <Result>
+          <Header>
+            <RequestID>init-1</RequestID>
+            <StatusCode>2</StatusCode>
+            <WebServiceTimeStamp>2020-09-23T22:04:12</WebServiceTimeStamp>
+            <PagingBookmark/>
+          </Header>
+          <DataRows>
+            <DataRow>
+              <IRESSSessionKey>ABCD1234-...@WebServicesTestA.iress.com.au</IRESSSessionKey>
+            </DataRow>
+          </DataRows>
+        </Result>
+      </Output>
+    </IRESSSessionStartResponse>
+  </soap:Body>
+</soap:Envelope>

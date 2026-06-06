@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ServiceSessionStart (IOS+) — response payload
+-->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <ServiceSessionStartResponse xmlns="http://webservices.iress.com.au/v4/">
+      <Output>
+        <Result>
+          <Header>
+            <RequestID>svc-1</RequestID>
+            <StatusCode>2</StatusCode>
+            <WebServiceTimeStamp>2025-01-15T09:30:00</WebServiceTimeStamp>
+            <PagingBookmark/>
+          </Header>
+          <DataRows>
+            <DataRow>
+              <ServiceSessionKey>ef0123ab-...@WebServicesTestA.iress.com.au</ServiceSessionKey>
+            </DataRow>
+          </DataRows>
+        </Result>
+      </Output>
+    </ServiceSessionStartResponse>
+  </soap:Body>
+</soap:Envelope>

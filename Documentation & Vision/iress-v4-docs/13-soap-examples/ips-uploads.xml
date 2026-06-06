@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IPS Uploads — all five methods, illustrative request payloads.
+  See ../05-services/ips/uploads/01-uploads-overview.md
+-->
+
+<!-- IPSUploadCreate1 -->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <IPSUploadCreate1 xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>817ab46b-f588-4bc8-beb1-0286d7f516ff@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>up-1</RequestID>
+          <Updates>false</Updates>
+          <Timeout>25</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <UploadType>SECURITY_LIST</UploadType>
+          <UploadDate>2025-01-15</UploadDate>
+          <Description>Mint — daily security list</Description>
+        </Parameters>
+      </Input>
+    </IPSUploadCreate1>
+  </soap:Body>
+</soap:Envelope>
+
+<!-- IPSUploadDataSet1 -->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <IPSUploadDataSet1 xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>817ab46b-f588-4bc8-beb1-0286d7f516ff@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>up-2</RequestID>
+          <Updates>false</Updates>
+          <Timeout>25</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <UploadNumber>U1</UploadNumber>
+          <Rows>
+            <!-- upload-type-specific rows here -->
+          </Rows>
+        </Parameters>
+      </Input>
+    </IPSUploadDataSet1>
+  </soap:Body>
+</soap:Envelope>
+
+<!-- IPSUploadRun1 -->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <IPSUploadRun1 xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>817ab46b-f588-4bc8-beb1-0286d7f516ff@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>up-3</RequestID>
+          <Updates>false</Updates>
+          <Timeout>55</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <UploadNumber>U1</UploadNumber>
+        </Parameters>
+      </Input>
+    </IPSUploadRun1>
+  </soap:Body>
+</soap:Envelope>
+
+<!-- IPSUploadSummaryGet2 -->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <IPSUploadSummaryGet2 xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>817ab46b-f588-4bc8-beb1-0286d7f516ff@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>up-4</RequestID>
+          <Updates>false</Updates>
+          <Timeout>25</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <UploadNumber>U1</UploadNumber>
+        </Parameters>
+      </Input>
+    </IPSUploadSummaryGet2>
+  </soap:Body>
+</soap:Envelope>
+
+<!-- IPSUploadErrorGet1 -->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <IPSUploadErrorGet1 xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>817ab46b-f588-4bc8-beb1-0286d7f516ff@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>up-5</RequestID>
+          <Updates>false</Updates>
+          <Timeout>25</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <UploadNumber>U1</UploadNumber>
+        </Parameters>
+      </Input>
+    </IPSUploadErrorGet1>
+  </soap:Body>
+</soap:Envelope>

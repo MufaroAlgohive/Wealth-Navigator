@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Force-close (SessionNumberToKick = -1) — IRESSSessionStart request payload.
+  See ../04-sessions/03-user-scenarios.md (Scenario 2)
+-->
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:v4="http://webservices.iress.com.au/v4/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <v4:IRESSSessionStart>
+      <v4:Input>
+        <v4:Header>
+          <v4:SessionKey></v4:SessionKey>
+          <v4:RequestID></v4:RequestID>
+          <v4:Updates>false</v4:Updates>
+          <v4:Timeout>25</v4:Timeout>
+          <v4:PageSize>0</v4:PageSize>
+          <v4:WaitForResponse>true</v4:WaitForResponse>
+          <v4:PagingBookmark/>
+          <v4:PagingDirection>0</v4:PagingDirection>
+          <v4:InputLocalizationType>0</v4:InputLocalizationType>
+          <v4:OutputLocalizationType>0</v4:OutputLocalizationType>
+        </v4:Header>
+        <v4:Parameters>
+          <v4:UserName>username</v4:UserName>
+          <v4:CompanyName>Company</v4:CompanyName>
+          <v4:Password>Password</v4:Password>
+          <v4:ApplicationID>AppID</v4:ApplicationID>
+          <v4:ApplicationLabel>AppLabel</v4:ApplicationLabel>
+          <v4:PreviousSessionKey></v4:PreviousSessionKey>
+          <v4:SessionTimeout></v4:SessionTimeout>
+          <v4:AuthenticationType></v4:AuthenticationType>
+          <v4:SessionNumberToKick>-1</v4:SessionNumberToKick>
+          <v4:KickLikeSessions>true</v4:KickLikeSessions>
+          <v4:Locale></v4:Locale>
+          <v4:LocalePrivateUseSubtags></v4:LocalePrivateUseSubtags>
+        </v4:Parameters>
+      </v4:Input>
+    </v4:IRESSSessionStart>
+  </soapenv:Body>
+</soapenv:Envelope>

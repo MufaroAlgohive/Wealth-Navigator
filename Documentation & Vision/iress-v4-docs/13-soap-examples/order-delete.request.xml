@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OrderDelete — cancel an order
+  See ../05-services/iosplus/01-order-create-amend-cancel.md
+-->
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <OrderDelete xmlns="http://webservices.iress.com.au/v4/">
+      <Input>
+        <Header>
+          <ServiceSessionKey>ef0123ab-...@WebServicesTestA.iress.com.au</ServiceSessionKey>
+          <RequestID>del-1</RequestID>
+          <Updates>false</Updates>
+          <Timeout>25</Timeout>
+          <PageSize>0</PageSize>
+          <WaitForResponse>true</WaitForResponse>
+          <PagingBookmark/>
+          <PagingDirection>0</PagingDirection>
+        </Header>
+        <Parameters>
+          <OrderNumber>JSE-20250115-0001</OrderNumber>
+          <AccountCode>MINT-LIVE-001</AccountCode>
+        </Parameters>
+      </Input>
+    </OrderDelete>
+  </soap:Body>
+</soap:Envelope>
