@@ -1,0 +1,84 @@
+"use client";
+
+import { useMemo } from "react";
+import { ArrowUp, ArrowDown, Radio, AlertTriangle } from "lucide-react";
+import { cn } from "@/lib/cn";
+import { useTick, useLastTickTs } from "@/lib/store/tick-stream-provider";
+import { Badge } from "@/components/ui/badge";
+
+interface TickerItem {
+  k: string;
+  label: string;
+  decimals: number;
+  suffix?: string;
+  base: number;
+  prev: number;
+}
+
+const DEFAULT_ITEMS: TickerItem[] = [
+  { k: "J203",     label: "ALSI",     decimals: 0,  base: 87412.18, prev: 86990.88 },
+  { k: "J200",     label: "TOP40",    decimals: 0,  base: 80115.40, prev: 79727.30 },
+  { k: "USDZAR",   label: "USDZAR",   decimals: 4,  base: 18.452,   prev: 18.494 },
+  { k: "EURZAR",   label: "EURZAR",   decimals: 4,  base: 19.881,   prev: 19.860 },
+  { k: "GBPJPY",   label: "GBPJPY",   decimals: 2,  base: 198.42,   prev: 198.10 },
+  { k: "Gold",     label: "GOLD",     decimals: 0,  base: 2682.40,  prev: 2664.10 },
+  { k: "Brent",    label: "BRENT",    decimals: 2,  base: 78.12,    prev: 78.57 },
+  { k: "R2030",    label: "R2030",    decimals: 3,  suffix: "%", base: 10.42, prev: 10.38 },
+  { k: "R2035",    label: "R2035",    decimals: 3,  suffix: "%", base: 11.42, prev: 11.40 },
+  { k: "R2040",    label: "R2040",    decimals: 3,  suffix: "%", base: 12.05, prev: 12.01 },
+  { k: "JIBAR_3M", label: "JIBAR 3M", decimals: 3,  suffix: "%", base: 8.11,  prev: 8.14 },
+  { k: "ZARONIA",  label: "ZARONIA",  decimals: 3,  suffix: "%", base: 7.48,  prev: 7.50 },
+  { k: "SPX",      label: "S&P 500",  decimals: 0,  base: 5812.45,  prev: 5788.27 },
+  { k: "NDX",      label: "NDX",      decimals: 0,  base: 20445.20, prev: 20302.65 },
+  { k: "NPN",      label: "NPN",      decimals: 2,  base: 4180.55,  prev: 4158.30 },
+  { k: "AGL",      label: "AGL",      decimals: 2,  base: 552.10,   prev: 539.70 },
+];
+
+export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
+  const last = useLastTickTs();
+  const age = Math.max(0, Date.now() - last);
+  const stale = age > 4000;
+  const live = age < 1500;
+
+  return (
+    <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap border-y border-border bg-surface-2/60 py-1.5 pl-3 pr-3 text-[11px] font-mono text-foreground/80 scrollbar-thin mask-fade-x">
+      <Badge variant={stale ? "warning" : "live"} className="shrink-0">
+        {stale ? <AlertTriangle className="h-2.5 w-2.5" /> : <Radio className="h-2.5 w-2.5 animate-pulse" />}
+        {stale ? "STALE" : "IRESS LIVE"}
+      </Badge>
+      <span className="shrink-0 text-muted-foreground/60">·</span>
+      {items.map((it) => (
+        <TickerChip key={it.k} item={it} />
+      ))}
+    </div>
+  );
+}
+
+function TickerChip({ item }: { item: TickerItem }) {
+  const t = useTick(item.k);
+  // Use the initial base as the "prev close" for change calculation
+  const change = t.last - item.prev;
+  const changePct = (change / item.prev) * 100;
+  const isUp = change > 0;
+  const isDown = change < 0;
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      <span className="text-[9.5px] uppercase tracking-wider text-muted-foreground/80">{item.label}</span>
+      <span className="font-semibold tabular-nums text-foreground">
+        {t.last.toLocaleString("en-ZA", { minimumFractionDigits: item.decimals, maximumFractionDigits: item.decimals })}
+        {item.suffix ?? ""}
+      </span>
+      <span
+        className={cn(
+          "flex items-center gap-0.5 text-[10px] tabular-nums",
+          isUp && "text-up",
+          isDown && "text-down",
+          !isUp && !isDown && "text-muted-foreground/70",
+        )}
+      >
+        {isUp ? <ArrowUp className="h-2.5 w-2.5" /> : isDown ? <ArrowDown className="h-2.5 w-2.5" /> : null}
+        {Math.abs(changePct).toFixed(2)}%
+      </span>
+    </span>
+  );
+}
