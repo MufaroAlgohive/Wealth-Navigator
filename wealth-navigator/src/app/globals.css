@@ -1,0 +1,239 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* ── Dark theme (default) — midnight violet-slate · Bloomberg × Linear ── */
+    --canvas: 252 32% 6%;
+    --surface: 252 28% 9%;
+    --surface-2: 252 25% 12%;
+    --elevated: 252 22% 15%;
+
+    --border: 252 20% 18%;
+    --border-strong: 252 20% 26%;
+    --input: 252 20% 18%;
+    --ring: 263 82% 68%;
+
+    --foreground: 250 20% 96%;
+    --muted: 252 22% 14%;
+    --muted-foreground: 250 14% 64%;
+
+    --primary: 263 82% 68%;
+    --primary-foreground: 252 32% 6%;
+    --secondary: 252 22% 14%;
+    --secondary-foreground: 250 20% 96%;
+    --accent: 252 22% 17%;
+    --accent-foreground: 250 20% 96%;
+
+    --destructive: 351 88% 62%;
+    --destructive-foreground: 250 20% 96%;
+    --success: 152 68% 50%;
+    --success-foreground: 252 32% 6%;
+    --warning: 38 95% 58%;
+    --warning-foreground: 252 32% 6%;
+    --info: 200 88% 62%;
+    --info-foreground: 252 32% 6%;
+
+    --up: 152 68% 50%;
+    --down: 351 88% 62%;
+    --halt: 0 80% 58%;
+
+    --popover: 252 28% 9%;
+    --popover-foreground: 250 20% 96%;
+    --card: 252 28% 9.5%;
+    --card-foreground: 250 20% 96%;
+
+    --sidebar: 252 34% 5%;
+    --sidebar-foreground: 250 14% 75%;
+    --sidebar-accent: 252 24% 12%;
+    --sidebar-accent-foreground: 250 20% 96%;
+    --sidebar-border: 252 22% 12%;
+    --sidebar-primary: 263 82% 68%;
+    --sidebar-primary-foreground: 250 20% 96%;
+    --sidebar-ring: 263 82% 68%;
+
+    --chart-1: 263 82% 68%;
+    --chart-2: 152 68% 50%;
+    --chart-3: 38 95% 58%;
+    --chart-4: 200 88% 62%;
+    --chart-5: 320 75% 62%;
+    --chart-6: 0 80% 60%;
+
+    --radius: 0.5rem;
+
+    --color-bg: #101214;
+
+    --color-surface: #161A1D;
+
+    --color-muted-surface: #1D2125;
+
+    --color-border: #2C333A;
+
+    --color-text-secondary: #596773;
+
+    --color-text-primary: #C7D1DB;
+
+    --color-heading: #DEE4EA;
+
+    --spacing-6: 1.5rem;
+
+    --rounded-lg: 0.5rem;
+
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.1);
+
+    --color-text-primary-rgb: 199, 209, 219;
+
+    --color-bg-2: #C7D1DB;
+  }
+
+  .light {
+    /* ── Light theme — clean white with vivid purple ─────────────────── */
+    --canvas: 0 0% 100%;
+    --surface: 0 0% 100%;
+    --surface-2: 252 20% 97%;
+    --elevated: 252 16% 94%;
+
+    --border: 252 14% 89%;
+    --border-strong: 252 14% 78%;
+    --input: 252 14% 89%;
+    --ring: 263 78% 58%;
+
+    --foreground: 252 28% 12%;
+    --muted: 252 16% 96%;
+    --muted-foreground: 252 12% 42%;
+
+    --primary: 263 78% 58%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 252 16% 96%;
+    --secondary-foreground: 252 28% 12%;
+    --accent: 252 18% 94%;
+    --accent-foreground: 252 28% 12%;
+
+    --destructive: 0 75% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 71% 32%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 38%;
+    --warning-foreground: 0 0% 100%;
+    --info: 217 80% 42%;
+    --info-foreground: 0 0% 100%;
+
+    --up: 152 68% 36%;
+    --down: 351 82% 50%;
+    --halt: 0 75% 46%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 252 28% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 252 28% 12%;
+
+    --sidebar: 0 0% 100%;
+    --sidebar-foreground: 252 12% 36%;
+    --sidebar-accent: 252 78% 96%;
+    --sidebar-accent-foreground: 263 78% 38%;
+    --sidebar-border: 252 14% 91%;
+    --sidebar-primary: 263 78% 58%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-ring: 263 78% 58%;
+
+    --chart-1: 263 78% 58%;
+    --chart-2: 152 68% 36%;
+    --chart-3: 32 92% 44%;
+    --chart-4: 200 85% 46%;
+    --chart-5: 320 70% 50%;
+    --chart-6: 0 75% 46%;
+  }
+  .dark {
+    --color-bg: #101214;
+    --color-surface: #161A1D;
+    --color-muted-surface: #1D2125;
+    --color-border: #2C333A;
+    --color-text-secondary: #596773;
+    --color-text-primary: #C7D1DB;
+    --color-heading: #DEE4EA;
+    --color-bg-2: #C7D1DB;
+    --color-text-primary-rgb: 199, 209, 219;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html, body {
+    height: 100%;
+  }
+  body {
+    @apply bg-canvas text-foreground antialiased;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    font-variant-numeric: tabular-nums;
+  }
+  /* Tabular numerals everywhere money moves */
+  .num,
+  td.num,
+  [data-num] {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Hide scrollbars in dense panels (keep accessibility) */
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 999px; }
+  .scrollbar-thin { scrollbar-width: thin; scrollbar-color: hsl(var(--border)) transparent; }
+
+  /* Focus ring used everywhere */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+}
+
+  /* Loading skeleton shimmer — single keyframe shared by all
+     `PanelSkeleton` / `KpiTileSkeleton` / `TableRowSkeleton` bars. The
+     `background-size: 200% 100%` makes the gradient twice as wide as
+     the bar, so translating it `-50%` produces a smooth wrap. */
+  @keyframes shimmer {
+    0%   { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+  }
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      hsl(var(--muted) / 0.4) 0%,
+      hsl(var(--muted) / 0.7) 50%,
+      hsl(var(--muted) / 0.4) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.6s linear infinite;
+  }
+  /* Honor users who opt out of motion — render the skeleton statically
+     so the page is still readable without a pulsing animation. */
+  @media (prefers-reduced-motion: reduce) {
+    .shimmer { animation: none; }
+  }
+}
+
+@layer utilities {
+  .text-up { color: hsl(var(--up)); }
+  .text-down { color: hsl(var(--down)); }
+  .text-halt { color: hsl(var(--halt)); }
+  .text-warn { color: hsl(var(--warning)); }
+
+  .bg-up\/10 { background-color: hsl(var(--up) / 0.1); }
+  .bg-down\/10 { background-color: hsl(var(--down) / 0.1); }
+
+  .grid-bg {
+    background-image:
+      linear-gradient(hsl(var(--border) / 0.4) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(var(--border) / 0.4) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .mask-fade-r {
+    mask-image: linear-gradient(to right, black 80%, transparent 100%);
+  }
+  .mask-fade-x {
+    mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
+  }
+}
