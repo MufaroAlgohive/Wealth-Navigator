@@ -1,0 +1,38 @@
+To: Charles Ntjana <charles.ntjana@iress.com>
+Cc: Tim Gush <tim.gush@iress.com>, Andre Pietersen <andre.pietersen@iress.com>, Lonwabo Damane <lonwabo@mymint.co.za>, Petrone Nel <petrone.nel@mymint.co.za>, Tsie Masilo <tsie.masilo@mymint.co.za>
+Subject: Re: MINT OEMS x IRESS -- API spec attached, please circulate to implementation team ahead of our session
+Date: June 2026
+Attachments: mint-iress-v4-endpoints-definite.txt, mint-iress-v4-endpoints-likely.txt
+
+Hi Charles,
+
+Thanks for the web services guide and the update on the project plan -- it is good to know the spec is now in Tim and Andre's hands.
+
+To make the project plan easier to sequence, we have split the 34 V4 methods referenced in the spec into two attached lists, sized to match the green/amber/red mark-up you were asked to do.
+
+mint-iress-v4-endpoints-definite.txt is the green set -- the 17 methods we will call in production from day one, grouped by IRESS namespace (Iress Pro, IOS+, IPS, FIX+). All 17 are already wired or declared in our adapter; the live swap from mock to production is a single IRESS_MODE config change once access is in place.
+
+mint-iress-v4-endpoints-likely.txt is the amber set -- the methods we expect to call in 6-18 months as the wealth-manager, strategist, financial-controller, and admin personas light up. Each pick is P0/P1/P2 ranked, and the namespace grouping matches the definite list so provisioning maps one-for-one.
+
+Three things to flag as Tim and Andre work through the likely list. First, three entries are PENDING placeholders where we do not yet know the right V4 verb -- the SENS feed, the macro release calendar, and the JSE sector weights -- and we are asking IRESS to confirm the canonical verb or propose the closest equivalent. Second, the likely list raises about 30 open questions, mostly on method-shape confirmations, and we are happy to resolve those async by email rather than burning call time. Third, the 10 P0 picks in the likely list are where the first integration tickets will land -- order-recovery, the wealth-manager book, financial-controller reconciliation, pre-trade compliance, depth-of-book, and compliance audit -- so if your team can provision those 10 first, the project plan can start in parallel with the definite-list work.
+
+The one specific ask, tied back to the project plan: if your team can mark up the definite list with provisioning timelines -- which 5-7 of the 17 can be activated on day one, which need 1-2 weeks, and which (if any) are entitlement-gated -- we can plan our dev team's first sprint around that ordering. That mark-up is the most useful thing you can send back this week.
+
+For the sandbox credentials: we noted they are pending IRESS compliance approval, and we are ready to point a sandbox at the login details the moment they arrive.
+
+We welcome any low-hanging-fruit flags as you work through the likely list -- especially deprecations planned for 2026/2027, or non-market-data use cases better served by a method we have not listed.
+
+Please confirm receipt of the two attached endpoint lists.
+
+Best regards,
+Juan van Wyk
+Engineering -- MINT Wealth Navigator
+MINT Wealth (Pty) Ltd
+<JUAN_EMAIL> · <PHONE>
+
+Invest. Borrow. Transact. -- All in One Platform.
+Building Wealth, Intentionally.
+
+MINT Platforms (Pty) Ltd is an authorised FSP and a registered Credit Provider (NCR). Information shared is general in nature and not financial, legal, tax or credit advice. All investments carry risk, including potential loss of capital.
+
+This email is confidential and intended only for the addressee. If received in error, please notify the sender and delete it.

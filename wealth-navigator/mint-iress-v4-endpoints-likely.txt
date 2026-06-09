@@ -1,0 +1,626 @@
+MINT WEALTH NAVIGATOR
+V4 Web Services  --  Likely (future) endpoint list
+Version: 2026-06-09
+Status: Pre-go-live (production Q4 2026)
+This list is directional, not binding. Methods here are expected to be called within
+6-18 months as adjacent personas and analytics surfaces light up. IRESS should
+provision access in advance so that integration is unblocked when the need arises.
+
+
+================================================================================
+GROUP 1  --  IRESS PRO
+Namespace: Iress Pro (Iress service session for market data, news, reference,
+audit). Methods here run on the Iress service session, except where noted.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+METHOD: AuditTrailGetByAccount
+Namespace / Service: Iress (served on the IPS service session per V4 master
+  quick-ref)
+Priority: P0
+Use case category: COMPLIANCE
+Business rationale: Powers the compliance officer's "Pending approvals" and
+  "Audit trail review" surfaces on /admin. Today this panel reads
+  `auditTrail` from a seed fixture. Compliance cannot replace the seed-bypass
+  pattern without a real per-account audit log; this method is the data layer
+  underneath.
+Triggering persona: Compliance / Admin
+Code readiness: Gap list (IRESS_ENDPOINT_INVENTORY.md C.2). Not on
+  IressClient; needs to be added to the interface, mocked, then wired to the
+  /admin panels.
+Open question for IRESS: Confirm the method is reachable on the IPS service
+  session rather than the Iress session (per the V4 master quick-ref note),
+  and confirm the bookmark-paging parameters (PagingBookmark from / forward
+  only).
+--------------------------------------------------------------------------------
+METHOD: PricingQuoteExGet
+Namespace / Service: Iress Pro / Iress service
+Priority: P0
+Use case category: TRADING
+Business rationale: Extended L1 / depth-of-book snapshot. Email brief
+  explicitly names "Equities (L1/L2)". Drives the /oems/security depth-ladder
+  widget and the extended view on /oems/equities. /api/ticks long-poll proxy
+  in the definite list covers L1; this is the L2 / extended side.
+Triggering persona: OEMS trader
+Code readiness: Gap list (IRESS_ENDPOINT_INVENTORY.md C.2). Not on IressClient.
+Open question for IRESS: Confirm whether `PricingQuoteExGet` returns a true
+  book-snapshot (10-level depth) or only an extended L1. If a separate
+  depth method exists in the WSDL, please share its verb. The
+  `PricingQuoteExGetUpdates` long-poll variant is gated on the WSDL  --  see
+  the separate entry for that below.
+--------------------------------------------------------------------------------
+METHOD: PricingQuoteExGetUpdates
+Namespace / Service: Iress Pro / Iress service
+Priority: P1
+Use case category: REAL_TIME_INFRA
+Business rationale: Long-poll updates for the PricingQuoteExGet subscription.
+  Required to push live L2 / extended-L1 changes to the /oems/security
+  depth-ladder without polling the snapshot on a tight cadence. Pairs with
+  PricingQuoteExGet above.
+Triggering persona: OEMS trader
+Code readiness: Gap list. Not on IressClient; gated on WSDL confirmation.
+Open question for IRESS: Is the `Ex` updates method actually surfaced in the
+  WSDL? The V4 quick-ref marks it as "(per WSDL)". If not exposed, we fall
+  back to a 1-2s polling loop on `PricingQuoteExGet`, which is the documented
+  fallback. Please confirm one way or the other on the 30-min call.
+--------------------------------------------------------------------------------
+METHOD: PricingTradeHistoricalGet
+Namespace / Service: Iress Pro / Iress service
+Priority: P2
+Use case category: BACKTEST_ALGO
+Business rationale: Time-and-sales backfill for the /oems/security
+  historical-prints widget and for the quant team's backtest tape
+  reconstruction. The OEMS wants intraday prints for visual backtest; the
+  quant team wants end-of-day prints for factor-model construction.
+Triggering persona: OEMS trader (UI), Quant / Strategist (data feed)
+Code readiness: Gap list. Not on IressClient; research note only.
+Open question for IRESS: What is the V4 verb for historical trade-by-trade
+  tape (time and sales) at the JSE, suitable for backtest? Is
+  PricingTradeHistoricalGet the right verb, and what is the maximum lookback
+  and the EOD vs. intraday delivery shape? (For the quant use case, intraday
+  tick-by-tick is ideal; EOD prints are a minimum acceptable.)
+--------------------------------------------------------------------------------
+METHOD: News / SENS / wire feed methods
+Namespace / Service: Iress Pro / Iress service
+Priority: P1
+Use case category: NEWS_SENS
+Business rationale: The /oems/news page currently reads the `news` and
+  `sens` arrays from seed fixtures. Real SENS announcements are a compliance
+  and trader-information need (corporate actions, suspensions, results,
+  dividend declarations). Same shape as the definite-list time series but
+  for the news / SENS surface.
+Triggering persona: OEMS trader (UI), Compliance (audit trail of disclosures)
+Code readiness: Gap list. The V4 PDF does not enumerate the news / SENS
+  methods; the WSDL is the source of truth. Not on IressClient.
+Open question for IRESS: What is the V4 verb for SENS / corporate-actions
+  news? (Not in the surfaced method list  --  please confirm.) Is the SENS
+  stream real-time or delayed, and is it included in the standard V4
+  entitlement or a separate subscription? If a third-party SENS feed is
+  expected, please flag it.
+--------------------------------------------------------------------------------
+METHOD: Macro releases feed (SARB / StatsSA / G10)
+Namespace / Service: Iress Pro / Iress service
+Priority: P1
+Use case category: NEWS_SENS
+Business rationale: /oems/macro page shows a macro calendar. Today
+  `macroCalendar` is a seed. Real releases (SARB MPC, StatsSA CPI/PPI/GDP,
+  US non-farm payrolls) need to be a real V4 method or, at minimum, a
+  TimeSeriesGet2 series with a release-event flag.
+Triggering persona: OEMS trader (UI), Strategist (backtest inputs)
+Code readiness: Gap list. Not on IressClient; the macroIndicators series is
+  already on the interface, but the release calendar is not.
+Open question for IRESS: Is there a V4 verb for the macro release calendar
+  (a typed time series with `isRelease = true` per point, or a separate
+  release-list method)? If it is a TimeSeriesGet2 variant, please share the
+  code list. If a separate method, please share the verb.
+--------------------------------------------------------------------------------
+METHOD: Sector performance / sector weights (JSE)
+Namespace / Service: Iress Pro / Iress service
+Priority: P2
+Use case category: MONITORING_QUANT
+Business rationale: The /oems/cockpit "Sector heatmap" panel is currently a
+  seed. The strategist and quant teams want a real V4 feed for the 12 JSE
+  sector weights and 1D/1W/1M/YTD sector performance.
+Triggering persona: Quant / Strategist
+Code readiness: Gap list. Not on IressClient; the sectors() helper in the
+  data bag is currently seed-backed.
+Open question for IRESS: What is the V4 verb for JSE sector weights / sector
+  performance? (We currently use a seed fixture for the 12-sector heatmap.)
+  Is this a TimeSeriesGet2 per-sector-code call, or is there a snapshot
+  method in the WSDL that returns the 12 sector weights in one call? If
+  per-sector TimeSeriesGet2, please share the sector code list.
+--------------------------------------------------------------------------------
+METHOD: TimeSeriesGet2 with code = "JIBAR" / "ZARONIA" (live confirm)
+Namespace / Service: Iress Pro / Iress service
+Priority: P2
+Use case category: MONITORING_QUANT
+Business rationale: We already call TimeSeriesGet2 for these series via the
+  definite list, but the exact codes on the production WSDL are not
+  confirmed. The /oems/macro and /oems/money-market pages need a confirmed
+  daily JIBAR fixing and a ZARONIA rate; the quant team needs the historical
+  archive for benchmark construction.
+Triggering persona: OEMS trader, Quant / Strategist
+Code readiness: On IressClient (definite list). The code constants are
+  research notes, not on the wire.
+Open question for IRESS: What is the V4 verb for daily JIBAR fixings and
+  ZARONIA rate? (We currently use seed fixtures; the WSDL code string is
+  unconfirmed.) Is the JIBAR code stable across 1M, 3M, 6M, 12M tenors, or
+  is there a per-tenor code (e.g. "JIBAR.1M")? Please share the production
+  code strings.
+--------------------------------------------------------------------------------
+
+
+================================================================================
+GROUP 2  --  IOS+
+Namespace: IOS+ (IOSPLUSAPI service session). Order entry, order retrieval,
+order recovery, search, contingent orders, algo orders, destination and
+attribute discovery, session / request hygiene.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+METHOD: OrderNoGetByOrderTag
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P0
+Use case category: TRADING
+Business rationale: Closes the "I sent an order and never got a response"
+  recovery hole that the V4 recovery guide (07-recovery/05) calls out as
+  the single highest-stakes case. The definite list already covers
+  OrderCreate3 with OrderTag idempotency; this is the missing half. Used by
+  the new-order dialog's pending-order reconciliation panel and by the
+  post-trade integrity check.
+Triggering persona: OEMS trader
+Code readiness: Gap list (IRESS_ENDPOINT_INVENTORY.md C.2). Not on
+  IressClient; one-day add for the interface plus a recovery helper in
+  lib/iress/recovery.ts.
+Open question for IRESS: How long does an OrderTag remain in the IOS+
+  idempotency cache after a successful OrderCreate3? We generate a UUID per
+  attempt client-side; we need the window so we can choose a UUID per
+  attempt vs. per logical order. (Tied to Open Question 3 in
+  IRESS_EMAIL_TO_PROVIDER.md Section C.)
+--------------------------------------------------------------------------------
+METHOD: OrderSearchGetByUser
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P0
+Use case category: FINANCIAL_CONTROL
+Business rationale: Step-2 of the two-step reconciliation algorithm
+  (07-recovery/04): OrderSearchGetByUser(OrderState=3) for inactive orders
+  since the last-known timestamp. Runs at startup, on reconnect, and at
+  EOD. The Financial Controller's Daily reconciliation panel
+  (/fc/overview) is the primary consumer.
+Triggering persona: Financial Controller, OEMS trader (recovery)
+Code readiness: Gap list. Not on IressClient; P0 for the financial
+  controller persona lighting up.
+Open question for IRESS: Confirm the parameter shape (DateTimeFrom,
+  OrderState, AccountCode scope, and any per-account filter). Also: is there
+  a per-account variant (OrderSearchGetByAccount) that should be the
+  primary call for an account-scoped reconciliation job?
+--------------------------------------------------------------------------------
+METHOD: DestinationGet
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P0
+Use case category: TRADING
+Business rationale: Discover the destinations a trader is entitled to use:
+  regular, contingent order (CO, DestinationSubTypeNumber 30-49), and algo
+  (Algo bit in DestinationPropertiesMask). The new-order dialog's
+  destination picker is a gating dependency for contingent and algo orders.
+  Without this, we can't tell the trader which CO/algo destinations are
+  available.
+Triggering persona: OEMS trader
+Code readiness: Gap list. Not on IressClient; P0 for the CO/algo
+  discovery prerequisite.
+Open question for IRESS: Confirm the AccessMode=0 parameter convention
+  (returns the user's accessible destinations) and the WSDL parameter
+  list. Confirm whether all destination sub-types are returned, or whether
+  we need a separate call per sub-type.
+--------------------------------------------------------------------------------
+METHOD: DestinationDetailGet
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P0
+Use case category: TRADING
+Business rationale: Inspect a destination's DestinationSubTypeNumber and
+  DestinationPropertiesMask to distinguish CO from algo and to set
+  ExecutionInstructions correctly when the new-order dialog submits a
+  CO/algo order. Pairs with DestinationGet above.
+Triggering persona: OEMS trader
+Code readiness: Gap list. Not on IressClient; P0.
+Open question for IRESS: Confirm the DestinationPropertiesMask bit layout
+  (the Algo bit is 256 per the V4 docs; please confirm and share the
+  bit-layout reference).
+--------------------------------------------------------------------------------
+METHOD: ETCGetByOrganisation
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P0
+Use case category: COMPLIANCE
+Business rationale: Pre-trade Estimated Trade Cost snapshot. Display the
+  expected all-in cost on the new-order dialog and block send if the trader
+  has not acknowledged a cost over the configured threshold. The
+  preTradeCheck helper in lib/iress/strategy.ts is the integration hook.
+  Email brief explicitly calls out pre-trade compliance; this is the
+  closest IRESS-native equivalent.
+Triggering persona: OEMS trader
+Code readiness: Gap list. Not on IressClient; P0 for the pre-trade
+  compliance hook.
+Open question for IRESS: Confirm the parameter shape (Organisation,
+  Account, Date are mentioned in the V4 docs; please share the WSDL
+  parameter list and the response shape). Is the response a single point
+  estimate or a fee-component breakdown?
+--------------------------------------------------------------------------------
+METHOD: AttributeGetByUser
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P1
+Use case category: TRADING
+Business rationale: Per-user attribute catalog. AttributeCategoryNumber=5
+  for algo properties, =8 for Iress Strategy Properties (IS013-IS041).
+  Required to populate the CO / algo parameter set on the new-order dialog
+  (the contingent-orders quick-ref confirms this surface).
+Triggering persona: OEMS trader
+Code readiness: Gap list. Not on IressClient; P1 for CO/algo parameter
+  editor.
+Open question for IRESS: Confirm the WSDL response shape and the
+  AttributeCategoryNumber enum values. Are IS013-IS041 the only
+  Iress-Strategy properties, or is there a higher-numbered extension set
+  we should be aware of for take-profit composites and trailing-CO
+  percent offsets?
+--------------------------------------------------------------------------------
+METHOD: SessionRequestEnd
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P1
+Use case category: REAL_TIME_INFRA
+Business rationale: Cleanly end a long-poll subscription by RequestID.
+  Called on page unmount and on logout so a trader's navigation does not
+  burn one of the 50 active-request slots per session. The V4 doc
+  03-paging-and-updates/03-updates.md is explicit: "explicitly call
+  SessionRequestEnd(RequestID=...) to end".
+Triggering persona: All (cross-cutting infra hygiene)
+Code readiness: Gap list. Not on IressClient; P1 (not on the critical path
+  but required to keep the 50 active-request budget clean).
+Open question for IRESS: Confirm the cleanup contract: does SessionRequestEnd
+  also end the underlying data request, or only the updates subscription?
+  (i.e. if we call it mid-stream, do we get a SOAP fault on the next
+  *Updates call with that RequestID?)
+--------------------------------------------------------------------------------
+METHOD: OrderPadGetByUser (+ Updates)
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P2
+Use case category: TRADING
+Business rationale: Per-user blotter across all accounts the user can see.
+  Today we call OrderPadGetByAccount per account (definite list); a
+  multi-strategy desk typically wants a per-user pad that aggregates
+  across accounts. Useful for the trader's "My book" cross-account view.
+Triggering persona: OEMS trader (multi-strategy desk)
+Code readiness: Gap list. Not on IressClient; P2.
+Open question for IRESS: Confirm the OrderFilter enum is the same as for
+  OrderPadGetByAccount (5 = active, 6 = today + yesterday, 7 = today).
+--------------------------------------------------------------------------------
+METHOD: OrderPadGetByAccountGroup (+ Updates)
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P2
+Use case category: TRADING
+Business rationale: Per-account-group pad (all accounts in a desk / mandate).
+  Complements the per-user pad: a desk lead can watch every account in
+  their group without enumerating accounts. Useful for the desk-level
+  "All accounts" view.
+Triggering persona: OEMS trader (desk lead)
+Code readiness: Gap list. Not on IressClient; P2.
+Open question for IRESS: Confirm the parameter shape (AccountGroupCode
+  vs. GroupCode  --  please share the WSDL parameter name). Also confirm the
+  Updates variant pairs with the same RequestID.
+--------------------------------------------------------------------------------
+METHOD: OrderSearchGetByAccount
+Namespace / Service: IOS+ / IOSPLUSAPI
+Priority: P2
+Use case category: FINANCIAL_CONTROL
+Business rationale: Account-scoped wider-filter search, pairs with
+  OrderSearchGetByUser for per-account reconciliation jobs. Used by the
+  /fc/overview nightly reconciliation worker.
+Triggering persona: Financial Controller
+Code readiness: Gap list. Not on IressClient; P2.
+Open question for IRESS: Confirm the parameter shape (DateTimeFrom,
+  OrderState, AccountCode). Is this a strictly more restrictive variant
+  of OrderSearchGetByUser, or are there additional AccountCode-scoped
+  filters exposed?
+--------------------------------------------------------------------------------
+METHOD: AdminUserCreate2 / UserCreate / AccountCreate
+Namespace / Service: IOS+ Admin / Iress WebAdmin
+Priority: P2
+Use case category: BUSINESS
+Business rationale: Account and user creation for the onboarding flow
+  when the wealth-manager persona begins on-boarding new client
+  households. All three support AmendIfExists=true per the V4 recovery
+  guide 07-recovery/02 and 03 for idempotent onboarding. Powers the
+  /business "KYC / FICA pipeline" and the /wm onboarding wizard.
+Triggering persona: Business / Sales
+Code readiness: Gap list. Not on IressClient. We do not currently call any
+  WebAdmin methods; the surface is latent.
+Open question for IRESS: Confirm the WebAdmin / IOS+ Admin namespace split
+  (which methods live on which service session). The V4 docs reference
+  "Iress WebAdmin" and "IOS+ Admin" as two distinct surfaces; please share
+  the canonical namespace and the SOAP service name for each. Also confirm
+  the AmendIfExists parameter name on each.
+--------------------------------------------------------------------------------
+METHOD: IRESSSessionStart (SessionNumberToKick=-1 force-close)
+Namespace / Service: Iress / Iress service
+Priority: P2
+Use case category: COMPLIANCE
+Business rationale: Force-close every other session for a given user.
+  Useful for the admin persona's kill-switch and for "lock out a
+  departing trader immediately" workflows. Documented in
+  04-sessions/03-user-scenarios.md. Note: this is the same IRESSSessionStart
+  method as in the definite list, with a different parameter shape.
+Triggering persona: Compliance / Admin
+Code readiness: Gap list. The base IRESSSessionStart is on IressClient
+  (definite list); the SessionNumberToKick=-1 shape is a parameter
+  variant, not a new method.
+Open question for IRESS: Confirm the recommended mint-side behaviour for
+  this call (the V4 doc warns that it ends every other session including
+  browser tabs of ViewPoint; we want to gate this behind explicit user
+  opt-in). Is there an audit-log surface for the kick event itself, or
+  does the admin's audit trail need to record it on the mint side?
+--------------------------------------------------------------------------------
+
+
+================================================================================
+GROUP 3  --  IPS
+Namespace: IPS (IPSAPI service session). Account and position lists,
+transaction history (per-account, modern), and outbound uploads.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+METHOD: IPSAccountGetAll1
+Namespace / Service: IPS / IPSAPI
+Priority: P0
+Use case category: WEALTH_MGMT
+Business rationale: List all client accounts the logged-in wealth manager
+  can see. Powers the /wm page's "My Client Book, Top 5 by AUM" panel
+  and the FC /overview's "Cash positions" panel. The /fc/overview page
+  already labels this method at page.tsx:148. Today the /wm page reads
+  clientsByWealthManager directly from @/lib/iress/seed. The single
+  most-wanted method for the wealth-manager persona.
+Triggering persona: Wealth Manager
+Code readiness: Gap list. Not on IressClient. Uses legacy cursor paging
+  via the parameter-level PreviousAccountCode (per V4 doc
+  03-paging-and-updates/04-paging-in-ips.md); will need a pagedFetch
+  wrapper.
+Open question for IRESS: Is `IPSAccountGetAll1` the right verb for
+  "accounts the logged-in wealth manager can see", or is there an
+  `AdvisorGetByUser` / `ClientGetByAdvisor` hierarchy method? If
+  entitlements are not gated at the Iress session level, please point us
+  at the right method. Also: is the V4 still on the "1" suffix, or is
+  there a v2 / GetAll2 in the live WSDL that supersedes this? (Tied to
+  Open Question 7 in IRESS_EMAIL_TO_PROVIDER.md Section C.)
+--------------------------------------------------------------------------------
+METHOD: IPSPositionGetAll1
+Namespace / Service: IPS / IPSAPI
+Priority: P0
+Use case category: WEALTH_MGMT
+Business rationale: Per-account positions for the wealth manager's book.
+  Legacy cursor paging (parameter-level)  --  needs a pagedFetch wrapper per
+  V4 doc 03-paging-and-updates/04. Drives the /wm "Holdings" drill-down
+  and the per-client P&L. The two IPSAccountGetAll1 + IPSPositionGetAll1
+  always go together.
+Triggering persona: Wealth Manager, Financial Controller
+Code readiness: Gap list. Not on IressClient.
+Open question for IRESS: Same as IPSAccountGetAll1  --  confirm the verb and
+  the v2 / GetAll2 question. Also: does the response include the
+  AccountCode, InstrumentCode, Quantity, AverageCost, MarketValue, and
+  Currency fields, or do we need to join with the account list?
+--------------------------------------------------------------------------------
+METHOD: IPSUploadCreate1 / IPSUploadDataSet1 / IPSUploadRun1
+        / IPSUploadSummaryGet2 / IPSUploadErrorGet1
+Namespace / Service: IPS / IPSAPI
+Priority: P1
+Use case category: BUSINESS
+Business rationale: Outbound uploads of Mint-authored reference data
+  (security lists, holdings, prices, model portfolio assignments) into
+  IPS. Five-step workflow: Create, DataSet, Run, Summary, Error. Powers
+  the /oems/integration "Outbound uploads" panel and the /business
+  mandate-assignment flow. The V4 PDF and 05-services/ips/uploads/01
+  describe the workflow; the upload type strings (SECURITY_LIST,
+  HOLDINGS, PRICES, MODEL_PORTFOLIO_ASSIGNMENT) are server-side config.
+Triggering persona: Business / Sales (mandate onboarding),
+  Financial Controller (reference data publishing)
+Code readiness: Gap list. Not on IressClient. The IPS upload family is
+  one of the two surfaces called out in IRESS_ENDPOINT_INVENTORY.md
+  Part A.6 that is missing from .env.example.
+Open question for IRESS: Please share the canonical list of upload type
+  strings on the production WSDL. The V4 doc says the strings are
+  server-side config; we need them confirmed to start a small end-to-end
+  test. Also: is there a per-upload-type schema (the row shape for
+  SECURITY_LIST vs HOLDINGS vs PRICES)?
+--------------------------------------------------------------------------------
+
+
+================================================================================
+GROUP 4  --  FIX+
+Namespace: FIX+ (FIXPLUSAPI service session). V4 FIX+ is status and
+control only. The actual FIX message stream (drop-copy bytes) travels
+over a separate TCP FIX connection, not via V4.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+METHOD: FIX+ drop-copy bytes (separate TCP connection)
+Namespace / Service: FIX+ TCP (NOT a V4 method)
+Priority: P2
+Use case category: SETTLEMENT_CORP_ACTIONS
+Business rationale: The actual FIX message stream for the drop-copy
+  connection. NOT a V4 method  --  V4 FIX+ is control / status only. The
+  bytes travel over a separate TCP FIX connection that Mint terminates
+  directly. This is a separate workstream from the V4 surface.
+Triggering persona: All (operationally required for compliance drop-copy
+  reconciliation)
+Code readiness: No V4 method to add. This is an infra workstream tracked
+  separately under lib/fix/dropcopy.ts (planned per PLANNING.md 3.1).
+Open question for IRESS: Please confirm the supported FIX protocol
+  versions (FIX 4.2 / 4.4 / 5.0 SP2) for the drop-copy, and share the
+  network-allowlist and TCP port for the production drop-copy endpoint.
+  Also confirm the message types (ExecutionReport, OrderCancelReject,
+  etc.) on the wire. (Tied to Open Question 15 in
+  IRESS_EMAIL_TO_PROVIDER.md Section C.) On the V4 status side,
+  TargetIDGet and TargetIDStatusGet from the definite list are the
+  surface for connection-state monitoring only.
+--------------------------------------------------------------------------------
+METHOD: IRESS endpoint health / per-method latency
+Namespace / Service: Iress (no dedicated method in V4 quick-ref)
+Priority: P2
+Use case category: MONITORING
+Business rationale: Mint ops need a way to monitor the health of the V4
+  Web Services integration: per-method latency, error rate, session
+  uptime. Today the /api/health route returns a static mode report; we
+  want real signals (rolling 1m / 5m / 1h p50/p95/p99 per method, error
+  counts by ErrorNumber, session up / down).
+Triggering persona: Mint ops / SRE
+Code readiness: No V4 method to add. Mint-side telemetry only  --  the
+  IRESSSessionStart / IRESSSessionEnd lifecycle and the per-method timing
+  is observable on the client.
+Open question for IRESS: Is there a V4 method to query per-method latency,
+  error rate, or session-uptime for monitoring / SRE? If not, is there a
+  recommended pattern (e.g. a synthetic heartbeat call, a
+  `PricingQuoteGet(JSE benchmark)` call as a canary) and any published
+  SLO targets at the JSE peak? (Tied to Open Question 14 in
+  IRESS_EMAIL_TO_PROVIDER.md Section C on the SLA topic.)
+--------------------------------------------------------------------------------
+
+
+================================================================================
+GROUP 5  --  CROSS-CUTTING / PROTO / BINDING
+These are not V4 methods per se. They are protocol-level questions that
+gate the live swap. Surfaced here so IRESS has a single place to answer
+them.
+================================================================================
+
+
+--------------------------------------------------------------------------------
+ITEM: WS-I / SOAP binding for the V4 WSDL
+Namespace / Service: Iress / all services
+Priority: P0
+Use case category: REAL_TIME_INFRA
+Business rationale: The V4 doc set says SOAP 1.1 / Document/Literal. We
+  need the WSDL stable for 2026 and 2027 with no breaking changes
+  (deprecated methods, new mandatory header fields, new envelope
+  semantics) so we can version the WSDL per env / per date in VCS per
+  the compatibility guidance.
+Triggering persona: Mint Engineering (live swap)
+Code readiness: wsdl-stub mode declared in lib/iress/index.ts:9 but not
+  implemented.
+Open question for IRESS: Please confirm WSDL version, SOAP 1.1 vs 1.2
+  binding preference, the recommended sandbox endpoint, and the
+  deprecation policy. We want to save the WSDL per env / per date in VCS
+  per the compatibility guidance. Please share the WSDL currently in
+  production at the CT test environment and the planned-prod version.
+  (Tied to Open Questions 1 and 2 in IRESS_EMAIL_TO_PROVIDER.md Section
+  C.)
+--------------------------------------------------------------------------------
+ITEM: IdP / ApplicationID discipline
+Namespace / Service: Iress
+Priority: P1
+Use case category: REAL_TIME_INFRA
+Business rationale: Mint's auth layer is being rebuilt around an IdP
+  (Clerk / Auth0  --  TBC per PLANNING 8). The ApplicationID becomes the
+  linking key between a Mint user and an IRESS Iress session.
+Triggering persona: Mint Engineering
+Code readiness: N/A  --  auth-side decision.
+Open question for IRESS: Please confirm the ApplicationID discipline:
+  should it be one ApplicationID per OEMS node, per user, or per
+  session? The V4 doc set says
+  ApplicationID = Mint-OEMS-<env>-<node>-<guid>; please confirm the
+  node-level granularity is acceptable, and whether you need one per
+  environment (dev / staging / load / prod) or one shared per node across
+  envs. (Tied to Open Question 16 in IRESS_EMAIL_TO_PROVIDER.md Section
+  C.)
+--------------------------------------------------------------------------------
+ITEM: Funeral cover / non-trading products system of record
+Namespace / Service: N/A (not a V4 method)
+Priority: P2
+Use case category: SETTLEMENT_CORP_ACTIONS
+Business rationale: Mint has a funeral-cover persona. The V4 surface
+  has no mapping for member onboarding, premium collection, claims,
+  beneficiaries, or underwriting. The investment float might be tracked
+  in IRESS, but the policy admin and the payment rails are almost
+  certainly a separate system.
+Triggering persona: Funeral Cover admin
+Code readiness: N/A  --  business decision.
+Open question for IRESS: What is the right IRESS surface (if any) for
+  funeral-cover member administration, premium collection, claims  --  or
+  is funeral cover on a separate system entirely (C-Flow, Avbob, in-house
+  policy admin)? My read of the seed fixtures (reconLegs, cashPositions,
+  reconExceptions) is that the funeral-cover team reconciles their book
+  against the IRESS book, i.e. IRESS is the investment system and the
+  funeral-cover policy admin is a separate system. Please confirm.
+--------------------------------------------------------------------------------
+ITEM: Settlement / STRATE feed
+Namespace / Service: N/A (V4 does not have a settlement method)
+Priority: P2
+Use case category: SETTLEMENT_CORP_ACTIONS
+Business rationale: The Financial Controller needs to reconcile
+  settlement legs against the JSE's STRATE settlement feed. V4 surfaces
+  settlement-instrumented bookings via BookingGetByOrganisation2 (already
+  on the definite list), but the settlement feed itself is downstream of
+  IRESS.
+Triggering persona: Financial Controller
+Code readiness: N/A  --  infra workstream.
+Open question for IRESS: Is `BookingGetByOrganisation2` sufficient for JSE
+  STRATE settlement, or do we need a separate settlement feed? The V4
+  doc set is explicit that V4 does not cover settlement; please confirm
+  the recommended path. (Tied to Open Question 12 in
+  IRESS_EMAIL_TO_PROVIDER.md Section C.)
+--------------------------------------------------------------------------------
+ITEM: Outbound wires / payments
+Namespace / Service: N/A
+Priority: P2
+Use case category: SETTLEMENT_CORP_ACTIONS
+Business rationale: The Email brief mentions "wires / cash management".
+  V4 surfaces wires as inbound transactions via
+  IPSTransactionGetByAccount5 (already on the definite list).
+Triggering persona: Financial Controller
+Code readiness: N/A.
+Open question for IRESS: Does V4 have an outbound wire / payment
+  initiation method, or are wires read-only via
+  IPSTransactionGetByAccount5 with the IPSUpload family as the only
+  write path (for our own reference / position data, not for payments)?
+  Please confirm. (Tied to Open Question 6 in IRESS_ENDPOINT_INVENTORY.md
+  Part F.)
+--------------------------------------------------------------------------------
+
+
+================================================================================
+END OF METHOD LIST
+================================================================================
+
+
+Notes:
+
+- Definite-list methods (17 on the IressClient interface today) are NOT
+  repeated in this file. They are cross-referenced by name where the
+  likely-list picks pair with them. See the companion file
+  `mint-iress-v4-endpoints-definite.txt` (or
+  `IRESS_ENDPOINT_INVENTORY.md` Part A.1) for the full definite list.
+
+- PENDING CONFIRMATION methods (no verb confirmed in the V4 docs):
+    - News / SENS feed (placeholder; see Group 1)
+    - Macro releases feed (placeholder; see Group 1)
+    - JSE sector weights / sector performance (placeholder; see Group 1)
+  These are flagged with an open question for IRESS to confirm the
+  canonical verb.
+
+- Total method count (excluding PENDING placeholders): see the report
+  that accompanies this file.
+
+- This file groups by IRESS namespace (Iress Pro, IOS+, IPS, FIX+,
+  Cross-cutting), as the recipient is a SOAP/WSDL person.
+
+
+================================================================================
+FOOTER
+================================================================================
+
+
+Open questions are flagged in each method block. We would like to resolve
+them in the 30-min technical call referenced in the cover email.
+
+If the right V4 verb for a use case is not in this list, please propose
+the canonical verb in your reply.
+

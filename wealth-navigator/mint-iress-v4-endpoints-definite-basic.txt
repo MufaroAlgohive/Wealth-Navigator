@@ -1,0 +1,28 @@
+MINT WEALTH NAVIGATOR
+V4 Web Services -- Definite (100%) endpoint list (basic)
+Version: 2026-06-09
+
+IRESS PRO
+IRESSSessionStart
+IRESSSessionEnd
+ServiceSessionStart
+ServiceSessionEnd
+PricingQuoteGet
+PricingQuoteGetUpdates
+TimeSeriesGet2
+TimeSeriesGet2Updates
+
+IOS+
+OrderCreate3
+OrderAmend2
+OrderDelete
+OrderPadGetByAccount
+OrderPadGetByAccountUpdates
+BookingGetByOrganisation2
+
+IPS
+IPSTransactionGetByAccount5
+
+FIX+
+TargetIDGet
+TargetIDStatusGet

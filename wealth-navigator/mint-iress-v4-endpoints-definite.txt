@@ -1,0 +1,575 @@
+MINT WEALTH NAVIGATOR
+V4 Web Services -- Definite (100%) endpoint list
+Version: 2026-06-09
+Status: Pre-go-live (production Q4 2026)
+This list is binding. Methods here will be called in production from day one.
+
+
+================================================================================
+1. PURPOSE
+================================================================================
+
+This is the definitive go-live endpoint list Mint Wealth Navigator will call in
+production from day one. It covers 17 V4 methods, organised by IRESS namespace so
+each group maps to one provisioning surface. Every method is named exactly as it
+appears on the V4 WSDL (verified against the V4 doc set
+Documentation & Vision/iress-v4-docs/, master quick reference
+10-reference/quick-reference/00-master.md and per-service quick refs, on
+2026-06-09). Every method is grounded in a file:line reference in the running
+Mint codebase.
+
+Layout for each method:
+
+    Name (verbatim from V4 docs)
+    Namespace ............ the V4 service hosting the method
+    SOAP service / target  the SOAP service + target namespace
+    SOAP action / WSDL op. the WSDL operation / SOAP action
+    Direction ............ request/response pattern
+    Purpose on Mint ....... 1 sentence: what dashboard/feature uses it
+    Code reference ........ file:line where Mint invokes it
+    Call rate ............. low / medium / high / streaming
+    Idempotency ........... does the method need / support an idempotency key
+    Wire-up today ......... "called from UI today" / "internal helper only" /
+                            "declared but not yet wired"
+    Mock implementation ... real fixture / no-op / throws
+
+
+================================================================================
+2. GROUP A -- Iress Pro (session + entitlement + market-data surface)
+================================================================================
+
+The Iress Pro namespace hosts the parent Iress session, the per-service
+ServiceSession, and the snapshot + long-poll market-data methods. SOAP endpoint
+target namespace: http://webservices.iress.com.au/v4/ .
+
+--------------------------------------------------------------------------------
+A.1  IRESSSessionStart
+--------------------------------------------------------------------------------
+Namespace .......... Iress (no service session required; the parent session)
+SOAP service ....... Iress -- hosted on the Iress V4 endpoint
+SOAP action / op ... IRESSSessionStart
+                    (V4 envelope: <IRESSSessionStart> in target namespace
+                    http://webservices.iress.com.au/v4/)
+Direction .......... Synchronous request/response. 55s default Timeout.
+Purpose on Mint .... First call on user login. Returns IRESSSessionKey and
+                    SessionNumber; all subsequent ServiceSessionKeys are
+                    children of it. Drives the session bring-up helper
+                    (bringUpMintSession in lib/iress/index.ts).
+Code reference ..... wealth-navigator/src/lib/iress/index.ts:78
+                    (bringUpMintSession); declared on IressClient at
+                    wealth-navigator/src/lib/iress/client.ts:161
+Call rate .......... Low (once per user login)
+Idempotency ......... N/A (session-bring-up; no Idempotency-Key documented)
+Wire-up today ....... Internal helper only (called by bringUpMintSession)
+Mock implementation  Real fixture (returns a MOCK-* key; honours
+                    SessionNumberToKick)
+
+--------------------------------------------------------------------------------
+A.2  IRESSSessionEnd
+--------------------------------------------------------------------------------
+Namespace .......... Iress
+SOAP service ....... Iress
+SOAP action / op ... IRESSSessionEnd
+Direction .......... Synchronous request/response
+Purpose on Mint .... Clean teardown on user logout. Closes the parent Iress
+                    session; cascades to all child service sessions
+                    (ServiceSessionKeys under it are invalidated).
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:162
+                    (declared on IressClient; pairs with A.1 in
+                    bringUpMintSession)
+Call rate .......... Low (once per user logout)
+Idempotency ......... N/A
+Wire-up today ....... Declared but not yet wired (no logout caller)
+Mock implementation  No-op (mock.ts:107)
+
+--------------------------------------------------------------------------------
+A.3  ServiceSessionStart
+--------------------------------------------------------------------------------
+Namespace .......... Iress (parent session required)
+SOAP service ....... Iress
+SOAP action / op ... ServiceSessionStart
+Direction .......... Synchronous request/response
+                    (3 calls per login -- one per child service: IOSPlus /
+                    IPS / FIXPlus, with ServiceSessionKey as the result)
+Purpose on Mint .... Opens the three child service sessions Mint uses in
+                    production: IOSPlus (for trading), IPS (for portfolio /
+                    transactions / future account and position calls), and
+                    FIXPlus (for drop-copy status). All three are brought up
+                    inside the bringUpMintSession helper.
+Code reference ..... wealth-navigator/src/lib/iress/index.ts:94
+                    (inside the bringUpMintSession loop, lines 87-100);
+                    declared on IressClient at
+                    wealth-navigator/src/lib/iress/client.ts:163
+Call rate .......... Low (3 calls per user login)
+Idempotency ......... N/A
+Wire-up today ....... Internal helper only (called by bringUpMintSession)
+Mock implementation  Real fixture (returns a MOCK-* key per service)
+
+--------------------------------------------------------------------------------
+A.4  ServiceSessionEnd
+--------------------------------------------------------------------------------
+Namespace .......... Iress
+SOAP service ....... Iress
+SOAP action / op ... ServiceSessionEnd
+Direction .......... Synchronous request/response
+                    (3 calls per logout, or 1 per per-service teardown)
+Purpose on Mint .... Clean per-service teardown on logout, plus a
+                    per-service path for Mint's 2-hour idle refresh. Also
+                    used if Mint adds a per-service restart path before the
+                    parent session itself expires.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:164
+                    (declared on IressClient; pairs with A.3 in
+                    bringUpMintSession)
+Call rate .......... Low (3 calls per user logout)
+Idempotency ......... N/A
+Wire-up today ....... Declared but not yet wired
+Mock implementation  No-op (mock.ts:117)
+
+--------------------------------------------------------------------------------
+A.5  PricingQuoteGet
+--------------------------------------------------------------------------------
+Namespace .......... Iress Pro
+SOAP service ....... Iress (Iress session only; no service session)
+SOAP action / op ... PricingQuoteGet
+Direction .......... Synchronous request/response; supports Updates=true to
+                    flip the same call into a long-poll subscription
+                    (initial snapshot + StatusCode=3 transition)
+Purpose on Mint .... L1 snapshot quote for any JSE security. Powers the L1
+                    tape on /oems/security, /oems/equities, the security
+                    page depth-ladder backing, and the live equivalent of
+                    the seed-backed /api/ticks SSE.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:167
+                    (declared on IressClient);
+                    wealth-navigator/src/lib/iress/mock.ts:120
+                    (mock implementation; the live swap is a 1:1
+                    replacement of quoteForSecurity on
+                    wealth-navigator/src/lib/iress/mock.ts:73)
+Call rate .......... High (per L1 quote on demand; can be hundreds per
+                    page load for a watchlist)
+Idempotency ......... N/A (read method; naturally idempotent)
+Wire-up today ....... Internal helper only (consumed via iressQueries.quote;
+                    will be the live backing for the /api/ticks SSE once
+                    IRESS_MODE=live)
+Mock implementation  Real fixture (seed-mapped via quoteForSecurity)
+
+--------------------------------------------------------------------------------
+A.6  PricingQuoteGetUpdates
+--------------------------------------------------------------------------------
+Namespace .......... Iress Pro
+SOAP service ....... Iress (Iress session only)
+SOAP action / op ... PricingQuoteGetUpdates
+Direction .......... Long-poll subscription. Called repeatedly with the
+                    SAME RequestID as the originating PricingQuoteGet
+                    call; IRESS blocks until an update is available or
+                    NoUpdateBlockTime elapses. 10 000-row queue limit;
+                    30-min request expiry.
+Purpose on Mint .... Long-poll updates for an open PricingQuoteGet
+                    subscription. The natural live wire-up for the /api/ticks
+                    SSE and lib/store/tick-stream-provider.tsx, both of which
+                    currently seed from initialQuotes().
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:168
+                    (declared on IressClient); live wire-up target is
+                    wealth-navigator/src/app/api/ticks/route.ts:5,20
+                    and wealth-navigator/src/lib/store/tick-stream-provider.tsx:11,40
+Call rate .......... Streaming (one long-poll per subscribed security)
+Idempotency ......... N/A
+Wire-up today ....... Declared but not yet wired
+Mock implementation  No-op (returns empty StatusCode=3 payload)
+
+--------------------------------------------------------------------------------
+A.7  TimeSeriesGet2
+--------------------------------------------------------------------------------
+Namespace .......... Iress Pro
+SOAP service ....... Iress (Iress session only; no service session)
+SOAP action / op ... TimeSeriesGet2
+Direction .......... Synchronous request/response with bookmark paging;
+                    supports Updates=true to flip into a long-poll
+                    subscription
+Purpose on Mint .... Generic time series for the ZAR Govi (NSS) curve, ZAR
+                    swap curve, ZAR ILB curve, JIBAR fixings, ZARONIA, and
+                    the J203/ALSI benchmark. Powers /oems/curves,
+                    /oems/macro, /oems/money-market, and the Govi / NSS
+                    panel on the OEMS Cockpit.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:169
+                    (declared on IressClient);
+                    wealth-navigator/src/lib/iress/mock.ts:129
+                    (mock mapper for ZAR_NSS, ZAR_SWAP, ZAR_REAL, ZARONIA,
+                    JIBAR, J203); 13 read pages consume this through
+                    iressQueries.*
+Call rate .......... Medium (per series; ~13 read pages = dozens per page
+                    load)
+Idempotency ......... N/A (read method)
+Wire-up today ....... Internal helper only (consumed via iressQueries.*,
+                    not directly from a page)
+Mock implementation  Real fixture (mapped for NSS, SWAP, REAL, ZARONIA,
+                    JIBAR, J203; returns empty array for unknown codes)
+
+--------------------------------------------------------------------------------
+A.8  TimeSeriesGet2Updates
+--------------------------------------------------------------------------------
+Namespace .......... Iress Pro
+SOAP service ....... Iress (Iress session only)
+SOAP action / op ... TimeSeriesGet2Updates
+Direction .......... Long-poll subscription. Same RequestID as the
+                    originating TimeSeriesGet2; 10 000-row queue limit;
+                    30-min request expiry.
+Purpose on Mint .... Long-poll updates for an open TimeSeriesGet2
+                    subscription. Same wire-up pattern as A.6: feeds a
+                    server-side proxy that pushes curve / macro refreshes
+                    to the client. Critical for the Cockpit's live curve
+                    and macro panels.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:170
+                    (declared on IressClient)
+Call rate .......... Streaming (one long-poll per subscribed series)
+Idempotency ......... N/A
+Wire-up today ....... Declared but not yet wired
+Mock implementation  No-op (returns empty StatusCode=3 payload)
+
+
+================================================================================
+3. GROUP B -- IOS+ (order-entry / order-management surface)
+================================================================================
+
+The IOS+ namespace hosts the order entry, order amend / cancel, and order-pad
+retrieval methods. SOAP endpoint target namespace:
+http://webservices.iress.com.au/v4/ . All IOS+ methods require a
+ServiceSessionKey (from a prior ServiceSessionStart with Service = "IOSPlus",
+Server = e.g. "IOSPLUSAPI"). Header token: ServiceSessionKey.
+
+--------------------------------------------------------------------------------
+B.1  OrderCreate3
+--------------------------------------------------------------------------------
+Namespace .......... IOS+
+SOAP service ....... IOS+ (ServiceSessionKey required; Server = "IOSPLUSAPI")
+SOAP action / op ... OrderCreate3
+Direction .......... Synchronous request/response. Supports bulk (array of
+                    Order elements); per-row ErrorNumber / ErrorMessage
+                    distinguishes success from failure.
+Purpose on Mint .... Place order at the JSE. The only UI call site for
+                    order entry is the New Order dialog launched from the
+                    Blotter.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:173
+                    (declared on IressClient);
+                    wealth-navigator/src/app/oems/blotter/new-order-dialog.tsx:95
+                    (direct UI caller; the only direct useIress().client
+                    caller for order entry)
+Call rate .......... Low (per order; human-driven, ~tens per minute at JSE
+                    peak)
+Idempotency ......... OrderTag -- a unique tag (UUID v4) is MANDATORY for
+                    every send. Mint generates crypto.randomUUID() per
+                    attempt (see lib/iress/index.ts:71 buildApplicationId
+                    and the OrderTag in new-order-dialog.tsx:97). The
+                    server rejects duplicate tags within the documented
+                    idempotency window (typically 5 minutes per
+                    05-services/iosplus/01-order-create-amend-cancel.md).
+Wire-up today ....... Called from UI today
+Mock implementation  Real fixture (idempotent on OrderTag; state-checked)
+
+--------------------------------------------------------------------------------
+B.2  OrderAmend2
+--------------------------------------------------------------------------------
+Namespace .......... IOS+
+SOAP service ....... IOS+ (ServiceSessionKey required)
+SOAP action / op ... OrderAmend2
+Direction .......... Synchronous request/response. Supports bulk.
+Purpose on Mint .... Amend volume / price / stop / TIF on a working order.
+                    Triggers from the Blotter row-edit action (UI hook
+                    will land in the next sprint; the call is fully
+                    declared and mocked end-to-end).
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:174
+                    (declared on IressClient);
+                    wealth-navigator/src/lib/iress/mock.ts:196
+                    (mock state machine: rejects amend of FILLED /
+                    CANCELLED orders)
+Call rate .......... Low
+Idempotency ......... None documented at the SOAP level. Mint must
+                    pre-check order state on the local OrderPad (or via
+                    OrderPadGetByAccount) before amending; the WSDL may
+                    surface an OrderTag-equivalent -- confirm at go-live.
+                    For now: a state-check pattern is used.
+Wire-up today ....... Declared but not yet wired (UI hook will land next
+                    sprint)
+Mock implementation  Real fixture (state-checked: rejects amend of
+                    FILLED / CANCELLED)
+
+--------------------------------------------------------------------------------
+B.3  OrderDelete
+--------------------------------------------------------------------------------
+Namespace .......... IOS+
+SOAP service ....... IOS+ (ServiceSessionKey required)
+SOAP action / op ... OrderDelete
+Direction .......... Synchronous request/response. Supports bulk.
+Purpose on Mint .... Cancel a single order, or cancel-all working on the
+                    Blotter's destructive-confirm button. The cancel-all
+                    loop in /oems/blotter/page.tsx issues one OrderDelete
+                    per working order.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:175
+                    (declared on IressClient);
+                    wealth-navigator/src/app/oems/blotter/page.tsx:62
+                    (the cancel-all loop over client.orderDelete)
+Call rate .......... Low (per cancel; tens at peak)
+Idempotency ......... Naturally idempotent: a second delete of a
+                    CANCELLED order is a no-op (or error code that the
+                    client treats as success). State-check pattern in the
+                    mock.
+Wire-up today ....... Called from UI today
+Mock implementation  Real fixture (state-checked: rejects delete of
+                    FILLED)
+
+--------------------------------------------------------------------------------
+B.4  OrderPadGetByAccount
+--------------------------------------------------------------------------------
+Namespace .......... IOS+
+SOAP service ....... IOS+ (ServiceSessionKey required)
+SOAP action / op ... OrderPadGetByAccount
+Direction .......... Synchronous request/response. OrderFilter = 5 returns
+                    the active-only snapshot (the recommended live shape
+                    per the V4 doc set, 05-services/iosplus/02-order-pad.md).
+                    Supports Updates=true to flip the call into a
+                    long-poll subscription.
+Purpose on Mint .... Per-account order pad. The live equivalent of the
+                    seed-backed iressData.orders() call the Blotter
+                    consumes today. OrderFilter = 5 (active only) for the
+                    live wire-up; the inactive half is a separate call
+                    (OrderSearchGetByUser) but that is OUT of scope for
+                    the 100% list and is covered in the "likely" file.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:176
+                    (declared on IressClient); the live wire-up replaces
+                    iressQueries.orders() at
+                    wealth-navigator/src/lib/iress/mock.ts:295
+Call rate .......... Medium (per Blotter page load; the active snapshot
+                    is small for a single account)
+Idempotency ......... N/A (read method)
+Wire-up today ....... Declared but not yet wired (the live path replaces
+                    the seed bag)
+Mock implementation  Real fixture (in-memory, filters on OrderFilter 1/2/4;
+                    no UI consumer today)
+
+--------------------------------------------------------------------------------
+B.5  OrderPadGetByAccountUpdates
+--------------------------------------------------------------------------------
+Namespace .......... IOS+
+SOAP service ....... IOS+ (ServiceSessionKey required)
+SOAP action / op ... OrderPadGetByAccountUpdates
+Direction .......... Long-poll subscription. Same RequestID as the
+                    originating OrderPadGetByAccount; 10 000-row queue
+                    limit; 30-min request expiry.
+Purpose on Mint .... Long-poll updates for the order pad subscription.
+                    Pushes WORKING -> FILLED / CANCELLED / PARTIAL /
+                    REJECTED / EXPIRED transitions to the Blotter in
+                    real time. Pairs with B.4.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:183
+                    (declared on IressClient)
+Call rate .......... Streaming (one long-poll per subscribed account pad)
+Idempotency ......... N/A
+Wire-up today ....... Declared but not yet wired
+Mock implementation  No-op (returns empty StatusCode=3 payload)
+
+--------------------------------------------------------------------------------
+B.6  BookingGetByOrganisation2
+--------------------------------------------------------------------------------
+Namespace .......... IOS+
+SOAP service ....... IOS+ (ServiceSessionKey required)
+SOAP action / op ... BookingGetByOrganisation2
+Direction .......... Synchronous request/response, paginated (bookings
+                    can be many per day per organisation)
+Purpose on Mint .... Per-booking row including the <MiscFees> array
+                    (stamp, brokerage, GST, levy, etc.). Powers the
+                    fee-level detail on the Blotter row side-panel and
+                    the Financial Controller's daily reconciliation.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:184
+                    (declared on IressClient);
+                    wealth-navigator/src/lib/iress/mock.ts:226
+                    (mock implementation); the method name appears in
+                    the /fc/overview Daily reconciliation panel header
+                    at
+                    wealth-navigator/src/app/fc/overview/page.tsx:87
+Call rate .......... Low / Medium (per reconciliation cycle; per fill
+                    that the Blotter wants fee-level detail on)
+Idempotency ......... N/A (read method)
+Wire-up today ....... Declared but not yet wired
+Mock implementation  Real fixture (in-memory; filters on From/To; returns
+                    one row per FILLED/PARTIAL order in the date range)
+
+
+================================================================================
+4. GROUP C -- IPS (Investment Portfolio Service)
+================================================================================
+
+The IPS namespace hosts the portfolio read-side methods Mint uses for
+reconciliation and activity panels. SOAP endpoint target namespace:
+http://webservices.iress.com.au/v4/ . All IPS methods require a
+ServiceSessionKey (from a prior ServiceSessionStart with Service = "IPS",
+Server = e.g. "IPSAPI"). Header token: ServiceSessionKey.
+
+--------------------------------------------------------------------------------
+C.1  IPSTransactionGetByAccount5
+--------------------------------------------------------------------------------
+Namespace .......... IPS
+SOAP service ....... IPS (ServiceSessionKey required; Server = "IPSAPI")
+SOAP action / op ... IPSTransactionGetByAccount5
+Direction .......... Synchronous request/response with MODERN
+                    header-level PagingBookmark paging. Corporate
+                    actions (dividend / distribution / capital events)
+                    surface as transaction rows in the response
+                    (per 05-services/ips/01-transactions.md).
+Purpose on Mint .... Per-account transaction history (modern paging).
+                    Powers the Financial Controller's EOD reconciliation,
+                    the wealth-manager "Activity" panel, and the
+                    funeral-cover recon (when the funeral-cover persona
+                    is lit up). The IPS method of record; supersedes the
+                    legacy per-account transaction methods.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:200
+                    (declared on IressClient);
+                    wealth-navigator/src/lib/iress/mock.ts:246
+                    (mock implementation); named explicitly in the
+                    /fc/overview Daily reconciliation panel header at
+                    wealth-navigator/src/app/fc/overview/page.tsx:87
+Call rate .......... Low / Medium (per reconciliation cycle; per
+                    "Activity" panel open)
+Idempotency ......... N/A (read method)
+Wire-up today ....... Declared but not yet wired
+Mock implementation  Real fixture (in-memory; filters on
+                    AccountCode/DateFrom/DateTo; returns one row per
+                    FILLED/PARTIAL order in the date range)
+
+
+================================================================================
+5. GROUP D -- FIX+ (FIX control/status surface)
+================================================================================
+
+The FIX+ namespace in V4 is a thin wrapper around the FIX+ engine -- control
+and status only. The actual FIX message stream (drop-copy bytes) travels
+over a separate TCP FIX connection that Mint terminates directly; V4 is not
+in the FIX bytes path. SOAP endpoint target namespace:
+http://webservices.iress.com.au/v4/ . All FIX+ methods require a
+ServiceSessionKey (from a prior ServiceSessionStart with Service = "FIXPlus",
+Server = e.g. "FIXPLUSAPI"). Header token: ServiceSessionKey.
+
+--------------------------------------------------------------------------------
+D.1  TargetIDGet
+--------------------------------------------------------------------------------
+Namespace .......... FIX+
+SOAP service ....... FIX+ (ServiceSessionKey required; Server =
+                    "FIXPLUSAPI")
+SOAP action / op ... TargetIDGet
+Direction .......... Synchronous request/response
+Purpose on Mint .... List the FIX+ drop-copy targets the user can see.
+                    Backed today by fixture MINT-DROPCOPY-01; live will
+                    return the user's actual target list. Drives the
+                    /oems/integration "FIX+ drop-copy" panel.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:212
+                    (declared on IressClient);
+                    wealth-navigator/src/lib/iress/mock.ts:265
+                    (mock implementation)
+Call rate .......... Very Low (per /oems/integration page load)
+Idempotency ......... N/A (read method)
+Wire-up today ....... Declared but not yet wired
+Mock implementation  Real fixture (returns [{TargetID: "MINT-DROPCOPY-01"}])
+
+--------------------------------------------------------------------------------
+D.2  TargetIDStatusGet
+--------------------------------------------------------------------------------
+Namespace .......... FIX+
+SOAP service ....... FIX+ (ServiceSessionKey required)
+SOAP action / op ... TargetIDStatusGet
+Direction .......... Synchronous request/response (typically polled on a
+                    short cadence from the UI status pill; not a V4
+                    long-poll method)
+Purpose on Mint .... Per-target connection state. Feeds the "FIX+
+                    drop-copy connection" status pill on /oems/integration
+                    and /oems/cockpit.
+Code reference ..... wealth-navigator/src/lib/iress/client.ts:213
+                    (declared on IressClient);
+                    wealth-navigator/src/lib/iress/mock.ts:268
+                    (mock implementation; always returns CONNECTED)
+Call rate .......... Low / Medium (per poll of the status pill; e.g.
+                    5s cadence on a single target)
+Idempotency ......... N/A (read method)
+Wire-up today ....... Declared but not yet wired
+Mock implementation  Real fixture (always returns CONNECTED; live swap is
+                    direct)
+
+
+================================================================================
+6. SUMMARY
+================================================================================
+
+Total methods: 17
+
+By namespace:
+
+  Iress Pro  --  8 methods
+    IRESSSessionStart, IRESSSessionEnd, ServiceSessionStart, ServiceSessionEnd,
+    PricingQuoteGet, PricingQuoteGetUpdates, TimeSeriesGet2,
+    TimeSeriesGet2Updates
+
+  IOS+       --  6 methods
+    OrderCreate3, OrderAmend2, OrderDelete, OrderPadGetByAccount,
+    OrderPadGetByAccountUpdates, BookingGetByOrganisation2
+
+  IPS        --  1 method
+    IPSTransactionGetByAccount5
+
+  FIX+       --  2 methods
+    TargetIDGet, TargetIDStatusGet
+
+By wire-up status:
+
+  Called from UI today ............. 2 methods
+                                      OrderCreate3 (new-order-dialog.tsx:95),
+                                      OrderDelete (blotter/page.tsx:62)
+
+  Internal helper only ............. 4 methods
+                                      IRESSSessionStart (bringUpMintSession),
+                                      ServiceSessionStart (bringUpMintSession),
+                                      PricingQuoteGet (via iressQueries.quote;
+                                      will become the live backing for the
+                                      /api/ticks SSE on IRESS_MODE=live),
+                                      TimeSeriesGet2 (via iressQueries.*;
+                                      13 read pages consume it through the
+                                      seed bag today)
+
+  Declared but not yet wired ....... 11 methods
+                                      IRESSSessionEnd, ServiceSessionEnd,
+                                      PricingQuoteGetUpdates,
+                                      TimeSeriesGet2Updates, OrderAmend2,
+                                      OrderPadGetByAccount,
+                                      OrderPadGetByAccountUpdates,
+                                      BookingGetByOrganisation2,
+                                      IPSTransactionGetByAccount5,
+                                      TargetIDGet, TargetIDStatusGet
+
+  Totals ............................ 2 + 4 + 11 = 17 (matches section 6)
+
+
+================================================================================
+7. CLOSING REQUESTS
+================================================================================
+
+If any method is deprecated, renamed, or pinned to a WSDL version we haven't
+seen, please flag in your reply.
+
+For each method, we have provided the code reference where Mint invokes it.
+Sandbox access for QA testing is requested.
+
+Mint's ApplicationID discipline follows the V4 doc recommendation:
+  Mint-OEMS-<env>-<node>-<guid>
+built by lib/iress/index.ts:69 buildApplicationId(envHint, node), with the
+GUID generated by crypto.randomUUID() per process.
+
+The IRESSSessionKey / ServiceSessionKey model is the standard two-layer
+session (parent Iress + 3 child services: IOSPlus / IPS / FIXPlus), built
+in lib/iress/index.ts:76 bringUpMintSession and torn down via
+IRESSSessionEnd + ServiceSessionEnd (the latter is declared but not yet
+wired in UI; the bring-up helper currently only opens, never closes).
+
+OrderCreate3 uses OrderTag (UUID v4 per attempt) for idempotency; we
+respect the documented 5-minute dedupe window. The OrderNoGetByOrderTag
+recovery half is on the "likely" list, not the 100% list -- it ships
+within one sprint of go-live.
+
+Please confirm receipt and acknowledge that every 100% method is on the V4
+WSDL today and not flagged for deprecation in 2026 / 2027.
+
+-- END OF DEFINITE LIST --

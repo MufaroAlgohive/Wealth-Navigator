@@ -1,0 +1,51 @@
+MINT WEALTH NAVIGATOR
+V4 Web Services -- Likely (future) endpoint list (basic)
+Version: 2026-06-09
+
+IRESS PRO
+AuditTrailGetByAccount
+PricingQuoteExGet
+PricingQuoteExGetUpdates
+PricingTradeHistoricalGet
+IRESSSessionStart (SessionNumberToKick=-1 variant)
+<PENDING: News / SENS feed>
+<PENDING: Macro releases feed>
+<PENDING: JSE sector weights>
+<PENDING: JIBAR / ZARONIA fixings (TimeSeriesGet2 codes?)>
+
+IOS+
+OrderNoGetByOrderTag
+OrderSearchGetByUser
+DestinationGet
+DestinationDetailGet
+ETCGetByOrganisation
+AttributeGetByUser
+SessionRequestEnd
+OrderPadGetByUser
+OrderPadGetByUserUpdates
+OrderPadGetByAccountGroup
+OrderPadGetByAccountGroupUpdates
+OrderSearchGetByAccount
+AdminUserCreate2
+UserCreate
+AccountCreate
+
+IPS
+IPSAccountGetAll1
+IPSPositionGetAll1
+IPSUploadCreate1
+IPSUploadDataSet1
+IPSUploadRun1
+IPSUploadSummaryGet2
+IPSUploadErrorGet1
+
+FIX+
+<OPEN: FIX+ drop-copy bytes (not V4 -- separate TCP)>
+<OPEN: IRESS endpoint health / per-method latency (research ask)>
+
+CROSS-CUTTING
+<OPEN: WS-I / SOAP binding>
+<OPEN: IdP / ApplicationID discipline>
+<OPEN: Funeral cover (separate system?)>
+<OPEN: Settlement / STRATE>
+<OPEN: Outbound wires>
