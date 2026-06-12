@@ -29,7 +29,7 @@ export interface NormalisedQuoteRow {
   changePct?: number;
   volume?: number;
   vwap?: number;
-  source: "live" | "seed-fallback" | "mock" | "supabase";
+  source: "live" | "seed-fallback" | "mock" | "supabase" | "unavailable";
 }
 
 /** BFF `/api/quotes` response (subset). */
@@ -45,12 +45,13 @@ export interface BffQuotesResponse {
     change?: number;
     change_pct?: number;
     ts?: number;
-    source: "live" | "seed-fallback" | "mock" | "supabase";
+    source: "live" | "seed-fallback" | "mock" | "supabase" | "unavailable";
   }>;
   liveCount: number;
   fallbackCount: number;
   mockCount?: number;
   supabaseCount?: number;
+  unavailableCount?: number;
 }
 
 /** Legacy `/api/iress/quotes` response (subset). */
@@ -107,15 +108,18 @@ export function deriveDataSource(
     fallbackCount: number;
     supabaseCount?: number;
     mockCount?: number;
+    unavailableCount?: number;
   },
 ): DataSourceKind {
   const supabase = counts.supabaseCount ?? rows.filter((r) => r.source === "supabase").length;
   const live = counts.liveCount;
   const fallback = counts.fallbackCount;
   const mock = counts.mockCount ?? rows.filter((r) => r.source === "mock").length;
+  const unavailable = counts.unavailableCount ?? rows.filter((r) => r.source === "unavailable").length;
 
-  if (supabase > 0 && live === 0 && fallback === 0 && mock === 0) return "supabase";
-  if (supabase > 0 && (fallback > 0 || mock > 0 || live > 0)) return "hybrid";
+  if (unavailable > 0 && supabase === 0 && live === 0 && fallback === 0 && mock === 0) return "mock";
+  if (supabase > 0 && live === 0 && fallback === 0 && mock === 0 && unavailable === 0) return "supabase";
+  if (supabase > 0 && (fallback > 0 || mock > 0 || live > 0 || unavailable > 0)) return "hybrid";
   if (live > 0 && fallback === 0) return "live";
   if (live > 0 && fallback > 0) return "hybrid";
   if (fallback > 0) return "seed";

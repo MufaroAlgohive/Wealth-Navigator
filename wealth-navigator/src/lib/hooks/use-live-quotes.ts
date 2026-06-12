@@ -25,6 +25,7 @@ interface QuotesFetchResult {
   fallbackCount: number;
   mockCount: number;
   supabaseCount: number;
+  unavailableCount?: number;
 }
 
 async function fetchQuotes(symKey: string, apiMode: "supabase" | "iress"): Promise<QuotesFetchResult> {
@@ -46,6 +47,7 @@ async function fetchQuotes(symKey: string, apiMode: "supabase" | "iress"): Promi
       fallbackCount: bff.fallbackCount,
       mockCount: bff.mockCount ?? 0,
       supabaseCount: bff.supabaseCount ?? 0,
+      unavailableCount: bff.unavailableCount ?? 0,
     };
   }
 
@@ -57,6 +59,7 @@ async function fetchQuotes(symKey: string, apiMode: "supabase" | "iress"): Promi
     fallbackCount: iress.fallbackCount,
     mockCount: 0,
     supabaseCount: 0,
+    unavailableCount: 0,
   };
 }
 
@@ -80,8 +83,10 @@ export function useLiveQuotes(symbols: string[], enabled = true) {
 
   useEffect(() => {
     if (!q.data?.rows.length) return;
+    const liveRows = q.data.rows.filter((r) => r.source === "supabase" || r.source === "live");
+    if (liveRows.length === 0) return;
     seedTicksFromQuotes(
-      q.data.rows.map((r) => ({
+      liveRows.map((r) => ({
         sym: r.sym,
         last: r.last,
         prev: r.prev,
@@ -102,6 +107,7 @@ export function useLiveQuotes(symbols: string[], enabled = true) {
         fallbackCount: q.data.fallbackCount,
         mockCount: q.data.mockCount,
         supabaseCount: q.data.supabaseCount,
+        unavailableCount: q.data.unavailableCount ?? 0,
       })
     : useSupabaseFlag
       ? "supabase"

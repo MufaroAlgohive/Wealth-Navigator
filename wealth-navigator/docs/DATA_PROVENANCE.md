@@ -2,7 +2,20 @@
 
 Living inventory of every data surface: what is **real IRESS**, what is **seed/mock**, and what is **hybrid**.
 
-> Machine-readable source: `src/lib/iress/provenance.ts` · API: `GET /api/iress/provenance`
+> Machine-readable source: `src/lib/iress/provenance.ts` · API: `GET /api/iress/provenance`  
+> **Remaining gaps:** `docs/REMAINING_GAPS.md`
+
+## Real-data policy (2026-06-12)
+
+When `USE_SUPABASE_QUOTES=true` and `NEXT_PUBLIC_USE_SUPABASE_QUOTES=true` (Vercel production):
+
+- **Never** render seed/mock prices — `NumberCell` shows `—` when no Supabase tick exists.
+- `/api/ticks` SSE and client random walk are **disabled**; quotes come from `/api/quotes` + Realtime only.
+- Missing symbols (e.g. BHG hollow CT row) return `source: "unavailable"`, not `seed-fallback`.
+- Panels without a live feed show `EmptyDataState` with "Data feed not configured".
+- Orders read from `oems_order_audit` via `GET /api/orders`; worker health from `GET /api/worker-health`.
+
+Local dev without the flags still uses mock adapter + seed for UI building.
 
 ## Summary (v2.0 live E2E)
 

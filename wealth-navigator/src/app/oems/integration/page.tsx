@@ -10,6 +10,9 @@ import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { iressConfig } from "@/lib/iress";
 import { useIress } from "@/lib/iress/provider";
+import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { formatTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
@@ -30,8 +33,17 @@ const STATUS_TONE = {
 
 export default function IntegrationPage() {
   const { data } = useIress();
-  const healthQ = useQuery({ queryKey: ["endpoints"], queryFn: () => data.endpoints(), ...queryOpts("reference") });
+  const realDataOnly = isRealDataOnlyClient();
+  const workerQ = useWorkerHealth(realDataOnly);
+  const healthQ = useQuery({
+    queryKey: ["endpoints"],
+    queryFn: () => data.endpoints(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
   const endpoints = healthQ.data ?? [];
+  const workers = workerQ.data?.workers ?? [];
+  const primaryWorker = workers[0];
 
   return (
     <div className="space-y-3">
@@ -56,9 +68,30 @@ export default function IntegrationPage() {
         />
         <KpiTile
           icon={<Activity className="h-3.5 w-3.5" />}
-          label="Healthy / Total"
-          value={`${endpoints.filter((e) => e.status === "ok").length} / ${endpoints.length}`}
-          tone={endpoints.some((e) => e.status === "error") ? "negative" : "positive"}
+          label={realDataOnly ? "Worker status" : "Healthy / Total"}
+          value={
+            realDataOnly
+              ? (primaryWorker?.status?.toUpperCase() ?? "—")
+              : `${endpoints.filter((e) => e.status === "ok").length} / ${endpoints.length}`
+          }
+          sub={
+            realDataOnly
+              ? primaryWorker
+                ? `Last heartbeat ${formatTime(new Date(primaryWorker.last_heartbeat_at).getTime())}`
+                : "No heartbeat row yet"
+              : undefined
+          }
+          tone={
+            realDataOnly
+              ? primaryWorker?.status === "healthy"
+                ? "positive"
+                : primaryWorker
+                  ? "warning"
+                  : "default"
+              : endpoints.some((e) => e.status === "error")
+                ? "negative"
+                : "positive"
+          }
         />
         <KpiTile
           icon={<Globe2 className="h-3.5 w-3.5" />}
@@ -69,7 +102,58 @@ export default function IntegrationPage() {
       </div>
 
       <div className="grid grid-cols-12 gap-2.5">
-        {healthQ.isLoading ? (
+        {realDataOnly ? (
+          workerQ.isLoading ? (
+            <PanelSkeleton rows={4} height="h-[420px]" className="col-span-12 lg:col-span-8" />
+          ) : (
+            <Panel
+              title="Railway worker · integration_worker_health"
+              endpoint="GET /api/worker-health"
+              dataSource="supabase"
+              className="col-span-12 lg:col-span-8 h-[420px]"
+              density="scroll"
+            >
+              {workers.length === 0 ? (
+                <EmptyDataState message="No worker heartbeat rows — start iress-ingest on Railway." />
+              ) : (
+                <table className="w-full font-mono text-[11px]">
+                  <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
+                    <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
+                      <th className="px-2.5 py-1.5 text-left">Worker</th>
+                      <th className="px-2.5 py-1.5 text-left">Status</th>
+                      <th className="px-2.5 py-1.5 text-left">IRESS mode</th>
+                      <th className="px-2.5 py-1.5 text-left">Last quote sync</th>
+                      <th className="px-2.5 py-1.5 text-left">Heartbeat</th>
+                      <th className="px-2.5 py-1.5 text-right">Symbols</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {workers.map((w) => (
+                      <tr key={w.worker_id}>
+                        <td className="px-2.5 py-1.5 font-semibold">{w.worker_id}</td>
+                        <td className="px-2.5 py-1.5">
+                          <Pill tone={w.status === "healthy" ? "success" : "warning"} size="xs" dot>
+                            {w.status}
+                          </Pill>
+                        </td>
+                        <td className="px-2.5 py-1.5 text-muted-foreground">{w.iress_mode ?? "—"}</td>
+                        <td className="px-2.5 py-1.5 text-muted-foreground">
+                          {w.last_quote_sync_at ? formatTime(new Date(w.last_quote_sync_at).getTime()) : "—"}
+                        </td>
+                        <td className="px-2.5 py-1.5 text-muted-foreground">
+                          {formatTime(new Date(w.last_heartbeat_at).getTime())}
+                        </td>
+                        <td className="px-2.5 py-1.5 text-right tabular-nums">
+                          {w.symbols_covered?.length ?? "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </Panel>
+          )
+        ) : healthQ.isLoading ? (
           <PanelSkeleton rows={8} height="h-[420px]" className="col-span-12 lg:col-span-8" />
         ) : (
           <Panel
@@ -119,9 +203,12 @@ export default function IntegrationPage() {
 
         <Panel
           title="Latency · p95 last 60 min"
-          endpoint="INTERNAL · p95 window"
+          endpoint={realDataOnly ? "Not available without metrics store" : "INTERNAL · p95 window"}
           className="col-span-12 lg:col-span-4 h-[420px]"
         >
+          {realDataOnly ? (
+            <EmptyDataState message="Latency history requires observability backend." />
+          ) : (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart
               data={Array.from({ length: 60 }, (_, i) => ({ t: i, p95: 220 + Math.sin(i / 6) * 30 + Math.cos(i / 18) * 18 }))}
@@ -140,6 +227,7 @@ export default function IntegrationPage() {
               <Area type="monotone" dataKey="p95" stroke="hsl(38 95% 56%)" fill="url(#lat)" strokeWidth={1.8} />
             </AreaChart>
           </ResponsiveContainer>
+          )}
         </Panel>
       </div>
 

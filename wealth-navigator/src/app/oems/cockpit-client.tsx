@@ -28,6 +28,9 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
+import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
+import { isRealDataOnlyClient, FEED_NOT_CONFIGURED } from "@/lib/data-policy";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 
 /**
  * SSR-safe intraday x-axis labels.
@@ -69,19 +72,21 @@ const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL"];
 
 export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const { data } = useIress();
+  const realDataOnly = isRealDataOnlyClient();
   const [range, setRange] = useState<"1D" | "5D" | "1M" | "3M">("1D");
   const liveQuotes = useLiveQuotes(MOVER_SYMBOLS);
 
-  const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), ...queryOpts("live") });
-  const indicesQ = useQuery({ queryKey: ["indices"], queryFn: () => data.indices(), ...queryOpts("reference") });
-  const sectorsQ = useQuery({ queryKey: ["sectors"], queryFn: () => data.sectors(), ...queryOpts("reference") });
-  const curveQ = useQuery({ queryKey: ["zar-govi"], queryFn: () => data.zarGoviCurve(), ...queryOpts("reference") });
-  const jibarQ = useQuery({ queryKey: ["jibar"], queryFn: () => data.jibarFixings(), ...queryOpts("reference") });
-  const macroQ = useQuery({ queryKey: ["macro"], queryFn: () => data.macroIndicators(), ...queryOpts("reference") });
-  const ordersQ = useQuery({ queryKey: ["orders"], queryFn: () => data.orders(), ...queryOpts("live") });
+  const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), enabled: !realDataOnly, ...queryOpts("live") });
+  const indicesQ = useQuery({ queryKey: ["indices"], queryFn: () => data.indices(), enabled: !realDataOnly, ...queryOpts("reference") });
+  const sectorsQ = useQuery({ queryKey: ["sectors"], queryFn: () => data.sectors(), enabled: !realDataOnly, ...queryOpts("reference") });
+  const curveQ = useQuery({ queryKey: ["zar-govi"], queryFn: () => data.zarGoviCurve(), enabled: !realDataOnly, ...queryOpts("reference") });
+  const jibarQ = useQuery({ queryKey: ["jibar"], queryFn: () => data.jibarFixings(), enabled: !realDataOnly, ...queryOpts("reference") });
+  const macroQ = useQuery({ queryKey: ["macro"], queryFn: () => data.macroIndicators(), enabled: !realDataOnly, ...queryOpts("reference") });
+  const seedOrdersQ = useQuery({ queryKey: ["orders"], queryFn: () => data.orders(), enabled: !realDataOnly, ...queryOpts("live") });
+  const auditOrdersQ = useAuditOrders("ALL", realDataOnly);
   const moversQ = useQuery({ queryKey: ["movers"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
-  const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), ...queryOpts("reference") });
-  const sensQ = useQuery({ queryKey: ["sens"], queryFn: () => data.sens(), ...queryOpts("reference") });
+  const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), enabled: !realDataOnly, ...queryOpts("reference") });
+  const sensQ = useQuery({ queryKey: ["sens"], queryFn: () => data.sens(), enabled: !realDataOnly, ...queryOpts("reference") });
 
   const strategies = strategiesQ.data ?? [];
   const indices = indicesQ.data ?? [];
@@ -89,7 +94,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const curve = curveQ.data ?? [];
   const jibar = jibarQ.data ?? [];
   const macro = macroQ.data ?? [];
-  const orders = ordersQ.data ?? [];
+  const orders = realDataOnly ? (auditOrdersQ.data?.orders ?? []) : (seedOrdersQ.data ?? []);
+  const ordersLoading = realDataOnly ? auditOrdersQ.isLoading : seedOrdersQ.isLoading;
   const movers = moversQ.data ?? [];
   const news = newsQ.data ?? [];
   const sens = sensQ.data ?? [];
@@ -145,6 +151,26 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 lg:grid-cols-6">
         {strategiesQ.isLoading || jibarQ.isLoading ? (
           [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`cockpit-kpi-${n}`} />)
+        ) : realDataOnly ? (
+          <>
+            <KpiTile icon={<Layers className="h-3.5 w-3.5" />} label="Platform AUM" value="—" sub={FEED_NOT_CONFIGURED} />
+            <KpiTile icon={<Activity className="h-3.5 w-3.5" />} label="Day P&L" value="—" sub={FEED_NOT_CONFIGURED} />
+            <KpiTile icon={<Lock className="h-3.5 w-3.5" />} label="Rebalance Locked" value="—" sub={FEED_NOT_CONFIGURED} />
+            <KpiTile
+              icon={<AlertTriangle className="h-3.5 w-3.5" />}
+              label="Open Orders"
+              value={openOrders.length.toString()}
+              sub={`${rejected} rejected · audit`}
+              tone={openOrders.length > 0 ? "warning" : "default"}
+            />
+            <KpiTile icon={<Banknote className="h-3.5 w-3.5" />} label="JIBAR 3M" value="—" sub={FEED_NOT_CONFIGURED} />
+            <KpiTile
+              icon={<TrendingUp className="h-3.5 w-3.5" />}
+              label="USD/ZAR"
+              value=""
+              sub={<NumberCell sym="USDZAR" decimals={4} size="xs" showChange />}
+            />
+          </>
         ) : (
           <>
             <KpiTile
@@ -198,7 +224,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
       {/* Row 1: heatmap | govi | movers */}
       <div className="grid grid-cols-12 gap-2.5">
-        {sectorsQ.isLoading ? (
+        {realDataOnly ? (
+          <Panel title="Sector Heatmap" endpoint="PricingQuoteGet · sector indices" dataSource="supabase" className="col-span-12 lg:col-span-5 h-[300px]">
+            <EmptyDataState message="Sector index quotes require IRESS entitlement (J200 / sector indices)." />
+          </Panel>
+        ) : sectorsQ.isLoading ? (
           <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
         ) : sectorsQ.isError ? (
           <PanelErrorShell title="Sector Heatmap" className="col-span-12 lg:col-span-5 h-[300px]" />
@@ -210,7 +240,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           />
         )}
 
-        {curveQ.isLoading ? (
+        {realDataOnly ? (
+          <Panel title="ZAR Sovereign Curve · NSS" endpoint="TimeSeriesGet2" className="col-span-12 lg:col-span-4 h-[300px]">
+            <EmptyDataState message="Yield curve feed not configured." />
+          </Panel>
+        ) : curveQ.isLoading ? (
           <PanelSkeleton rows={4} height="h-[300px]" className="col-span-12 lg:col-span-4" />
         ) : (
           <Panel
@@ -279,7 +313,15 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
       {/* Row 2: ALSI intraday | SENS feed */}
       <div className="grid grid-cols-12 gap-2.5">
-        {indicesQ.isLoading ? (
+        {realDataOnly ? (
+          <Panel
+            title="JSE All Share · Intraday"
+            endpoint="TimeSeriesGet2 · J203"
+            className="col-span-12 lg:col-span-8 h-[320px]"
+          >
+            <EmptyDataState message="ALSI intraday requires TimeSeriesGet2 entitlement." />
+          </Panel>
+        ) : indicesQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
         ) : (
           <Panel
@@ -321,7 +363,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           </Panel>
         )}
 
-        {sensQ.isLoading ? (
+        {realDataOnly ? (
+          <Panel title="SENS · Live" endpoint="External vendor required" className="col-span-12 lg:col-span-4 h-[320px]">
+            <EmptyDataState message="SENS feed not configured." />
+          </Panel>
+        ) : sensQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-4" />
         ) : (
           <Panel
@@ -342,13 +388,13 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
       {/* Row 3: open orders | macro pulse */}
       <div className="grid grid-cols-12 gap-2.5">
-        {ordersQ.isLoading ? (
+        {ordersLoading ? (
           <PanelSkeleton rows={8} height="h-[340px]" className="col-span-12 lg:col-span-8" />
         ) : (
           <Panel
             title={`Open Orders · ${openOrders.length}`}
-            endpoint="OrderPadGetByAccount"
-            dataSource="seed"
+            endpoint="OrderPadGetByAccount → oems_order_audit"
+            dataSource={realDataOnly ? "supabase" : "seed"}
             className="col-span-12 lg:col-span-8 h-[340px]"
             density="scroll"
             right={
@@ -357,6 +403,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               </Link>
             }
           >
+            {openOrders.length === 0 ? (
+              <EmptyDataState title="No open orders" message={realDataOnly ? "Worker has not mirrored orders yet, or account has none working." : FEED_NOT_CONFIGURED} />
+            ) : (
             <table className="w-full font-mono text-[11px]">
               <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
@@ -399,10 +448,15 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 ))}
               </tbody>
             </table>
+            )}
           </Panel>
         )}
 
-        {macroQ.isLoading ? (
+        {realDataOnly ? (
+          <Panel title="Macro Pulse" endpoint="External vendor required" className="col-span-12 lg:col-span-4 h-[340px]">
+            <EmptyDataState message="Macro data feed not configured." />
+          </Panel>
+        ) : macroQ.isLoading ? (
           <PanelSkeleton rows={4} height="h-[340px]" className="col-span-12 lg:col-span-4" />
         ) : (
           <Panel
@@ -438,7 +492,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
       {/* Row 4: News flash strip + curve move decomposition */}
       <div className="grid grid-cols-12 gap-2.5">
-        {newsQ.isLoading ? (
+        {realDataOnly ? (
+          <Panel title="News Flow · Last 60 min" endpoint="External vendor required" className="col-span-12 lg:col-span-8 h-[260px]">
+            <EmptyDataState message="News feed not configured." />
+          </Panel>
+        ) : newsQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[260px]" className="col-span-12 lg:col-span-8" />
         ) : (
           <Panel
@@ -475,6 +533,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           className="col-span-12 lg:col-span-4 h-[260px]"
           right={<span className="font-mono text-[10px]">today vs 1D</span>}
         >
+          {realDataOnly ? (
+            <EmptyDataState message="PCA decomposition requires live curve feed." />
+          ) : (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={pca} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
               <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
@@ -488,6 +549,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+          )}
         </Panel>
       </div>
     </div>

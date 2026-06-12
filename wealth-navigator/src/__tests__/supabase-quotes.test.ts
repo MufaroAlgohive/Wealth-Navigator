@@ -128,7 +128,7 @@ describe("USE_SUPABASE_QUOTES flag", () => {
     expect(inFilter?.value).toEqual(expect.arrayContaining(["NPN", "PRX", "FSR"]));
   });
 
-  it("falls back to seed when Supabase returns no securities rows", async () => {
+  it("returns unavailable (not seed) when Supabase returns no securities rows", async () => {
     process.env.USE_SUPABASE_QUOTES = "true";
     process.env.SUPABASE_URL = "https://example.supabase.co";
     process.env.SUPABASE_SERVICE_ROLE_KEY = "service-key";
@@ -142,11 +142,11 @@ describe("USE_SUPABASE_QUOTES flag", () => {
     const { fetchQuotesSafe } = await import("@/lib/iress/live-queries");
     const results = await fetchQuotesSafe(["NPN"], "JSE");
     expect(results).toHaveLength(1);
-    expect(results[0]?.source).toBe("seed-fallback");
-    expect(results[0]?.quote.last).toBeGreaterThan(0);
+    expect(results[0]?.source).toBe("unavailable");
+    expect(results[0]?.quote.last).toBe(0);
   });
 
-  it("falls back to seed for symbols missing from stock_intraday_c", async () => {
+  it("returns unavailable for symbols missing from stock_intraday_c", async () => {
     process.env.USE_SUPABASE_QUOTES = "true";
     process.env.SUPABASE_URL = "https://example.supabase.co";
     process.env.SUPABASE_SERVICE_ROLE_KEY = "service-key";
@@ -165,6 +165,7 @@ describe("USE_SUPABASE_QUOTES flag", () => {
     const npn = results.find((r) => r.symbol === "NPN");
     const prx = results.find((r) => r.symbol === "PRX");
     expect(npn?.source).toBe("supabase");
-    expect(prx?.source).toBe("seed-fallback");
+    expect(prx?.source).toBe("unavailable");
+    expect(prx?.quote.last).toBe(0);
   });
 });

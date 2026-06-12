@@ -9,12 +9,15 @@ import { toast } from "sonner";
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { ConfirmDestructive } from "@/components/oems/confirm-destructive";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { useIress } from "@/lib/iress/provider";
+import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatTime, formatZAR } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { NewOrderDialog } from "./new-order-dialog";
@@ -31,12 +34,15 @@ const STATES: Array<{ key: OrderState | "ALL"; label: string }> = [
 
 export default function BlotterPage() {
   const { data, client } = useIress();
+  const realDataOnly = isRealDataOnlyClient();
   const qc = useQueryClient();
   const [state, setState] = useState<OrderState | "ALL">("ALL");
   const [q, setQ] = useState("");
 
-  const ordersQ = useQuery({ queryKey: ["orders"], queryFn: () => data.orders() });
-  const orders = ordersQ.data ?? [];
+  const seedOrdersQ = useQuery({ queryKey: ["orders"], queryFn: () => data.orders(), enabled: !realDataOnly });
+  const auditOrdersQ = useAuditOrders("ALL", realDataOnly);
+  const orders = realDataOnly ? (auditOrdersQ.data?.orders ?? []) : (seedOrdersQ.data ?? []);
+  const ordersLoading = realDataOnly ? auditOrdersQ.isLoading : seedOrdersQ.isLoading;
 
   const filtered = useMemo(() => {
     return orders.filter((o) =>
@@ -115,12 +121,18 @@ export default function BlotterPage() {
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Symbol, strategy, order id…" className="h-8 pl-8 text-xs" />
         </div>
         <div className="ml-auto text-[10px] text-muted-foreground">
-          {filtered.length} of {orders.length} orders · IRESS · OrderPadGetByAccount
+          {filtered.length} of {orders.length} orders · {realDataOnly ? "oems_order_audit" : "mock · OrderPadGetByAccount"}
         </div>
       </div>
 
-      <Panel title={`Orders · ${filtered.length}`} endpoint="OrderPadGetByAccount" dataSource="seed" density="scroll" className="h-[calc(100vh-260px)]">
-        {ordersQ.isLoading ? (
+      <Panel
+        title={`Orders · ${filtered.length}`}
+        endpoint={realDataOnly ? "GET /api/orders · oems_order_audit" : "OrderPadGetByAccount"}
+        dataSource={realDataOnly ? "supabase" : "seed"}
+        density="scroll"
+        className="h-[calc(100vh-260px)]"
+      >
+        {ordersLoading ? (
           <div className="space-y-1.5 px-3.5 py-2.5" aria-busy="true" aria-live="polite">
             {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
               <div key={`blotter-row-${n}`} className="flex items-center gap-3">
@@ -135,6 +147,11 @@ export default function BlotterPage() {
               </div>
             ))}
           </div>
+        ) : filtered.length === 0 ? (
+          <EmptyDataState
+            title="No orders"
+            message={realDataOnly ? "Worker has not mirrored orders to oems_order_audit yet." : "No orders in mock book."}
+          />
         ) : (
           <table className="w-full font-mono text-[11px]">
             <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">

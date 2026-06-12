@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "@/lib/cn";
-import { useThrottledTickSeries } from "@/lib/store/tick-stream-provider";
+import { useThrottledTickSeries, useTick } from "@/lib/store/tick-stream-provider";
 
 interface SparklineProps {
   sym: string;
@@ -25,9 +25,11 @@ interface SparklineProps {
  * component is a pure renderer of whatever buffer it receives.
  */
 export function Sparkline({ sym, fallback, height = 28, width = 80, color, className, points = 36, intervalMs }: SparklineProps) {
-  const data = useThrottledTickSeries(sym, fallback, points, intervalMs);
+  const tick = useTick(sym);
+  const hasLive = tick.ts > 0 && tick.last > 0;
+  const data = useThrottledTickSeries(sym, hasLive ? tick.last : 0, points, intervalMs);
 
-  if (data.length < 2) {
+  if (!hasLive || data.length < 2 || data.every((v) => v === 0)) {
     return <svg className={cn("inline-block", className)} width={width} height={height} aria-hidden />;
   }
   const min = Math.min(...data);

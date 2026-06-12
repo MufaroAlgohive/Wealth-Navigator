@@ -75,5 +75,6 @@ export async function GET(req: Request) {
     fallbackCount: quotes.filter((q) => q.source === "seed-fallback").length,
     mockCount: quotes.filter((q) => q.source === "mock").length,
     supabaseCount: quotes.filter((q) => q.source === "supabase").length,
+    unavailableCount: quotes.filter((q) => q.source === "unavailable").length,
   });
 }

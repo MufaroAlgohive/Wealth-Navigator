@@ -15,11 +15,12 @@ import { getIressClient, iressConfig } from "@/lib/iress/index";
 import { iressQueries } from "@/lib/iress/mock";
 import { IressError } from "@/lib/iress/errors";
 import { getMintSession, withMintSession, invalidateMintSession } from "@/lib/iress/session-manager";
+import { emptyQuote, isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { initialQuotes, zarGoviCurve } from "@/lib/iress/seed";
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import type { Order, Quote } from "@/types/iress";
 
-export type QuoteSource = "live" | "seed-fallback" | "mock" | "supabase";
+export type QuoteSource = "live" | "seed-fallback" | "mock" | "supabase" | "unavailable";
 
 export interface QuoteWithSource {
   quote: Quote;
@@ -43,10 +44,8 @@ function normaliseSymbol(raw: string): string {
   return raw.replace(/\.JSE$/i, "").replace(/\s+/g, "").toUpperCase();
 }
 
-function isUseSupabaseQuotesEnabled(): boolean {
-  const raw = process.env.USE_SUPABASE_QUOTES;
-  if (!raw) return false;
-  return raw === "1" || raw.toLowerCase() === "true";
+function unavailableQuote(symbol: string, exchange = "JSE"): QuoteWithSource {
+  return { symbol: normaliseSymbol(symbol), quote: emptyQuote(normaliseSymbol(symbol), exchange), source: "unavailable" };
 }
 
 interface IntradayRow {
@@ -121,7 +120,9 @@ async function fetchQuotesFromSupabase(
     throw new Error(`securities_c read failed: ${secErr.message}`);
   }
   const metaRows = (securities ?? []) as SecurityMetaRow[];
-  if (metaRows.length === 0) return [];
+  if (metaRows.length === 0) {
+    return normalised.map((sym) => unavailableQuote(sym, exchange));
+  }
 
   const ids = metaRows.map((r) => r.id);
   const { data: ticks, error: tickErr } = await supabase
@@ -141,21 +142,28 @@ async function fetchQuotesFromSupabase(
     }
   }
 
-  return metaRows.map((meta) => {
+  const metaBySymbol = new Map(metaRows.map((m) => [m.symbol, m]));
+  const out: QuoteWithSource[] = [];
+
+  for (const sym of normalised) {
+    const meta = metaBySymbol.get(sym);
+    if (!meta) {
+      out.push(unavailableQuote(sym, exchange));
+      continue;
+    }
     const tick = latestBySecurity.get(meta.id);
     if (!tick) {
-      return {
-        symbol: meta.symbol,
-        quote: seedQuoteFor(meta.symbol, exchange),
-        source: "seed-fallback" as const,
-      };
+      out.push(unavailableQuote(sym, exchange));
+      continue;
     }
-    return {
+    out.push({
       symbol: meta.symbol,
       quote: buildQuoteFromIntraday(meta, tick, meta.symbol, exchange),
-      source: "supabase" as const,
-    };
-  });
+      source: "supabase",
+    });
+  }
+
+  return out;
 }
 
 /** Fetch a single quote — live when possible, seed on failure. */
@@ -171,7 +179,7 @@ export async function fetchQuote(
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[live-queries] supabase quote(${symbol}) failed: ${msg}`);
     }
-    return { quote: seedQuoteFor(symbol, exchange), source: "seed-fallback", symbol };
+    return unavailableQuote(symbol, exchange);
   }
 
   const results = await fetchQuotes([symbol], exchange);
@@ -186,16 +194,12 @@ export async function fetchQuotes(
   if (isUseSupabaseQuotesEnabled()) {
     try {
       const results = await fetchQuotesFromSupabase(symbols, exchange);
-      if (results.length > 0) return results;
+      return results;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[live-queries] supabase fetch failed: ${msg}`);
     }
-    return symbols.map((symbol) => ({
-      symbol: normaliseSymbol(symbol),
-      quote: seedQuoteFor(normaliseSymbol(symbol), exchange),
-      source: "seed-fallback" as const,
-    }));
+    return symbols.map((symbol) => unavailableQuote(symbol, exchange));
   }
 
   if (!isLiveMode()) {
@@ -255,16 +259,12 @@ export async function fetchQuotes(
 export async function fetchQuotesSafe(symbols: string[], exchange = "JSE"): Promise<QuoteWithSource[]> {
   if (isUseSupabaseQuotesEnabled()) {
     try {
-      const results = await fetchQuotesFromSupabase(symbols, exchange);
-      if (results.length > 0) return results;
+      return await fetchQuotesFromSupabase(symbols, exchange);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[live-queries] supabase fetchQuotesSafe failed: ${msg}`);
     }
-    return symbols.map((symbol) => {
-      const stripped = normaliseSymbol(symbol);
-      return { symbol: stripped, quote: seedQuoteFor(stripped, exchange), source: "seed-fallback" as const };
-    });
+    return symbols.map((symbol) => unavailableQuote(symbol, exchange));
   }
   try {
     return await withMintSession(async () => fetchQuotes(symbols, exchange));

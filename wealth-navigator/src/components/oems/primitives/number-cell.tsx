@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Minus } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { useTick } from "@/lib/store/tick-stream-provider";
 
 interface NumberCellProps {
@@ -46,13 +47,16 @@ export function NumberCell({
   onClick,
 }: NumberCellProps) {
   const t = sym ? useTick(sym) : undefined;
-  const value = t ? t.last : fallback;
-  const change = t ? t.changePct : 0;
-  const prev = useRef(value);
+  const realDataOnly = isRealDataOnlyClient();
+  const hasLiveTick = Boolean(t && t.ts > 0 && t.last > 0);
+  const noData = sym && realDataOnly && !hasLiveTick;
+  const value = noData ? null : t ? t.last : fallback;
+  const change = t && hasLiveTick ? t.changePct : 0;
+  const prev = useRef<number>(value ?? 0);
   const [dir, setDir] = useState<"up" | "down" | null>(null);
 
   useEffect(() => {
-    if (!t || !flash) return;
+    if (!t || !flash || noData || value == null) return;
     if (value === prev.current) return;
     setDir(value > prev.current ? "up" : "down");
     prev.current = value;
@@ -103,11 +107,17 @@ export function NumberCell({
           flash && dir === "down" && "bg-down/15",
         )}
       >
-        {prefix && isUp ? "+" : ""}
-        {value.toLocaleString("en-ZA", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
-        {suffix && <span className="text-muted-foreground">{suffix}</span>}
+        {noData || value == null ? (
+          <span className="text-muted-foreground">—</span>
+        ) : (
+          <>
+            {prefix && isUp ? "+" : ""}
+            {value.toLocaleString("en-ZA", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
+            {suffix && <span className="text-muted-foreground">{suffix}</span>}
+          </>
+        )}
       </span>
-      {showChange && t && (
+      {showChange && t && hasLiveTick && (
         <span className={cn("font-mono text-[10px] tabular-nums", isUp ? "text-up" : isDown ? "text-down" : "text-muted-foreground")}>
           {isFlat ? "0.00%" : `${isUp ? "+" : ""}${change.toFixed(2)}%`}
         </span>

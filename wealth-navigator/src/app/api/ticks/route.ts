@@ -1,10 +1,6 @@
-// SSE tick stream — emits batches of price updates every ~700ms.
-//
-// In mock mode (default): synthesises random walks on seed instruments.
-// In live mode (IRESS_MODE=live): seeds from PricingQuoteGet, then polls
-// PricingQuoteGetUpdates when a watch subscription is active; falls back to
-// local simulation on IRESS errors.
+// SSE tick stream — disabled when USE_SUPABASE_QUOTES=true (Supabase Realtime + BFF poll only).
 
+import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { initialQuotes } from "@/lib/iress/seed";
 import { iressConfig } from "@/lib/iress";
 import {
@@ -60,6 +56,13 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export async function GET() {
+  if (isUseSupabaseQuotesEnabled()) {
+    return Response.json(
+      { error: "Tick SSE disabled in Supabase quotes mode — use /api/quotes + Realtime" },
+      { status: 503, headers: { "X-Tick-Source": "disabled-supabase" } },
+    );
+  }
+
   const isLive = iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub";
   let watchRequestId: string | null = null;
   let liveActive = false;

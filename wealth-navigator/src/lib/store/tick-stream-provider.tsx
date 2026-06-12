@@ -9,6 +9,7 @@
 import { create } from "zustand";
 import { useEffect, useRef } from "react";
 import { initialQuotes } from "@/lib/iress/seed";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { useSyncExternalStore } from "react";
 
 /** Per-sample push cadence. The SSE stream ticks at ~3 Hz; sparklines can
@@ -37,9 +38,25 @@ const EMPTY_QUOTE: Quote = {
   volume: 0,
 };
 
-const tickMap = new Map<string, Quote>(Object.entries(initialQuotes()).map(([k, v]) => [k, {
-  last: v.last, prev: v.last, change: v.change, changePct: v.changePct, ts: v.ts, vwap: v.vwap, volume: v.volume,
-}]));
+function buildInitialTickMap(): Map<string, Quote> {
+  if (isRealDataOnlyClient()) return new Map();
+  return new Map(
+    Object.entries(initialQuotes()).map(([k, v]) => [
+      k,
+      {
+        last: v.last,
+        prev: v.last,
+        change: v.change,
+        changePct: v.changePct,
+        ts: v.ts,
+        vwap: v.vwap,
+        volume: v.volume,
+      },
+    ]),
+  );
+}
+
+const tickMap = buildInitialTickMap();
 
 // Cache the keys snapshot so `useTickKeys` returns a stable reference
 // between ticks — `useSyncExternalStore` requires the snapshot to be
@@ -82,8 +99,7 @@ function setQuoteFeedKind(kind: TickFeedKind) {
 }
 
 function isSupabaseQuotesMode(): boolean {
-  const raw = process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES;
-  return raw === "1" || raw?.toLowerCase() === "true";
+  return isRealDataOnlyClient();
 }
 
 /** Seed or update ticks from a live-quote API response (client-side). */
@@ -97,13 +113,13 @@ export function seedTicksFromQuotes(
   }
   for (const r of rows) {
     if (!r.sym || r.last <= 0) continue;
-    const prev = r.prev ?? r.last;
-    const change = r.change ?? (prev > 0 ? r.last - prev : 0);
-    const changePct = r.changePct ?? (prev > 0 ? (change / prev) * 100 : 0);
+    const prev = r.prev != null && r.prev > 0 ? r.prev : undefined;
+    const change = r.change ?? (prev != null && prev > 0 ? r.last - prev : 0);
+    const changePct = r.changePct ?? (prev != null && prev > 0 ? (change / prev) * 100 : 0);
     if (feed === "supabase") {
       tickMap.set(r.sym, {
         last: r.last,
-        prev,
+        prev: prev ?? r.last,
         change,
         changePct,
         ts: Date.now(),
