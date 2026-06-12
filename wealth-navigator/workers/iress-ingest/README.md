@@ -41,10 +41,12 @@ IRESS_MODE=live IRESS_WORKER_DRY_RUN=1 SUPABASE_ALLOW_WRITES=0 \
 IRESS_MODE=live IRESS_WORKER_DRY_RUN=0 SUPABASE_ALLOW_WRITES=1 \
   IRESS_USERNAME=... IRESS_PASSWORD=... IRESS_COMPANY_NAME=Mint \
   IRESS_BASE_URL=https://webservices-ct.iress.co.za/v4 \
-  SUPABASE_URL=https://mfxnghmuccevsxwcetej.supabase.co \
+  SUPABASE_URL=https://nnwzhxfjpjbzujevwzlh.supabase.co \
   SUPABASE_SERVICE_ROLE_KEY=... \
   bun run worker:iress
 ```
+
+Railway `SUPABASE_URL` must match Vercel (same MyMint project).
 
 Copy `.env.example` to `.env` in this folder or export vars in your shell. **Do not commit secrets.** The repo-root `.gitignore` covers `supabase_creds`.
 
@@ -109,6 +111,26 @@ IRESS_FORCE_KICK_ALL=1 bun run iress:logout
 # Verify seat is free
 bun scripts/probe-iress-login.ts
 ```
+
+### Stale `stock_intraday_c` cleanup (bad LastTrade rows)
+
+If the UI shows absurd prices (e.g. AGL 120,003) after a `mapQuote` fix, the
+worker may already be healthy but old bad rows remain in Supabase. The quote loop
+runs immediately on boot (no warm-up delay) and inserts fresh ticks each poll —
+deleting bad rows lets the next sync repopulate.
+
+Run in the **MyMint** Supabase SQL editor (idempotent):
+
+```sql
+-- Remove intraday ticks for the worker watchlist so the next poll repopulates.
+DELETE FROM stock_intraday_c i
+USING securities_c s
+WHERE i.security_id = s.id
+  AND s.symbol IN ('NPN','BHG','AGL','PRX','FSR','SBK','MTN','SHP','SOL','CPI');
+```
+
+Redeploy the Railway worker after pulling the `mapQuote` / `resolveQuoteLast`
+fix so new rows use `<Close>` when `<Last>` is absent post-close.
 
 Railway one-time recovery (optional — worker first-boot auto-kick usually suffices):
 

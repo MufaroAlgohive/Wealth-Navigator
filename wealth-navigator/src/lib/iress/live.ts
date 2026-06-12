@@ -94,6 +94,51 @@ function mapResponse<T>(raw: { header: Record<string, unknown>; dataRows: Array<
   };
 }
 
+type QuoteNumReader = (...keys: string[]) => number;
+type QuoteStrReader = (...keys: string[]) => string;
+
+/**
+ * Pick the display price from a PricingQuoteGet row.
+ *
+ * Real CT responses may expose `<Last>` (live) alongside a stale `<LastTrade>`
+ * (often a bogus cumulative value when the JSE is closed). When `<Last>` is
+ * absent or zero, prefer session `<Close>` / book mid before `<LastTrade>`.
+ */
+export function resolveQuoteLast(
+  num: QuoteNumReader,
+  str: QuoteStrReader,
+): number {
+  const liveLast = num("Last");
+  const close = num("Close", "ClosePrice");
+  const prevClose = num("PrevClose", "PreviousClose");
+  const bid = num("Bid", "BidPrice", "BuyPrice");
+  const ask = num("Ask", "AskPrice", "SellPrice");
+  const lastTrade = num("LastTrade", "LastPrice", "PxLast");
+  const state = str("MarketState", "QuoteState", "State", "Status");
+  const closed = /CLOSED|CLOSE|HALT|PRE[_-]?OPEN/i.test(state);
+
+  const bookMid =
+    bid > 0 && ask > 0 ? (bid + ask) / 2 : bid > 0 ? bid : ask > 0 ? ask : 0;
+  const officialClose = close > 0 ? close : prevClose > 0 ? prevClose : 0;
+
+  if (liveLast > 0) return liveLast;
+
+  if (closed || liveLast <= 0) {
+    if (officialClose > 0) return officialClose;
+    if (bookMid > 0) return bookMid;
+  }
+
+  if (lastTrade > 0) {
+    const anchor = officialClose > 0 ? officialClose : bookMid;
+    if (anchor > 0 && (lastTrade > anchor * 3 || lastTrade < anchor / 3)) {
+      return anchor;
+    }
+    return lastTrade;
+  }
+
+  return officialClose || bookMid;
+}
+
 function mapQuote(row: Record<string, unknown> | undefined): Quote {
   if (!row) {
     return emptyQuote();
@@ -123,9 +168,7 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
   };
   return {
     symbol: str("SecurityCode", "Code", "Symbol", "symbol"),
-    // Real IRESS CT returns <Last> for the live quote; <LastTrade> can be stale
-    // or absent pre-open. Prefer <Last> first (see iress-live.test.ts).
-    last: num("Last", "LastTrade", "LastPrice", "PxLast"),
+    last: resolveQuoteLast(num, str),
     bid: num("Bid", "BidPrice", "BuyPrice"),
     ask: num("Ask", "AskPrice", "SellPrice"),
     bidSize: num("BidSize", "BidQty", "BuySize"),

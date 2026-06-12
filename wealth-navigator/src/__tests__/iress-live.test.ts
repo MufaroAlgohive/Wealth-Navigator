@@ -824,6 +824,51 @@ describe("mapQuote field-name fallback for real IRESS V4 responses", () => {
       </soap:Envelope>`;
   }
 
+  it("uses <Close> when CLOSED and <Last> is absent but <LastTrade> is stale", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <PricingQuoteGetResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>q-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows>
+                  <DataRow>
+                    <SecurityCode>AGL</SecurityCode>
+                    <Exchange>JSE</Exchange>
+                    <LastTrade>120003</LastTrade>
+                    <Close>552.1</Close>
+                    <Bid>551.5</Bid>
+                    <Ask>552.5</Ask>
+                    <QuoteState>CLOSED</QuoteState>
+                  </DataRow>
+                </DataRows>
+              </Result>
+            </Output>
+          </PricingQuoteGetResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.pricingQuoteGet({
+      Header: { SessionKey: "k", RequestID: "q-1" },
+      SecurityCode: "AGL",
+      Exchange: "JSE",
+    });
+    expect(res.DataRows[0]?.last).toBe(552.1);
+    expect(res.DataRows[0]?.marketState).toBe("CLOSED");
+  });
+
   it("prefers <Last> over a stale <LastTrade> when both are present", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
