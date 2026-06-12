@@ -7,17 +7,45 @@ import { Search } from "lucide-react";
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIress } from "@/lib/iress/provider";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 
 export default function NewsPage() {
   const { data } = useIress();
-  const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), ...queryOpts("reference") });
-  const sensQ = useQuery({ queryKey: ["sens"], queryFn: () => data.sens(), ...queryOpts("reference") });
+  const realDataOnly = isRealDataOnlyClient();
+  const newsQ = useQuery({
+    queryKey: ["news"],
+    queryFn: () => data.news(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const sensQ = useQuery({
+    queryKey: ["sens"],
+    queryFn: () => data.sens(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+
+  if (realDataOnly) {
+    return (
+      <div className="space-y-3">
+        <header>
+          <h1 className="text-lg font-semibold tracking-tight">News & SENS</h1>
+          <p className="text-xs text-muted-foreground">Reuters · Bloomberg · Moneyweb · Dow Jones · SENS regulatory tape</p>
+        </header>
+        <Panel title="News tape" endpoint="External news vendor">
+          <EmptyDataState message="News feed not configured." />
+        </Panel>
+      </div>
+    );
+  }
+
   const news = newsQ.data ?? [];
   const sens = sensQ.data ?? [];
 

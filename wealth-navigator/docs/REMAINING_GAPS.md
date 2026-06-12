@@ -12,6 +12,12 @@ Last updated: 2026-06-12. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_
 | Open orders (cockpit + blotter) | `oems_order_audit` | `/api/orders` |
 | Integration worker status | `integration_worker_health` | `/api/worker-health` |
 | Instrument metadata | `securities_c` | joined in `/api/quotes` |
+| Blotter mock create/cancel | Hidden in prod | `blotter/page.tsx` |
+| Security lookup quotes | `/api/quotes` | `security/page.tsx` |
+| Equities grid quotes | `/api/quotes` | `equities/page.tsx` |
+| Ticker bar (equities) | Supabase ticks only | `ticker-bar.tsx` |
+| Strategies / FI / MM / curves / macro / news | EmptyDataState | respective `/oems/*` pages |
+| Persona pages | EmptyDataState | `/strategist`, `/wm`, `/admin`, `/business`, `/fc` |
 
 ## Requires IRESS entitlement (Charles / CT)
 

@@ -9,30 +9,50 @@ import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIress } from "@/lib/iress/provider";
 import { canRebalance, rebalanceBlockReason, rebalanceBlockTooltip } from "@/lib/iress/strategy";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatPct, formatZAR } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import type { Strategy } from "@/types/iress";
 import { queryOpts } from "@/lib/store/query-provider";
 
-// `?focus=` deep-link via `useSearchParams` — the page is dynamic, so
-// the consumer lives inside a Suspense boundary to satisfy Next.js 16's
-// CSR-bailout check during prerender.
 function StrategiesPageContent() {
   const { data } = useIress();
-  const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), ...queryOpts("live") });
+  const realDataOnly = isRealDataOnlyClient();
+  const strategiesQ = useQuery({
+    queryKey: ["strategies"],
+    queryFn: () => data.strategies(),
+    enabled: !realDataOnly,
+    ...queryOpts("live"),
+  });
   const strategies = strategiesQ.data ?? [];
-  // The command palette (⌘K) deep-links here with `?focus=<strategyId>`.
   const focusId = useSearchParams().get("focus");
   const [selected, setSelected] = useState<string>(
     (focusId && strategies.find((s) => s.id === focusId)?.id) || strategies[0]?.id || "",
   );
   const active = strategies.find((s) => s.id === selected) ?? strategies[0];
+
+  if (realDataOnly) {
+    return (
+      <div className="space-y-3">
+        <header>
+          <h1 className="text-lg font-semibold tracking-tight">Strategies</h1>
+          <p className="text-xs text-muted-foreground">
+            Rebalance gated on linked investors · pre-trade mandate & halt checks via IRESS
+          </p>
+        </header>
+        <Panel title="Strategy mandates" endpoint="Portfolio system">
+          <EmptyDataState message="Strategy AUM, holdings, and rebalance state require portfolio system integration." />
+        </Panel>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">

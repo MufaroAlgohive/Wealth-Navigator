@@ -3,12 +3,10 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { ArrowRight, Layers, Briefcase, AlertTriangle } from "lucide-react";
-import { OEMSShell } from "@/components/oems/shell/oems-shell";
-import { CommandPaletteProvider } from "@/components/oems/command-palette";
+import { PersonaRealDataGate } from "@/components/oems/persona-real-data-gate";
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { KpiTile } from "@/components/oems/primitives/kpi-tile";
-import { PersonaHeader } from "@/components/oems/primitives/persona-header";
 import { Button } from "@/components/ui/button";
 import { oemsStrategies, deals } from "@/lib/iress/seed";
 import { formatPct, formatZAR } from "@/lib/format";
@@ -48,14 +46,11 @@ export default function BusinessPage() {
   );
 
   return (
-    <CommandPaletteProvider>
-      <OEMSShell>
-        <div className="space-y-3">
-        <PersonaHeader
-          persona="business"
-          description="House view performance · sales pipeline · compliance flags."
-        />
-
+    <PersonaRealDataGate
+      persona="business"
+      description="House view performance · sales pipeline · compliance flags."
+      message="Business pipeline and house-view KPIs require CRM / sales system integration."
+    >
         {/* KPI strip */}
         <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
           <KpiTile
@@ -181,8 +176,6 @@ export default function BusinessPage() {
             </Button>
           </Link>
         </div>
-      </div>
-      </OEMSShell>
-    </CommandPaletteProvider>
+    </PersonaRealDataGate>
   );
 }

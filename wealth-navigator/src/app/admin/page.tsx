@@ -4,11 +4,9 @@ import { useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Shield, Check, X, ScrollText, Users as UsersIcon, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
-import { OEMSShell } from "@/components/oems/shell/oems-shell";
-import { CommandPaletteProvider } from "@/components/oems/command-palette";
+import { PersonaRealDataGate } from "@/components/oems/persona-real-data-gate";
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
-import { PersonaHeader } from "@/components/oems/primitives/persona-header";
 import { Button } from "@/components/ui/button";
 import { pendingApprovals, auditTrail } from "@/lib/iress/seed";
 import { PERSONA_USERS, type Persona } from "@/lib/store/session-provider";
@@ -49,14 +47,12 @@ export default function AdminPage() {
   }
 
   return (
-    <CommandPaletteProvider>
-      <OEMSShell>
-        <div className="space-y-3">
-        <PersonaHeader
-          persona="admin"
-          description="Pending approvals · audit trail · user & role access."
-        />
-
+    <PersonaRealDataGate
+      persona="admin"
+      description="Pending approvals · audit trail · user & role access."
+      message="Admin approvals and audit trail require compliance / ops system integration."
+      endpoint="Compliance / ops system"
+    >
         {/* Row 1: Pending approvals | Audit trail */}
         <div className="grid grid-cols-12 gap-2.5">
           <Panel
@@ -215,8 +211,6 @@ export default function AdminPage() {
             </Button>
           </Link>
         </div>
-      </div>
-      </OEMSShell>
-    </CommandPaletteProvider>
+    </PersonaRealDataGate>
   );
 }

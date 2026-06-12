@@ -4,12 +4,10 @@ import { useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Banknote, AlertTriangle, Check, Wallet } from "lucide-react";
 import { toast } from "sonner";
-import { OEMSShell } from "@/components/oems/shell/oems-shell";
-import { CommandPaletteProvider } from "@/components/oems/command-palette";
+import { PersonaRealDataGate } from "@/components/oems/persona-real-data-gate";
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { KpiTile } from "@/components/oems/primitives/kpi-tile";
-import { PersonaHeader } from "@/components/oems/primitives/persona-header";
 import { Button } from "@/components/ui/button";
 import { reconLegs, cashPositions, reconExceptions } from "@/lib/iress/seed";
 import { formatTimeShort, formatZARExact } from "@/lib/format";
@@ -40,14 +38,11 @@ export default function FuneralCoverOverview() {
   }
 
   return (
-    <CommandPaletteProvider>
-      <OEMSShell>
-        <div className="space-y-3">
-        <PersonaHeader
-          persona="funeral_cover"
-          description="Daily reconciliation · cash positions · recon exceptions."
-        />
-
+    <PersonaRealDataGate
+      persona="funeral_cover"
+      description="Daily reconciliation · cash positions · recon exceptions."
+      message="Funeral cover reconciliation requires ops / accounting system integration."
+    >
         {/* KPI strip */}
         <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
           <KpiTile
@@ -227,8 +222,6 @@ export default function FuneralCoverOverview() {
             </Button>
           </Link>
         </div>
-      </div>
-      </OEMSShell>
-    </CommandPaletteProvider>
+    </PersonaRealDataGate>
   );
 }

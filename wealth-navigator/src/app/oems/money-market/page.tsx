@@ -8,18 +8,55 @@ import { Panel } from "@/components/oems/primitives/panel";
 import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Button } from "@/components/ui/button";
 import { useIress } from "@/lib/iress/provider";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatZAR, formatPct } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 
 export default function MoneyMarketPage() {
   const { data } = useIress();
-  const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), ...queryOpts("live") });
-  const mmQ = useQuery({ queryKey: ["mm"], queryFn: () => data.mmInstruments(), ...queryOpts("reference") });
-  const jibarQ = useQuery({ queryKey: ["jibar"], queryFn: () => data.jibarFixings(), ...queryOpts("reference") });
-  const curveQ = useQuery({ queryKey: ["zar-govi"], queryFn: () => data.zarGoviCurve(), ...queryOpts("reference") });
+  const realDataOnly = isRealDataOnlyClient();
+  const strategiesQ = useQuery({
+    queryKey: ["strategies"],
+    queryFn: () => data.strategies(),
+    enabled: !realDataOnly,
+    ...queryOpts("live"),
+  });
+  const mmQ = useQuery({
+    queryKey: ["mm"],
+    queryFn: () => data.mmInstruments(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const jibarQ = useQuery({
+    queryKey: ["jibar"],
+    queryFn: () => data.jibarFixings(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const curveQ = useQuery({
+    queryKey: ["zar-govi"],
+    queryFn: () => data.zarGoviCurve(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+
+  if (realDataOnly) {
+    return (
+      <div className="space-y-3">
+        <header>
+          <h1 className="text-lg font-semibold tracking-tight">Money Market</h1>
+          <p className="text-xs text-muted-foreground">JIBAR · ZARONIA · NCD · T-Bill · FRN universe · weighted yield & duration</p>
+        </header>
+        <Panel title="Money market universe" endpoint="IRESS + SARB fixings">
+          <EmptyDataState message="JIBAR fixings and MM instrument yields require IRESS rate entitlement." />
+        </Panel>
+      </div>
+    );
+  }
 
   const mm = (strategiesQ.data ?? []).filter((s) => s.kind === "money_market");
   const instruments = mmQ.data ?? [];

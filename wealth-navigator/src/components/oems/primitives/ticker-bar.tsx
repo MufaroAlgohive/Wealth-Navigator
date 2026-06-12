@@ -3,6 +3,8 @@
 import { ArrowUp, ArrowDown, Radio, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useTick, useLastTickTs, useQuoteFeedKind, type TickFeedKind } from "@/lib/store/tick-stream-provider";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
+import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { Badge } from "@/components/ui/badge";
 
 const FEED_LABELS = {
@@ -10,6 +12,11 @@ const FEED_LABELS = {
   stream: "STREAM",
   mock: "MOCK",
 } as const;
+
+/** Railway worker watchlist — symbols that may have Supabase ticks. */
+const WORKER_WATCHLIST = new Set([
+  "NPN", "PRX", "FSR", "SBK", "AGL", "BHG", "MTN", "SOL", "SHP", "CPI",
+]);
 
 interface TickerItem {
   k: string;
@@ -39,7 +46,15 @@ const DEFAULT_ITEMS: TickerItem[] = [
   { k: "AGL",      label: "AGL",      decimals: 2,  base: 552.10,   prev: 539.70 },
 ];
 
+function isIndexOrFxSymbol(k: string): boolean {
+  return !WORKER_WATCHLIST.has(k);
+}
+
 export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
+  const realDataOnly = isRealDataOnlyClient();
+  const watchlistSyms = items.filter((it) => WORKER_WATCHLIST.has(it.k)).map((it) => it.k);
+  useLiveQuotes(realDataOnly ? watchlistSyms : []);
+
   const last = useLastTickTs();
   const feedKind = useQuoteFeedKind();
   const age = Math.max(0, Date.now() - last);
@@ -49,6 +64,11 @@ export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
   const feedLabel = FEED_LABELS[feedKind];
   const badgeVariant = stale ? "warning" : feedKind === "mock" ? "secondary" : "live";
 
+  const visibleItems = realDataOnly
+    ? items.filter((it) => !isIndexOrFxSymbol(it.k))
+    : items;
+  const hasHiddenSim = realDataOnly && items.some((it) => isIndexOrFxSymbol(it.k));
+
   return (
     <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap border-y border-border bg-surface-2/60 py-1.5 pl-3 pr-3 text-[11px] font-mono text-foreground/80 scrollbar-thin mask-fade-x">
       <Badge variant={badgeVariant} className="shrink-0">
@@ -56,11 +76,33 @@ export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
         {stale ? "STALE" : feedLabel}
       </Badge>
       <span className="shrink-0 text-muted-foreground/60">·</span>
-      {items.map((it) => (
-        <TickerChip key={it.k} item={it} feedKind={feedKind} />
+      {visibleItems.map((it) => (
+        <TickerChipMaybe key={it.k} item={it} feedKind={feedKind} realDataOnly={realDataOnly} />
       ))}
+      {hasHiddenSim && (
+        <>
+          <span className="shrink-0 text-muted-foreground/60">·</span>
+          <span className="shrink-0 text-[9.5px] uppercase tracking-wider text-muted-foreground/80">
+            FX/indices feed not configured
+          </span>
+        </>
+      )}
     </div>
   );
+}
+
+function TickerChipMaybe({
+  item,
+  feedKind,
+  realDataOnly,
+}: {
+  item: TickerItem;
+  feedKind: TickFeedKind;
+  realDataOnly: boolean;
+}) {
+  const t = useTick(item.k);
+  if (realDataOnly && t.ts === 0) return null;
+  return <TickerChip item={item} feedKind={feedKind} />;
 }
 
 function TickerChip({ item, feedKind }: { item: TickerItem; feedKind: TickFeedKind }) {
@@ -75,11 +117,13 @@ function TickerChip({ item, feedKind }: { item: TickerItem; feedKind: TickFeedKi
         : 0;
   const isUp = change > 0;
   const isDown = change < 0;
+  const displayLast = t.ts > 0 ? t.last : item.base;
+
   return (
     <span className="flex shrink-0 items-center gap-1.5">
       <span className="text-[9.5px] uppercase tracking-wider text-muted-foreground/80">{item.label}</span>
       <span className="font-semibold tabular-nums text-foreground">
-        {t.last.toLocaleString("en-ZA", { minimumFractionDigits: item.decimals, maximumFractionDigits: item.decimals })}
+        {displayLast.toLocaleString("en-ZA", { minimumFractionDigits: item.decimals, maximumFractionDigits: item.decimals })}
         {item.suffix ?? ""}
       </span>
       <span
@@ -90,8 +134,19 @@ function TickerChip({ item, feedKind }: { item: TickerItem; feedKind: TickFeedKi
           !isUp && !isDown && "text-muted-foreground/70",
         )}
       >
-        {isUp ? <ArrowUp className="h-2.5 w-2.5" /> : isDown ? <ArrowDown className="h-2.5 w-2.5" /> : null}
-        {Math.abs(changePct).toFixed(2)}%
+        {t.ts > 0 ? (
+          <>
+            {isUp ? <ArrowUp className="h-2.5 w-2.5" /> : isDown ? <ArrowDown className="h-2.5 w-2.5" /> : null}
+            {Math.abs(changePct).toFixed(2)}%
+          </>
+        ) : feedKind === "mock" ? (
+          <>
+            {isUp ? <ArrowUp className="h-2.5 w-2.5" /> : isDown ? <ArrowDown className="h-2.5 w-2.5" /> : null}
+            {Math.abs(changePct).toFixed(2)}%
+          </>
+        ) : (
+          <span>—</span>
+        )}
       </span>
     </span>
   );

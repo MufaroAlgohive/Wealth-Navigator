@@ -85,23 +85,27 @@ export default function BlotterPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <ConfirmDestructive
-            count={openOrders.length}
-            label={`CANCEL ${openOrders.length} ${openOrders.length === 1 ? "ORDER" : "ORDERS"}`}
-            triggerLabel="Cancel working"
-            triggerVariant="outline"
-            disabled={cancelAll.isPending}
-            description="IRESS · OrderDelete · orders will be removed from the venue"
-            previewItems={openOrders.map((o) => ({
-              id: o.id,
-              primary: `${o.side} ${o.qty.toLocaleString()} ${o.symbol}`,
-              secondary: `@ ${o.arrivalMid.toFixed(2)}${o.destination ? ` · ${o.destination}` : ""}`,
-            }))}
-            onConfirm={async () => {
-              await cancelAll.mutateAsync();
-            }}
-          />
-          <NewOrderDialog onCreated={() => qc.invalidateQueries({ queryKey: ["orders"] })} />
+          {!realDataOnly && (
+            <>
+              <ConfirmDestructive
+                count={openOrders.length}
+                label={`CANCEL ${openOrders.length} ${openOrders.length === 1 ? "ORDER" : "ORDERS"}`}
+                triggerLabel="Cancel working"
+                triggerVariant="outline"
+                disabled={cancelAll.isPending}
+                description="IRESS · OrderDelete · orders will be removed from the venue"
+                previewItems={openOrders.map((o) => ({
+                  id: o.id,
+                  primary: `${o.side} ${o.qty.toLocaleString()} ${o.symbol}`,
+                  secondary: `@ ${o.arrivalMid.toFixed(2)}${o.destination ? ` · ${o.destination}` : ""}`,
+                }))}
+                onConfirm={async () => {
+                  await cancelAll.mutateAsync();
+                }}
+              />
+              <NewOrderDialog onCreated={() => qc.invalidateQueries({ queryKey: ["orders"] })} />
+            </>
+          )}
         </div>
       </header>
 

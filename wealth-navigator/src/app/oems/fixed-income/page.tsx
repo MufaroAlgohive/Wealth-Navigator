@@ -8,18 +8,45 @@ import { Search, LineChart as LineIcon } from "lucide-react";
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Input } from "@/components/ui/input";
 import { useIress } from "@/lib/iress/provider";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { cn } from "@/lib/cn";
 import { useTick } from "@/lib/store/tick-stream-provider";
 import { queryOpts } from "@/lib/store/query-provider";
 
 export default function FixedIncomePage() {
   const { data } = useIress();
-  const bondsQ = useQuery({ queryKey: ["bonds"], queryFn: () => data.bonds(), ...queryOpts("reference") });
-  const curveHistoryQ = useQuery({ queryKey: ["zar-govi"], queryFn: () => data.zarGoviCurve(), ...queryOpts("reference") });
+  const realDataOnly = isRealDataOnlyClient();
+  const bondsQ = useQuery({
+    queryKey: ["bonds"],
+    queryFn: () => data.bonds(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const curveHistoryQ = useQuery({
+    queryKey: ["zar-govi"],
+    queryFn: () => data.zarGoviCurve(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
   const bonds = bondsQ.data ?? [];
   const today = curveHistoryQ.data ?? [];
+
+  if (realDataOnly) {
+    return (
+      <div className="space-y-3">
+        <header>
+          <h1 className="text-lg font-semibold tracking-tight">Fixed Income</h1>
+          <p className="text-xs text-muted-foreground">Clean/dirty pricing · DV01 · convexity · KRD · spread to curve</p>
+        </header>
+        <Panel title="Bond screener" endpoint="IRESS + index vendors">
+          <EmptyDataState message="Fixed income pricing and curve history require IRESS bond entitlement." />
+        </Panel>
+      </div>
+    );
+  }
 
   const [selected, setSelected] = useState<string>(bonds[1]?.isin ?? "");
   const bond = bonds.find((b) => b.isin === selected) ?? bonds[1];

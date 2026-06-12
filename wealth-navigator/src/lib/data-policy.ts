@@ -48,3 +48,8 @@ export function emptyQuote(symbol: string, exchange = "JSE"): Quote {
 }
 
 export const FEED_NOT_CONFIGURED = "Data feed not configured";
+
+/** Alias for production mandate checks in UI and API routes. */
+export function isProductionRealDataMode(): boolean {
+  return isRealDataOnlyClient();
+}

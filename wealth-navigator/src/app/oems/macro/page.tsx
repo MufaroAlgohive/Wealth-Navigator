@@ -8,7 +8,9 @@ import { Panel } from "@/components/oems/primitives/panel";
 import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { useIress } from "@/lib/iress/provider";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatPct } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
@@ -29,8 +31,34 @@ function makeSeries(seed: number, base: number, vol: number, n = 60) {
 
 export default function MacroPage() {
   const { data } = useIress();
-  const indicatorsQ = useQuery({ queryKey: ["macro"], queryFn: () => data.macroIndicators(), ...queryOpts("reference") });
-  const releasesQ = useQuery({ queryKey: ["releases"], queryFn: () => data.macroReleases(), ...queryOpts("reference") });
+  const realDataOnly = isRealDataOnlyClient();
+  const indicatorsQ = useQuery({
+    queryKey: ["macro"],
+    queryFn: () => data.macroIndicators(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const releasesQ = useQuery({
+    queryKey: ["releases"],
+    queryFn: () => data.macroReleases(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+
+  if (realDataOnly) {
+    return (
+      <div className="space-y-3">
+        <header>
+          <h1 className="text-lg font-semibold tracking-tight">Macro</h1>
+          <p className="text-xs text-muted-foreground">SARB · StatsSA · G10 series · indicator surprise · upcoming releases</p>
+        </header>
+        <Panel title="Macro indicators" endpoint="Macro data vendor">
+          <EmptyDataState message="Macro data feed not configured." />
+        </Panel>
+      </div>
+    );
+  }
+
   const indicators = indicatorsQ.data ?? [];
   const releases = releasesQ.data ?? [];
 

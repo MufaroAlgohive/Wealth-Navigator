@@ -10,26 +10,24 @@ import { NumberCell } from "@/components/oems/primitives/number-cell";
 import { DepthLadder } from "@/components/oems/primitives/depth-ladder";
 import { TimeAndSales } from "@/components/oems/primitives/time-and-sales";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Input } from "@/components/ui/input";
 import { useIress } from "@/lib/iress/provider";
 import { initialQuotes, seedLastFor } from "@/lib/iress/seed";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { useTick, useTickSeries } from "@/lib/store/tick-stream-provider";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 
-// `?sym=` deep-link via `useSearchParams` — the page is dynamic, so the
-// consumer lives inside a Suspense boundary to satisfy Next.js 16's
-// CSR-bailout check during prerender.
 function SecurityPageContent() {
   const { data } = useIress();
+  const realDataOnly = isRealDataOnlyClient();
   const equitiesQ = useQuery({ queryKey: ["equities"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
   const equities = equitiesQ.data ?? [];
   const searchParams = useSearchParams();
   const [sym, setSym] = useState("NPN");
 
-  // Command palette (⌘K) deep-links here with `?sym=XYZ`; pick it up
-  // once on mount so the lookup lands on the right ticker.
   useEffect(() => {
     const fromUrl = searchParams.get("sym");
     if (fromUrl) setSym(fromUrl.toUpperCase());
@@ -37,10 +35,11 @@ function SecurityPageContent() {
   }, []);
 
   const inst = equities.find((i) => i.symbol === sym) ?? equities[0];
-  const activeSym = inst?.symbol ?? "NPN";
-  const seedLast = seedLastFor(activeSym);
+  const activeSym = inst?.symbol ?? sym;
   const liveQuotes = useLiveQuotes([activeSym]);
   const quoteSource = liveQuotes.dataSource;
+  const tick = useTick(activeSym);
+  const hasLiveQuote = tick.ts > 0;
 
   return (
     <div className="space-y-3">
@@ -68,7 +67,8 @@ function SecurityPageContent() {
         ) : (
           <Panel
             title="Watchlist · JSE"
-            endpoint="GET /v1/quotes/batch"
+            endpoint={realDataOnly ? "GET /api/quotes" : "GET /v1/quotes/batch"}
+            dataSource={realDataOnly ? quoteSource : undefined}
             className="col-span-6 lg:col-span-2 h-[400px]"
             density="scroll"
           >
@@ -84,7 +84,7 @@ function SecurityPageContent() {
                   >
                     <div className="flex items-center justify-between font-mono text-[11px]">
                       <span className="font-semibold">{m.symbol}</span>
-                      <NumberCell sym={m.symbol} fallback={0} decimals={2} />
+                      <NumberCell sym={m.symbol} fallback={realDataOnly ? 0 : 0} decimals={2} />
                     </div>
                     <div className="mt-0.5 flex items-center justify-between text-[9.5px] text-muted-foreground">
                       <span className="truncate">{m.name}</span>
@@ -101,12 +101,16 @@ function SecurityPageContent() {
         ) : (
           <Panel
             title={`${inst?.symbol ?? "—"} · Intraday`}
-            endpoint="PricingQuoteGet"
+            endpoint={realDataOnly ? "GET /api/quotes" : "PricingQuoteGet"}
             dataSource={quoteSource}
             className="col-span-12 lg:col-span-6 h-[400px]"
-            right={<NumberCell sym={activeSym} fallback={seedLast} decimals={2} showChange />}
+            right={<NumberCell sym={activeSym} fallback={realDataOnly ? 0 : seedLastFor(activeSym)} decimals={2} showChange />}
           >
-            <SecurityChart sym={activeSym} />
+            {realDataOnly && !hasLiveQuote ? (
+              <EmptyDataState message="No intraday series — quote feed has no ticks for this symbol yet." />
+            ) : (
+              <SecurityChart sym={activeSym} realDataOnly={realDataOnly} />
+            )}
           </Panel>
         )}
 
@@ -119,7 +123,11 @@ function SecurityPageContent() {
             className="col-span-6 lg:col-span-2 h-[400px]"
             density="scroll"
           >
-            <DepthLadder mid={seedLast} tick={seedLast > 1000 ? 0.5 : 0.05} levels={8} />
+            {realDataOnly ? (
+              <EmptyDataState message="Depth L2 feed not configured." />
+            ) : (
+              <DepthLadder mid={seedLastFor(activeSym)} tick={seedLastFor(activeSym) > 1000 ? 0.5 : 0.05} levels={8} />
+            )}
           </Panel>
         )}
 
@@ -132,7 +140,11 @@ function SecurityPageContent() {
             className="col-span-6 lg:col-span-2 h-[400px]"
             density="scroll"
           >
-            <TimeAndSales mid={seedLast} n={28} />
+            {realDataOnly ? (
+              <EmptyDataState message="Time & sales feed not configured." />
+            ) : (
+              <TimeAndSales mid={seedLastFor(activeSym)} n={28} />
+            )}
           </Panel>
         )}
       </div>
@@ -151,34 +163,20 @@ function SecurityPageContent() {
               </div>
             ))}
           </div>
+        ) : realDataOnly ? (
+          <EmptyDataState message="Fundamentals require ref-data vendor integration." />
         ) : (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-            {[
-              { k: "RIC", v: inst?.ric ?? "—" },
-              { k: "ISIN", v: inst?.isin ?? "—" },
-              { k: "Exchange", v: inst?.exchange ?? "—" },
-              { k: "Sector", v: inst?.sector ?? "—" },
-              { k: "Currency", v: inst?.currency ?? "—" },
-              { k: "Asset class", v: inst?.assetClass ?? "—" },
-              { k: "P/E", v: "18.4" },
-              { k: "EV/EBITDA", v: "11.2" },
-              { k: "Div Yield", v: "2.4%" },
-              { k: "Mkt Cap", v: "R1.81tn" },
-              { k: "52w Hi", v: (seedLast * 1.18).toFixed(2) },
-              { k: "52w Lo", v: (seedLast * 0.78).toFixed(2) },
-              { k: "ADV (3m)", v: "1.8m" },
-              { k: "Beta", v: "1.12" },
-              { k: "Bid", v: (seedLast * 0.9997).toFixed(2) },
-              { k: "Ask", v: (seedLast * 1.0003).toFixed(2) },
-              { k: "Spread bp", v: (((seedLast * 1.0003) - (seedLast * 0.9997)) / seedLast * 10_000).toFixed(1) },
-              { k: "VWAP", v: seedLast.toFixed(2) },
-            ].map(({ k, v }) => (
-              <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-                <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
-                <p className="mt-0.5 font-mono text-xs font-semibold">{v}</p>
-              </div>
-            ))}
-          </div>
+          <FundamentalsGrid
+            inst={{
+              ric: inst?.ric,
+              isin: inst?.isin,
+              exchange: inst?.exchange,
+              sector: inst?.sector,
+              currency: inst?.currency,
+              assetClass: inst?.assetClass,
+            }}
+            sym={activeSym}
+          />
         )}
       </Panel>
     </div>
@@ -193,12 +191,59 @@ export default function SecurityPage() {
   );
 }
 
-function SecurityChart({ sym }: { sym: string }) {
-  // The seed baseline comes from initialQuotes() so brand-new symbols
-  // (e.g. typed into the search box) still get a sensible default.
-  const fallback = initialQuotes()[sym]?.last ?? seedLastFor(sym);
+function FundamentalsGrid({
+  sym,
+  inst,
+}: {
+  sym: string;
+  inst: {
+    ric?: string;
+    isin?: string;
+    exchange?: string;
+    sector?: string;
+    currency?: string;
+    assetClass?: string;
+  };
+}) {
+  const seedLast = seedLastFor(sym);
+  const fields = [
+    { k: "RIC", v: inst.ric ?? "—" },
+    { k: "ISIN", v: inst.isin ?? "—" },
+    { k: "Exchange", v: inst.exchange ?? "—" },
+    { k: "Sector", v: inst.sector ?? "—" },
+    { k: "Currency", v: inst.currency ?? "—" },
+    { k: "Asset class", v: inst.assetClass ?? "—" },
+    { k: "P/E", v: "18.4" },
+    { k: "EV/EBITDA", v: "11.2" },
+    { k: "Div Yield", v: "2.4%" },
+    { k: "Mkt Cap", v: "R1.81tn" },
+    { k: "52w Hi", v: (seedLast * 1.18).toFixed(2) },
+    { k: "52w Lo", v: (seedLast * 0.78).toFixed(2) },
+    { k: "ADV (3m)", v: "1.8m" },
+    { k: "Beta", v: "1.12" },
+    { k: "Bid", v: (seedLast * 0.9997).toFixed(2) },
+    { k: "Ask", v: (seedLast * 1.0003).toFixed(2) },
+    { k: "Spread bp", v: (((seedLast * 1.0003) - (seedLast * 0.9997)) / seedLast * 10_000).toFixed(1) },
+    { k: "VWAP", v: seedLast.toFixed(2) },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+      {fields.map(({ k, v }) => (
+        <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+          <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
+          <p className="mt-0.5 font-mono text-xs font-semibold">{v}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SecurityChart({ sym, realDataOnly }: { sym: string; realDataOnly: boolean }) {
+  const fallback = realDataOnly ? 0 : (initialQuotes()[sym]?.last ?? seedLastFor(sym));
   const points = useTickSeries(sym, fallback, 90);
-  if (points.length < 2) return null;
+  if (points.length < 2 || (realDataOnly && points.every((p) => p === 0))) {
+    return realDataOnly ? null : null;
+  }
 
   const w = 800;
   const h = 360;

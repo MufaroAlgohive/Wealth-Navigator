@@ -8,16 +8,55 @@ import { Panel } from "@/components/oems/primitives/panel";
 import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { useIress } from "@/lib/iress/provider";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatBps } from "@/lib/format";
 import { queryOpts } from "@/lib/store/query-provider";
 
 export default function CurvesPage() {
   const { data } = useIress();
-  const goviQ = useQuery({ queryKey: ["govi"], queryFn: () => data.zarGoviCurve(), ...queryOpts("reference") });
-  const swapQ = useQuery({ queryKey: ["swap"], queryFn: () => data.zarSwapCurve(), ...queryOpts("reference") });
-  const realQ = useQuery({ queryKey: ["real"], queryFn: () => data.zarRealCurve(), ...queryOpts("reference") });
-  const breakevenQ = useQuery({ queryKey: ["breakeven"], queryFn: () => data.zarBreakeven(), ...queryOpts("reference") });
+  const realDataOnly = isRealDataOnlyClient();
+  const goviQ = useQuery({
+    queryKey: ["govi"],
+    queryFn: () => data.zarGoviCurve(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const swapQ = useQuery({
+    queryKey: ["swap"],
+    queryFn: () => data.zarSwapCurve(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const realQ = useQuery({
+    queryKey: ["real"],
+    queryFn: () => data.zarRealCurve(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const breakevenQ = useQuery({
+    queryKey: ["breakeven"],
+    queryFn: () => data.zarBreakeven(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+
+  if (realDataOnly) {
+    return (
+      <div className="space-y-3">
+        <header>
+          <h1 className="text-lg font-semibold tracking-tight">Yield Curves · ZAR</h1>
+          <p className="text-xs text-muted-foreground">
+            Nelson-Siegel-Svensson fitted · ZAR govi · swap · real · breakeven · PCA decomposition
+          </p>
+        </header>
+        <Panel title="ZAR yield curves" endpoint="TimeSeriesGet2">
+          <EmptyDataState message="Yield curve feed not configured." />
+        </Panel>
+      </div>
+    );
+  }
 
   const govi = goviQ.data ?? [];
   const swap = swapQ.data ?? [];
