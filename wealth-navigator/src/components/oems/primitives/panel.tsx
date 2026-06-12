@@ -5,6 +5,7 @@ import { Info, CircleDot } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
+import { DataSourceBadge, type DataSourceKind } from "@/components/oems/primitives/data-source-badge";
 
 type Status = "live" | "delayed" | "halt" | "stale";
 
@@ -12,6 +13,8 @@ interface PanelProps extends React.HTMLAttributes<HTMLDivElement> {
   title: string;
   /** IRESS V4 method or endpoint this panel is bound to. */
   endpoint?: string;
+  /** Provenance indicator — live vs seed vs mock. */
+  dataSource?: DataSourceKind;
   /** Right-slot content (numeric eyebrow, action button, etc.). */
   right?: React.ReactNode;
   /** Whether the body is `comfortable`, `dense`, or `scroll`. */
@@ -27,6 +30,7 @@ interface PanelProps extends React.HTMLAttributes<HTMLDivElement> {
 export function Panel({
   title,
   endpoint,
+  dataSource,
   right,
   density = "comfortable",
   status = "live",
@@ -51,6 +55,7 @@ export function Panel({
           <h3 className="truncate text-[11px] font-semibold uppercase tracking-wider text-foreground/90">
             {title}
           </h3>
+          {dataSource && <DataSourceBadge source={dataSource} className="ml-0.5" />}
           {endpoint && (
             <Tooltip>
               <TooltipTrigger asChild>

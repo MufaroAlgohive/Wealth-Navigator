@@ -62,6 +62,36 @@ function emit() {
   for (const l of listeners) l();
 }
 
+/** Seed or update ticks from a live-quote API response (client-side). */
+export function seedTicksFromQuotes(
+  rows: Array<{ sym: string; last: number; bid?: number; ask?: number; change?: number; changePct?: number; volume?: number; vwap?: number }>,
+) {
+  for (const r of rows) {
+    if (!r.sym || r.last <= 0) continue;
+    const cur = tickMap.get(r.sym);
+    const base: Quote = cur ?? {
+      last: r.last,
+      prev: r.last,
+      change: 0,
+      changePct: 0,
+      ts: Date.now(),
+      vwap: r.vwap ?? r.last,
+      volume: r.volume ?? 0,
+    };
+    tickMap.set(r.sym, {
+      ...base,
+      last: r.last,
+      prev: cur?.last ?? r.last,
+      change: r.change ?? base.change,
+      changePct: r.changePct ?? base.changePct,
+      vwap: r.vwap ?? base.vwap,
+      volume: r.volume ?? base.volume,
+      ts: Date.now(),
+    });
+  }
+  emit();
+}
+
 function setTick(sym: string, next: Partial<Quote>) {
   const cur = tickMap.get(sym);
   if (!cur) return;

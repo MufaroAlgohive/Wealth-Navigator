@@ -1,8 +1,18 @@
 // SSE tick stream — emits batches of price updates every ~700ms.
-// In production this would proxy the IRESS edge WebSocket; in dev it just
-// synthesises random walks on a subset of the seed instruments.
+//
+// In mock mode (default): synthesises random walks on seed instruments.
+// In live mode (IRESS_MODE=live): seeds from PricingQuoteGet, then polls
+// PricingQuoteGetUpdates when a watch subscription is active; falls back to
+// local simulation on IRESS errors.
 
 import { initialQuotes } from "@/lib/iress/seed";
+import { iressConfig } from "@/lib/iress";
+import {
+  DEFAULT_QUOTE_SYMBOLS,
+  fetchQuotesSafe,
+  pollQuoteUpdates,
+  startQuoteWatch,
+} from "@/lib/iress/live-queries";
 
 const SEED_KEYS = [
   "J203", "J200", "USDZAR", "EURZAR", "GBPJPY",
@@ -22,10 +32,9 @@ const quotes: Map<string, number> = new Map(
   }),
 );
 
-function tick() {
+function tickLocal() {
   const out: Array<{ sym: string; last: number }> = [];
   const keys = Array.from(quotes.keys());
-  // tick ~25% of symbols per emit
   const n = Math.max(1, Math.floor(keys.length * 0.25));
   for (let i = 0; i < n; i++) {
     const k = keys[Math.floor(Math.random() * keys.length)];
@@ -40,24 +49,63 @@ function tick() {
   return out;
 }
 
+function applyTicks(batch: Array<{ sym: string; last: number }>) {
+  for (const t of batch) {
+    if (t.last > 0) quotes.set(t.sym, t.last);
+  }
+  return batch;
+}
+
 export const dynamic = "force-dynamic";
-export const runtime = "nodejs"; // SSE is fine on Node; Bun works too
+export const runtime = "nodejs";
 
 export async function GET() {
+  const isLive = iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub";
+  let watchRequestId: string | null = null;
+  let liveActive = false;
+
+  if (isLive) {
+    try {
+      const liveQuotes = await fetchQuotesSafe(DEFAULT_QUOTE_SYMBOLS, "JSE");
+      for (const { symbol, quote } of liveQuotes) {
+        if (quote.last > 0) quotes.set(symbol, quote.last);
+      }
+      const watch = await startQuoteWatch(DEFAULT_QUOTE_SYMBOLS.slice(0, 8), "JSE");
+      if (watch) {
+        watchRequestId = watch.requestId;
+        for (const { symbol, quote } of watch.initial) {
+          if (quote.last > 0) quotes.set(symbol, quote.last);
+        }
+        liveActive = true;
+      }
+    } catch (err) {
+      console.warn("[ticks] live bootstrap failed, using local sim:", err);
+    }
+  }
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
     start(controller) {
-      // emit immediately
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify(tick())}\n\n`));
-      const id = setInterval(() => {
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(applyTicks(
+        Array.from(quotes.entries()).slice(0, 12).map(([sym, last]) => ({ sym, last })),
+      ))}\n\n`));
+
+      const id = setInterval(async () => {
         try {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(tick())}\n\n`));
+          let batch: Array<{ sym: string; last: number }>;
+          if (liveActive && watchRequestId) {
+            const updates = await pollQuoteUpdates(watchRequestId);
+            batch = updates.length > 0 ? applyTicks(updates) : tickLocal();
+          } else {
+            batch = tickLocal();
+          }
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(batch)}\n\n`));
         } catch {
           clearInterval(id);
         }
       }, 700);
-      // Heartbeat every 15s so proxies don't kill the connection
+
       const hb = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(`: heartbeat\n\n`));
@@ -66,15 +114,11 @@ export async function GET() {
         }
       }, 15_000);
 
-      // Best-effort cleanup when client disconnects
-      const close = () => {
+      void (() => {
         clearInterval(id);
         clearInterval(hb);
         try { controller.close(); } catch { /* ignore */ }
-      };
-      // No request signal available here in a clean way; the interval
-      // self-corrects via the try/catch above when controller is closed.
-      void close;
+      });
     },
   });
 
@@ -84,6 +128,7 @@ export async function GET() {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      "X-Tick-Source": liveActive ? "iress-hybrid" : isLive ? "iress-fallback-sim" : "mock-sim",
     },
   });
 }

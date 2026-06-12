@@ -16,6 +16,7 @@ import { initialQuotes, seedLastFor } from "@/lib/iress/seed";
 import { useTick, useTickSeries } from "@/lib/store/tick-stream-provider";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
+import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 
 export default function SecurityPage() {
   const { data } = useIress();
@@ -35,6 +36,8 @@ export default function SecurityPage() {
   const inst = equities.find((i) => i.symbol === sym) ?? equities[0];
   const activeSym = inst?.symbol ?? "NPN";
   const seedLast = seedLastFor(activeSym);
+  const liveQuotes = useLiveQuotes([activeSym]);
+  const quoteSource = liveQuotes.dataSource;
 
   return (
     <div className="space-y-3">
@@ -95,7 +98,8 @@ export default function SecurityPage() {
         ) : (
           <Panel
             title={`${inst?.symbol ?? "—"} · Intraday`}
-            endpoint={`WS /v1/quotes/${inst?.isin ?? ""}/stream`}
+            endpoint="PricingQuoteGet"
+            dataSource={quoteSource}
             className="col-span-12 lg:col-span-6 h-[400px]"
             right={<NumberCell sym={activeSym} fallback={seedLast} decimals={2} showChange />}
           >

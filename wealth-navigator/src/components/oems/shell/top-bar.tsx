@@ -25,6 +25,7 @@ import {
 import { isJseOpen } from "@/lib/sa-holidays";
 import { cn } from "@/lib/cn";
 import { ConnectionPill } from "@/components/oems/primitives/connection-pill";
+import { ProvenanceStrip } from "@/components/oems/shell/provenance-strip";
 import { notifyAuthChange } from "@/lib/auth/store";
 import { useCommandPalette } from "@/components/oems/command-palette";
 
@@ -96,6 +97,7 @@ export function TopBar() {
       </div>
 
       <div className="ml-auto flex items-center gap-2">
+        <ProvenanceStrip />
         <div className="hidden md:flex">
           <CommandPaletteTrigger />
         </div>

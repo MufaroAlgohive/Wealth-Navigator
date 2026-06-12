@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { Panel } from "@/components/oems/primitives/panel";
+import type { DataSourceKind } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 import { formatPct, formatPctAbs } from "@/lib/format";
 
@@ -13,6 +14,7 @@ interface Sector {
 
 interface SectorHeatmapProps {
   data: Sector[];
+  dataSource?: DataSourceKind;
   className?: string;
 }
 
@@ -25,7 +27,7 @@ interface SectorHeatmapProps {
  * the sector name in the middle, and a signed change + weight on the
  * right, monospaced.
  */
-export function SectorHeatmap({ data, className }: SectorHeatmapProps) {
+export function SectorHeatmap({ data, dataSource, className }: SectorHeatmapProps) {
   const sorted = useMemo(
     () => [...data].sort((a, b) => b.weight - a.weight),
     [data],
@@ -38,8 +40,9 @@ export function SectorHeatmap({ data, className }: SectorHeatmapProps) {
   return (
     <Panel
       title="JSE Sectors"
-      endpoint="GET /v1/indices/sectors"
-      subtitle={`${data.length} sectors · NSE LIVE`}
+      endpoint="PricingQuoteGet (sector indices)"
+      dataSource={dataSource}
+      subtitle={`${data.length} sectors`}
       className={className}
     >
       <ul role="list" className="divide-y divide-border/40">

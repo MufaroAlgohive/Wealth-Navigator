@@ -59,3 +59,16 @@ src/
 - `wsdl-stub` — for tests that hit a saved WSDL.
 
 Every UI panel that fetches data shows its IRESS V4 method on hover (see the `endpoint` prop on `<Panel />`).
+
+## Switching to live IRESS
+
+Set `IRESS_MODE=live` in `.env.local` with server-side `IRESS_*` credentials.
+See **[docs/LOCALHOST_LIVE.md](docs/LOCALHOST_LIVE.md)** for the full localhost guide.
+
+- **Data provenance inventory:** [docs/DATA_PROVENANCE.md](docs/DATA_PROVENANCE.md)
+- **Verify script:** `.\scripts\verify-live-e2e.ps1`
+- **App login:** `admin` / `admin` (separate from IRESS SOAP creds)
+- **Mock mode** (`IRESS_MODE=mock`) is the default and works offline
+
+Panels show **LIVE / HYBRID / SEED / MOCK** badges indicating data source.
+In development, the top bar shows a provenance strip with session status.

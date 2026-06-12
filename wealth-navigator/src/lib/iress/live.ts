@@ -1,0 +1,704 @@
+// Live IRESS V4 SOAP client.
+//
+// Implements the `IressClient` interface from `./client.ts` against the real
+// IRESS V4 web-services endpoint (SOAP 1.1 over HTTPS). Selected by
+// `IRESS_MODE=live` or `IRESS_MODE=wsdl-stub` in `index.ts`.
+//
+// ## SOAP client choice
+//
+// We hand-rolled a small SOAP 1.1 transport in `./transport.ts` (Option C in
+// the build brief) rather than pulling in the heavy `soap` / `strong-soap`
+// npm packages. The V4 WSDLs aren't on disk — the docs are narrative — and
+// the typed `IressClient` interface is the contract the UI depends on. A
+// hand-rolled transport is ~250 lines, has zero new dependencies beyond
+// `fast-xml-parser`, and gives us full control over envelope construction,
+// fault translation, and per-call timeouts. The transport is injected so
+// tests can swap in a fake `fetch` and assert envelope shape without making
+// any network calls.
+//
+// ## Auth + endpoints
+//
+// - `IRESS_BASE_URL` (default `https://webservices-ct.iress.co.za/v4`) — the
+//   dev / sandbox CT endpoint Charles Ntjana's `DFM@Mint` credential lives on.
+// - `IRESS_PROD_URL` (default `https://webservices.iress.co.za/v4`) — the
+//   production endpoint. The adapter always hits the dev URL unless the env
+//   is explicitly pointed elsewhere.
+//
+// All V4 SOAP methods are POSTs to `${baseUrl}/SOAP.aspx` with a SOAPAction
+// header of `"http://webservices.iress.com.au/v4/${method}"`.
+
+import { IressError } from "@/lib/iress/errors";
+import type {
+  IressClient,
+  IressHeader,
+  IressResponse,
+  IressSessionStartRequest,
+  IressSessionStartResponse,
+  OrderCreate3Request,
+  OrderCreate3Response,
+  OrderAmend2Request,
+  PricingQuoteGetRequest,
+  ServiceSessionStartRequest,
+  ServiceSessionStartResponse,
+  TimeSeriesGet2Request,
+  IPSTransactionGetByAccount5Request,
+  NewOrder,
+} from "@/lib/iress/client";
+import type { Order, OrderSide, Quote } from "@/types/iress";
+import { createSoapTransport, makeHeader, readResultHeaderNumber, readResultRowString, type SoapTransport } from "@/lib/iress/transport";
+
+// ─── Validation helpers ───────────────────────────────────────────────────
+
+/** Throws `IressError(25018, ...)` if the request is missing a required field. */
+function require(value: string | number | undefined | null, field: string, method: string): asserts value is string | number {
+  if (value === undefined || value === null || value === "") {
+    throw new IressError(25018, method, `${method}: missing required field \`${field}\``);
+  }
+}
+
+function requireObject<T extends object>(value: T | undefined | null, field: string, method: string): asserts value is T {
+  if (!value || typeof value !== "object") {
+    throw new IressError(25018, method, `${method}: missing required field \`${field}\``);
+  }
+}
+
+function requireSessionKey(header: IressHeader | undefined, method: string): asserts header is IressHeader {
+  if (!header || typeof header !== "object") {
+    throw new IressError(25018, method, `${method}: missing \`Header\``);
+  }
+  require(header.SessionKey, "Header.SessionKey", method);
+  require(header.RequestID, "Header.RequestID", method);
+}
+
+function newRequestID(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// ─── Result mapping helpers ───────────────────────────────────────────────
+
+/** Standard V4 response: Header.StatusCode / ErrorNumber, DataRows. */
+function mapResponse<T>(raw: { header: Record<string, unknown>; dataRows: Array<unknown> }): IressResponse<T> {
+  const errNo = readResultHeaderNumber(raw.header, "ErrorNumber");
+  return {
+    Header: {
+      StatusCode: ((): 1 | 2 | 3 => {
+        const sc = readResultHeaderNumber(raw.header, "StatusCode");
+        if (sc === 1 || sc === 3) return sc;
+        return 2;
+      })(),
+      PagingBookmark: readResultRowString(raw.header, "PagingBookmark") || undefined,
+      ErrorNumber: errNo,
+      ErrorDescription: readResultRowString(raw.header, "ErrorDescription") || undefined,
+    },
+    DataRows: raw.dataRows as T[],
+  };
+}
+
+function mapQuote(row: Record<string, unknown> | undefined): Quote {
+  if (!row) {
+    return emptyQuote();
+  }
+  const num = (k: string) => Number(row[k] ?? 0);
+  const str = (k: string) => String(row[k] ?? "");
+  return {
+    symbol: str("SecurityCode") || str("Code") || str("symbol"),
+    last: num("LastTrade"),
+    bid: num("Bid"),
+    ask: num("Ask"),
+    bidSize: num("BidSize"),
+    askSize: num("AskSize"),
+    open: num("Open"),
+    high: num("High"),
+    low: num("Low"),
+    close: num("Close"),
+    prevClose: num("PrevClose"),
+    change: num("NetChange"),
+    changePct: num("PercentChange"),
+    volume: num("Volume"),
+    vwap: num("VWAP"),
+    marketCap: row["MarketCap"] === undefined ? undefined : num("MarketCap"),
+    currency: str("Currency") || "ZAR",
+    marketState: (str("MarketState") || "OPEN") as Quote["marketState"],
+    ts: row["LastTradeDateTime"] ? Date.parse(String(row["LastTradeDateTime"])) || Date.now() : Date.now(),
+  };
+}
+
+function emptyQuote(): Quote {
+  return {
+    symbol: "",
+    last: 0, bid: 0, ask: 0, bidSize: 0, askSize: 0,
+    open: 0, high: 0, low: 0, close: 0, prevClose: 0,
+    change: 0, changePct: 0, volume: 0, vwap: 0,
+    currency: "ZAR",
+    marketState: "HALT",
+    ts: Date.now(),
+  };
+}
+
+function mapOrder(row: Record<string, unknown>): Order {
+  const str = (k: string) => String(row[k] ?? "");
+  const num = (k: string) => Number(row[k] ?? 0);
+  const side: OrderSide = num("BuySell") === 1 ? "BUY" : "SELL";
+  const tif = str("TimeInForce") as Order["tif"];
+  const type = str("OrderType") as Order["type"];
+  const destination = str("Destination") as Order["destination"];
+  return {
+    id: str("OrderNumber"),
+    parentId: row["ParentOrderNumber"] ? str("ParentOrderNumber") : undefined,
+    account: str("AccountCode"),
+    strategy: row["Strategy"] ? str("Strategy") : "(unspecified)",
+    side,
+    symbol: str("SecurityCode"),
+    isin: row["ISIN"] ? str("ISIN") : "ZZZ",
+    type: (["MKT", "LMT", "STP", "STP_LMT"] as const).includes(type as never) ? (type as Order["type"]) : "LMT",
+    tif: (["DAY", "IOC", "FOK", "GTC"] as const).includes(tif as never) ? (tif as Order["tif"]) : "DAY",
+    destination: (["JSE", "NASDAQ", "NYSE", "LSE", "OTC", "DARK"] as const).includes(destination as never) ? (destination as Order["destination"]) : "JSE",
+    qty: num("Volume"),
+    filled: num("FilledVolume"),
+    limit: row["Price"] === undefined ? null : num("Price"),
+    stop: row["TriggerPrice"] === undefined ? null : num("TriggerPrice"),
+    avgPx: num("AveragePrice"),
+    vwap: num("VWAP"),
+    trader: row["Trader"] ? str("Trader") : "(current user)",
+    ts: row["LastUpdate"] ? Date.parse(String(row["LastUpdate"])) || Date.now() : Date.now(),
+    state: ((): Order["state"] => {
+      const s = str("OrderState").toUpperCase();
+      if (s === "WORKING" || s === "PARTIAL" || s === "FILLED" || s === "CANCELLED" || s === "REJECTED") return s;
+      return "WORKING";
+    })(),
+    rejectReason: row["RejectReason"] ? str("RejectReason") : undefined,
+    slippageBps: num("SlippageBps"),
+    arrivalMid: num("ArrivalMid"),
+    orderTag: str("OrderTag") || "",
+  };
+}
+
+// ─── Factory ─────────────────────────────────────────────────────────────
+
+export interface LiveClientOptions {
+  /** SOAP transport (defaults to one created from `IRESS_BASE_URL`). */
+  transport?: SoapTransport;
+  /** Override the base URL used to build the default transport. */
+  baseUrl?: string;
+}
+
+export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient {
+  const transport = opts.transport ?? createSoapTransport({
+    baseUrl: opts.baseUrl ?? process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4",
+  });
+
+  return {
+    // ── session ────────────────────────────────────────────────────
+    async iressSessionStart(req: IressSessionStartRequest): Promise<IressSessionStartResponse> {
+      require(req.UserName, "UserName", "IRESSSessionStart");
+      require(req.Password, "Password", "IRESSSessionStart");
+      require(req.ApplicationID, "ApplicationID", "IRESSSessionStart");
+      require(req.CompanyName, "CompanyName", "IRESSSessionStart");
+      const result = await transport.call({
+        method: "IRESSSessionStart",
+        header: makeHeader({
+          requestID: newRequestID("init"),
+          timeout: 55,
+          waitForResponse: true,
+        }),
+        parameters: {
+          UserName: req.UserName,
+          CompanyName: req.CompanyName,
+          Password: req.Password,
+          ApplicationID: req.ApplicationID,
+          ApplicationLabel: req.ApplicationLabel,
+          AuthenticationType: req.AuthenticationType,
+          SessionTimeout: req.SessionTimeout,
+          SessionNumberToKick: req.SessionNumberToKick,
+          KickLikeSessions: req.KickLikeSessions,
+          Locale: req.Locale,
+        },
+      });
+      if (result.dataRows.length === 0 || !result.firstRow?.["IRESSSessionKey"]) {
+        throw new IressError(666, "IRESSSessionStart", "No IRESSSessionKey in response");
+      }
+      const key = String(result.firstRow["IRESSSessionKey"]);
+      // The V4 spec says the response also carries SessionNumber / SessionTimeout /
+      // ApplicationID, but older servers sometimes omit them. The mock returns
+      // them in the result header; map defensively.
+      return {
+        IRESSSessionKey: key,
+        SessionNumber: Number(result.firstRow["SessionNumber"] ?? 0) || 1,
+        SessionTimeout: Number(result.firstRow["SessionTimeout"] ?? req.SessionTimeout ?? 120) || 120,
+        ApplicationID: String(result.firstRow["ApplicationID"] ?? req.ApplicationID),
+      };
+    },
+
+    async iressSessionEnd(req: { IRESSSessionKey: string }): Promise<void> {
+      require(req.IRESSSessionKey, "IRESSSessionKey", "IRESSSessionEnd");
+      await transport.call({
+        method: "IRESSSessionEnd",
+        header: makeHeader({
+          sessionKey: req.IRESSSessionKey,
+          requestID: newRequestID("end-iress"),
+          timeout: 10,
+          waitForResponse: true,
+        }),
+        parameters: {},
+      });
+    },
+
+    async serviceSessionStart(req: ServiceSessionStartRequest): Promise<ServiceSessionStartResponse> {
+      require(req.IRESSSessionKey, "IRESSSessionKey", "ServiceSessionStart");
+      require(req.Service, "Service", "ServiceSessionStart");
+      require(req.Server, "Server", "ServiceSessionStart");
+      const result = await transport.call({
+        method: "ServiceSessionStart",
+        header: makeHeader({
+          sessionKey: req.IRESSSessionKey,
+          requestID: newRequestID("svc-start"),
+          timeout: 30,
+          waitForResponse: true,
+        }),
+        parameters: {
+          Service: req.Service,
+          Server: req.Server,
+        },
+      });
+      if (!result.firstRow?.["ServiceSessionKey"]) {
+        throw new IressError(666, "ServiceSessionStart", "No ServiceSessionKey in response");
+      }
+      return {
+        ServiceSessionKey: String(result.firstRow["ServiceSessionKey"]),
+        Service: req.Service,
+        Server: req.Server,
+      };
+    },
+
+    async serviceSessionEnd(req: { ServiceSessionKey: string }): Promise<void> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "ServiceSessionEnd");
+      await transport.call({
+        method: "ServiceSessionEnd",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("svc-end"),
+          timeout: 10,
+          waitForResponse: true,
+        }),
+        parameters: {},
+      });
+    },
+
+    // ── market data ────────────────────────────────────────────────
+    async pricingQuoteGet(req: PricingQuoteGetRequest): Promise<IressResponse<Quote>> {
+      requireSessionKey(req.Header, "PricingQuoteGet");
+      require(req.SecurityCode, "SecurityCode", "PricingQuoteGet");
+      require(req.Exchange, "Exchange", "PricingQuoteGet");
+      const result = await transport.call({
+        method: "PricingQuoteGet",
+        header: makeHeader({
+          sessionKey: req.Header.SessionKey,
+          requestID: req.Header.RequestID,
+          updates: req.Header.Updates,
+          timeout: req.Header.Timeout ?? 25,
+          pageSize: req.Header.PageSize,
+          pagingBookmark: req.Header.PagingBookmark,
+          pagingDirection: req.Header.PagingDirection,
+          waitForResponse: req.Header.WaitForResponse ?? true,
+        }),
+        parameters: { SecurityCode: req.SecurityCode, Exchange: req.Exchange, ...stripHeader(req) },
+      });
+      return mapResponse<Quote>({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => mapQuote(r)),
+      });
+    },
+
+    async pricingQuoteGetUpdates(req: { RequestID: string }): Promise<IressResponse<Quote>> {
+      require(req.RequestID, "RequestID", "PricingQuoteGetUpdates");
+      const result = await transport.call({
+        method: "PricingQuoteGetUpdates",
+        header: makeHeader({
+          sessionKey: "",
+          requestID: req.RequestID,
+          waitForResponse: false,
+        }),
+        parameters: { RequestID: req.RequestID },
+      });
+      return mapResponse<Quote>({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => mapQuote(r)),
+      });
+    },
+
+    async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
+      requireSessionKey(req.Header, "TimeSeriesGet2");
+      require(req.Code, "Code", "TimeSeriesGet2");
+      const result = await transport.call({
+        method: "TimeSeriesGet2",
+        header: makeHeader({
+          sessionKey: req.Header.SessionKey,
+          requestID: req.Header.RequestID,
+          updates: req.Header.Updates,
+          timeout: req.Header.Timeout ?? 25,
+          pageSize: req.Header.PageSize,
+          pagingBookmark: req.Header.PagingBookmark,
+          pagingDirection: req.Header.PagingDirection,
+          waitForResponse: req.Header.WaitForResponse ?? true,
+        }),
+        parameters: {
+          Code: req.Code,
+          From: req.From,
+          To: req.To,
+          Interval: req.Interval,
+        },
+      });
+      return mapResponse<{ t: number; v: number }>({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => ({
+          t: r["t"] !== undefined ? Number(r["t"]) : r["TimeStamp"] !== undefined ? Date.parse(String(r["TimeStamp"])) : Date.now(),
+          v: Number(r["v"] ?? r["Value"] ?? 0),
+        })),
+      });
+    },
+
+    async timeSeriesGet2Updates(req: { RequestID: string }): Promise<IressResponse<{ t: number; v: number }>> {
+      require(req.RequestID, "RequestID", "TimeSeriesGet2Updates");
+      const result = await transport.call({
+        method: "TimeSeriesGet2Updates",
+        header: makeHeader({ sessionKey: "", requestID: req.RequestID, waitForResponse: false }),
+        parameters: { RequestID: req.RequestID },
+      });
+      return mapResponse<{ t: number; v: number }>({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => ({
+          t: r["t"] !== undefined ? Number(r["t"]) : r["TimeStamp"] !== undefined ? Date.parse(String(r["TimeStamp"])) : Date.now(),
+          v: Number(r["v"] ?? r["Value"] ?? 0),
+        })),
+      });
+    },
+
+    // ── trading (IOS+) ─────────────────────────────────────────────
+    async orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "OrderCreate3");
+      requireObject(req.Order, "Order", "OrderCreate3");
+      const order = req.Order as NewOrder;
+      require(order.AccountCode, "Order.AccountCode", "OrderCreate3");
+      require(order.SecurityCode, "Order.SecurityCode", "OrderCreate3");
+      require(order.Exchange, "Order.Exchange", "OrderCreate3");
+      require(order.Volume, "Order.Volume", "OrderCreate3");
+      require(order.Destination, "Order.Destination", "OrderCreate3");
+      // OrderTag is *recommended* per the docs but not strictly required —
+      // for a live adapter we follow the mock and require it so the OEMS gets
+      // idempotency for free. Loosen if the integration tests show that the
+      // server generates its own.
+      require(req.OrderTag, "OrderTag", "OrderCreate3");
+      const result = await transport.call({
+        method: "OrderCreate3",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("ord-create"),
+          timeout: 25,
+          waitForResponse: true,
+        }),
+        parameters: {
+          Order: {
+            AccountCode: order.AccountCode,
+            SecurityCode: order.SecurityCode,
+            Exchange: order.Exchange,
+            BuySell: order.BuySell,
+            OrderType: order.OrderType,
+            Volume: order.Volume,
+            Price: order.Price,
+            TriggerPrice: order.TriggerPrice,
+            Destination: order.Destination,
+            TimeInForce: order.TimeInForce,
+            ExpiryDate: order.ExpiryDate,
+          },
+          OrderTag: req.OrderTag,
+        },
+      });
+      const first = result.firstRow ?? {};
+      const status = String(first["Status"] ?? "WORKING").toUpperCase() === "REJECTED" ? "REJECTED" : "WORKING";
+      const errorNumber = first["ErrorNumber"] !== undefined ? Number(first["ErrorNumber"]) : undefined;
+      const errorDescription = first["ErrorDescription"] !== undefined ? String(first["ErrorDescription"]) : undefined;
+      if (status === "REJECTED" && errorNumber) {
+        throw new IressError(errorNumber, "OrderCreate3", errorDescription ?? "Order rejected");
+      }
+      if (!first["OrderNumber"]) {
+        throw new IressError(666, "OrderCreate3", "No OrderNumber in response");
+      }
+      return {
+        OrderNumber: String(first["OrderNumber"]),
+        Status: status,
+        ErrorNumber: errorNumber,
+        ErrorDescription: errorDescription,
+      };
+    },
+
+    async orderAmend2(req: OrderAmend2Request): Promise<{ OrderNumber: string }> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "OrderAmend2");
+      require(req.OrderNumber, "OrderNumber", "OrderAmend2");
+      const result = await transport.call({
+        method: "OrderAmend2",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("ord-amend"),
+          timeout: 25,
+          waitForResponse: true,
+        }),
+        parameters: {
+          OrderNumber: req.OrderNumber,
+          Volume: req.Volume,
+          Price: req.Price,
+          TriggerPrice: req.TriggerPrice,
+          TimeInForce: req.TimeInForce,
+        },
+      });
+      const first = result.firstRow;
+      const errorNumber = first && first["ErrorNumber"] !== undefined ? Number(first["ErrorNumber"]) : 0;
+      if (errorNumber) {
+        throw new IressError(errorNumber, "OrderAmend2", String(first?.["ErrorDescription"] ?? ""));
+      }
+      if (!first?.["OrderNumber"]) {
+        throw new IressError(666, "OrderAmend2", "No OrderNumber in response");
+      }
+      return { OrderNumber: String(first["OrderNumber"]) };
+    },
+
+    async orderDelete(req: { ServiceSessionKey: string; OrderNumber: string }): Promise<void> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "OrderDelete");
+      require(req.OrderNumber, "OrderNumber", "OrderDelete");
+      const result = await transport.call({
+        method: "OrderDelete",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("ord-delete"),
+          timeout: 25,
+          waitForResponse: true,
+        }),
+        parameters: { OrderNumber: req.OrderNumber },
+      });
+      const first = result.firstRow;
+      const errorNumber = first && first["ErrorNumber"] !== undefined ? Number(first["ErrorNumber"]) : 0;
+      if (errorNumber) {
+        throw new IressError(errorNumber, "OrderDelete", String(first?.["ErrorDescription"] ?? ""));
+      }
+    },
+
+    async orderPadGetByAccount(req: {
+      ServiceSessionKey: string;
+      AccountCode: string;
+      OrderFilter: 1 | 2 | 3 | 4 | 5;
+      Updates?: boolean;
+      RequestID: string;
+    }): Promise<IressResponse<Order>> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "OrderPadGetByAccount");
+      require(req.AccountCode, "AccountCode", "OrderPadGetByAccount");
+      require(req.RequestID, "RequestID", "OrderPadGetByAccount");
+      const result = await transport.call({
+        method: "OrderPadGetByAccount",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: req.RequestID,
+          updates: req.Updates,
+          timeout: 25,
+          pageSize: 500,
+          waitForResponse: true,
+        }),
+        parameters: {
+          AccountCode: req.AccountCode,
+          OrderFilter: req.OrderFilter,
+        },
+      });
+      return mapResponse<Order>({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => mapOrder(r)),
+      });
+    },
+
+    async orderPadGetByAccountUpdates(req: { RequestID: string }): Promise<IressResponse<Order>> {
+      require(req.RequestID, "RequestID", "OrderPadGetByAccountUpdates");
+      const result = await transport.call({
+        method: "OrderPadGetByAccountUpdates",
+        header: makeHeader({
+          serviceSessionKey: "",
+          requestID: req.RequestID,
+          waitForResponse: false,
+        }),
+        parameters: { RequestID: req.RequestID },
+      });
+      return mapResponse<Order>({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => mapOrder(r)),
+      });
+    },
+
+    async bookingGetByOrganisation2(req: {
+      ServiceSessionKey: string;
+      From: string;
+      To: string;
+      AccountCode?: string;
+    }): Promise<IressResponse<{
+      BookingNumber: string;
+      TradeNumber: string;
+      Symbol: string;
+      BuySell: OrderSide;
+      Volume: number;
+      Price: number;
+      MiscFees: { Code: string; Amount: number; Currency: string }[];
+    }>> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "BookingGetByOrganisation2");
+      require(req.From, "From", "BookingGetByOrganisation2");
+      require(req.To, "To", "BookingGetByOrganisation2");
+      const result = await transport.call({
+        method: "BookingGetByOrganisation2",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("booking"),
+          timeout: 60,
+          pageSize: 500,
+          waitForResponse: true,
+        }),
+        parameters: {
+          From: req.From,
+          To: req.To,
+          AccountCode: req.AccountCode,
+        },
+      });
+      return mapResponse({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => {
+          const str = (k: string) => String(r[k] ?? "");
+          const num = (k: string) => Number(r[k] ?? 0);
+          const feesRaw = r["MiscFees"];
+          const fees: { Code: string; Amount: number; Currency: string }[] = [];
+          if (feesRaw && typeof feesRaw === "object" && !Array.isArray(feesRaw)) {
+            const f = feesRaw as Record<string, unknown>;
+            const arr = f["Fee"];
+            if (Array.isArray(arr)) {
+              for (const x of arr) {
+                const fee = x as Record<string, unknown>;
+                fees.push({ Code: String(fee["Code"] ?? ""), Amount: Number(fee["Amount"] ?? 0), Currency: String(fee["Currency"] ?? "ZAR") });
+              }
+            } else if (arr && typeof arr === "object") {
+              const fee = arr as Record<string, unknown>;
+              fees.push({ Code: String(fee["Code"] ?? ""), Amount: Number(fee["Amount"] ?? 0), Currency: String(fee["Currency"] ?? "ZAR") });
+            }
+          }
+          return {
+            BookingNumber: str("BookingNumber"),
+            TradeNumber: str("TradeNumber"),
+            Symbol: str("Symbol") || str("SecurityCode"),
+            BuySell: (num("BuySell") === 1 ? "BUY" : "SELL") as OrderSide,
+            Volume: num("Volume"),
+            Price: num("Price"),
+            MiscFees: fees,
+          };
+        }),
+      });
+    },
+
+    // ── portfolio (IPS) ────────────────────────────────────────────
+    async ipsTransactionGetByAccount5(req: IPSTransactionGetByAccount5Request): Promise<IressResponse<{
+      TransactionNumber: string;
+      Date: string;
+      Type: string;
+      Symbol: string;
+      Quantity: number;
+      Price: number;
+      Amount: number;
+      Currency: string;
+    }>> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "IPSTransactionGetByAccount5");
+      require(req.AccountCode, "AccountCode", "IPSTransactionGetByAccount5");
+      require(req.DateFrom, "DateFrom", "IPSTransactionGetByAccount5");
+      require(req.DateTo, "DateTo", "IPSTransactionGetByAccount5");
+      const result = await transport.call({
+        method: "IPSTransactionGetByAccount5",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("ips-tx"),
+          timeout: 60,
+          pageSize: 500,
+          waitForResponse: true,
+        }),
+        parameters: {
+          AccountCode: req.AccountCode,
+          DateFrom: req.DateFrom,
+          DateTo: req.DateTo,
+        },
+      });
+      return mapResponse({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => {
+          const str = (k: string) => String(r[k] ?? "");
+          const num = (k: string) => Number(r[k] ?? 0);
+          return {
+            TransactionNumber: str("TransactionNumber"),
+            Date: str("Date"),
+            Type: str("Type"),
+            Symbol: str("Symbol") || str("SecurityCode"),
+            Quantity: num("Quantity"),
+            Price: num("Price"),
+            Amount: num("Amount"),
+            Currency: str("Currency") || "ZAR",
+          };
+        }),
+      });
+    },
+
+    // ── FIX+ ───────────────────────────────────────────────────────
+    async targetIdGet(req: { ServiceSessionKey: string }): Promise<{ TargetID: string }[]> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "TargetIDGet");
+      const result = await transport.call({
+        method: "TargetIDGet",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("fix-tgt"),
+          timeout: 25,
+          waitForResponse: true,
+        }),
+        parameters: {},
+      });
+      return result.dataRows.map((r) => ({ TargetID: String(r["TargetID"] ?? "") })).filter((r) => r.TargetID);
+    },
+
+    async targetIdStatusGet(req: { ServiceSessionKey: string; TargetID: string }): Promise<{
+      TargetID: string;
+      Status: "CONNECTED" | "DISCONNECTED" | "ERROR";
+      LastSeq: number;
+      LastError?: string;
+    }> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "TargetIDStatusGet");
+      require(req.TargetID, "TargetID", "TargetIDStatusGet");
+      const result = await transport.call({
+        method: "TargetIDStatusGet",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("fix-status"),
+          timeout: 25,
+          waitForResponse: true,
+        }),
+        parameters: { TargetID: req.TargetID },
+      });
+      const r = result.firstRow ?? {};
+      const status = String(r["Status"] ?? "DISCONNECTED").toUpperCase();
+      return {
+        TargetID: String(r["TargetID"] ?? req.TargetID),
+        Status: status === "CONNECTED" || status === "ERROR" ? status : "DISCONNECTED",
+        LastSeq: Number(r["LastSeq"] ?? 0),
+        LastError: r["LastError"] ? String(r["LastError"]) : undefined,
+      };
+    },
+  };
+}
+
+/**
+ * Default singleton — used by `index.ts` when `IRESS_MODE=live` or
+ * `IRESS_MODE=wsdl-stub`. Lazy: the SOAP transport is built on first call,
+ * not on module import.
+ */
+export const liveIressClient: IressClient = createLiveIressClient();
+
+/** Strip the `Header` from a request (helper for spreading parameters). */
+function stripHeader<T extends { Header?: unknown }>(req: T): Record<string, unknown> {
+  const { Header: _, ...rest } = req;
+  void _;
+  return rest as Record<string, unknown>;
+}

@@ -74,7 +74,8 @@ export default function IntegrationPage() {
         ) : (
           <Panel
             title="Endpoint health · last 30 min"
-            endpoint="GET /v1/iress/health"
+            endpoint="GET /api/iress/health"
+            dataSource={iressConfig.mode === "live" ? "hybrid" : "seed"}
             className="col-span-12 lg:col-span-8 h-[420px]"
             density="scroll"
           >

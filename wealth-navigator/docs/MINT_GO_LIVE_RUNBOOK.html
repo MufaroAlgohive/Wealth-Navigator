@@ -1,0 +1,1059 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mint OEMS — Production Go-Live Runbook</title>
+<style>
+  :root{
+    --ink:        #1a1625;
+    --ink-soft:   #443e57;
+    --ink-mute:   #6b6580;
+    --line:       #e6e2f0;
+    --line-strong:#cfc8df;
+    --paper:      #ffffff;
+    --tint:       #f7f5fc;
+    --tint-2:     #efeaf9;
+    --accent:     #6b46c1;     /* deep purple */
+    --accent-2:   #8b5cf6;
+    --accent-3:   #4c2a99;
+    --ok:         #15803d;
+    --warn:       #b45309;
+    --bad:        #b91c1c;
+    --code-bg:    #f3f0fa;
+    --code-ink:   #2d2542;
+    --callout-bg: #fbf9ff;
+    --callout-bd: #c7b8ec;
+    --shadow:     0 1px 0 rgba(26,22,37,.04), 0 8px 24px -16px rgba(76,42,153,.12);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --ink:#ece8f5; --ink-soft:#c8c0db; --ink-mute:#8b85a3;
+      --line:#2a2440; --line-strong:#3d3556;
+      --paper:#16121f; --tint:#1d1830; --tint-2:#241c3a;
+      --accent:#a78bfa; --accent-2:#c4b5fd; --accent-3:#7c3aed;
+      --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+      --code-bg:#221a36; --code-ink:#d8d0ea;
+      --callout-bg:#1f1834; --callout-bd:#5b3fa6;
+      --shadow:0 1px 0 rgba(0,0,0,.3), 0 8px 24px -16px rgba(167,139,250,.2);
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth; scroll-padding-top:80px}
+  body{
+    margin:0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size:15.5px;
+    line-height:1.6;
+    color:var(--ink);
+    background:var(--tint);
+    -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  a{color:var(--accent); text-decoration:none; border-bottom:1px solid transparent}
+  a:hover{border-bottom-color:var(--accent)}
+  code, pre, .mono{font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace}
+  code{background:var(--code-bg); color:var(--code-ink); padding:1px 6px; border-radius:4px; font-size:.9em}
+  pre{
+    background:var(--code-bg); color:var(--code-ink);
+    border:1px solid var(--line);
+    border-left:3px solid var(--accent);
+    padding:14px 16px; border-radius:6px; overflow-x:auto;
+    font-size:13.5px; line-height:1.55;
+  }
+  pre code{background:none; padding:0; font-size:inherit; color:inherit}
+
+  /* Layout */
+  .topbar{
+    position:sticky; top:0; z-index:50;
+    background:var(--paper);
+    border-bottom:1px solid var(--line);
+    backdrop-filter:saturate(180%) blur(6px);
+  }
+  .topbar-inner{
+    max-width:1240px; margin:0 auto;
+    display:flex; align-items:center; gap:16px;
+    padding:14px 24px;
+  }
+  .brand{display:flex; align-items:center; gap:12px; min-width:0}
+  .brand-text{display:flex; flex-direction:column; line-height:1.15; min-width:0}
+  .brand-text strong{font-size:15px; color:var(--ink); letter-spacing:-.01em}
+  .brand-text span{font-size:12px; color:var(--ink-mute)}
+  .badge-row{display:flex; gap:6px; flex-wrap:wrap; margin-left:auto}
+  .badge{
+    display:inline-flex; align-items:center; gap:5px;
+    font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:upperline;
+    padding:3px 9px; border-radius:999px;
+    border:1px solid var(--line-strong);
+    background:var(--tint); color:var(--ink-soft);
+    white-space:nowrap;
+  }
+  .badge-live{background:#e7f6ec; color:var(--ok); border-color:#bfe5c8}
+  .badge-mock{background:#f4ecfb; color:var(--accent-3); border-color:#d8c5f4}
+  .badge-seed{background:#fef3c7; color:var(--warn); border-color:#fde2a3}
+  .badge-stop{background:#fde7e7; color:var(--bad); border-color:#f5b8b8}
+
+  .shell{
+    max-width:1240px; margin:0 auto;
+    display:grid; grid-template-columns: 240px minmax(0,1fr);
+    gap:32px; padding:28px 24px 80px;
+  }
+  @media (max-width: 900px){
+    .shell{grid-template-columns:1fr; padding:20px 16px 64px}
+    .nav{position:static; max-height:none; padding:16px; border-radius:10px}
+  }
+  .nav{
+    position:sticky; top:80px; align-self:start;
+    max-height: calc(100vh - 100px); overflow:auto;
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:18px 16px;
+  }
+  .nav h4{
+    font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+    color:var(--ink-mute); margin:0 0 10px 4px; font-weight:600;
+  }
+  .nav ol{list-style:none; margin:0; padding:0; counter-reset:n}
+  .nav li{counter-increment:n; margin:1px 0}
+  .nav a{
+    display:flex; gap:10px; align-items:baseline;
+    padding:5px 8px; border-radius:6px;
+    color:var(--ink-soft); font-size:13.5px;
+    border:none;
+  }
+  .nav a::before{
+    content:counter(n, decimal-leading-zero);
+    font-size:10.5px; font-weight:600;
+    color:var(--ink-mute); font-variant-numeric:tabular-nums;
+    min-width:22px;
+  }
+  .nav a:hover{background:var(--tint-2); color:var(--ink)}
+  .nav a.sub{font-size:12.5px; color:var(--ink-mute); padding-left:30px}
+  .nav a.sub::before{content:""; min-width:0; width:6px; height:6px; border-radius:50%; background:var(--line-strong); display:inline-block}
+
+  main{min-width:0}
+  section{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:32px 36px;
+    margin-bottom:24px;
+    box-shadow:var(--shadow);
+  }
+  @media (max-width:600px){ section{padding:22px 18px} }
+  h1{
+    font-size:30px; line-height:1.2; letter-spacing:-.02em;
+    margin:0 0 6px; color:var(--ink);
+  }
+  h2{
+    font-size:22px; letter-spacing:-.01em;
+    margin:0 0 6px; color:var(--ink);
+    padding-bottom:10px; border-bottom:1px solid var(--line);
+  }
+  h3{font-size:16.5px; margin:24px 0 8px; color:var(--ink); letter-spacing:-.005em}
+  h4{font-size:14px; margin:18px 0 6px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em}
+  p{margin:8px 0 12px}
+  .lede{font-size:16.5px; color:var(--ink-soft); margin-top:0}
+  .meta{font-size:13px; color:var(--ink-mute); margin-top:-2px}
+
+  .rule-card{
+    display:grid; grid-template-columns:auto 1fr; gap:14px 16px;
+    background:var(--tint); border:1px solid var(--line);
+    border-radius:8px; padding:16px 18px; margin:14px 0;
+  }
+  .rule-card .num{
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-weight:700; color:var(--accent);
+    background:var(--paper);
+    border:1px solid var(--line-strong);
+    border-radius:6px; padding:2px 8px; font-size:13px;
+    height:fit-content;
+  }
+  .rule-card .num.bad{color:var(--bad); border-color:#f5b8b8; background:#fde7e7}
+  .rule-card p{margin:0}
+
+  .callout{
+    border:1px solid var(--callout-bd);
+    background:var(--callout-bg);
+    border-radius:10px;
+    padding:16px 20px;
+    margin:18px 0;
+  }
+  .callout h4{margin:0 0 6px; color:var(--accent-3); text-transform:none; letter-spacing:0; font-size:14.5px}
+  .callout.danger{border-color:#f5b8b8; background:#fef2f2}
+  .callout.danger h4{color:var(--bad)}
+  .callout.warn{border-color:#fde2a3; background:#fffbeb}
+  .callout.warn h4{color:#92400e}
+  .callout.tip{border-color:#bfe5c8; background:#f0fdf4}
+  .callout.tip h4{color:#166534}
+
+  .single-seat{
+    border:2px solid var(--bad);
+    background:linear-gradient(180deg, #fff5f5 0%, #fff 100%);
+    border-radius:12px;
+    padding:18px 22px;
+    margin:18px 0;
+    position:relative;
+  }
+  @media (prefers-color-scheme: dark){
+    .single-seat{background:linear-gradient(180deg, #2a1620 0%, #1d1226 100%); border-color:#b91c1c}
+  }
+  .single-seat::before{
+    content:"SINGLE LICENSE SEAT";
+    position:absolute; top:-10px; left:18px;
+    background:var(--bad); color:#fff;
+    font-size:11px; font-weight:700; letter-spacing:.08em;
+    padding:3px 10px; border-radius:4px;
+  }
+  .single-seat h3{margin-top:8px}
+
+  .grid-2{display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:14px 0}
+  @media (max-width:720px){ .grid-2{grid-template-columns:1fr} }
+
+  table{
+    width:100%; border-collapse:collapse; margin:14px 0;
+    font-size:14px; background:var(--paper);
+  }
+  th, td{
+    text-align:left; padding:10px 12px;
+    border-bottom:1px solid var(--line);
+    vertical-align:top;
+  }
+  th{
+    font-size:12px; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--ink-mute); font-weight:600;
+    background:var(--tint);
+    border-bottom:1px solid var(--line-strong);
+  }
+  tr:last-child td{border-bottom:none}
+  td code{font-size:12.5px}
+
+  .phase{
+    border:1px solid var(--line); border-radius:10px;
+    padding:20px 22px; margin:14px 0;
+    background:var(--tint);
+  }
+  .phase-head{
+    display:flex; flex-wrap:wrap; gap:10px; align-items:baseline;
+    margin-bottom:8px;
+  }
+  .phase-tag{
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:11.5px; font-weight:700; letter-spacing:.06em;
+    background:var(--accent); color:#fff;
+    padding:3px 10px; border-radius:4px;
+  }
+  .phase h3{margin:0; font-size:18px}
+  .phase p{margin:6px 0}
+  .phase h4{margin-top:14px; color:var(--accent-3)}
+  .pause{
+    display:flex; align-items:center; gap:8px;
+    background:#fff7ed; border:1px solid #fde2a3; color:#92400e;
+    padding:8px 12px; border-radius:6px; font-size:13px;
+    margin:12px 0 0;
+  }
+  .pause::before{content:"PAUSE"; font-weight:700; letter-spacing:.08em; font-size:11px;
+    background:#92400e; color:#fff; padding:2px 6px; border-radius:3px}
+  @media (prefers-color-scheme: dark){
+    .pause{background:#3b2410; border-color:#92400e; color:#fde2a3}
+    .pause::before{background:#fbbf24; color:#1a1625}
+  }
+
+  .ascii{
+    background:#0f0a1c; color:#d6cce8;
+    border-radius:8px; padding:16px 18px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:13px; line-height:1.55;
+    overflow-x:auto; white-space:pre;
+    border:1px solid #2a1f3d;
+  }
+
+  /* Architecture diagram */
+  .diagram-wrap{
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:18px;
+    background:var(--tint);
+    margin:14px 0;
+    overflow-x:auto;
+  }
+  .diagram-wrap svg{display:block; min-width:680px; max-width:100%; height:auto; margin:0 auto}
+
+  .legend{display:flex; flex-wrap:wrap; gap:14px; font-size:13px; margin:10px 0 0; color:var(--ink-soft)}
+  .legend span{display:inline-flex; align-items:center; gap:6px}
+  .swatch{width:12px; height:12px; border-radius:3px; display:inline-block}
+
+  ul.checklist{list-style:none; padding:0; margin:8px 0}
+  ul.checklist li{
+    position:relative; padding:6px 0 6px 26px; border-bottom:1px dashed var(--line);
+  }
+  ul.checklist li:last-child{border-bottom:none}
+  ul.checklist li::before{
+    content:""; position:absolute; left:4px; top:13px;
+    width:12px; height:12px; border:1.5px solid var(--line-strong); border-radius:3px;
+    background:var(--paper);
+  }
+
+  .toc-top{
+    display:flex; flex-wrap:wrap; gap:8px; margin:14px 0 6px;
+  }
+  .toc-top a{
+    font-size:12.5px; padding:4px 10px; border-radius:999px;
+    background:var(--tint); color:var(--ink-soft);
+    border:1px solid var(--line);
+  }
+  .toc-top a:hover{background:var(--tint-2); color:var(--ink); border-color:var(--line-strong)}
+
+  footer{
+    max-width:1240px; margin:0 auto; padding:0 24px 40px;
+    color:var(--ink-mute); font-size:13px;
+    display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between;
+  }
+  footer a{color:var(--ink-soft)}
+
+  .pill{
+    display:inline-block; font-size:11.5px; font-weight:600;
+    padding:2px 8px; border-radius:4px;
+    background:var(--tint-2); color:var(--accent-3);
+    border:1px solid #d8c5f4;
+    font-family:ui-monospace,Menlo,Consolas,monospace;
+  }
+  .pill.live{background:#e7f6ec; color:var(--ok); border-color:#bfe5c8}
+  .pill.mock{background:#f4ecfb; color:var(--accent-3); border-color:#d8c5f4}
+  .pill.seed{background:#fef3c7; color:var(--warn); border-color:#fde2a3}
+
+  /* Print */
+  @media print{
+    @page{margin:14mm 12mm; size:A4}
+    body{background:#fff; color:#000; font-size:11.5pt; line-height:1.45}
+    .topbar, .nav, .toc-top{display:none !important}
+    .shell{grid-template-columns:1fr; padding:0; max-width:none; gap:0}
+    section{
+      box-shadow:none; border:none;
+      border-bottom:1px solid #ccc;
+      border-radius:0; padding:14px 0;
+      page-break-inside: avoid; break-inside: avoid;
+      margin:0;
+    }
+    h2{page-break-after:avoid; break-after:avoid}
+    h3{page-break-after:avoid; break-after:avoid}
+    pre, .ascii, table{font-size:9.5pt; page-break-inside:avoid; break-inside:avoid}
+    .diagram-wrap{page-break-inside:avoid; break-inside:avoid}
+    a{color:#000; border:none}
+    .callout, .single-seat, .phase{background:#fff !important; border-color:#888 !important; page-break-inside:avoid; break-inside:avoid}
+    .single-seat::before{background:#000 !important; color:#fff}
+    .badge, .pill{border:1px solid #555 !important; background:#fff !important; color:#000 !important}
+    footer{color:#555; padding:0; max-width:none}
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand" aria-label="Mint OEMS">
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#8b5cf6"/>
+            <stop offset="100%" stop-color="#4c2a99"/>
+          </linearGradient>
+        </defs>
+        <rect x="2" y="2" width="28" height="28" rx="7" fill="url(#lg)"/>
+        <path d="M9 20 L13 12 L17 18 L20 14 L23 20" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="23" cy="20" r="1.6" fill="#fff"/>
+      </svg>
+      <div class="brand-text">
+        <strong>Mint Wealth Navigator</strong>
+        <span>OEMS · Production Go-Live</span>
+      </div>
+    </div>
+    <div class="badge-row" aria-label="Environment status">
+      <span class="badge badge-live">LIVE</span>
+      <span class="badge badge-mock">MOCK</span>
+      <span class="badge badge-seed">SEED</span>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+
+  <aside class="nav" aria-label="Section navigation">
+    <h4>On this page</h4>
+    <ol>
+      <li><a href="#summary">1. Executive summary</a></li>
+      <li><a href="#architecture">2. Architecture</a></li>
+      <li><a href="#single-license">3. Single-license reality</a></li>
+      <li><a href="#fanout">4. Live data fan-out</a></li>
+      <li><a href="#phases">5. Phases 0–6</a>
+        <ol style="list-style:none; padding:0; margin:0">
+          <li><a class="sub" href="#phase-0">Phase 0 — Local safety</a></li>
+          <li><a class="sub" href="#phase-1">Phase 1 — Supabase schema</a></li>
+          <li><a class="sub" href="#phase-2">Phase 2 — Railway worker</a></li>
+          <li><a class="sub" href="#phase-3">Phase 3 — Vercel env</a></li>
+          <li><a class="sub" href="#phase-4">Phase 4 — Wire UI</a></li>
+          <li><a class="sub" href="#phase-5">Phase 5 — Hardening</a></li>
+          <li><a class="sub" href="#phase-6">Phase 6 — Rollout</a></li>
+        </ol>
+      </li>
+      <li><a href="#timeline">6. Second-by-second</a></li>
+      <li><a href="#multisite">7. Multi-site replication</a></li>
+      <li><a href="#risks">8. Risk register</a></li>
+      <li><a href="#roles">9. Roles & owners</a></li>
+      <li><a href="#glossary">10. Glossary</a></li>
+    </ol>
+  </aside>
+
+  <main>
+
+    <section id="summary">
+      <h1>Mint OEMS — Production Go-Live Runbook</h1>
+      <p class="lede">Get IRESS data flowing into Supabase via a single Railway worker, then have every website read Supabase — and get a live second-by-second fan-out to 2–3 sites for free.</p>
+      <p class="meta">Source of truth: <code>wealth-navigator/docs/GO_LIVE_RUNBOOK.md</code>. This document distils the runbook for in-browser use; the markdown file remains authoritative.</p>
+
+      <div class="toc-top" aria-label="Quick jumps">
+        <a href="#architecture">Diagram</a>
+        <a href="#single-license">Single seat</a>
+        <a href="#fanout">Fan-out</a>
+        <a href="#phase-0">Phase 0</a>
+        <a href="#phase-1">Phase 1</a>
+        <a href="#phase-2">Phase 2</a>
+        <a href="#phase-3">Phase 3</a>
+        <a href="#phase-4">Phase 4</a>
+        <a href="#phase-5">Phase 5</a>
+        <a href="#phase-6">Phase 6</a>
+        <a href="#risks">Risks</a>
+        <a href="#glossary">Glossary</a>
+      </div>
+
+      <h2>1. Executive summary</h2>
+      <p><strong>Goal.</strong> IRESS market data lands in Supabase Postgres on every tick. Vercel-hosted sites (and any future sister site) read quotes from Supabase and subscribe to <em>Supabase Realtime</em> for second-by-second updates. The Railway worker is the single IRESS license holder; the UI tiers never speak to IRESS for the hot read path.</p>
+      <p><strong>Binding constraint.</strong> Our DFM@Mint entitlement is a <strong>single concurrent IRESS session</strong>. Every architectural decision below flows from that fact.</p>
+      <p><strong>Three platforms, distinct jobs.</strong></p>
+      <div class="grid-2">
+        <div class="rule-card"><span class="num">V</span><p><strong>Vercel</strong> — Next.js UI, BFF routes, SSE pipes to browsers. No IRESS for live data.</p></div>
+        <div class="rule-card"><span class="num">S</span><p><strong>Supabase</strong> — Postgres (source of truth), Auth, Realtime broadcasts.</p></div>
+        <div class="rule-card"><span class="num">R</span><p><strong>Railway</strong> — long-running IRESS worker, sticky ApplicationID, single replica.</p></div>
+        <div class="rule-card"><span class="num">I</span><p><strong>IRESS</strong> — CT (testing) for staging, prod only after Charles approves. License seat = 1.</p></div>
+      </div>
+
+      <div class="callout tip">
+        <h4>Mental model in one sentence</h4>
+        <p>Worker writes rows; Supabase shouts rows; every site hears the shout. Sites never speak to IRESS for live data — they only ever listen.</p>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <h2>2. Architecture</h2>
+      <p>Three platforms, one database, one license. The Railway worker is the only thing that touches IRESS in production. Sites only read from Supabase.</p>
+
+      <div class="diagram-wrap">
+        <svg viewBox="0 0 880 360" role="img" aria-label="Architecture: IRESS, Railway worker, Supabase, Vercel sites">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#6b6580"/>
+            </marker>
+            <marker id="arr-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#6b46c1"/>
+            </marker>
+          </defs>
+
+          <!-- IRESS -->
+          <rect x="20" y="40" width="150" height="80" rx="10" fill="#fff" stroke="#cfc8df" stroke-width="1.5"/>
+          <text x="95" y="68" text-anchor="middle" font-size="14" font-weight="700" fill="#1a1625">IRESS</text>
+          <text x="95" y="86" text-anchor="middle" font-size="11" fill="#6b6580">CT (testing) → prod later</text>
+          <text x="95" y="103" text-anchor="middle" font-size="10.5" fill="#b91c1c" font-weight="600">1 license seat</text>
+
+          <!-- License guard ring -->
+          <rect x="10" y="30" width="170" height="100" rx="14" fill="none" stroke="#b91c1c" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+          <!-- Railway worker -->
+          <rect x="230" y="30" width="200" height="100" rx="10" fill="#fbf9ff" stroke="#c7b8ec" stroke-width="1.5"/>
+          <text x="330" y="55" text-anchor="middle" font-size="14" font-weight="700" fill="#1a1625">Railway worker</text>
+          <text x="330" y="74" text-anchor="middle" font-size="11" fill="#443e57">iress-ingest</text>
+          <text x="330" y="92" text-anchor="middle" font-size="10.5" fill="#6b46c1">sticky ApplicationID · 1 replica</text>
+          <text x="330" y="110" text-anchor="middle" font-size="10.5" fill="#6b46c1">SIGTERM → IRESSSessionEnd</text>
+
+          <!-- Supabase -->
+          <rect x="490" y="20" width="200" height="120" rx="10" fill="#fff" stroke="#cfc8df" stroke-width="1.5"/>
+          <text x="590" y="45" text-anchor="middle" font-size="14" font-weight="700" fill="#1a1625">Supabase</text>
+          <text x="590" y="65" text-anchor="middle" font-size="11" fill="#443e57">Postgres + Auth + Realtime</text>
+          <line x1="500" y1="78" x2="680" y2="78" stroke="#e6e2f0"/>
+          <text x="590" y="95" text-anchor="middle" font-size="11" fill="#1a1625" font-family="ui-monospace,Menlo,monospace">stock_intraday_c</text>
+          <text x="590" y="111" text-anchor="middle" font-size="11" fill="#1a1625" font-family="ui-monospace,Menlo,monospace">securities_c</text>
+          <text x="590" y="127" text-anchor="middle" font-size="11" fill="#1a1625" font-family="ui-monospace,Menlo,monospace">integration_worker_health</text>
+
+          <!-- Vercel site 1 -->
+          <rect x="750" y="20" width="110" height="100" rx="10" fill="#fff" stroke="#cfc8df" stroke-width="1.5"/>
+          <text x="805" y="45" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1625">Vercel</text>
+          <text x="805" y="62" text-anchor="middle" font-size="11" fill="#443e57">mint-oems</text>
+          <text x="805" y="79" text-anchor="middle" font-size="10.5" fill="#6b6580">Next.js · BFF</text>
+          <text x="805" y="95" text-anchor="middle" font-size="10.5" fill="#6b6580">SSE → browser</text>
+
+          <!-- Vercel site 2 -->
+          <rect x="750" y="140" width="110" height="80" rx="10" fill="#fff" stroke="#cfc8df" stroke-width="1.5"/>
+          <text x="805" y="163" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1625">Vercel</text>
+          <text x="805" y="180" text-anchor="middle" font-size="11" fill="#443e57">site 2</text>
+          <text x="805" y="197" text-anchor="middle" font-size="10.5" fill="#6b6580">Next.js</text>
+
+          <!-- Vercel site 3 -->
+          <rect x="750" y="240" width="110" height="80" rx="10" fill="#fff" stroke="#cfc8df" stroke-width="1.5"/>
+          <text x="805" y="263" text-anchor="middle" font-size="13" font-weight="700" fill="#1a1625">Vercel</text>
+          <text x="805" y="280" text-anchor="middle" font-size="11" fill="#443e57">site 3 (future)</text>
+          <text x="805" y="297" text-anchor="middle" font-size="10.5" fill="#6b6580">Next.js</text>
+
+          <!-- Realtime broadcast cloud -->
+          <rect x="490" y="180" width="200" height="60" rx="30" fill="#f4ecfb" stroke="#c7b8ec" stroke-width="1.5"/>
+          <text x="590" y="204" text-anchor="middle" font-size="13" font-weight="700" fill="#4c2a99">Supabase Realtime</text>
+          <text x="590" y="222" text-anchor="middle" font-size="11" fill="#443e57">postgres_changes broadcast</text>
+
+          <!-- Worker → Supabase writes -->
+          <line x1="430" y1="80" x2="490" y2="80" stroke="#6b46c1" stroke-width="2" marker-end="url(#arr-accent)"/>
+          <text x="460" y="73" text-anchor="middle" font-size="10.5" fill="#6b46c1" font-weight="600">upsert ticks</text>
+
+          <!-- Supabase → Realtime -->
+          <line x1="590" y1="140" x2="590" y2="180" stroke="#6b46c1" stroke-width="2" marker-end="url(#arr-accent)"/>
+
+          <!-- Realtime → sites -->
+          <line x1="690" y1="200" x2="750" y2="70" stroke="#6b46c1" stroke-width="1.5" marker-end="url(#arr-accent)"/>
+          <line x1="690" y1="210" x2="750" y2="180" stroke="#6b46c1" stroke-width="1.5" marker-end="url(#arr-accent)"/>
+          <line x1="690" y1="220" x2="750" y2="280" stroke="#6b46c1" stroke-width="1.5" marker-end="url(#arr-accent)"/>
+          <text x="725" y="135" font-size="10" fill="#6b46c1">INSERT/UPDATE</text>
+
+          <!-- IRESS → worker SOAP -->
+          <line x1="170" y1="80" x2="230" y2="80" stroke="#6b6580" stroke-width="1.5" marker-end="url(#arr)"/>
+          <text x="200" y="73" text-anchor="middle" font-size="10" fill="#6b6580">SOAP</text>
+
+          <!-- Legend -->
+          <rect x="20" y="280" width="700" height="60" rx="8" fill="#fff" stroke="#e6e2f0"/>
+          <text x="36" y="304" font-size="11" font-weight="700" fill="#1a1625" letter-spacing="0.04em">LEGEND</text>
+          <line x1="36" y1="320" x2="66" y2="320" stroke="#6b46c1" stroke-width="2"/>
+          <text x="74" y="324" font-size="11" fill="#443e57">Data path (worker → DB → sites)</text>
+          <line x1="260" y1="320" x2="290" y2="320" stroke="#6b6580" stroke-width="1.5"/>
+          <text x="298" y="324" font-size="11" fill="#443e57">IRESS SOAP (license seat)</text>
+          <rect x="500" y="313" width="14" height="14" fill="none" stroke="#b91c1c" stroke-dasharray="3 2"/>
+          <text x="520" y="324" font-size="11" fill="#443e57">Single-license boundary</text>
+        </svg>
+      </div>
+
+      <div class="legend">
+        <span><span class="swatch" style="background:#6b46c1"></span> Data path</span>
+        <span><span class="swatch" style="background:#6b6580"></span> IRESS SOAP</span>
+        <span><span class="swatch" style="background:transparent;border:1.5px dashed #b91c1c"></span> Single-license boundary</span>
+      </div>
+    </section>
+
+    <section id="single-license">
+      <h2>3. The single-license reality</h2>
+
+      <div class="single-seat">
+        <h3>DFM@Mint appears to be 1 concurrent IRESS session.</h3>
+        <p>Every design decision in this runbook exists to keep that single seat in the right hands. If we ever get a second seat, Phase 4 of the runbook is where we re-architect — not before.</p>
+        <p><strong>25008</strong> is <em>never</em> a bad password. It means <code>"No more licenses available"</code> — another process already holds the seat. The fix is to stop the other process, not to rotate credentials.</p>
+      </div>
+
+      <h3>Non-negotiable rules</h3>
+      <div class="rule-card"><span class="num bad">1</span><p><strong>Only one process ever holds the license.</strong> The Railway worker is that process. Period.</p></div>
+      <div class="rule-card"><span class="num bad">2</span><p><strong>Vercel functions do NOT call IRESS for live data in production.</strong> IRESS on the UI tier is for admin / one-off actions only (e.g. a manual <code>PricingQuoteGet</code> from a debug route).</p></div>
+      <div class="rule-card"><span class="num bad">3</span><p><strong>Railway worker = single replica only.</strong> Scale-out is off the table until Charles gives us 2+ seats and we add license pooling.</p></div>
+      <div class="rule-card"><span class="num bad">4</span><p><strong>All sites read Supabase, never IRESS.</strong> That includes the OEMS dashboard, the strategist console, and any future sister site.</p></div>
+
+      <h3>If Charles gives us 2+ licenses later</h3>
+      <p>Document <em>before</em> splitting. Reasonable split:</p>
+      <ul>
+        <li><strong>Seat 1:</strong> Railway worker — long-poll quote sync (hot path).</li>
+        <li><strong>Seat 2:</strong> admin / one-off actions (order placement, manual lookups) — could run on Railway admin service or a dev worker.</li>
+        <li><strong>Seat 3+:</strong> only after we've audited concurrent patterns and proven no contention.</li>
+      </ul>
+      <p>Until that day, run with one seat and assume the next 25008 is yours to debug.</p>
+    </section>
+
+    <section id="fanout">
+      <h2>4. Live data fan-out strategy</h2>
+      <p>The question the team keeps asking: <em>how do we push live data to 2–3 sites that update every second?</em></p>
+
+      <h3>Path A — Supabase Realtime (recommended)</h3>
+      <p>Worker writes to <code>stock_intraday_c</code>. Supabase broadcasts every row change to all Realtime subscribers. Each site subscribes via the standard Supabase JS client.</p>
+      <pre><code>// In the BFF or a long-lived client component
+const channel = supabase
+  .channel('quotes')
+  .on(
+    'postgres_changes',
+    { event: 'INSERT', schema: 'public', table: 'stock_intraday_c' },
+    (payload) =&gt; {
+      // push to SSE on /api/ticks; heatmap/blotter/cards re-render
+      onTick(payload.new);
+    }
+  )
+  .subscribe();</code></pre>
+
+      <p><strong>Why this is enough.</strong> Supabase Realtime is a managed fan-out. We get WebSockets, presence, and broadcast channels without running our own server. Vercel functions can subscribe on demand; browsers can subscribe directly from the client SDK.</p>
+
+      <h3>Path B — Add Upstash Redis (optional upgrade)</h3>
+      <p>If Postgres changes feel like the wrong tool (e.g. we need pure pub/sub with no row history), add Upstash Redis pub/sub on top: the worker still upserts Postgres (source of truth) but also <code>PUBLISH</code>es a JSON tick to a Redis channel. Sites subscribe to Redis instead of Postgres changes.</p>
+      <p>Use Path B only if Path A's throughput becomes a problem. Postgres changes are not the bottleneck for 10–50 watchlist symbols at one tick per 15s.</p>
+
+      <h3>What we explicitly do NOT do</h3>
+      <div class="rule-card"><span class="num bad">X</span><p><strong>WebSocket from the worker.</strong> Vercel can subscribe; we don't need a custom WebSocket server. Don't build one.</p></div>
+      <div class="rule-card"><span class="num bad">X</span><p><strong>Poll IRESS from each site.</strong> That's how you get license fights, slow responses, and inconsistent snapshots across tabs. Read the row instead.</p></div>
+      <div class="rule-card"><span class="num bad">X</span><p><strong>Long-poll IRESS from Vercel functions.</strong> Same reason. The license is the worker's, not the function's.</p></div>
+
+      <h3>Why 2–3 sites get this for free</h3>
+      <p>Every site is a <em>subscriber</em> to the same Supabase channel. They never compete for the IRESS seat. Adding site #4 means a new Vercel project and a new <code>supabase.channel('quotes')</code> subscription — zero extra IRESS load.</p>
+    </section>
+
+    <section id="phases">
+      <h2>5. Phases 0–6</h2>
+      <p>Each phase ends with a <strong>Pause for approval</strong> marker. Don't roll past a pause without the listed verification.</p>
+
+      <div class="phase" id="phase-0">
+        <div class="phase-head"><span class="phase-tag">PHASE 0</span><h3>Local safety</h3></div>
+        <p><strong>Goal:</strong> confirm we can iterate without leaking creds or breaking the local build.</p>
+        <h4>Steps</h4>
+        <ol>
+          <li>Confirm <code>supabase_creds</code> is git-ignored: <code>git check-ignore -v supabase_creds</code> should return a hit on <code>.gitignore</code> line 2.</li>
+          <li>Grep for risky SQL: <code>rg -nP '\b(DROP|TRUNCATE|DELETE\s+FROM|UPDATE\s+\w+\s+SET)\b' wealth-navigator/supabase wealth-navigator/src</code> — should be empty.</li>
+          <li>Run tests: <code>bun install &amp;&amp; bun run test</code>.</li>
+          <li>Boot the worker in mock dry-run: <code>IRESS_MODE=mock IRESS_WORKER_DRY_RUN=1 bun run worker:iress</code> — expect <code>would upsert stock_intraday_c</code> lines. Stop with <kbd>Ctrl+C</kbd>.</li>
+        </ol>
+        <h4>Owner</h4>
+        <p>Juan (local).</p>
+        <h4>Success criteria</h4>
+        <ul>
+          <li><code>supabase_creds</code> ignored.</li>
+          <li>No risky SQL in <code>wealth-navigator/</code>.</li>
+          <li>Tests green.</li>
+          <li>Worker boots and shuts down cleanly.</li>
+        </ul>
+        <div class="pause">confirm Phase 0 outputs match the expectations above before touching the LIVE database.</div>
+      </div>
+
+      <div class="phase" id="phase-1">
+        <div class="phase-head"><span class="phase-tag">PHASE 1</span><h3>Supabase schema (LIVE)</h3></div>
+        <p><strong>Goal:</strong> add the four LIVE-DATA-READY tables / view / policies, all in this order. Every file is idempotent; Juan pastes each into the Supabase SQL editor manually — never auto-apply.</p>
+
+        <h4>Paste in this order</h4>
+        <ol>
+          <li><code>supabase/migrations/20260611000000_integration_worker_health.sql</code> — heartbeat table.</li>
+          <li><code>supabase/migrations/20260612000001_worker_session_metadata.sql</code> — sticky ApplicationID.</li>
+          <li><code>supabase/migrations/20260612000002_oems_order_audit.sql</code> — order audit trail.</li>
+          <li><code>supabase/migrations/20260612000003_intraday_read_policies.sql</code> — RLS read policies.</li>
+          <li><code>supabase/migrations/20260612000004_iress_instrument_enrichment.sql</code> — <code>securities_with_latest_quote</code> view.</li>
+        </ol>
+
+        <h4>Pre-flight SELECTs (run first)</h4>
+        <pre><code>-- 1) confirm ingest targets exist with the columns the worker writes
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name IN ('securities_c', 'stock_intraday_c')
+ORDER BY table_name, ordinal_position;
+
+-- 2) confirm every watchlist symbol resolves to a UUID
+SELECT id, symbol FROM public.securities_c
+WHERE symbol IN ('NPN','PRX','FSR','SBK','AGL','BHG','MTN','SOL','SHP','CPI');
+
+-- 3) heartbeat table does not yet exist
+SELECT to_regclass('public.integration_worker_health') AS heartbeat_table;</code></pre>
+
+        <h4>Per-migration verification</h4>
+        <pre><code>-- after migration 1
+SELECT to_regclass('public.integration_worker_health');  -- expect the table name
+
+-- after migration 2
+SELECT to_regclass('public.worker_session_metadata');     -- expect the table name
+
+-- after migration 3
+SELECT to_regclass('public.oems_order_audit');            -- expect the table name
+
+-- after migration 4: should return 4 rows, all 'SELECT'
+SELECT tablename, policyname, cmd
+FROM pg_policies
+WHERE schemaname = 'public'
+  AND tablename IN ('stock_intraday_c', 'securities_c')
+ORDER BY tablename, policyname;
+
+-- after migration 5
+SELECT * FROM public.securities_with_latest_quote LIMIT 5;</code></pre>
+
+        <h4>Owner</h4>
+        <p>Juan (Supabase SQL editor).</p>
+        <h4>Success criteria</h4>
+        <ul>
+          <li>All five migrations pasted; no errors.</li>
+          <li>All verification queries return expected rows.</li>
+          <li>Watchlist symbols present in <code>securities_c</code> (insert missing rows if not).</li>
+        </ul>
+        <div class="pause">confirm <code>integration_worker_health</code> is visible in the dashboard and <code>securities_c</code> covers every watchlist symbol.</div>
+      </div>
+
+      <div class="phase" id="phase-2">
+        <div class="phase-head"><span class="phase-tag">PHASE 2</span><h3>Railway IRESS worker</h3></div>
+        <p><strong>Goal:</strong> stand up the long-running worker; prove it writes ticks and heartbeats on LIVE.</p>
+
+        <h4>Local staging write (single symbol)</h4>
+        <pre><code>IRESS_MODE=live IRESS_WORKER_DRY_RUN=0 SUPABASE_ALLOW_WRITES=1 \
+  IRESS_USERNAME=... IRESS_PASSWORD=... IRESS_COMPANY_NAME=Mint \
+  IRESS_BASE_URL=https://webservices-ct.iress.co.za/v4 \
+  SUPABASE_URL=https://mfxnghmuccevsxwcetej.supabase.co \
+  SUPABASE_SERVICE_ROLE_KEY=... \
+  IRESS_WATCHLIST_SYMBOLS=NPN \
+  IRESS_WORKER_QUOTE_INTERVAL_SEC=15 \
+  IRESS_WORKER_HEARTBEAT_SEC=30 \
+  bun run worker:iress</code></pre>
+
+        <p>Verify in a second terminal:</p>
+        <pre><code>-- heartbeat present and recent
+SELECT worker_id, status, iress_mode, last_heartbeat_at
+FROM public.integration_worker_health
+ORDER BY last_heartbeat_at DESC LIMIT 1;
+
+-- ticks growing for the test symbol
+SELECT current_price, timestamp
+FROM public.stock_intraday_c
+WHERE security_id = (SELECT id FROM public.securities_c WHERE symbol = 'NPN')
+ORDER BY timestamp DESC LIMIT 10;</code></pre>
+
+        <h4>Deploy to Railway</h4>
+        <ul>
+          <li>One service, root <code>wealth-navigator</code>, Dockerfile <code>workers/iress-ingest/Dockerfile</code>.</li>
+          <li>Replicas: <strong>1</strong>. Document the single-license constraint in the service description.</li>
+          <li>Env (minimum): <code>IRESS_MODE=live</code>, IRESS creds, <code>SUPABASE_URL</code>, <code>SUPABASE_SERVICE_ROLE_KEY</code>, <code>IRESS_WORKER_DRY_RUN=0</code>, <code>SUPABASE_ALLOW_WRITES=1</code>, <code>WORKER_ID=iress-ingest-1</code>, <code>IRESS_WORKER_HEARTBEAT_SEC=30</code>, <code>IRESS_WORKER_QUOTE_INTERVAL_SEC=15</code>, <code>IRESS_WATCHLIST_SYMBOLS=NPN,PRX,FSR,SBK,AGL,BHG,MTN,SOL,SHP,CPI</code>.</li>
+          <li>Watch logs for <code>[iress-ingest] starting</code> → <code>quote sync complete (10 symbols)</code>.</li>
+        </ul>
+
+        <h4>Owner</h4>
+        <p>Juan (Railway + SQL editor).</p>
+        <h4>Success criteria</h4>
+        <ul>
+          <li>One row in <code>integration_worker_health</code>, status <code>healthy</code>.</li>
+          <li><code>stock_intraday_c</code> ticks grow for every watchlist symbol.</li>
+        </ul>
+        <div class="pause">confirm the Railway worker is producing live ticks for every watchlist symbol before pointing the UI at it.</div>
+      </div>
+
+      <div class="phase" id="phase-3">
+        <div class="phase-head"><span class="phase-tag">PHASE 3</span><h3>Vercel (UI) env</h3></div>
+        <p><strong>Goal:</strong> configure Vercel production env, smoke test, then leave IRESS in the request path for admin only.</p>
+
+        <h4>Set Vercel production env</h4>
+        <pre><code>IRESS_MODE=mock                          # start in mock; flip to live after smoke
+IRESS_USERNAME=...
+IRESS_PASSWORD=...
+IRESS_COMPANY_NAME=Mint
+IRESS_BASE_URL=https://webservices-ct.iress.co.za/v4
+IRESS_APPLICATION_LABEL=Mint-OEMS-Production
+NEXT_PUBLIC_SUPABASE_URL=https://mfxnghmuccevsxwcetej.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+SUPABASE_URL=https://mfxnghmuccevsxwcetej.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=...            # Vercel encrypted env, server-only
+USE_SUPABASE_QUOTES=false                # toggle in Phase 4</code></pre>
+
+        <div class="callout warn">
+          <h4>Never <code>NEXT_PUBLIC_</code> the IRESS creds</h4>
+          <p>Server-only env. Only the service role, anon key, and Supabase URL go public; IRESS stays on the server side.</p>
+        </div>
+
+        <h4>Smoke</h4>
+        <ul>
+          <li><code>curl -sS https://&lt;domain&gt;/api/iress/health | jq</code> — expect <code>cached: true</code>, <code>valid: true</code> after the live flip.</li>
+          <li>Visit <code>/oems</code>, <code>/oems/holdings</code>, <code>/oems/integration</code> — all render without 500s. Provenance badge should read <span class="pill mock">MOCK</span> first, then <span class="pill live">LIVE</span>.</li>
+        </ul>
+
+        <h4>Owner</h4>
+        <p>Juan (Vercel project settings).</p>
+        <h4>Success criteria</h4>
+        <ul>
+          <li>All UI pages render with <code>IRESS_MODE=mock</code>, then <code>IRESS_MODE=live</code>.</li>
+          <li>Health check returns valid session after the live flip.</li>
+        </ul>
+        <div class="pause">confirm <code>/oems</code> and <code>/oems/holdings</code> render with <code>IRESS_MODE=live</code> and the Vercel health check shows a valid session.</div>
+      </div>
+
+      <div class="phase" id="phase-4">
+        <div class="phase-head"><span class="phase-tag">PHASE 4</span><h3>Wire UI to Supabase (live fan-out)</h3></div>
+        <p><strong>Goal:</strong> flip the UI's read path from IRESS to Supabase and add the Realtime subscription so 2–3 sites get live ticks in lockstep.</p>
+
+        <h4>Steps</h4>
+        <ol>
+          <li>Flip <code>USE_SUPABASE_QUOTES=1</code> in Vercel production env.</li>
+          <li>Add <code>GET /api/quotes?symbols=…</code> backed by <code>createServiceRoleClient()</code> (returns <code>{ symbol, last_price, timestamp, source }</code>).</li>
+          <li>Update <code>live-queries.ts</code> to read Supabase when the flag is true; tag responses with <code>source: "supabase"</code>.</li>
+          <li>Add a Supabase Realtime subscription in the BFF or a client component: <code>supabase.channel('quotes').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'stock_intraday_c' }, …)</code> — push to the existing <code>/api/ticks</code> SSE stream.</li>
+          <li>Verify with two browser tabs: both show the same price within ~1 s of the worker writing.</li>
+          <li><strong>For 2–3 sites:</strong> every site is its own Vercel/Next project with the same Supabase env. Each subscribes to the same channel. No extra IRESS load.</li>
+        </ol>
+
+        <h4>Tests</h4>
+        <ul>
+          <li>Mock the Supabase client at the route boundary; assert shape.</li>
+          <li>Confirm <code>USE_SUPABASE_QUOTES=false</code> keeps the legacy path green.</li>
+          <li>Confirm <code>seed-fallback</code> still triggers on Supabase error.</li>
+        </ul>
+
+        <h4>Owner</h4>
+        <p>Engineering PR → Juan (Vercel preview, then prod).</p>
+        <h4>Success criteria</h4>
+        <ul>
+          <li>Two browser tabs show identical live ticks within ~1 s.</li>
+          <li>Provenance badge on <code>/oems/integration</code> reads <span class="pill live">SUPABASE</span>.</li>
+          <li>Legacy mock / live paths still green.</li>
+        </ul>
+        <div class="pause">the UI must show live ticks sourced from Supabase before Phase 5.</div>
+      </div>
+
+      <div class="phase" id="phase-5">
+        <div class="phase-head"><span class="phase-tag">PHASE 5</span><h3>Hardening</h3></div>
+        <p><strong>Goal:</strong> alerting, audit, RLS review, and the ApplicationID persistence that makes restarts safe.</p>
+
+        <h4>Heartbeat alert (&gt; 2 min silence pages)</h4>
+        <pre><code>SELECT worker_id, EXTRACT(EPOCH FROM (now() - last_heartbeat_at)) AS age_sec
+FROM public.integration_worker_health
+WHERE now() - last_heartbeat_at &gt; interval '2 minutes';</code></pre>
+
+        <h4>Other items</h4>
+        <ul>
+          <li><strong>Worker writes <code>oems_order_audit</code></strong> on every order event (review-only migration; idempotent, no <code>DROP</code>).</li>
+          <li><strong>RLS review</strong> — confirm <code>intraday_read_policies</code> matches the personas: anon / authenticated read; service_role writes.</li>
+          <li><strong>ApplicationID persistence</strong> — pin a stable label per Railway service (e.g. <code>IRESS_APPLICATION_LABEL=Mint-OEMS-Railway-1</code>) so restarts reuse the IRESS session.</li>
+          <li><strong>Graceful deploys</strong> — single-replica caveat: rolling deploy = 3 s gap with no license. Acceptable for now; revisit if we ever need zero-downtime.</li>
+        </ul>
+
+        <div class="callout">
+          <h4>Single-replica reminder</h4>
+          <p>Document in the Railway service description and in <code>workers/iress-ingest/README.md</code>: <em>"Single replica — one IRESS license seat. Do not scale up without re-architecting for license pooling."</em></p>
+        </div>
+
+        <h4>Owner</h4>
+        <p>Juan (SQL editor + monitoring) + engineering (ApplicationID).</p>
+        <h4>Success criteria</h4>
+        <ul>
+          <li>Alert fires when worker is killed.</li>
+          <li>RLS policies audited against personas.</li>
+          <li>ApplicationID persists across restarts.</li>
+        </ul>
+        <div class="pause">confirm the RLS policies, audit-log migration review, and ApplicationID approach are acceptable before Phase 6.</div>
+      </div>
+
+      <div class="phase" id="phase-6">
+        <div class="phase-head"><span class="phase-tag">PHASE 6</span><h3>Rollout checklist + failure modes</h3></div>
+
+        <h4>Final checklist</h4>
+        <table>
+          <thead>
+            <tr><th style="width:32px">#</th><th>Check</th><th>Command / action</th><th>Expected</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>Pre-flight SELECTs</td><td>Run in SQL editor</td><td>All three queries return expected rows</td></tr>
+            <tr><td>2</td><td><code>securities_c</code> gap fill</td><td>Run in SQL editor</td><td>Every watchlist symbol has a row</td></tr>
+            <tr><td>3</td><td>Heartbeat migration</td><td>Run in SQL editor</td><td><code>to_regclass</code> returns the table name</td></tr>
+            <tr><td>4</td><td>Worker mock dry-run</td><td><code>bun run worker:iress</code> (mock)</td><td><code>would upsert stock_intraday_c</code> lines</td></tr>
+            <tr><td>5</td><td>Worker live dry-run</td><td><code>IRESS_MODE=live IRESS_WORKER_DRY_RUN=1 …</code></td><td><code>quote sync complete (N symbols)</code></td></tr>
+            <tr><td>6</td><td>Worker staging write</td><td><code>SUPABASE_ALLOW_WRITES=1</code> + 1 symbol</td><td>Rows grow in <code>stock_intraday_c</code></td></tr>
+            <tr><td>7</td><td>Deploy Railway worker</td><td>Railway dashboard</td><td>Logs show <code>starting</code> + <code>quote sync complete</code></td></tr>
+            <tr><td>8</td><td>Verify LIVE ticks</td><td>SQL editor</td><td>Heartbeat row + ticking ticks</td></tr>
+            <tr><td>9</td><td>Vercel env + mock smoke</td><td>Visit <code>/oems</code>, <code>/oems/holdings</code></td><td>No 500s</td></tr>
+            <tr><td>10</td><td>Flip Vercel <code>IRESS_MODE=live</code></td><td><code>/api/iress/health</code></td><td><code>valid: true</code></td></tr>
+            <tr><td>11</td><td>Wire UI to Supabase read path</td><td>Vercel preview with flag on</td><td>Preview matches worker ticks; legacy path still green</td></tr>
+            <tr><td>12</td><td>Promote <code>USE_SUPABASE_QUOTES=true</code></td><td>Vercel production env</td><td>All tiles show live data with new source badge</td></tr>
+            <tr><td>13</td><td>Heartbeat alert + RLS + audit review</td><td>SQL editor + monitoring</td><td>Alert fires; policies in place</td></tr>
+            <tr><td>14</td><td>Document replica / graceful-deploy limits</td><td>Railway service description + worker README</td><td>Notes added</td></tr>
+          </tbody>
+        </table>
+
+        <h4>Common failure modes</h4>
+        <table>
+          <thead>
+            <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="pill seed">25008</span> from IRESS</td>
+              <td>Another process holds the seat (dev server, probe, second replica)</td>
+              <td>Stop all other IRESS clients; call <code>tearDownMintSession</code>; restart worker. Scale Railway back to 1.</td>
+            </tr>
+            <tr>
+              <td><code>stock_intraday_c</code> empty for some symbols</td>
+              <td>Watchlist symbol missing from <code>securities_c</code></td>
+              <td>Re-run the pre-flight <code>SELECT</code>; narrow <code>IRESS_WATCHLIST_SYMBOLS</code> or <code>INSERT</code> the missing rows.</td>
+            </tr>
+            <tr>
+              <td>Heartbeat row never appears</td>
+              <td>Worker crashed before first heartbeat, or <code>SUPABASE_ALLOW_WRITES=0</code></td>
+              <td>Check Railway logs; set <code>IRESS_WORKER_DRY_RUN=0</code> + <code>SUPABASE_ALLOW_WRITES=1</code>; restart.</td>
+            </tr>
+            <tr>
+              <td>Heartbeat present, <code>last_quote_sync_at</code> null</td>
+              <td><code>securities_c</code> lookup returns zero rows</td>
+              <td>Same fix as empty ticks; alert won't fire — add a derived check against <code>last_quote_sync_at</code>.</td>
+            </tr>
+            <tr>
+              <td>UI still shows <span class="pill seed">SEED</span> after <code>USE_SUPABASE_QUOTES=true</code></td>
+              <td>Flag not set on production env, or <code>/api/quotes</code> cached</td>
+              <td>Confirm Vercel production env (preview has its own scope); clear route cache; re-curl <code>/api/quotes?symbols=NPN</code>.</td>
+            </tr>
+            <tr>
+              <td>25001 invalid-session storm</td>
+              <td>SOAP call racing the session cache</td>
+              <td><code>WorkerSessionManager.invalidate()</code> + restart; the auto-recover path is already wired.</td>
+            </tr>
+            <tr>
+              <td>Heartbeat alert fires immediately after deploy</td>
+              <td>Window too tight for Railway restart latency</td>
+              <td>Raise the alert window to 2 × <code>IRESS_WORKER_HEARTBEAT_SEC</code> + 60 s.</td>
+            </tr>
+            <tr>
+              <td>Multi-site drift</td>
+              <td>Some site reading from a different table or env</td>
+              <td>All sites must read <code>securities_with_latest_quote</code> (or <code>stock_intraday_c</code> latest) and the same Supabase project.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4>Owner</h4>
+        <p>Juan, end to end.</p>
+        <h4>Success criteria</h4>
+        <p>All 14 checklist rows green; failure-mode runbook reviewed; alert tested by killing the worker.</p>
+        <div class="pause">declare production cut over only after rows 1–14 are green and one full market-hour cycle has elapsed with live ticks.</div>
+      </div>
+    </section>
+
+    <section id="timeline">
+      <h2>6. Live data flow — second-by-second</h2>
+      <p>What happens between an IRESS tick and a re-rendered heatmap tile. Latency budget assumes a healthy Supabase region and a single in-flight update per symbol.</p>
+      <div class="ascii">T+0ms    IRESS PricingQuoteGet (every ~15s per symbol)
+T+50ms   worker upserts stock_intraday_c (cents)
+T+80ms   Supabase Realtime broadcasts row to all subscribers
+T+100ms  each Vercel site pushes SSE to its connected browsers
+T+150ms  heatmap / blotter / balance card re-renders</div>
+      <p>Under load, the slowest segment is usually the worker's SOAP round-trip; Postgres writes are sub-10ms; Realtime fan-out is typically &lt; 50ms within a region. Two-region Vercel deployments add cross-region latency, mitigated by the <code>/api/quotes</code> REST endpoint as a fallback.</p>
+    </section>
+
+    <section id="multisite">
+      <h2>7. Multi-site replication (the 2–3 sites question)</h2>
+      <p>Adding a second or third site to the same data feed is straightforward because sites are <em>subscribers</em>, not producers.</p>
+
+      <h3>What each site needs</h3>
+      <ul>
+        <li>Its own Vercel/Next.js project (or a shared project on the same domain).</li>
+        <li>Its own <code>NEXT_PUBLIC_SUPABASE_URL</code> + <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>.</li>
+        <li>Its own <code>SUPABASE_SERVICE_ROLE_KEY</code> (server-only, for the BFF).</li>
+        <li>Its own <code>USE_SUPABASE_QUOTES=1</code>.</li>
+      </ul>
+
+      <h3>What each site does NOT need</h3>
+      <ul>
+        <li>IRESS credentials (only if it does direct calls — recommended: <strong>no</strong>).</li>
+        <li>Its own Railway worker — one worker feeds all sites.</li>
+        <li>Its own Supabase project — share the same one.</li>
+      </ul>
+
+      <h3>Drift control</h3>
+      <p>Every site reads the <em>same</em> Postgres row. There is no per-site state to drift. As long as each site subscribes to the same Supabase channel and reads the same table/view, two browser tabs on different sites show the same price within Realtime's fan-out window (~50–100 ms within a region, a touch more cross-region).</p>
+
+      <div class="callout tip">
+        <h4>Adding a new site is a Vercel-only exercise</h4>
+        <p>New project → copy env → deploy. No IRESS involvement, no new worker, no new Supabase project. The architecture is "many listeners, one source of truth, one license holder."</p>
+      </div>
+    </section>
+
+    <section id="risks">
+      <h2>8. Risk register</h2>
+      <table>
+        <thead>
+          <tr><th>Risk</th><th style="width:90px">Likelihood</th><th style="width:90px">Impact</th><th>Mitigation</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>IRESS license single-seat</td>
+            <td>High</td>
+            <td>High</td>
+            <td>1 worker replica; never call IRESS from Vercel in production.</td>
+          </tr>
+          <tr>
+            <td>Supabase write storm (every quote, every tick)</td>
+            <td>Medium</td>
+            <td>Medium</td>
+            <td>Throttle to ~15 s per symbol; batch insert.</td>
+          </tr>
+          <tr>
+            <td>Realtime subscriber overload</td>
+            <td>Medium</td>
+            <td>Medium</td>
+            <td>Use channel-per-symbol-group; debounce UI updates.</td>
+          </tr>
+          <tr>
+            <td>Worker crash mid-session</td>
+            <td>Medium</td>
+            <td>High</td>
+            <td>SIGTERM hook calls <code>IRESSSessionEnd</code>; sticky ApplicationID on restart.</td>
+          </tr>
+          <tr>
+            <td>25008 in production</td>
+            <td>High</td>
+            <td>High</td>
+            <td>1 replica; alert on heartbeat silence; never <code>npm run dev</code> against live.</td>
+          </tr>
+          <tr>
+            <td>Charles's compliance review still open</td>
+            <td>Medium</td>
+            <td>High</td>
+            <td>Stay on CT creds; do not switch to prod until approval.</td>
+          </tr>
+          <tr>
+            <td>RLS misconfiguration leaks writes</td>
+            <td>Low</td>
+            <td>High</td>
+            <td>No INSERT/UPDATE/DELETE policies; service_role only for writes; review <code>intraday_read_policies</code> against personas.</td>
+          </tr>
+          <tr>
+            <td>Worker drift across restarts</td>
+            <td>Low</td>
+            <td>Medium</td>
+            <td>Stable <code>IRESS_APPLICATION_LABEL</code> + <code>RAILWAY_DEPLOYMENT_ID</code>; sticky session in <code>worker_session_metadata</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="roles">
+      <h2>9. Roles &amp; owners (RACI-lite)</h2>
+      <div class="grid-2">
+        <div class="rule-card"><span class="num">I</span><p><strong>Infra.</strong> Vercel + Railway deploys. Owner: Juan. One worker service, one UI project (per site).</p></div>
+        <div class="rule-card"><span class="num">D</span><p><strong>DB.</strong> Supabase migrations, RLS, view definitions. Owner: Juan (paste in SQL editor; never auto-apply).</p></div>
+        <div class="rule-card"><span class="num">W</span><p><strong>Worker.</strong> IRESS session, sticky ApplicationID, Supabase writes, heartbeat. Owner: Juan + engineering.</p></div>
+        <div class="rule-card"><span class="num">U</span><p><strong>UI.</strong> Vercel, Realtime subscription, <code>/api/quotes</code>, <code>DataSourceBadge</code> labels. Owner: engineering + Juan.</p></div>
+        <div class="rule-card"><span class="num">C</span><p><strong>Compliance.</strong> Charles / Andre / Iress approvals, prod creds, go-live sign-off. Owner: Juan to drive, Charles to approve.</p></div>
+        <div class="rule-card"><span class="num">M</span><p><strong>Monitoring.</strong> Heartbeat alert (2 min silence → page), RLS review, audit log review. Owner: Juan.</p></div>
+      </div>
+    </section>
+
+    <section id="glossary">
+      <h2>10. Glossary</h2>
+      <table>
+        <thead><tr><th style="width:200px">Term</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><strong>ApplicationID</strong></td><td>IRESS-side identifier for the calling process. The worker uses a stable <code>IRESS_APPLICATION_LABEL</code> + hostname/GUID so restarts reuse the same session where possible.</td></tr>
+          <tr><td><strong>IRESSSessionKey</strong></td><td>The opaque token returned by <code>IRESSSessionStart</code> that the worker uses on every subsequent SOAP call.</td></tr>
+          <tr><td><strong>ServiceSession</strong></td><td>Server-only long-running session that the Railway worker holds. Distinct from a per-request UI session.</td></tr>
+          <tr><td><strong>25001</strong></td><td>IRESS SOAP fault: invalid session. The auto-recover path in <code>WorkerSessionManager</code> rebuilds the session and retries.</td></tr>
+          <tr><td><strong>25008</strong></td><td>IRESS SOAP fault: <em>no more licenses available</em>. Means another process holds the seat — not a bad password.</td></tr>
+          <tr><td><strong>NoUpdateBlockTime</strong></td><td>IRESS server-side coalescing window for repeated quote calls with no change. The worker respects it implicitly by polling at a steady interval.</td></tr>
+          <tr><td><strong>RLS</strong></td><td>Row-Level Security. Postgres feature that gates rows by role. We use SELECT-only policies for anon/authenticated on intraday tables; writes are service_role only.</td></tr>
+          <tr><td><strong>Realtime</strong></td><td>Supabase-managed pub/sub over Postgres changes. The fan-out channel for live ticks.</td></tr>
+          <tr><td><strong>Sticky session</strong></td><td>An IRESS session bound to a stable ApplicationID and ServiceSession so restarts don't churn sessions and licenses.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+  </main>
+</div>
+
+<footer>
+  <span>Last updated: 2026-06-12 — Mint Wealth Navigator / OEMS Go-Live Team</span>
+  <span><a href="#summary">Back to top</a> · <a href="#phases">Phases</a> · <a href="#risks">Risks</a></span>
+</footer>
+
+</body>
+</html>

@@ -1,7 +1,9 @@
 // Public IRESS adapter entrypoint.
 // The active implementation is selected by IRESS_MODE.
 
+import { getIressCredentialsFromEnv } from "@/lib/iress/config";
 import { mockIressClient, iressQueries } from "@/lib/iress/mock";
+import { liveIressClient, createLiveIressClient } from "@/lib/iress/live";
 import type { IressClient } from "@/lib/iress/client";
 import type { IressSessionStartResponse } from "@/lib/iress/client";
 import type { IressService } from "@/types/iress";
@@ -16,8 +18,26 @@ function detectMode(): IressMode {
 
 const mode: IressMode = detectMode();
 
+/**
+ * Pick the IRESS client for a given mode. Both `live` and `wsdl-stub` use
+ * the SOAP client (the `wsdl-stub` mode is intended for CI: point
+ * `IRESS_BASE_URL` at a saved WSDL and use the same transport). `mock` uses
+ * the deterministic in-process adapter.
+ */
+export function getIressClient(targetMode: IressMode = mode): IressClient {
+  if (targetMode === "live" || targetMode === "wsdl-stub") return liveIressClient;
+  return mockIressClient;
+}
+
+/**
+ * Build a fresh live client — useful for tests that want to inject a custom
+ * transport (e.g. a fake `fetch`) without mutating the module-level
+ * singleton.
+ */
+export { createLiveIressClient };
+
 /** The IRESS client — UI code should use this. */
-export const iress: IressClient = mockIressClient;
+export const iress: IressClient = getIressClient(mode);
 
 /** Convenience query helpers for read-only seed data. */
 export const iressData = iressQueries;
@@ -72,15 +92,25 @@ export function buildApplicationId(envHint: "dev" | "staging" | "load" | "prod",
   return `Mint-OEMS-${cap}-${node}-${guid}`;
 }
 
+export { getIressCredentialsFromEnv } from "@/lib/iress/config";
+export type { IressCredentials } from "@/lib/iress/config";
+
 /** Bring up a session + the standard service sessions in one call. */
-export async function bringUpMintSession(user: { userName: string; company: string; password: string }) {
-  const applicationId = buildApplicationId("prod", "web-1");
+export async function bringUpMintSession(
+  user: { userName: string; company: string; password: string },
+  options?: { applicationId?: string; applicationLabel?: string; node?: string },
+) {
+  // Sticky ApplicationID for the long-running Railway worker: same
+  // (UserName + CompanyName + ApplicationID) triple lets IRESS reconnect to
+  // the same in-flight license seat. Falls back to a fresh random GUID.
+  const applicationId = options?.applicationId ?? buildApplicationId("prod", options?.node ?? "web-1");
+  const applicationLabel = options?.applicationLabel ?? "Mint-OEMS-Web";
   const iressSession: IressSessionStartResponse = await iress.iressSessionStart({
     UserName: user.userName,
     CompanyName: user.company,
     Password: user.password,
     ApplicationID: applicationId,
-    ApplicationLabel: "Mint-OEMS-Web",
+    ApplicationLabel: applicationLabel,
     SessionTimeout: 120,
     Locale: "en-ZA",
   });
@@ -99,6 +129,29 @@ export async function bringUpMintSession(user: { userName: string; company: stri
     serviceKeys[Service] = ServiceSessionKey;
   }
   return { iressSession, serviceKeys };
+}
+
+/**
+ * Start an IRESS WS session using credentials from env vars
+ * (`IRESS_USERNAME`, `IRESS_PASSWORD`, `IRESS_COMPANY_NAME`).
+ */
+export async function bringUpMintSessionFromEnv(options?: {
+  applicationId?: string;
+  applicationLabel?: string;
+  node?: string;
+}) {
+  const creds = getIressCredentialsFromEnv();
+  if (!creds.userName || !creds.password) {
+    throw new Error("IRESS credentials not configured (IRESS_USERNAME / IRESS_PASSWORD)");
+  }
+  return bringUpMintSession(
+    {
+      userName: creds.userName,
+      company: creds.company,
+      password: creds.password,
+    },
+    options,
+  );
 }
 
 export type { IressClient } from "@/lib/iress/client";

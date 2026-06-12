@@ -118,8 +118,8 @@ const LoginOne: React.FC<LoginOneProps> = ({
     return raw;
   }, [searchParams]);
 
-  const [username, setUsername] = React.useState("");
-  const [password, setPassword] = React.useState("");
+  const [username, setUsername] = React.useState("admin");
+  const [password, setPassword] = React.useState("admin");
   const [showPassword, setShowPassword] = React.useState(false);
 
   // Mouse-tracking on the left panel drives a single, very subtle bloom
@@ -162,11 +162,10 @@ const LoginOne: React.FC<LoginOneProps> = ({
         null) as Persona | null;
       if (persona) setPersona(persona);
       const dest = persona && persona !== "oems" ? PERSONA_HOME[persona] : nextPath;
-      toast.success("Signed in", {
-        description: persona
-          ? `Welcome back, ${PERSONA_USERS[persona].name.split(" ")[0]}.`
-          : "Welcome back.",
-      });
+      const description = persona
+        ? `Welcome back, ${PERSONA_USERS[persona].name.split(" ")[0]}.`
+        : "Welcome back.";
+      toast.success("Signed in", { description });
       // `dest` is a same-origin path; the typed-routes check is overly
       // strict for the dynamic `?next=` redirect target, so cast.
       router.replace(dest as Parameters<typeof router.replace>[0]);

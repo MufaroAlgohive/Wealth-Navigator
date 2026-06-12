@@ -26,6 +26,7 @@ import { cn } from "@/lib/cn";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { queryOpts } from "@/lib/store/query-provider";
+import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 
 /**
  * SSR-safe intraday x-axis labels.
@@ -63,9 +64,12 @@ interface CockpitClientProps {
   mastheadDate: string;
 }
 
+const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL"];
+
 export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const { data } = useIress();
   const [range, setRange] = useState<"1D" | "5D" | "1M" | "3M">("1D");
+  const liveQuotes = useLiveQuotes(MOVER_SYMBOLS);
 
   const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), ...queryOpts("live") });
   const indicesQ = useQuery({ queryKey: ["indices"], queryFn: () => data.indices(), ...queryOpts("reference") });
@@ -200,6 +204,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         ) : (
           <SectorHeatmap
             data={sectors}
+            dataSource="seed"
             className="col-span-12 lg:col-span-5 h-[300px]"
           />
         )}
@@ -244,7 +249,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         ) : (
           <Panel
             title="Top Movers · JSE"
-            endpoint="GET /v1/quotes/movers?exchange=JSE"
+            endpoint="PricingQuoteGet"
+            dataSource={liveQuotes.dataSource}
             className="col-span-12 lg:col-span-3 h-[300px]"
             density="scroll"
             right={
@@ -340,7 +346,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         ) : (
           <Panel
             title={`Open Orders · ${openOrders.length}`}
-            endpoint="GET /v1/orders?state=working,partial"
+            endpoint="OrderPadGetByAccount"
+            dataSource="seed"
             className="col-span-12 lg:col-span-8 h-[340px]"
             density="scroll"
             right={
