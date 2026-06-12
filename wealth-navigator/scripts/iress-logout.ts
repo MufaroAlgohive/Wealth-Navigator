@@ -21,7 +21,7 @@ import {
 import type { IressService } from "../src/types/iress";
 
 function loadDotEnvLocal(): void {
-  const path = join(import.meta.dir, "..", ".env.local");
+  const path = join(import.meta.dirname, "..", ".env.local");
   if (!existsSync(path)) return;
   const text = readFileSync(path, "utf8");
   for (const line of text.split(/\r?\n/)) {

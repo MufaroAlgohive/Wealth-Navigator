@@ -1,5 +1,11 @@
 import LoginOne from "@/components/login-1";
 
+// `<LoginOne />` calls `useSearchParams()` to honour the `?next=` redirect
+// that middleware appends. Next.js 16 requires either a Suspense boundary
+// around the consumer or an opt-out from prerender — this page is
+// inherently dynamic, so opt out.
+export const dynamic = "force-dynamic";
+
 /**
  * /login — split-screen sign-in.
  *

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import { Lock, RefreshCw, Users, Target, Activity, ShieldCheck, ChevronRight } from "lucide-react";
@@ -20,7 +20,10 @@ import { cn } from "@/lib/cn";
 import type { Strategy } from "@/types/iress";
 import { queryOpts } from "@/lib/store/query-provider";
 
-export default function StrategiesPage() {
+// `?focus=` deep-link via `useSearchParams` — the page is dynamic, so
+// the consumer lives inside a Suspense boundary to satisfy Next.js 16's
+// CSR-bailout check during prerender.
+function StrategiesPageContent() {
   const { data } = useIress();
   const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), ...queryOpts("live") });
   const strategies = strategiesQ.data ?? [];
@@ -82,6 +85,14 @@ export default function StrategiesPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function StrategiesPage() {
+  return (
+    <Suspense fallback={null}>
+      <StrategiesPageContent />
+    </Suspense>
   );
 }
 

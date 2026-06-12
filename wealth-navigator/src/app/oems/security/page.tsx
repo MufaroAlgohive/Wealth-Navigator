@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
@@ -18,7 +18,10 @@ import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 
-export default function SecurityPage() {
+// `?sym=` deep-link via `useSearchParams` — the page is dynamic, so the
+// consumer lives inside a Suspense boundary to satisfy Next.js 16's
+// CSR-bailout check during prerender.
+function SecurityPageContent() {
   const { data } = useIress();
   const equitiesQ = useQuery({ queryKey: ["equities"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
   const equities = equitiesQ.data ?? [];
@@ -179,6 +182,14 @@ export default function SecurityPage() {
         )}
       </Panel>
     </div>
+  );
+}
+
+export default function SecurityPage() {
+  return (
+    <Suspense fallback={null}>
+      <SecurityPageContent />
+    </Suspense>
   );
 }
 

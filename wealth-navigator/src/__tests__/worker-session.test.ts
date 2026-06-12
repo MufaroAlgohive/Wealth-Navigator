@@ -336,8 +336,8 @@ describe("bringUpMintSession service sessions", () => {
     const serviceSessionStart = vi
       .spyOn(iress, "serviceSessionStart")
       .mockRejectedValueOnce(new IressError(666, "ServiceSessionStart", "soap:Receiver — HTTP 500"))
-      .mockResolvedValueOnce({ ServiceSessionKey: "IPS-KEY" })
-      .mockResolvedValueOnce({ ServiceSessionKey: "FIX-KEY" });
+      .mockResolvedValueOnce({ ServiceSessionKey: "IPS-KEY", Service: "IPS", Server: "IPSAPI" })
+      .mockResolvedValueOnce({ ServiceSessionKey: "FIX-KEY", Service: "FIXPlus", Server: "FIXPLUSAPI" });
 
     const result = await bringUpMintSession(
       { userName: "u", company: "c", password: "p" },
