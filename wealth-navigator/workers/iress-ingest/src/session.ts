@@ -178,6 +178,41 @@ async function clearPersistedSessionKey(deps: WorkerSessionDeps): Promise<void> 
   }
 }
 
+/**
+ * Reset the `metadata.shutdown` flag to `false` after the worker has
+ * successfully started a new IRESS session. Without this the previous
+ * run's `shutdown: true` survives across the sticky ApplicationID
+ * reconnect, which `persistedSessionIsStale` then treats as stale and
+ * forces a needless purge + re-login.
+ */
+async function clearShutdownFlag(deps: WorkerSessionDeps): Promise<void> {
+  if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
+    console.info(
+      `[iress-ingest] would reset metadata.shutdown for ${deps.workerId}`,
+    );
+    return;
+  }
+  try {
+    const { error } = await deps.supabase
+      .from("worker_session_metadata")
+      .update({
+        metadata: {
+          applicationLabel: deps.applicationLabel,
+          node: deps.node,
+          shutdown: false,
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("worker_id", deps.workerId);
+    if (error) {
+      console.warn(`[iress-ingest] clearShutdownFlag failed: ${error.message}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[iress-ingest] clearShutdownFlag threw: ${msg}`);
+  }
+}
+
 async function clearPersistedApplicationId(deps: WorkerSessionDeps): Promise<void> {
   if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
     console.info(`[iress-ingest] would expire worker_session_metadata for ${deps.workerId}`);
@@ -271,6 +306,9 @@ export class WorkerSessionManager {
       });
     }
     await clearPersistedSessionKey(this.deps);
+    // Drop the stale shutdown flag so the freshly persisted row reflects
+    // "we are mid-login" rather than the previous run's shutdown state.
+    await clearShutdownFlag(this.deps);
   }
 
   private async recoverDeadSession(staleKey: string | undefined, err: unknown): Promise<void> {
@@ -317,7 +355,11 @@ export class WorkerSessionManager {
         applicationId,
         iressSessionKey: session.iressSessionKey,
         expiresAt: session.expiresAt,
-        metadata: { applicationLabel: this.deps.applicationLabel, node: this.deps.node },
+        metadata: {
+          applicationLabel: this.deps.applicationLabel,
+          node: this.deps.node,
+          shutdown: false,
+        },
       });
       return session;
     } catch (err) {

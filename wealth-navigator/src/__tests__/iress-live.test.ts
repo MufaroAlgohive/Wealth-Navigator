@@ -684,3 +684,100 @@ describe("validation runs before any transport call", () => {
     expect(callSpy).not.toHaveBeenCalled();
   });
 });
+
+// ─── 8. pricingQuoteGet surfaces non-zero ErrorNumber from the response ──
+//
+// V4 returns 200 OK with empty DataRows + ErrorNumber!=0 in the response
+// header when the request is refused at the application layer (e.g. 25034
+// entitlement check failed). Without an explicit check, the worker silently
+// drops the symbol and "quote sync complete" never logs.
+
+describe("pricingQuoteGet response ErrorNumber handling", () => {
+  function makeErrorResponseXml(errorNumber: number, description: string) {
+    return `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <PricingQuoteGetResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>q-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>${errorNumber}</ErrorNumber>
+                  <ErrorDescription>${description}</ErrorDescription>
+                </Header>
+                <DataRows></DataRows>
+              </Result>
+            </Output>
+          </PricingQuoteGetResponse>
+        </soap:Body>
+      </soap:Envelope>`;
+  }
+
+  it("throws IressError(25034, ...) when response header ErrorNumber is non-zero", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(makeErrorResponseXml(25034, "Entitlement check failed for NPN"), {
+          status: 200,
+          headers: { "Content-Type": "text/xml" },
+        }),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const err = await client
+      .pricingQuoteGet({
+        Header: { SessionKey: "k", RequestID: "q-1" },
+        SecurityCode: "NPN",
+        Exchange: "JSE",
+      })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(IressError);
+    expect((err as IressError).code).toBe(25034);
+    expect((err as IressError).method).toBe("PricingQuoteGet");
+    expect((err as Error).message).toContain("Entitlement check failed for NPN");
+  });
+
+  it("falls through to the typed Quote mapping when ErrorNumber is 0", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+              <soap:Body>
+                <PricingQuoteGetResponse xmlns="${IRESS_NS}">
+                  <Output>
+                    <Result>
+                      <Header>
+                        <RequestID>q-1</RequestID>
+                        <StatusCode>2</StatusCode>
+                        <ErrorNumber>0</ErrorNumber>
+                      </Header>
+                      <DataRows>
+                        <DataRow>
+                          <SecurityCode>NPN</SecurityCode>
+                          <Exchange>JSE</Exchange>
+                          <LastTrade>4180.5</LastTrade>
+                          <Currency>ZAR</Currency>
+                          <MarketState>OPEN</MarketState>
+                        </DataRow>
+                      </DataRows>
+                    </Result>
+                  </Output>
+                </PricingQuoteGetResponse>
+              </soap:Body>
+            </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.pricingQuoteGet({
+      Header: { SessionKey: "k", RequestID: "q-1" },
+      SecurityCode: "NPN",
+      Exchange: "JSE",
+    });
+    expect(res.Header.ErrorNumber).toBe(0);
+    expect(res.DataRows).toHaveLength(1);
+    expect(res.DataRows[0]?.last).toBe(4180.5);
+  });
+});

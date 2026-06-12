@@ -303,10 +303,24 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         }),
         parameters: { SecurityCode: req.SecurityCode, Exchange: req.Exchange, ...stripHeader(req) },
       });
-      return mapResponse<Quote>({
+      const mapped = mapResponse<Quote>({
         header: result.header,
         dataRows: result.dataRows.map((r) => mapQuote(r)),
       });
+      // V4 returns 200 OK with an empty DataRows + ErrorNumber!=0 in the
+      // response header when the request is refused at the application
+      // layer (e.g. 25010 method not entitled, 25034 entitlement check
+      // failed). Without this check those failures look like "empty
+      // snapshots" and the caller silently drops the symbol.
+      if (mapped.Header.ErrorNumber !== 0) {
+        throw new IressError(
+          mapped.Header.ErrorNumber,
+          "PricingQuoteGet",
+          mapped.Header.ErrorDescription ??
+            `PricingQuoteGet error ${mapped.Header.ErrorNumber}`,
+        );
+      }
+      return mapped;
     },
 
     async pricingQuoteGetUpdates(req: { RequestID: string }): Promise<IressResponse<Quote>> {

@@ -160,7 +160,11 @@ describe("WorkerSessionManager sticky ApplicationID", () => {
       },
       serviceKeys: {},
     });
-    const update = vi.fn().mockReturnThis();
+    const updateCalls: Array<Record<string, unknown>> = [];
+    const update = vi.fn().mockImplementation((payload: Record<string, unknown>) => {
+      updateCalls.push(payload);
+      return { eq: vi.fn().mockResolvedValue({ error: null }) };
+    });
     const supabase = {
       from: vi.fn(() => ({
         select: vi.fn().mockReturnThis(),
@@ -204,6 +208,19 @@ describe("WorkerSessionManager sticky ApplicationID", () => {
       expect.objectContaining({ iressSessionKey: "KEY-STALE@WebServicesCT" }),
     );
     expect(update).toHaveBeenCalled();
+    // At least one update must have cleared the sticky session key
+    // (iress_session_key: null) and another must have reset
+    // metadata.shutdown: false so persistedSessionIsStale no longer
+    // treats the row as stale on the next boot.
+    const clearedKey = updateCalls.find((p) => "iress_session_key" in p);
+    const resetShutdown = updateCalls.find(
+      (p) =>
+        typeof p.metadata === "object" &&
+        p.metadata !== null &&
+        (p.metadata as Record<string, unknown>).shutdown === false,
+    );
+    expect(clearedKey).toBeDefined();
+    expect(resetShutdown).toBeDefined();
     expect(bringUp).toHaveBeenCalled();
   });
 

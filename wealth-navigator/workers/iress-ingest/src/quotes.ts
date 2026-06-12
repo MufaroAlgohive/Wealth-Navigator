@@ -24,7 +24,7 @@ async function fetchLiveQuote(
   session: WorkerMintSession,
   symbol: string,
   exchange: string,
-): Promise<Quote | null> {
+): Promise<{ row: Quote | null; outcome: "ok" | "no-row" | "no-trade" }> {
   const client = getIressClient("live");
   const stripped = normaliseSymbol(symbol);
   const res = await client.pricingQuoteGet({
@@ -37,8 +37,15 @@ async function fetchLiveQuote(
     Exchange: exchange,
   });
   const row = res.DataRows[0];
-  if (!row || row.last <= 0) return null;
-  return { ...row, symbol: stripped };
+  if (!row) {
+    return { row: null, outcome: "no-row" };
+  }
+  if (row.last <= 0) {
+    // Pre-open / halt / closed — surface a warning so the worker log
+    // shows why the symbol was skipped instead of going silent.
+    return { row, outcome: "no-trade" };
+  }
+  return { row: { ...row, symbol: stripped }, outcome: "ok" };
 }
 
 async function fetchMockQuote(symbol: string, exchange: string): Promise<Quote> {
@@ -81,6 +88,9 @@ export interface MissingInstrument {
 
 export interface SyncResult {
   synced: number;
+  requested: number;
+  errors: number;
+  empty: number;
   plans: QuoteUpsertPlan[];
   missingInstruments: MissingInstrument[];
 }
@@ -143,6 +153,9 @@ export async function syncWatchlistQuotes(
   const exchange = "JSE";
   const isLive = iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub";
   const quotes: Array<{ symbol: string; quote: Quote }> = [];
+  let errorCount = 0;
+  let emptyCount = 0;
+  let sessionFatal: string | null = null;
 
   if (isLive) {
     try {
@@ -153,17 +166,36 @@ export async function syncWatchlistQuotes(
         for (const symbol of env.watchlistSymbols) {
           const normalised = normaliseSymbol(symbol);
           try {
-            const quote = await fetchLiveQuote(session, normalised, exchange);
-            if (quote) quotes.push({ symbol: normalised, quote });
+            const { row, outcome } = await fetchLiveQuote(session, normalised, exchange);
+            if (outcome === "ok" && row) {
+              quotes.push({ symbol: normalised, quote: row });
+            } else if (outcome === "no-row") {
+              emptyCount += 1;
+              console.warn(
+                `[iress-ingest] PricingQuoteGet(${normalised}) returned no DataRow (${exchange}) — likely unknown symbol or market closed`,
+              );
+            } else {
+              // "no-trade" — row present, last<=0. Pre-open / halt / closed.
+              emptyCount += 1;
+              console.warn(
+                `[iress-ingest] PricingQuoteGet(${normalised}) returned no trade (marketState=${row?.marketState ?? "?"} last=0) — pre-open/halt/closed`,
+              );
+            }
           } catch (err) {
             if (isIressSessionDeadError(err)) throw err;
+            errorCount += 1;
             const msg = err instanceof Error ? err.message : String(err);
-            console.warn(`[iress-ingest] PricingQuoteGet(${normalised}) failed: ${msg}`);
+            const stack = err instanceof Error ? err.stack : undefined;
+            console.warn(
+              `[iress-ingest] PricingQuoteGet(${normalised}) failed: ${msg}`,
+              stack ?? "",
+            );
           }
         }
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      sessionFatal = msg;
       console.warn(`[iress-ingest] quote sync session failed: ${msg}`);
     }
   } else {
@@ -173,8 +205,31 @@ export async function syncWatchlistQuotes(
     }
   }
 
+  // Always log the sync outcome so Railway logs show the loop finished —
+  // even when no quotes landed (gating this on synced>0 is what hid the
+  // "no rows" failure mode from the user).
+  console.info(
+    JSON.stringify({
+      level: "info",
+      event: "quote_sync_complete",
+      source: "iress-worker",
+      requested: env.watchlistSymbols.length,
+      ok: quotes.length,
+      empty: emptyCount,
+      errors: errorCount,
+      sessionFatal: sessionFatal ?? null,
+    }),
+  );
+
   if (quotes.length === 0) {
-    return { synced: 0, plans: [], missingInstruments: [] };
+    return {
+      synced: 0,
+      requested: env.watchlistSymbols.length,
+      errors: errorCount,
+      empty: emptyCount,
+      plans: [],
+      missingInstruments: [],
+    };
   }
 
   const symbols = quotes.map((q) => q.symbol);
@@ -249,5 +304,12 @@ export async function syncWatchlistQuotes(
     }
   }
 
-  return { synced: plans.length, plans, missingInstruments };
+  return {
+    synced: plans.length,
+    requested: env.watchlistSymbols.length,
+    errors: errorCount,
+    empty: emptyCount,
+    plans,
+    missingInstruments,
+  };
 }

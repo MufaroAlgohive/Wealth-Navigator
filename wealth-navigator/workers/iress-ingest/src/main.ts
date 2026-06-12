@@ -72,8 +72,12 @@ async function quoteLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
       const result = await syncWatchlistQuotes(env, sessions, supabase);
+      // Always stamp lastQuoteSyncAt + a complete log — even on synced=0 —
+      // so the heartbeat can flip to healthy and the operator can see
+      // that the loop ran end-to-end. The detail line is emitted from
+      // `syncWatchlistQuotes` as a structured `quote_sync_complete` event.
+      lastQuoteSyncAt = new Date().toISOString();
       if (result.synced > 0) {
-        lastQuoteSyncAt = new Date().toISOString();
         console.info(
           `[iress-ingest] quote sync complete (${result.synced} symbols, ${result.missingInstruments.length} missing)`,
         );
