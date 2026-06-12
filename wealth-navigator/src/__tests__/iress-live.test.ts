@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IressClient } from "@/lib/iress/client";
 import { IressError } from "@/lib/iress/errors";
-import { createLiveIressClient, liveIressClient, describeQuoteRowKeys, resolveQuoteLast } from "@/lib/iress/live";
+import { createLiveIressClient, liveIressClient, describeQuoteRowKeys, describeQuoteRowNumericFields, resolveQuoteLast } from "@/lib/iress/live";
 import { IRESS_NS, type SoapTransport, buildSoapEnvelope } from "@/lib/iress/transport";
 
 // ─── 1. Env-var detection in `index.ts` ─────────────────────────────────
@@ -1029,6 +1029,40 @@ describe("resolveQuoteLast", () => {
     expect(
       rowNums({ Last: 120003, High: 560, Low: 544, QuoteState: "CLOSED" }),
     ).toBe(552);
+  });
+
+  it("AGL: skips write when bogus Last=120003 and no OHLC anchor", () => {
+    expect(
+      rowNums({ Last: 120003, QuoteState: "CLOSED" }),
+    ).toBe(0);
+  });
+
+  it("FSR: skips write when bogus Last=4986 and no anchor", () => {
+    expect(
+      rowNums({ Last: 4986, QuoteState: "CLOSED" }),
+    ).toBe(0);
+  });
+
+  it("BHG: prefers Open anchor when Last=2445 is bogus vs Open=528", () => {
+    expect(
+      rowNums({ Last: 2445, Open: 528, QuoteState: "CLOSED" }),
+    ).toBe(528);
+  });
+
+  it("uses SettlementPrice when Close is absent", () => {
+    expect(
+      rowNums({ Last: 120003, SettlementPrice: 552, QuoteState: "CLOSED" }),
+    ).toBe(552);
+  });
+});
+
+describe("describeQuoteRowNumericFields diagnostic helper", () => {
+  it("returns all numeric fields from a raw row", () => {
+    const row = { SecurityCode: "AGL", Last: 120003, Close: 552, QuoteState: "CLOSED" };
+    expect(describeQuoteRowNumericFields(row)).toEqual({
+      Last: 120003,
+      Close: 552,
+    });
   });
 });
 

@@ -180,17 +180,15 @@ export async function syncWatchlistQuotes(
                 `[iress-ingest] PricingQuoteGet(${normalised}) returned no DataRow (${exchange}) — likely unknown symbol or market closed; rowKeys=${rowKeys}`,
               );
             } else {
-              // "no-trade" — row present, last<=0. Pre-open / halt / closed.
-              // Mid-session last=0 with marketState=OPEN is a strong signal
-              // that the mapper read the wrong field name (e.g. real IRESS
-              // returns <Last> but we looked for <LastTrade>); log the
-              // available row keys so the next fix is a one-line addition
-              // to `mapQuote` in src/lib/iress/live.ts.
+              // "no-trade" — row present, last<=0. Pre-open / halt / closed, or
+              // bogus Last rejected by resolveQuoteLast (no anchor to salvage).
               emptyCount += 1;
               const state = row?.marketState ?? "?";
               const looksLikeFieldMismatch = state === "OPEN" && rowKeys !== "<empty row>";
+              const looksLikeBogusLast =
+                state === "CLOSED" && rowKeys.includes("Last") && !rowKeys.includes("Close");
               console.warn(
-                `[iress-ingest] PricingQuoteGet(${normalised}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
+                `[iress-ingest] PricingQuoteGet(${normalised}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
               );
             }
           } catch (err) {

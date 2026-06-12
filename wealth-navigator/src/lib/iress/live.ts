@@ -97,54 +97,132 @@ function mapResponse<T>(raw: { header: Record<string, unknown>; dataRows: Array<
 type QuoteNumReader = (...keys: string[]) => number;
 type QuoteStrReader = (...keys: string[]) => string;
 
+/** Close / settlement field aliases seen across IRESS V4 CT quote rows. */
+const CLOSE_KEYS = [
+  "Close",
+  "ClosePrice",
+  "ClosingPrice",
+  "TodayClose",
+  "SessionClose",
+  "SettlementPrice",
+  "OfficialClose",
+  "LastClose",
+  "IndicativeClose",
+  "AdjustedClose",
+  "ReferencePrice",
+] as const;
+
+const PREV_CLOSE_KEYS = [
+  "PrevClose",
+  "PreviousClose",
+  "PreviousSettlement",
+  "PriorClose",
+  "YesterdayClose",
+] as const;
+
+/** Median of price candidates that cluster within 3× of each other. */
+function clusterAnchor(candidates: number[]): number {
+  const positive = candidates.filter((p) => p > 0);
+  if (positive.length === 0) return 0;
+  const sorted = [...positive].sort((a, b) => a - b);
+  const med = sorted[Math.floor(sorted.length / 2)]!;
+  const consistent = sorted.filter((p) => p >= med / 3 && p <= med * 3);
+  if (consistent.length === 0) return med;
+  return consistent.reduce((sum, p) => sum + p, 0) / consistent.length;
+}
+
 /**
  * Pick the display price from a PricingQuoteGet row.
  *
  * Real CT responses may expose `<Last>` (live) alongside a stale `<LastTrade>`
  * (often a bogus cumulative value when the JSE is closed). When `<Last>` is
- * absent or zero, prefer session `<Close>` / book mid before `<LastTrade>`.
+ * absent or zero, prefer session `<Close>` / OHLC cluster / book mid before
+ * `<LastTrade>`. When no anchor exists and `Last` looks like volume or an
+ * outlier, return 0 so callers skip the write.
  */
 export function resolveQuoteLast(
   num: QuoteNumReader,
   str: QuoteStrReader,
 ): number {
   const liveLast = num("Last");
-  const close = num("Close", "ClosePrice");
-  const prevClose = num("PrevClose", "PreviousClose");
+  const close = num(...CLOSE_KEYS);
+  const prevClose = num(...PREV_CLOSE_KEYS);
+  const open = num("Open", "OpenPrice");
   const high = num("High", "HighPrice", "DayHigh");
   const low = num("Low", "LowPrice", "DayLow");
+  const vwap = num("VWAP", "Vwap", "AveragePrice", "AvgPrice");
   const bid = num("Bid", "BidPrice", "BuyPrice");
   const ask = num("Ask", "AskPrice", "SellPrice");
-  const lastTrade = num("LastTrade", "LastPrice", "PxLast");
+  const lastTrade = num("LastTrade", "LastPrice", "PxLast", "TradePrice");
+  const volume = num("Volume", "TotalVolume", "CumVolume", "TotalTradedVolume");
   const state = str("MarketState", "QuoteState", "State", "Status");
-  const closed = /CLOSED|CLOSE|HALT|PRE[_-]?OPEN/i.test(state);
+  const closed = /CLOSED|CLOSE|HALT|PRE[_-]?OPEN|SUSPEND/i.test(state);
 
   const bookMid =
     bid > 0 && ask > 0 ? (bid + ask) / 2 : bid > 0 ? bid : ask > 0 ? ask : 0;
   const officialClose = close > 0 ? close : prevClose > 0 ? prevClose : 0;
   const sessionMid = high > 0 && low > 0 ? (high + low) / 2 : 0;
+  const ohlcAnchor = clusterAnchor([open, high, low, vwap, close, prevClose]);
   const anchor =
-    officialClose > 0 ? officialClose : sessionMid > 0 ? sessionMid : bookMid;
+    officialClose > 0
+      ? officialClose
+      : sessionMid > 0
+        ? sessionMid
+        : ohlcAnchor > 0
+          ? ohlcAnchor
+          : bookMid;
 
   const isBogusVsAnchor = (price: number) =>
     anchor > 0 && (price > anchor * 3 || price < anchor / 3);
 
+  const looksLikeVolume = (price: number) =>
+    volume > 0 &&
+    price > 100 &&
+    Math.abs(price - volume) / Math.max(volume, 1) < 0.05;
+
+  const noAnchorSuspicious = (price: number) => {
+    if (price <= 0) return false;
+    if (looksLikeVolume(price)) return true;
+    const ohlcOnly = clusterAnchor([open, high, low, vwap, close, prevClose]);
+    if (ohlcOnly > 0 && (price > ohlcOnly * 3 || price < ohlcOnly / 3)) return true;
+    // Watchlist JSE names: no anchor at all and Last above plausible single-name range.
+    if (anchor === 0 && bookMid === 0 && price > 4500) return true;
+    return false;
+  };
+
+  const rejectOrAnchor = (price: number) => {
+    if (isBogusVsAnchor(price) || noAnchorSuspicious(price)) {
+      return anchor > 0 ? anchor : 0;
+    }
+    return price;
+  };
+
   if (liveLast > 0) {
-    if (isBogusVsAnchor(liveLast)) return anchor;
-    return liveLast;
+    const resolved = rejectOrAnchor(liveLast);
+    if (resolved > 0) return resolved;
+    if (closed) {
+      if (officialClose > 0) return officialClose;
+      if (sessionMid > 0) return sessionMid;
+      if (ohlcAnchor > 0) return ohlcAnchor;
+      if (bookMid > 0) return bookMid;
+    }
+    return 0;
   }
 
   if (closed || liveLast <= 0) {
     if (officialClose > 0) return officialClose;
+    if (sessionMid > 0) return sessionMid;
+    if (ohlcAnchor > 0) return ohlcAnchor;
     if (bookMid > 0) return bookMid;
   }
 
   if (lastTrade > 0) {
-    if (isBogusVsAnchor(lastTrade)) return anchor;
-    return lastTrade;
+    const resolved = rejectOrAnchor(lastTrade);
+    if (resolved > 0) return resolved;
+    return anchor > 0 ? anchor : 0;
   }
 
-  return officialClose || bookMid;
+  return officialClose || sessionMid || ohlcAnchor || bookMid;
 }
 
 function mapQuote(row: Record<string, unknown> | undefined): Quote {
@@ -184,8 +262,8 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
     open: num("Open", "OpenPrice"),
     high: num("High", "HighPrice", "DayHigh"),
     low: num("Low", "LowPrice", "DayLow"),
-    close: num("Close", "ClosePrice", "PrevClose", "PreviousClose"),
-    prevClose: num("PrevClose", "PreviousClose", "Close"),
+    close: num(...CLOSE_KEYS, ...PREV_CLOSE_KEYS),
+    prevClose: num(...PREV_CLOSE_KEYS, ...CLOSE_KEYS),
     change: num("NetChange", "Change"),
     changePct: num("PercentChange", "ChangePct"),
     volume: num("Volume", "TotalVolume", "CumVolume"),
@@ -214,6 +292,41 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
 export function describeQuoteRowKeys(row: unknown): string {
   if (!row || typeof row !== "object") return "<missing row>";
   return Object.keys(row as Record<string, unknown>).sort().join(",") || "<empty row>";
+}
+
+/** All numeric fields on a raw PricingQuoteGet row (for CT field discovery). */
+export function describeQuoteRowNumericFields(row: unknown): Record<string, number> {
+  if (!row || typeof row !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(row as Record<string, unknown>)) {
+    if (v === undefined || v === null || v === "") continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) out[k] = n;
+  }
+  return out;
+}
+
+const quoteRawLogOnce = new Set<string>();
+
+function maybeLogRawQuoteRow(securityCode: string, rawRow: Record<string, unknown>): void {
+  const sym = String(rawRow["SecurityCode"] ?? securityCode ?? "").toUpperCase();
+  if (!sym || quoteRawLogOnce.has(sym)) return;
+  const debugSymbols = (process.env.IRESS_QUOTE_RAW_LOG ?? "AGL,FSR")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  if (!debugSymbols.includes(sym)) return;
+  quoteRawLogOnce.add(sym);
+  console.info(
+    JSON.stringify({
+      level: "info",
+      event: "quote_raw_row",
+      source: "iress-live",
+      symbol: sym,
+      rowKeys: describeQuoteRowKeys(rawRow),
+      numerics: describeQuoteRowNumericFields(rawRow),
+    }),
+  );
 }
 
 function emptyQuote(): Quote {
@@ -396,6 +509,9 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         }),
         parameters: { SecurityCode: req.SecurityCode, Exchange: req.Exchange, ...stripHeader(req) },
       });
+      for (const rawRow of result.dataRows) {
+        maybeLogRawQuoteRow(req.SecurityCode, rawRow);
+      }
       const mapped = mapResponse<Quote>({
         header: result.header,
         dataRows: result.dataRows.map((r) => mapQuote(r)),
