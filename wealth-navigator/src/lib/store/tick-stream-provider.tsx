@@ -62,10 +62,39 @@ function emit() {
   for (const l of listeners) l();
 }
 
+export type TickFeedKind = "supabase" | "stream" | "mock";
+
+let quoteFeedKind: TickFeedKind = "mock";
+const supabaseProtectedSyms = new Set<string>();
+
+export function useQuoteFeedKind(): TickFeedKind {
+  return useSyncExternalStore(
+    subscribe,
+    () => quoteFeedKind,
+    () => "mock" as TickFeedKind,
+  );
+}
+
+function setQuoteFeedKind(kind: TickFeedKind) {
+  if (quoteFeedKind === kind) return;
+  quoteFeedKind = kind;
+  emit();
+}
+
+function isSupabaseQuotesMode(): boolean {
+  const raw = process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES;
+  return raw === "1" || raw?.toLowerCase() === "true";
+}
+
 /** Seed or update ticks from a live-quote API response (client-side). */
 export function seedTicksFromQuotes(
   rows: Array<{ sym: string; last: number; bid?: number; ask?: number; change?: number; changePct?: number; volume?: number; vwap?: number }>,
+  feed: TickFeedKind = "supabase",
 ) {
+  if (feed === "supabase") {
+    setQuoteFeedKind("supabase");
+    for (const r of rows) if (r.sym) supabaseProtectedSyms.add(r.sym);
+  }
   for (const r of rows) {
     if (!r.sym || r.last <= 0) continue;
     const cur = tickMap.get(r.sym);
@@ -92,9 +121,10 @@ export function seedTicksFromQuotes(
   emit();
 }
 
-function setTick(sym: string, next: Partial<Quote>) {
+function setTick(sym: string, next: Partial<Quote>, feed: TickFeedKind = "stream") {
   const cur = tickMap.get(sym);
   if (!cur) return;
+  if (supabaseProtectedSyms.has(sym) && feed !== "supabase") return;
   const merged: Quote = { ...cur, ...next, ts: Date.now() };
   // round
   merged.last = +merged.last.toFixed(4);
@@ -252,11 +282,11 @@ export function useThrottledTickSeries(
 // Mirrors the Lovable prototype's tick generator.
 let started = false;
 function startLocalSim() {
-  if (started || typeof window === "undefined") return;
+  if (started || typeof window === "undefined" || isSupabaseQuotesMode()) return;
   started = true;
   const interval = Number(process.env.NEXT_PUBLIC_TICK_INTERVAL_MS ?? 1100);
   setInterval(() => {
-    const keys = Array.from(tickMap.keys());
+    const keys = Array.from(tickMap.keys()).filter((k) => !supabaseProtectedSyms.has(k));
     if (keys.length === 0) return;
     const n = Math.max(1, Math.floor(keys.length * 0.25));
     for (let i = 0; i < n; i++) {
@@ -284,7 +314,8 @@ export function TickStreamProvider({ children }: { children: React.ReactNode }) 
       es.onmessage = (e) => {
         try {
           const ticks: Array<{ sym: string; last: number }> = JSON.parse(e.data);
-          for (const t of ticks) setTick(t.sym, { last: t.last });
+          setQuoteFeedKind("stream");
+          for (const t of ticks) setTick(t.sym, { last: t.last }, "stream");
         } catch { /* ignore */ }
       };
       es.onerror = () => {
@@ -295,9 +326,8 @@ export function TickStreamProvider({ children }: { children: React.ReactNode }) 
     } catch {
       startLocalSim();
     }
-    // Always start the local sim too so the UI feels alive on cold start
-    // (SSE delivers on the next event).
-    startLocalSim();
+    // Local sim only when not on Supabase quotes (avoids random-walking worker prices).
+    if (!isSupabaseQuotesMode()) startLocalSim();
     return () => {
       cancelled = true;
       esRef.current?.close();

@@ -1,10 +1,15 @@
 "use client";
 
-import { useMemo } from "react";
 import { ArrowUp, ArrowDown, Radio, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { useTick, useLastTickTs } from "@/lib/store/tick-stream-provider";
+import { useTick, useLastTickTs, useQuoteFeedKind } from "@/lib/store/tick-stream-provider";
 import { Badge } from "@/components/ui/badge";
+
+const FEED_LABELS = {
+  supabase: "SUPABASE",
+  stream: "STREAM",
+  mock: "MOCK",
+} as const;
 
 interface TickerItem {
   k: string;
@@ -36,15 +41,19 @@ const DEFAULT_ITEMS: TickerItem[] = [
 
 export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
   const last = useLastTickTs();
+  const feedKind = useQuoteFeedKind();
   const age = Math.max(0, Date.now() - last);
-  const stale = age > 4000;
-  const live = age < 1500;
+  const stale = age > 20_000;
+  const fresh = age < 5_000;
+
+  const feedLabel = FEED_LABELS[feedKind];
+  const badgeVariant = stale ? "warning" : feedKind === "mock" ? "secondary" : "live";
 
   return (
     <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap border-y border-border bg-surface-2/60 py-1.5 pl-3 pr-3 text-[11px] font-mono text-foreground/80 scrollbar-thin mask-fade-x">
-      <Badge variant={stale ? "warning" : "live"} className="shrink-0">
-        {stale ? <AlertTriangle className="h-2.5 w-2.5" /> : <Radio className="h-2.5 w-2.5 animate-pulse" />}
-        {stale ? "STALE" : "IRESS LIVE"}
+      <Badge variant={badgeVariant} className="shrink-0">
+        {stale ? <AlertTriangle className="h-2.5 w-2.5" /> : fresh ? <Radio className="h-2.5 w-2.5 animate-pulse" /> : null}
+        {stale ? "STALE" : feedLabel}
       </Badge>
       <span className="shrink-0 text-muted-foreground/60">·</span>
       {items.map((it) => (

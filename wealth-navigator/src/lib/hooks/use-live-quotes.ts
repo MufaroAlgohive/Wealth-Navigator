@@ -4,56 +4,114 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { seedTicksFromQuotes } from "@/lib/store/tick-stream-provider";
 import { iressConfig } from "@/lib/iress";
+import {
+  deriveDataSource,
+  isUseSupabaseQuotesClientEnabled,
+  normaliseBffQuotes,
+  normaliseIressQuotes,
+  QUOTE_POLL_INTERVAL_MS,
+  resolveQuoteApiMode,
+  type BffQuotesResponse,
+  type IressQuotesResponse,
+} from "@/lib/hooks/quote-routing";
+import { useSupabaseQuoteRealtime } from "@/lib/hooks/use-supabase-quote-realtime";
+import type { DataSourceKind } from "@/components/oems/primitives/data-source-badge";
 
-interface LiveQuoteRow {
-  symbol: string;
-  source: "live" | "seed-fallback" | "mock";
-  quote: { last: number; bid: number; ask: number; change: number; changePct: number; volume: number; vwap: number };
-}
-
-interface QuotesResponse {
+interface QuotesFetchResult {
   mode: string;
-  quotes: LiveQuoteRow[];
+  useSupabase?: boolean;
+  rows: ReturnType<typeof normaliseBffQuotes>;
   liveCount: number;
   fallbackCount: number;
+  mockCount: number;
+  supabaseCount: number;
 }
 
-/** Fetch live quotes from the server API and seed the tick store. */
+async function fetchQuotes(symKey: string, apiMode: "supabase" | "iress"): Promise<QuotesFetchResult> {
+  const path =
+    apiMode === "supabase"
+      ? `/api/quotes?symbols=${encodeURIComponent(symKey)}`
+      : `/api/iress/quotes?symbols=${encodeURIComponent(symKey)}`;
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`quotes ${res.status}`);
+  const data = await res.json();
+
+  if (apiMode === "supabase") {
+    const bff = data as BffQuotesResponse;
+    return {
+      mode: bff.mode,
+      useSupabase: bff.useSupabase,
+      rows: normaliseBffQuotes(bff),
+      liveCount: bff.liveCount,
+      fallbackCount: bff.fallbackCount,
+      mockCount: bff.mockCount ?? 0,
+      supabaseCount: bff.supabaseCount ?? 0,
+    };
+  }
+
+  const iress = data as IressQuotesResponse;
+  return {
+    mode: iress.mode,
+    rows: normaliseIressQuotes(iress),
+    liveCount: iress.liveCount,
+    fallbackCount: iress.fallbackCount,
+    mockCount: 0,
+    supabaseCount: 0,
+  };
+}
+
+/** Fetch quotes from the BFF and seed the tick store for watchlist symbols. */
 export function useLiveQuotes(symbols: string[], enabled = true) {
   const symKey = symbols.join(",");
-  const isLive = iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub";
+  const useSupabaseFlag = isUseSupabaseQuotesClientEnabled();
+  const apiMode = resolveQuoteApiMode({ useSupabaseFlag, iressMode: iressConfig.mode });
+  const fetchEnabled = enabled && symbols.length > 0;
 
   const q = useQuery({
-    queryKey: ["live-quotes", symKey],
-    queryFn: async (): Promise<QuotesResponse> => {
-      const res = await fetch(`/api/iress/quotes?symbols=${encodeURIComponent(symKey)}`);
-      if (!res.ok) throw new Error(`quotes ${res.status}`);
-      return res.json();
-    },
-    enabled: enabled && isLive && symbols.length > 0,
-    staleTime: 30_000,
-    refetchInterval: 60_000,
+    queryKey: ["live-quotes", apiMode, symKey],
+    queryFn: () => fetchQuotes(symKey, apiMode),
+    enabled: fetchEnabled,
+    staleTime: QUOTE_POLL_INTERVAL_MS,
+    refetchInterval: QUOTE_POLL_INTERVAL_MS,
   });
 
+  const supabaseActive = useSupabaseFlag || q.data?.useSupabase === true || q.data?.mode === "supabase";
+  useSupabaseQuoteRealtime(symbols, fetchEnabled && supabaseActive);
+
   useEffect(() => {
-    if (!q.data?.quotes) return;
+    if (!q.data?.rows.length) return;
     seedTicksFromQuotes(
-      q.data.quotes.map((r) => ({
-        sym: r.symbol,
-        last: r.quote.last,
-        bid: r.quote.bid,
-        ask: r.quote.ask,
-        change: r.quote.change,
-        changePct: r.quote.changePct,
-        volume: r.quote.volume,
-        vwap: r.quote.vwap,
+      q.data.rows.map((r) => ({
+        sym: r.sym,
+        last: r.last,
+        bid: r.bid,
+        ask: r.ask,
+        change: r.change,
+        changePct: r.changePct,
+        volume: r.volume,
+        vwap: r.vwap,
       })),
+      apiMode === "supabase" ? "supabase" : "stream",
     );
-  }, [q.data]);
+  }, [q.data, apiMode]);
 
-  const hasLive = (q.data?.liveCount ?? 0) > 0;
-  const hasFallback = (q.data?.fallbackCount ?? 0) > 0;
-  const dataSource = !isLive ? "mock" as const : hasLive && !hasFallback ? "live" as const : hasLive && hasFallback ? "hybrid" as const : hasFallback ? "seed" as const : "mock" as const;
+  const dataSource: DataSourceKind = q.data
+    ? deriveDataSource(q.data.rows, {
+        liveCount: q.data.liveCount,
+        fallbackCount: q.data.fallbackCount,
+        mockCount: q.data.mockCount,
+        supabaseCount: q.data.supabaseCount,
+      })
+    : useSupabaseFlag
+      ? "supabase"
+      : apiMode === "iress"
+        ? "live"
+        : "mock";
 
-  return { ...q, dataSource, isLive };
+  return {
+    ...q,
+    dataSource,
+    apiMode,
+    isLive: apiMode === "iress" || dataSource === "supabase" || dataSource === "live",
+  };
 }

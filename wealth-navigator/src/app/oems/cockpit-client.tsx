@@ -14,6 +14,7 @@ import {
 import { Panel } from "@/components/oems/primitives/panel";
 import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { SectorHeatmap } from "@/components/oems/primitives/sector-heatmap";
@@ -128,7 +129,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Pill tone="success" dot>LIVE</Pill>
+          <DataSourceBadge source={liveQuotes.dataSource} />
           <Tabs value={range} onValueChange={(v) => setRange(v as typeof range)}>
             <TabsList className="h-7 bg-muted">
               <TabsTrigger value="1D" className="h-5 px-2 text-[10.5px]">1D</TabsTrigger>

@@ -19,10 +19,25 @@ Living inventory of every data surface: what is **real IRESS**, what is **seed/m
 | Status | Badge | Description |
 |--------|-------|-------------|
 | LIVE | green | Data from IRESS CT/prod SOAP |
+| SUPABASE | info | Worker snapshot in `stock_intraday_c` (BFF or Realtime) |
 | HYBRID | blue | Live where possible; seed/sim fallback |
 | SEED | amber | Static seed or synthetic generation |
 | MOCK | muted | In-process mock adapter |
 | PENDING | — | No V4 method identified |
+
+---
+
+## Chrome vs panel provenance
+
+Global chrome and per-panel badges answer different questions:
+
+| Surface | What it shows | Driven by |
+|---------|---------------|-----------|
+| **Ticker bar** (top strip) | `SUPABASE` / `STREAM` / `MOCK` / `STALE` | Tick feed kind from `useQuoteFeedKind()` — set when BFF seeds ticks (`supabase`), SSE `/api/ticks` pushes (`stream`), or seed sim only (`mock`). Stale when last tick &gt; 20 s. |
+| **Cockpit masthead** | `DataSourceBadge` on the page header | `useLiveQuotes` → `deriveDataSource()` from `/api/quotes` (when `NEXT_PUBLIC_USE_SUPABASE_QUOTES=true`) or `/api/iress/quotes` (local live only). |
+| **Panel title row** | `DataSourceBadge` per panel | Explicit `dataSource` prop — e.g. movers panel uses quote provenance; sector heatmap / open orders stay `seed`. |
+
+Production (Vercel): `IRESS_MODE=mock`, `USE_SUPABASE_QUOTES=true`, `NEXT_PUBLIC_USE_SUPABASE_QUOTES=true`. The Railway worker writes snapshots; the UI polls `/api/quotes` every ~15 s and optionally subscribes to `stock_intraday_c` INSERT for sub-second updates. Display-only sparkline jitter does **not** write to the database and does not run for Supabase-protected symbols.
 
 ---
 
@@ -33,7 +48,7 @@ Living inventory of every data surface: what is **real IRESS**, what is **seed/m
 | KPIs (AUM, P&L) | cockpit-client | seed → oemsStrategies | No | — | SEED |
 | Sector heatmap | SectorHeatmap | seed → sectorHeatmap | Yes | PricingQuoteGet | SEED |
 | ZAR govi curve | cockpit-client | seed → zarGoviCurve | Yes | TimeSeriesGet2 | SEED |
-| Top movers | cockpit-client + NumberCell | seed + `/api/iress/quotes` | Yes | PricingQuoteGet | HYBRID |
+| Top movers | cockpit-client + NumberCell | `/api/quotes` (Supabase) or `/api/iress/quotes` (local live) + tick store | Worker / Yes | PricingQuoteGet | SUPABASE / HYBRID |
 | ALSI intraday | cockpit-client | seed + synthetic | Yes | TimeSeriesGet2 | SEED |
 | Open orders | cockpit-client | mock → liveOrders | Yes* | OrderPadGetByAccount | SEED |
 | SENS feed | cockpit-client | seed → sensFeed | No | — | SEED |
