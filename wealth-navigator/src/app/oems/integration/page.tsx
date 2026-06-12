@@ -232,6 +232,51 @@ export default function IntegrationPage() {
       </div>
 
       <div className="grid grid-cols-12 gap-2.5">
+        {realDataOnly ? (
+          <>
+            <Panel
+              title="Order mirror · oems_order_audit"
+              endpoint="OrderPadGetByAccount → worker poll"
+              dataSource="unconfigured"
+              className="col-span-12 lg:col-span-6 h-[220px]"
+            >
+              <ul className="space-y-2 text-[12px] text-muted-foreground">
+                <li>
+                  Railway <span className="font-mono text-foreground">iress-ingest</span> polls{" "}
+                  <span className="font-mono text-foreground">OrderPadGetByAccount</span> every{" "}
+                  <span className="font-mono text-foreground">IRESS_WORKER_ORDER_POLL_SEC</span> (default 60s) and upserts into{" "}
+                  <span className="font-mono text-foreground">oems_order_audit</span>.
+                </li>
+                <li>
+                  Required env on the worker:{" "}
+                  <span className="font-mono text-foreground">IRESS_ACCOUNT_CODE</span> (comma-separated account codes), plus{" "}
+                  <span className="font-mono text-foreground">SUPABASE_ALLOW_WRITES=1</span> and{" "}
+                  <span className="font-mono text-foreground">IRESS_WORKER_DRY_RUN=0</span>.
+                </li>
+                <li>
+                  Without <span className="font-mono text-foreground">IRESS_ACCOUNT_CODE</span>, quote ingest still runs but the blotter and cockpit open-orders panel stay empty — that is expected.
+                </li>
+              </ul>
+            </Panel>
+            <Panel
+              title="Quote ingest · stock_intraday_c"
+              endpoint="PricingQuoteGet → worker poll"
+              dataSource="supabase"
+              className="col-span-12 lg:col-span-6 h-[220px]"
+            >
+              <ul className="space-y-2 text-[12px] text-muted-foreground">
+                <li>
+                  Vercel reads worker snapshots via <span className="font-mono text-foreground">GET /api/quotes</span> (~15s poll) and optional Realtime on{" "}
+                  <span className="font-mono text-foreground">stock_intraday_c</span>.
+                </li>
+                <li>
+                  Connection pill shows <span className="font-mono text-foreground">SUPABASE OK</span> when the last quote tick is under 20s old;{" "}
+                  <span className="font-mono text-foreground">/api/ticks</span> SSE is disabled in this mode.
+                </li>
+              </ul>
+            </Panel>
+          </>
+        ) : null}
         <Panel
           title="Session model · two-layer"
           endpoint="IRESSSessionStart + ServiceSessionStart"

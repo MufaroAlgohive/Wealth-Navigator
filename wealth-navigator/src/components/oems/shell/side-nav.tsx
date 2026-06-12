@@ -11,6 +11,7 @@ import { cn } from "@/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/oems/primitives/pill";
+import { useSideNavBadges } from "@/lib/hooks/use-side-nav-badges";
 import type { Route } from "next";
 
 interface NavItem {
@@ -67,6 +68,7 @@ const NAV: NavSection[] = [
 export function SideNav() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = React.useState(false);
+  const { resolve: resolveBadge } = useSideNavBadges();
 
   return (
     <aside
@@ -91,7 +93,11 @@ export function SideNav() {
             <ul className="space-y-0.5 px-1.5">
               {section.items.map((item) => (
                 <li key={item.to}>
-                  <NavLinkItem item={item} active={pathname === item.to} collapsed={collapsed} />
+                  <NavLinkItem
+                    item={{ ...item, badge: resolveBadge(item.to, item.badge) }}
+                    active={pathname === item.to}
+                    collapsed={collapsed}
+                  />
                 </li>
               ))}
             </ul>

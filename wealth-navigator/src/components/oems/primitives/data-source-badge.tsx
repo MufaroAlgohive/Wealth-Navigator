@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/cn";
 
-export type DataSourceKind = "live" | "mock" | "seed" | "hybrid" | "supabase";
+export type DataSourceKind = "live" | "mock" | "seed" | "hybrid" | "supabase" | "unconfigured";
 
 const STYLES: Record<DataSourceKind, string> = {
   live: "border-success/40 bg-success/10 text-success",
@@ -10,6 +10,7 @@ const STYLES: Record<DataSourceKind, string> = {
   seed: "border-warning/40 bg-warning/10 text-warning",
   hybrid: "border-primary/40 bg-primary/10 text-primary",
   supabase: "border-info/40 bg-info/10 text-info",
+  unconfigured: "border-border bg-muted/30 text-muted-foreground",
 };
 
 const LABELS: Record<DataSourceKind, string> = {
@@ -18,6 +19,7 @@ const LABELS: Record<DataSourceKind, string> = {
   seed: "SEED",
   hybrid: "HYBRID",
   supabase: "SUPABASE",
+  unconfigured: "UNCONFIGURED",
 };
 
 interface DataSourceBadgeProps {

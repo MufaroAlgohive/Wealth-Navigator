@@ -29,6 +29,7 @@ import { Button } from "@/components/ui/button";
 import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
+import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
 import { isRealDataOnlyClient, FEED_NOT_CONFIGURED } from "@/lib/data-policy";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 
@@ -84,6 +85,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const macroQ = useQuery({ queryKey: ["macro"], queryFn: () => data.macroIndicators(), enabled: !realDataOnly, ...queryOpts("reference") });
   const seedOrdersQ = useQuery({ queryKey: ["orders"], queryFn: () => data.orders(), enabled: !realDataOnly, ...queryOpts("live") });
   const auditOrdersQ = useAuditOrders("ALL", realDataOnly);
+  const workerQ = useWorkerHealth(realDataOnly);
+  const primaryWorker = workerQ.data?.workers[0];
   const moversQ = useQuery({ queryKey: ["movers"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
   const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), enabled: !realDataOnly, ...queryOpts("reference") });
   const sensQ = useQuery({ queryKey: ["sens"], queryFn: () => data.sens(), enabled: !realDataOnly, ...queryOpts("reference") });
@@ -225,7 +228,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       {/* Row 1: heatmap | govi | movers */}
       <div className="grid grid-cols-12 gap-2.5">
         {realDataOnly ? (
-          <Panel title="Sector Heatmap" endpoint="PricingQuoteGet · sector indices" dataSource="supabase" className="col-span-12 lg:col-span-5 h-[300px]">
+          <Panel title="Sector Heatmap" endpoint="PricingQuoteGet · sector indices" dataSource="unconfigured" className="col-span-12 lg:col-span-5 h-[300px]">
             <EmptyDataState message="Sector index quotes require IRESS entitlement (J200 / sector indices)." />
           </Panel>
         ) : sectorsQ.isLoading ? (
@@ -404,7 +407,20 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             }
           >
             {openOrders.length === 0 ? (
-              <EmptyDataState title="No open orders" message={realDataOnly ? "Worker has not mirrored orders yet, or account has none working." : FEED_NOT_CONFIGURED} />
+              <EmptyDataState
+                title="No open orders"
+                message={
+                  realDataOnly
+                    ? primaryWorker
+                      ? `Worker ${primaryWorker.status} · last quote sync ${
+                          primaryWorker.last_quote_sync_at
+                            ? formatTime(new Date(primaryWorker.last_quote_sync_at).getTime())
+                            : "never"
+                        }. Orders mirror when Railway has IRESS_ACCOUNT_CODE and SUPABASE_ALLOW_WRITES=1.`
+                      : "No worker heartbeat yet. Set IRESS_ACCOUNT_CODE on Railway iress-ingest and enable writes to populate oems_order_audit."
+                    : FEED_NOT_CONFIGURED
+                }
+              />
             ) : (
             <table className="w-full font-mono text-[11px]">
               <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
