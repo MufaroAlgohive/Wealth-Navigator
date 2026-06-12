@@ -21,8 +21,9 @@ describe("session-manager", () => {
 
     vi.doMock("@/lib/iress/index", () => ({
       bringUpMintSessionFromEnv: bringUp,
-      iress: { iressSessionEnd: vi.fn() },
       iressConfig: { mode: "mock" },
+      LICENSE_RELEASE_DELAY_MS: 0,
+      tearDownIressWireSession: vi.fn(async () => true),
     }));
 
     const mod = await import("@/lib/iress/session-manager");
@@ -54,8 +55,9 @@ describe("session-manager", () => {
 
     vi.doMock("@/lib/iress/index", () => ({
       bringUpMintSessionFromEnv: bringUp,
-      iress: { iressSessionEnd: vi.fn() },
       iressConfig: { mode: "mock" },
+      LICENSE_RELEASE_DELAY_MS: 0,
+      tearDownIressWireSession: vi.fn(async () => true),
     }));
 
     const mod = await import("@/lib/iress/session-manager");
@@ -78,8 +80,9 @@ describe("session-manager", () => {
         iressSession: { IRESSSessionKey: "K", SessionTimeout: 120, SessionNumber: 1, ApplicationID: "a" },
         serviceKeys: {},
       }),
-      iress: { iressSessionEnd: vi.fn() },
       iressConfig: { mode: "mock" },
+      LICENSE_RELEASE_DELAY_MS: 0,
+      tearDownIressWireSession: vi.fn(async () => true),
     }));
 
     const mod = await import("@/lib/iress/session-manager");
@@ -90,7 +93,8 @@ describe("session-manager", () => {
     expect(mod.getSessionStatus().cached).toBe(true);
   });
 
-  it("tearDownMintSession calls IRESSSessionEnd and clears cache", async () => {
+  it("tearDownMintSession ends service sessions then IRESSSessionEnd", async () => {
+    const serviceSessionEnd = vi.fn().mockResolvedValue(undefined);
     const iressSessionEnd = vi.fn().mockResolvedValue(undefined);
     const bringUp = vi.fn().mockResolvedValue({
       iressSession: {
@@ -104,8 +108,18 @@ describe("session-manager", () => {
 
     vi.doMock("@/lib/iress/index", () => ({
       bringUpMintSessionFromEnv: bringUp,
-      iress: { iressSessionEnd },
       iressConfig: { mode: "live" },
+      LICENSE_RELEASE_DELAY_MS: 0,
+      tearDownIressWireSession: vi.fn(async (opts: {
+        iressSessionKey: string;
+        serviceKeys?: Record<string, string>;
+      }) => {
+        for (const key of Object.values(opts.serviceKeys ?? {})) {
+          await serviceSessionEnd({ ServiceSessionKey: key });
+        }
+        await iressSessionEnd({ IRESSSessionKey: opts.iressSessionKey });
+        return true;
+      }),
     }));
 
     const mod = await import("@/lib/iress/session-manager");
@@ -114,6 +128,7 @@ describe("session-manager", () => {
 
     const ended = await mod.tearDownMintSession();
     expect(ended).toBe(true);
+    expect(serviceSessionEnd).toHaveBeenCalledWith({ ServiceSessionKey: "SSK-1" });
     expect(iressSessionEnd).toHaveBeenCalledWith({
       IRESSSessionKey: "KEY-END@WebServicesCT",
     });
@@ -123,8 +138,9 @@ describe("session-manager", () => {
   it("tearDownMintSession is no-op when cache is empty", async () => {
     vi.doMock("@/lib/iress/index", () => ({
       bringUpMintSessionFromEnv: vi.fn(),
-      iress: { iressSessionEnd: vi.fn() },
       iressConfig: { mode: "live" },
+      LICENSE_RELEASE_DELAY_MS: 0,
+      tearDownIressWireSession: vi.fn(async () => true),
     }));
 
     const mod = await import("@/lib/iress/session-manager");

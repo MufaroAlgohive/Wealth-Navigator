@@ -11,7 +11,75 @@ Audit of `IRESSSessionStart` requirements vs Mint credentials (`DFM@Mint`) and t
 
 **TEST-LIVE-ALL run (same day, post-fix):** `bun run typecheck` pass; `136/136` tests pass; dev server `:3000`; app login `admin`/`admin` 200; health HTTP 500 body `ok:false`; quotes `NPN`/`PRX` `source=seed-fallback` (`liveCount=0`); provenance `session.started=false`. No `CompanyName` retries (error is license, not unknown user).
 
-**Next step for Mint:** Ask Charles/Iress Support to release stale `DFM`@`Mint` sessions or add CT license; optionally use `SessionNumberToKick` once approved (not wired in Mint yet).
+**Next step for Mint:** Ask Charles/Iress Support to release stale `DFM`@`Mint` sessions or add CT license; use `bun run iress:logout` for a proper client-side release before restarting the worker.
+
+---
+
+## Proper logout (IRESS V4)
+
+IRESS support: **do not stop the worker process without logging out** — an abrupt kill leaves the license seat occupied until idle timeout (up to 2 hours).
+
+### Documented sequence
+
+Sources: `iress-v4-docs/01-foundations/04-getting-started.md` §5, `04-sessions/02-service-sessions.md`, `04-sessions/01-iress-sessions.md`.
+
+| Step | Method | Notes |
+|------|--------|-------|
+| 1 | `ServiceSessionEnd` | Once per open service session (IOS+, IPS, FIX+). `ServiceSessionKey` in the SOAP header. Timeout ~10s. Best-effort — continue on error. |
+| 2 | `IRESSSessionEnd` | `IRESSSessionKey` in the SOAP header. Also cascades to any remaining child service sessions. Timeout ~10s. |
+| 3 | Wait | **3 seconds** (`LICENSE_RELEASE_DELAY_MS`) after `IRESSSessionEnd` before starting another `IRESSSessionStart` on CT — seat release is not instantaneous. |
+
+`IRESSSessionEnd` alone is sufficient (it ends all child service sessions), but ending service sessions first frees the license promptly per IRESS best practice.
+
+### What Mint does
+
+| Component | Logout behaviour |
+|-----------|------------------|
+| Railway worker (`workers/iress-ingest/src/main.ts`) | `SIGTERM` / `SIGINT` → `tearDown()` → `ServiceSessionEnd` × N → `IRESSSessionEnd` → 3s wait → expire `worker_session_metadata` |
+| Next.js dev server (`session-manager.ts`) | Same sequence on Ctrl+C / `DELETE /api/iress/session?wait=1` |
+| `scripts/iress-logout.ts` | CLI: reads `IRESS_SESSION_KEY` or Supabase `worker_session_metadata`, runs full teardown |
+| `scripts/probe-iress-login.ts` | IRESS-only probe (no service sessions) — `IRESSSessionEnd` + 3s wait |
+
+### Release the seat right now
+
+**Local (orphaned dev session):**
+
+```powershell
+cd wealth-navigator
+bun run iress:logout
+```
+
+Or: stop dev server with Ctrl+C (hooks call teardown), or `DELETE http://localhost:3000/api/iress/session?wait=1`.
+
+**Railway (graceful — preferred):**
+
+Railway sends **SIGTERM** on deploy stop / scale-to-zero. The worker handles it on Linux (`process.once("SIGTERM", …)` in `main.ts`). To release without waiting for deploy:
+
+1. Stop the Railway service (or trigger a one-off deploy restart) — SIGTERM runs the teardown hook.
+2. Wait **≥ 3 seconds** before starting another IRESS client.
+3. If the seat is still stuck (25008), run logout from a machine with credentials + Supabase env:
+
+```powershell
+cd wealth-navigator
+# .env.local needs IRESS_* and SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY
+bun run iress:logout
+```
+
+Optional override: `IRESS_SESSION_KEY=<key>` if you have the key from logs (prefix only is logged in production).
+
+### 25008 at startup
+
+When all licenses are in use, `IRESSSessionStart` returns SOAP fault **25008** with a `<CurrentSessions>` list in the fault context (`04-sessions/03-user-scenarios.md`).
+
+Mint behaviour:
+
+- **First attempt:** plain login with sticky `ApplicationID` — no kick.
+- **On 25008:** worker backs off 60s and logs `bun run iress:logout` — does **not** mint new `ApplicationID` values in a retry loop.
+- **Opt-in kick (destructive):** set `IRESS_SESSION_NUMBER_TO_KICK=<SessionNumber>` or `IRESS_FORCE_KICK_ALL=1` only with explicit approval — ends other sessions for the user.
+
+### SessionNumberToKick viability
+
+**Viable** for recovery when you know which session to end (Scenario 1) or as a nuclear option `SessionNumberToKick=-1` (Scenario 2 — ends **every** session for the user including ViewPoint tabs). Mint wires kick only via env opt-in on a 25008 retry, not on the first login attempt. Parse `<SessionNumber>` from the 25008 fault `<Context>` if building a “kick this session” UI later.
 
 ---
 

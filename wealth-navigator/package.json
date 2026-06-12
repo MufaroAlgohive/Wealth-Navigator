@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
-    "worker:iress": "bun workers/iress-ingest/src/main.ts"
+    "worker:iress": "bun workers/iress-ingest/src/main.ts",
+    "iress:logout": "bun scripts/iress-logout.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",

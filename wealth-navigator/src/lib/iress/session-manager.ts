@@ -5,12 +5,16 @@
  * refreshes on expiry or 25001 (invalid session) errors.
  */
 
-import { bringUpMintSessionFromEnv, iress, iressConfig } from "@/lib/iress/index";
+import {
+  bringUpMintSessionFromEnv,
+  iressConfig,
+  LICENSE_RELEASE_DELAY_MS,
+  tearDownIressWireSession,
+} from "@/lib/iress/index";
 import { IressError } from "@/lib/iress/errors";
 import type { IressService } from "@/types/iress";
 
-/** CT may need a moment to free the license seat after SessionEnd. */
-export const LICENSE_RELEASE_DELAY_MS = 3_000;
+export { LICENSE_RELEASE_DELAY_MS };
 
 export interface MintSession {
   iressSessionKey: string;
@@ -75,18 +79,11 @@ export async function tearDownMintSession(options?: {
     return true;
   }
 
-  try {
-    await iress.iressSessionEnd({ IRESSSessionKey: session.iressSessionKey });
-    const delay = options?.releaseDelayMs ?? 0;
-    if (delay > 0) {
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-    return true;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[mint-iress] tearDownMintSession failed: ${message}`);
-    return false;
-  }
+  return tearDownIressWireSession({
+    iressSessionKey: session.iressSessionKey,
+    serviceKeys: session.serviceKeys,
+    releaseDelayMs: options?.releaseDelayMs ?? 0,
+  });
 }
 
 /** Whether a cached session exists and is not yet expired. */

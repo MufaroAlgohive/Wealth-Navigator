@@ -10,15 +10,18 @@
 
 import {
   bringUpMintSessionFromEnv,
-  iress,
   iressConfig,
+  LICENSE_RELEASE_DELAY_MS,
+  tearDownIressWireSession,
 } from "../../../src/lib/iress/index";
 import { IressError } from "../../../src/lib/iress/errors";
 import type { IressService } from "../../../src/types/iress";
 import type { WorkerSupabase } from "./supabase";
 
-export const LICENSE_RELEASE_DELAY_MS = 3_000;
+export { LICENSE_RELEASE_DELAY_MS };
 const EXPIRY_BUFFER_MS = 30_000;
+/** Back off after 25008 instead of hammering IRESSSessionStart. */
+const LICENSE_EXHAUSTED_BACKOFF_MS = 60_000;
 
 export interface WorkerMintSession {
   iressSessionKey: string;
@@ -157,6 +160,7 @@ export class WorkerSessionManager {
   private cache: WorkerMintSession | null = null;
   private inflight: Promise<WorkerMintSession> | null = null;
   private lastPersistedApplicationId: string | null = null;
+  private licenseBackoffUntil = 0;
 
   constructor(private readonly deps: WorkerSessionDeps) {}
 
@@ -197,20 +201,32 @@ export class WorkerSessionManager {
 
   private async startSession(): Promise<WorkerMintSession> {
     const applicationId = await this.resolveApplicationId();
-    const { iressSession, serviceKeys } = await bringUpMintSessionFromEnv({
-      applicationId,
-      applicationLabel: this.deps.applicationLabel,
-      node: this.deps.node,
-    });
-    const session = this.buildSession(iressSession, serviceKeys, applicationId);
-    this.lastPersistedApplicationId = applicationId;
-    await persistApplicationId(this.deps, {
-      applicationId,
-      iressSessionKey: session.iressSessionKey,
-      expiresAt: session.expiresAt,
-      metadata: { applicationLabel: this.deps.applicationLabel, node: this.deps.node },
-    });
-    return session;
+    try {
+      const { iressSession, serviceKeys } = await bringUpMintSessionFromEnv({
+        applicationId,
+        applicationLabel: this.deps.applicationLabel,
+        node: this.deps.node,
+      });
+      this.licenseBackoffUntil = 0;
+      const session = this.buildSession(iressSession, serviceKeys, applicationId);
+      this.lastPersistedApplicationId = applicationId;
+      await persistApplicationId(this.deps, {
+        applicationId,
+        iressSessionKey: session.iressSessionKey,
+        expiresAt: session.expiresAt,
+        metadata: { applicationLabel: this.deps.applicationLabel, node: this.deps.node },
+      });
+      return session;
+    } catch (err) {
+      if (err instanceof IressError && err.code === 25008) {
+        this.licenseBackoffUntil = Date.now() + LICENSE_EXHAUSTED_BACKOFF_MS;
+        console.error(
+          `[iress-ingest] 25008 license seat occupied — backing off ${LICENSE_EXHAUSTED_BACKOFF_MS}ms. ` +
+            "Run `bun run iress:logout` from wealth-navigator/ or stop the other IRESS client.",
+        );
+      }
+      throw err;
+    }
   }
 
   invalidate(): void {
@@ -218,6 +234,14 @@ export class WorkerSessionManager {
   }
 
   async getSession(): Promise<WorkerMintSession> {
+    if (Date.now() < this.licenseBackoffUntil) {
+      const waitSec = Math.ceil((this.licenseBackoffUntil - Date.now()) / 1000);
+      throw new IressError(
+        25008,
+        "IRESSSessionStart",
+        `License seat occupied — retry in ~${waitSec}s or run bun run iress:logout`,
+      );
+    }
     if (this.cache && Date.now() < this.cache.expiresAt - EXPIRY_BUFFER_MS) {
       return this.cache;
     }
@@ -268,20 +292,13 @@ export class WorkerSessionManager {
       return true;
     }
 
-    try {
-      await iress.iressSessionEnd({ IRESSSessionKey: session.iressSessionKey });
-      if (releaseDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, releaseDelayMs));
-      }
-      await clearPersistedApplicationId(this.deps);
-      this.lastPersistedApplicationId = null;
-      return true;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[iress-ingest] tearDown failed: ${message}`);
-      await clearPersistedApplicationId(this.deps);
-      this.lastPersistedApplicationId = null;
-      return false;
-    }
+    const ended = await tearDownIressWireSession({
+      iressSessionKey: session.iressSessionKey,
+      serviceKeys: session.serviceKeys,
+      releaseDelayMs,
+    });
+    await clearPersistedApplicationId(this.deps);
+    this.lastPersistedApplicationId = null;
+    return ended;
   }
 }

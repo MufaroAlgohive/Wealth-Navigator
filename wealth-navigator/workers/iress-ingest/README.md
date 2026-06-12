@@ -54,7 +54,7 @@ IRESS recovers the SOAP session for the same `(UserName + CompanyName + Applicat
 
 1. On start, looks up its `worker_id` row in `worker_session_metadata` and reuses the persisted `application_id`. If no row exists, it mints a stable one (`Mint-OEMS-Worker-<HOSTNAME or WORKER_ID>`).
 2. Persists the new `application_id` + session key + expires_at + hostname + label into `worker_session_metadata` so a Railway restart reuses the same seat.
-3. On `SIGTERM` / `SIGINT`, calls `IRESSSessionEnd`, waits `LICENSE_RELEASE_DELAY_MS = 3000`, and stamps the row's `expires_at = now()`.
+3. On `SIGTERM` / `SIGINT`, calls `ServiceSessionEnd` (each open service) → `IRESSSessionEnd` → waits `LICENSE_RELEASE_DELAY_MS = 3000`, and stamps the row's `expires_at = now()`. Orphaned seats: `bun run iress:logout` from `wealth-navigator/`.
 
 This is what makes a Railway rolling deploy safe: the new replica inherits the same `ApplicationID` and the IRESS side reconnects to the previous session (modulo its 2 h `SessionTimeout`).
 

@@ -2,11 +2,15 @@
 // The active implementation is selected by IRESS_MODE.
 
 import { getIressCredentialsFromEnv } from "@/lib/iress/config";
+import { IressError } from "@/lib/iress/errors";
 import { mockIressClient, iressQueries } from "@/lib/iress/mock";
 import { liveIressClient, createLiveIressClient } from "@/lib/iress/live";
 import type { IressClient } from "@/lib/iress/client";
-import type { IressSessionStartResponse } from "@/lib/iress/client";
+import type { IressSessionStartRequest, IressSessionStartResponse } from "@/lib/iress/client";
 import type { IressService } from "@/types/iress";
+
+/** CT may need a moment to free the license seat after SessionEnd. */
+export const LICENSE_RELEASE_DELAY_MS = 3_000;
 
 export type IressMode = "mock" | "live" | "wsdl-stub";
 
@@ -95,17 +99,99 @@ export function buildApplicationId(envHint: "dev" | "staging" | "load" | "prod",
 export { getIressCredentialsFromEnv } from "@/lib/iress/config";
 export type { IressCredentials } from "@/lib/iress/config";
 
+function readKickOptionsFromEnv(): Pick<IressSessionStartRequest, "SessionNumberToKick" | "KickLikeSessions"> {
+  if (process.env.IRESS_FORCE_KICK_ALL === "1" || process.env.IRESS_FORCE_KICK_ALL === "true") {
+    return { SessionNumberToKick: -1, KickLikeSessions: true };
+  }
+  const raw = process.env.IRESS_SESSION_NUMBER_TO_KICK;
+  if (raw !== undefined && raw !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return { SessionNumberToKick: n, KickLikeSessions: true };
+  }
+  return {};
+}
+
+async function iressSessionStartWithLicenseRecovery(
+  params: IressSessionStartRequest,
+): Promise<IressSessionStartResponse> {
+  try {
+    return await iress.iressSessionStart(params);
+  } catch (err) {
+    if (!(err instanceof IressError) || err.code !== 25008) throw err;
+    const kick = readKickOptionsFromEnv();
+    if (kick.SessionNumberToKick === undefined) {
+      console.error(
+        "[mint-iress] 25008 license exhausted — another session holds the seat. " +
+          "Run `bun run iress:logout` or wait for idle timeout. " +
+          "Set IRESS_SESSION_NUMBER_TO_KICK or IRESS_FORCE_KICK_ALL=1 only with explicit approval.",
+      );
+      throw err;
+    }
+    console.warn(
+      `[mint-iress] 25008 — retrying IRESSSessionStart with SessionNumberToKick=${kick.SessionNumberToKick}`,
+    );
+    return await iress.iressSessionStart({ ...params, ...kick });
+  }
+}
+
+/**
+ * Proper V4 logout: end each service session, then the parent IRESS session,
+ * then optionally wait for the license seat to free on CT.
+ */
+export async function tearDownIressWireSession(options: {
+  iressSessionKey: string;
+  serviceKeys?: Partial<Record<IressService, string>>;
+  releaseDelayMs?: number;
+  client?: IressClient;
+}): Promise<boolean> {
+  const client = options.client ?? iress;
+  for (const [service, key] of Object.entries(options.serviceKeys ?? {})) {
+    if (!key) continue;
+    try {
+      await client.serviceSessionEnd({ ServiceSessionKey: key });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[mint-iress] ServiceSessionEnd(${service}) failed (continuing): ${message}`);
+    }
+  }
+  try {
+    await client.iressSessionEnd({ IRESSSessionKey: options.iressSessionKey });
+    const delay = options.releaseDelayMs ?? 0;
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    return true;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[mint-iress] tearDownIressWireSession failed: ${message}`);
+    return false;
+  }
+}
+
 /** Bring up a session + the standard service sessions in one call. */
 export async function bringUpMintSession(
   user: { userName: string; company: string; password: string },
-  options?: { applicationId?: string; applicationLabel?: string; node?: string },
+  options?: {
+    applicationId?: string;
+    applicationLabel?: string;
+    node?: string;
+    sessionNumberToKick?: number;
+    kickLikeSessions?: boolean;
+  },
 ) {
   // Sticky ApplicationID for the long-running Railway worker: same
   // (UserName + CompanyName + ApplicationID) triple lets IRESS reconnect to
   // the same in-flight license seat. Falls back to a fresh random GUID.
   const applicationId = options?.applicationId ?? buildApplicationId("prod", options?.node ?? "web-1");
   const applicationLabel = options?.applicationLabel ?? "Mint-OEMS-Web";
-  const iressSession: IressSessionStartResponse = await iress.iressSessionStart({
+  const kickOnFirstAttempt =
+    options?.sessionNumberToKick !== undefined
+      ? {
+          SessionNumberToKick: options.sessionNumberToKick,
+          KickLikeSessions: options.kickLikeSessions ?? true,
+        }
+      : {};
+  const iressSession: IressSessionStartResponse = await iressSessionStartWithLicenseRecovery({
     UserName: user.userName,
     CompanyName: user.company,
     Password: user.password,
@@ -113,6 +199,7 @@ export async function bringUpMintSession(
     ApplicationLabel: applicationLabel,
     SessionTimeout: 120,
     Locale: "en-ZA",
+    ...kickOnFirstAttempt,
   });
   const servicesToStart: Array<{ Service: IressService; Server: string }> = [
     { Service: "IOSPlus", Server: "IOSPLUSAPI" },
