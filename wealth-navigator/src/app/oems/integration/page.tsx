@@ -125,29 +125,49 @@ export default function IntegrationPage() {
                       <th className="px-2.5 py-1.5 text-left">Last quote sync</th>
                       <th className="px-2.5 py-1.5 text-left">Heartbeat</th>
                       <th className="px-2.5 py-1.5 text-right">Symbols</th>
+                      <th className="px-2.5 py-1.5 text-left">Accounts</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
-                    {workers.map((w) => (
-                      <tr key={w.worker_id}>
-                        <td className="px-2.5 py-1.5 font-semibold">{w.worker_id}</td>
-                        <td className="px-2.5 py-1.5">
-                          <Pill tone={w.status === "healthy" ? "success" : "warning"} size="xs" dot>
-                            {w.status}
-                          </Pill>
-                        </td>
-                        <td className="px-2.5 py-1.5 text-muted-foreground">{w.iress_mode ?? "—"}</td>
-                        <td className="px-2.5 py-1.5 text-muted-foreground">
-                          {w.last_quote_sync_at ? formatTime(new Date(w.last_quote_sync_at).getTime()) : "—"}
-                        </td>
-                        <td className="px-2.5 py-1.5 text-muted-foreground">
-                          {formatTime(new Date(w.last_heartbeat_at).getTime())}
-                        </td>
-                        <td className="px-2.5 py-1.5 text-right tabular-nums">
-                          {w.symbols_covered?.length ?? "—"}
-                        </td>
-                      </tr>
-                    ))}
+                    {workers.map((w) => {
+                      const exchanges = w.symbol_exchanges ?? {};
+                      const rateSymbols = Object.entries(exchanges)
+                        .filter(([, ex]) => ex === "FX" || ex === "MM")
+                        .map(([sym]) => sym);
+                      const symCount = w.symbols_covered?.length ?? 0;
+                      return (
+                        <tr key={w.worker_id}>
+                          <td className="px-2.5 py-1.5 font-semibold">{w.worker_id}</td>
+                          <td className="px-2.5 py-1.5">
+                            <Pill tone={w.status === "healthy" ? "success" : "warning"} size="xs" dot>
+                              {w.status}
+                            </Pill>
+                          </td>
+                          <td className="px-2.5 py-1.5 text-muted-foreground">{w.iress_mode ?? "—"}</td>
+                          <td className="px-2.5 py-1.5 text-muted-foreground">
+                            {w.last_quote_sync_at ? formatTime(new Date(w.last_quote_sync_at).getTime()) : "—"}
+                          </td>
+                          <td className="px-2.5 py-1.5 text-muted-foreground">
+                            {formatTime(new Date(w.last_heartbeat_at).getTime())}
+                          </td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">
+                            {symCount || "—"}
+                            {rateSymbols.length > 0 && (
+                              <span className="ml-1.5 text-[9.5px] text-muted-foreground">
+                                +{rateSymbols.length} rate
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-2.5 py-1.5">
+                            {w.account_configured ? (
+                              <span className="text-foreground/90">{w.accounts?.join(", ")}</span>
+                            ) : (
+                              <span className="text-warning">unset</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               )}
@@ -237,37 +257,68 @@ export default function IntegrationPage() {
             <Panel
               title="Order mirror · oems_order_audit"
               endpoint="OrderPadGetByAccount → worker poll"
-              dataSource="unconfigured"
-              className="col-span-12 lg:col-span-6 h-[220px]"
+              dataSource={primaryWorker?.account_configured ? "supabase" : "unconfigured"}
+              className="col-span-12 lg:col-span-6 h-[240px]"
             >
-              <ul className="space-y-2 text-[12px] text-muted-foreground">
-                <li>
-                  Railway <span className="font-mono text-foreground">iress-ingest</span> polls{" "}
-                  <span className="font-mono text-foreground">OrderPadGetByAccount</span> every{" "}
-                  <span className="font-mono text-foreground">IRESS_WORKER_ORDER_POLL_SEC</span> (default 60s) and upserts into{" "}
-                  <span className="font-mono text-foreground">oems_order_audit</span>.
-                </li>
-                <li>
-                  Required env on the worker:{" "}
-                  <span className="font-mono text-foreground">IRESS_ACCOUNT_CODE</span> (comma-separated account codes), plus{" "}
-                  <span className="font-mono text-foreground">SUPABASE_ALLOW_WRITES=1</span> and{" "}
-                  <span className="font-mono text-foreground">IRESS_WORKER_DRY_RUN=0</span>.
-                </li>
-                <li>
-                  Without <span className="font-mono text-foreground">IRESS_ACCOUNT_CODE</span>, quote ingest still runs but the blotter and cockpit open-orders panel stay empty — that is expected.
-                </li>
-              </ul>
+              {!primaryWorker ? (
+                <p className="text-[12px] text-muted-foreground">
+                  No worker heartbeat yet — start the Railway{" "}
+                  <span className="font-mono text-foreground">Iress-Worker</span> service to begin ingesting.
+                </p>
+              ) : primaryWorker.account_configured ? (
+                <ul className="space-y-2 text-[12px] text-muted-foreground">
+                  <li>
+                    Polling accounts:{" "}
+                    <span className="font-mono text-foreground">
+                      {primaryWorker.accounts?.join(", ") || "—"}
+                    </span>{" "}
+                    (<span className="font-mono text-foreground">IRESS_ACCOUNT_CODE</span>)
+                  </li>
+                  <li>
+                    <span className="font-mono text-foreground">OrderPadGetByAccount</span> every{" "}
+                    <span className="font-mono text-foreground">IRESS_WORKER_ORDER_POLL_SEC</span>{" "}
+                    (default 60s) → upserts into{" "}
+                    <span className="font-mono text-foreground">oems_order_audit</span>. Cockpit Open
+                    Orders + Blotter read from this table.
+                  </li>
+                </ul>
+              ) : (
+                <div className="space-y-2 text-[12px]">
+                  <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[12px]">
+                    <p className="font-medium text-warning">Set <span className="font-mono">IRESS_ACCOUNT_CODE</span> on Railway to enable order mirror</p>
+                    <p className="mt-1 text-muted-foreground">
+                      The worker is running but <span className="font-mono">IRESS_ACCOUNT_CODE</span>{" "}
+                      is empty, so <span className="font-mono">OrderPadGetByAccount</span> returns
+                      no rows. The Cockpit Open Orders panel will stay empty until this is set.
+                    </p>
+                  </div>
+                  <p className="text-muted-foreground">
+                    Set the env on the Railway <span className="font-mono text-foreground">Iress-Worker</span>{" "}
+                    service to a comma-separated list of account codes (e.g.{" "}
+                    <span className="font-mono text-foreground">Z12345,Z67890</span>), then restart.
+                    Quote ingest keeps running independently of this env.
+                  </p>
+                </div>
+              )}
             </Panel>
             <Panel
               title="Quote ingest · stock_intraday_c"
               endpoint="PricingQuoteGet → worker poll"
               dataSource="supabase"
-              className="col-span-12 lg:col-span-6 h-[220px]"
+              className="col-span-12 lg:col-span-6 h-[240px]"
             >
               <ul className="space-y-2 text-[12px] text-muted-foreground">
                 <li>
                   Vercel reads worker snapshots via <span className="font-mono text-foreground">GET /api/quotes</span> (~15s poll) and optional Realtime on{" "}
                   <span className="font-mono text-foreground">stock_intraday_c</span>.
+                </li>
+                <li>
+                  Watchlist size:{" "}
+                  <span className="font-mono text-foreground">
+                    {primaryWorker?.symbols_covered?.length ?? "—"}
+                  </span>{" "}
+                  symbols. Rate codes (USDZAR → <span className="font-mono text-foreground">FX</span>, JIBAR_3M → <span className="font-mono text-foreground">MM</span>)
+                  ride the same <span className="font-mono text-foreground">PricingQuoteGet</span> loop — no extra entitlement needed.
                 </li>
                 <li>
                   Connection pill shows <span className="font-mono text-foreground">SUPABASE OK</span> when the last quote tick is under 20s old;{" "}

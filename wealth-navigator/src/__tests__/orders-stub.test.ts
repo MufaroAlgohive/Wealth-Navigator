@@ -48,6 +48,7 @@ function makeWorkerEnv(overrides: Partial<{
   iressMode: string;
   iressAccountCode: string;
 }> = {}) {
+  const watchlistSymbols = ["NPN"];
   return {
     workerId: "iress-ingest-test",
     iressMode: overrides.iressMode ?? "mock",
@@ -56,7 +57,11 @@ function makeWorkerEnv(overrides: Partial<{
     heartbeatSec: 30,
     quoteIntervalSec: 15,
     orderPollIntervalSec: 60,
-    watchlistSymbols: ["NPN"],
+    watchlistSymbols,
+    watchlistEntries: watchlistSymbols.map((s) => ({ symbol: s, exchange: "JSE", kind: "equity" as const })),
+    watchlistExchanges: {},
+    fxExchange: "FX",
+    moneyMarketExchange: "MM",
     instrumentSync: false,
     supabaseUrl: "https://example.supabase.co",
     supabaseServiceKey: "sk",

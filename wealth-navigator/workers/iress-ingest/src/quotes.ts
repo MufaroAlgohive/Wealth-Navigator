@@ -155,9 +155,9 @@ export async function syncWatchlistQuotes(
   sessions: WorkerSessionManager,
   supabase: WorkerSupabase | null,
 ): Promise<SyncResult> {
-  const exchange = env.defaultExchange || "JSE";
+  const defaultExchange = env.defaultExchange || "JSE";
   const isLive = iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub";
-  const quotes: Array<{ symbol: string; quote: Quote }> = [];
+  const quotes: Array<{ symbol: string; quote: Quote; exchange: string }> = [];
   let errorCount = 0;
   let emptyCount = 0;
   let sessionFatal: string | null = null;
@@ -166,18 +166,19 @@ export async function syncWatchlistQuotes(
     try {
       await sessions.withSession(async (session) => {
         console.info(
-          `[iress-ingest] quote sync start iressKey=${redactSessionKeyForLog(session.iressSessionKey)} exchange=${exchange} symbols=${env.watchlistSymbols.length}`,
+          `[iress-ingest] quote sync start iressKey=${redactSessionKeyForLog(session.iressSessionKey)} symbols=${env.watchlistSymbols.length}`,
         );
-        for (const symbol of env.watchlistSymbols) {
-          const normalised = normaliseSymbol(symbol);
+        for (const entry of env.watchlistEntries) {
+          const symbol = normaliseSymbol(entry.symbol);
+          const exchange = entry.exchange ?? defaultExchange;
           try {
-            const { row, outcome, rowKeys } = await fetchLiveQuote(session, normalised, exchange);
+            const { row, outcome, rowKeys } = await fetchLiveQuote(session, symbol, exchange);
             if (outcome === "ok" && row) {
-              quotes.push({ symbol: normalised, quote: row });
+              quotes.push({ symbol, quote: row, exchange });
             } else if (outcome === "no-row") {
               emptyCount += 1;
               console.warn(
-                `[iress-ingest] PricingQuoteGet(${normalised}) returned no DataRow (${exchange}) — likely unknown symbol or market closed; rowKeys=${rowKeys}`,
+                `[iress-ingest] PricingQuoteGet(${symbol}) returned no DataRow (${exchange}) — likely unknown symbol or market closed; rowKeys=${rowKeys}`,
               );
             } else {
               // "no-trade" — row present, last<=0. Pre-open / halt / closed, or
@@ -188,7 +189,7 @@ export async function syncWatchlistQuotes(
               const looksLikeBogusLast =
                 state === "CLOSED" && rowKeys.includes("Last") && !rowKeys.includes("Close");
               console.warn(
-                `[iress-ingest] PricingQuoteGet(${normalised}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
+                `[iress-ingest] PricingQuoteGet(${symbol}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
               );
             }
           } catch (err) {
@@ -197,7 +198,7 @@ export async function syncWatchlistQuotes(
             const msg = err instanceof Error ? err.message : String(err);
             const stack = err instanceof Error ? err.stack : undefined;
             console.warn(
-              `[iress-ingest] PricingQuoteGet(${normalised}) failed: ${msg}`,
+              `[iress-ingest] PricingQuoteGet(${symbol}) failed: ${msg}`,
               stack ?? "",
             );
           }
@@ -209,9 +210,10 @@ export async function syncWatchlistQuotes(
       console.warn(`[iress-ingest] quote sync session failed: ${msg}`);
     }
   } else {
-    for (const raw of env.watchlistSymbols) {
-      const normalised = normaliseSymbol(raw);
-      quotes.push({ symbol: normalised, quote: await fetchMockQuote(normalised, exchange) });
+    for (const entry of env.watchlistEntries) {
+      const symbol = normaliseSymbol(entry.symbol);
+      const exchange = entry.exchange ?? defaultExchange;
+      quotes.push({ symbol, quote: await fetchMockQuote(symbol, exchange), exchange });
     }
   }
 
@@ -252,7 +254,7 @@ export async function syncWatchlistQuotes(
   const plans: QuoteUpsertPlan[] = [];
   const missingInstruments: MissingInstrument[] = [];
 
-  for (const { symbol, quote } of quotes) {
+  for (const { symbol, quote, exchange: qExchange } of quotes) {
     const securityId = securityMap.get(symbol);
     const priceCents = quoteToCents(quote.last);
     const plan: QuoteUpsertPlan = {
@@ -266,14 +268,14 @@ export async function syncWatchlistQuotes(
     if (env.dryRun || !env.allowWrites) {
       console.info(
         `[iress-ingest] would upsert stock_intraday_c`,
-        JSON.stringify(plan),
+        JSON.stringify({ ...plan, exchange: qExchange }),
       );
       continue;
     }
 
     if (!supabase) continue;
     if (!securityId) {
-      const missing: MissingInstrument = { symbol, exchange, observedAt: timestamp };
+      const missing: MissingInstrument = { symbol, exchange: qExchange, observedAt: timestamp };
       missingInstruments.push(missing);
       console.warn(
         JSON.stringify({
@@ -281,7 +283,7 @@ export async function syncWatchlistQuotes(
           event: "missing_security",
           workerId: env.workerId,
           symbol,
-          exchange,
+          exchange: qExchange,
           observedAt: timestamp,
           msg: `no securities_c row for ${symbol} — skipping intraday write`,
         }),

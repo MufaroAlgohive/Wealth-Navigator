@@ -71,6 +71,73 @@ function ok<T>(rows: T[], statusCode: 1 | 2 | 3 = 2): IressResponse<T> {
 }
 
 function quoteForSecurity(code: string, exchange: string): Quote {
+  const codeUpper = code.toUpperCase();
+  // FX cross-currency rates (USDZAR, EURZAR, etc.).
+  // The IRESS reference-data maps a "USD/ZAR" symbol to its `fxQuotes`
+  // entry under the same key (the "/" stripped); the worker watchlist
+  // uses the unslashed form (`USDZAR`) which is the canonical code
+  // PricingQuoteGet accepts.
+  if (exchange === "FX" || codeUpper.startsWith("USD") || codeUpper.includes("ZAR") || codeUpper.startsWith("EUR") || codeUpper.startsWith("GBP") || codeUpper.startsWith("AUD") || codeUpper.startsWith("JPY")) {
+    const pair = codeUpper.includes("/") ? codeUpper : `${codeUpper.slice(0, 3)}/${codeUpper.slice(3)}`;
+    const fx = fxQuotes.find((f) => f.pair.toUpperCase() === pair);
+    if (fx) {
+      return {
+        symbol: codeUpper,
+        last: fx.last,
+        prevClose: +(fx.last - fx.change).toFixed(4),
+        change: fx.change,
+        changePct: fx.changePct,
+        bid: fx.last - 0.0008,
+        ask: fx.last + 0.0008,
+        bidSize: 0,
+        askSize: 0,
+        open: fx.last,
+        high: fx.last,
+        low: fx.last,
+        close: fx.last,
+        volume: 0,
+        vwap: fx.last,
+        currency: pair.endsWith("ZAR") ? "ZAR" : "USD",
+        marketState: "OPEN",
+        ts: Date.now(),
+      };
+    }
+  }
+  // Money-market rate codes (JIBAR_3M, etc.).
+  if (exchange === "MM" || codeUpper.startsWith("JIBAR") || codeUpper === "ZARONIA" || codeUpper === "SARB_REPO") {
+    let rate: number | undefined;
+    let prev: number | undefined;
+    if (codeUpper.startsWith("JIBAR_")) {
+      const tenor = codeUpper.replace("JIBAR_", "");
+      const fix = jibarFixings.find((f) => f.tenor.replace(/\/.*/, "").toUpperCase() === tenor || f.tenor.toUpperCase() === tenor);
+      if (fix) { rate = fix.rate; prev = fix.prev; }
+    } else if (codeUpper === "ZARONIA") {
+      rate = zaronia.value;
+      prev = zaronia.prev;
+    }
+    if (rate != null && prev != null) {
+      return {
+        symbol: codeUpper,
+        last: rate,
+        prevClose: prev,
+        change: +(rate - prev).toFixed(4),
+        changePct: prev > 0 ? +(((rate - prev) / prev) * 100).toFixed(4) : 0,
+        bid: rate,
+        ask: rate,
+        bidSize: 0,
+        askSize: 0,
+        open: rate,
+        high: rate,
+        low: rate,
+        close: prev,
+        volume: 0,
+        vwap: rate,
+        currency: "ZAR",
+        marketState: "OPEN",
+        ts: Date.now(),
+      };
+    }
+  }
   // JSE equities — `liveQuotes` is seeded; if missing, fabricate.
   const direct = liveQuotes[code];
   if (direct) return { ...direct, marketState: "OPEN" };

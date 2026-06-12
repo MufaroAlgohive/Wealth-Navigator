@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ServerResponse, IncomingMessage } from "node:http";
 
 import { IressError } from "@/lib/iress/errors";
 import type { Order } from "@/types/iress";
@@ -42,6 +43,7 @@ interface FakeRes {
   writeHead: (status: number, headers?: Record<string, string>) => void;
   write: (chunk: string) => void;
   end: (chunk?: string) => void;
+  [k: string]: unknown;
 }
 
 function fakeRes(): FakeRes {
@@ -80,6 +82,7 @@ function fakeReq(opts: { method?: string; url?: string; headers?: Record<string,
 }
 
 function buildEnv(overrides: Record<string, string | number | boolean | string[]> = {}): import("../../workers/iress-ingest/src/env").WorkerEnv {
+  const watchlistSymbols = ["NPN", "PRX"];
   return {
     workerId: "iress-ingest-test",
     iressMode: "live",
@@ -88,7 +91,11 @@ function buildEnv(overrides: Record<string, string | number | boolean | string[]
     heartbeatSec: 30,
     quoteIntervalSec: 15,
     orderPollIntervalSec: 60,
-    watchlistSymbols: ["NPN", "PRX"],
+    watchlistSymbols,
+    watchlistEntries: watchlistSymbols.map((s) => ({ symbol: s, exchange: "JSE", kind: "equity" as const })),
+    watchlistExchanges: {},
+    fxExchange: "FX",
+    moneyMarketExchange: "MM",
     instrumentSync: false,
     supabaseUrl: "",
     supabaseServiceKey: "",
@@ -123,7 +130,7 @@ describe("worker http-api /health", () => {
     } as never;
     const req = fakeReq({ url: "/health" });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv(),
       sessions,
       supabase: null,
@@ -145,7 +152,7 @@ describe("worker http-api /health", () => {
     const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
     const req = fakeReq({ url: "/health" });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv(),
       sessions: { peekSession: () => null, invalidate: () => undefined } as never,
       supabase: null,
@@ -159,7 +166,7 @@ describe("worker http-api /health", () => {
     const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
     const req = fakeReq({ url: "/health", headers: { authorization: "Bearer secret-token" } });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv(),
       sessions: { peekSession: () => null, invalidate: () => undefined } as never,
       supabase: null,
@@ -171,7 +178,7 @@ describe("worker http-api /health", () => {
     const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
     const req = fakeReq({ url: "/health", headers: { "x-worker-token": "secret-token" } });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv(),
       sessions: { peekSession: () => null, invalidate: () => undefined } as never,
       supabase: null,
@@ -187,7 +194,7 @@ describe("worker http-api /orders", () => {
     const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
     const req = fakeReq({ url: "/orders" });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv({ iressAccountCode: "" }),
       sessions: { invalidate: () => undefined } as never,
       supabase: null,
@@ -237,7 +244,7 @@ describe("worker http-api /orders", () => {
     } as never;
     const req = fakeReq({ url: "/orders?account=ACC1&filter=1" });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv(),
       sessions,
       supabase: null,
@@ -259,7 +266,7 @@ describe("worker http-api /orders", () => {
     const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
     const req = fakeReq({ url: "/orders?account=ACC1" });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv({ iressMode: "mock" }),
       sessions: { invalidate: () => undefined } as never,
       supabase: null,
@@ -284,7 +291,7 @@ describe("worker http-api /orders", () => {
     } as never;
     const req = fakeReq({ url: "/orders?account=ACC1" });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv(),
       sessions,
       supabase: null,
@@ -310,7 +317,7 @@ describe("worker http-api /orders", () => {
     } as never;
     const req = fakeReq({ url: "/orders?account=ACC1" });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv(),
       sessions,
       supabase: null,
@@ -324,7 +331,7 @@ describe("worker http-api 404", () => {
     const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
     const req = fakeReq({ url: "/nope" });
     const res = fakeRes();
-    await handleRequest(req, res, {
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
       env: buildEnv(),
       sessions: { invalidate: () => undefined } as never,
       supabase: null,

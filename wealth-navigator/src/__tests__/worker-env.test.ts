@@ -6,18 +6,22 @@ import { loadWorkerEnv } from "../../workers/iress-ingest/src/env";
  * Tests for `loadWorkerEnv` watchlist parsing.
  *
  * The worker reads `IRESS_WATCHLIST_SYMBOLS` (comma-separated, case-insensitive,
- * whitespace-tolerant) and falls back to a 20-name JSE Top-40 subset when the
- * variable is missing/empty. Each entry is normalised by `normaliseSymbol`
- * (strips `.JSE`, removes spaces, uppercases) before `pricingQuoteGet`.
+ * whitespace-tolerant) and falls back to the default production watchlist
+ * (20-name JSE Top-40 subset + USDZAR + JIBAR_3M) when the variable is
+ * missing/empty. Each entry is normalised by `normaliseSymbol` (strips
+ * `.JSE`, removes spaces, uppercases) before `pricingQuoteGet`.
  *
- * This guards the production watchlist expansion (NPN → 10 symbols) against
- * silent regressions in the parse step — a typo in a separator or a missing
- * `.filter(Boolean)` would otherwise let an empty string reach IRESS.
+ * This guards the production watchlist expansion against silent regressions
+ * in the parse step — a typo in a separator or a missing `.filter(Boolean)`
+ * would otherwise let an empty string reach IRESS.
  */
 
 const ORIGINAL_ENV = { ...process.env };
 const WATCHLIST_KEYS = [
   "IRESS_WATCHLIST_SYMBOLS",
+  "IRESS_WATCHLIST_EXCHANGES",
+  "IRESS_FX_EXCHANGE",
+  "IRESS_MM_EXCHANGE",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
   "IRESS_USERNAME",
@@ -81,15 +85,17 @@ describe("loadWorkerEnv watchlist parsing", () => {
     expect(env.watchlistSymbols).toEqual(["NPN.JSE", "PRX.JSE"]);
   });
 
-  it("falls back to the 20-name JSE Top-40 subset when the env var is missing", () => {
+  it("falls back to the production watchlist (20 JSE + USDZAR + JIBAR_3M) when env var is missing", () => {
     clearEnv();
     const env = loadWorkerEnv();
-    expect(env.watchlistSymbols.length).toBe(20);
+    expect(env.watchlistSymbols.length).toBe(22);
     expect(env.watchlistSymbols).toContain("NPN");
     expect(env.watchlistSymbols).toContain("PRX");
+    expect(env.watchlistSymbols).toContain("USDZAR");
+    expect(env.watchlistSymbols).toContain("JIBAR_3M");
     // All entries are uppercased, non-empty tickers.
     for (const sym of env.watchlistSymbols) {
-      expect(sym).toMatch(/^[A-Z0-9]+$/);
+      expect(sym).toMatch(/^[A-Z0-9_]+$/);
     }
   });
 
@@ -97,7 +103,7 @@ describe("loadWorkerEnv watchlist parsing", () => {
     clearEnv();
     process.env.IRESS_WATCHLIST_SYMBOLS = "";
     const env = loadWorkerEnv();
-    expect(env.watchlistSymbols.length).toBe(20);
+    expect(env.watchlistSymbols.length).toBe(22);
   });
 
   it("parses the production 10-symbol JSE watchlist used on Railway", () => {
@@ -109,5 +115,27 @@ describe("loadWorkerEnv watchlist parsing", () => {
       "AGL", "BHG", "CPI", "FSR", "MTN", "NPN", "PRX", "SBK", "SHP", "SOL",
     ]);
     expect(new Set(env.watchlistSymbols).size).toBe(10);
+  });
+
+  it("maps USDZAR and JIBAR_3M to FX/MM exchanges by default", () => {
+    clearEnv();
+    const env = loadWorkerEnv();
+    expect(env.watchlistExchanges.USDZAR).toBe("FX");
+    expect(env.watchlistExchanges.JIBAR_3M).toBe("MM");
+    expect(env.watchlistEntries.find((e) => e.symbol === "USDZAR")?.kind).toBe("fx");
+    expect(env.watchlistEntries.find((e) => e.symbol === "JIBAR_3M")?.kind).toBe("money-market");
+    // Equities default to defaultExchange (JSE) and are not pinned in the
+    // per-symbol map because they all share the same value.
+    expect(env.watchlistExchanges.NPN).toBeUndefined();
+  });
+
+  it("honours IRESS_WATCHLIST_EXCHANGES overrides", () => {
+    clearEnv();
+    process.env.IRESS_WATCHLIST_SYMBOLS = "NPN,USDZAR";
+    process.env.IRESS_WATCHLIST_EXCHANGES = "USDZAR:FX2";
+    const env = loadWorkerEnv();
+    expect(env.watchlistExchanges.USDZAR).toBe("FX2");
+    // Equities inherit the kind default which is undefined.
+    expect(env.watchlistExchanges.NPN).toBeUndefined();
   });
 });

@@ -1,4 +1,4 @@
-# Vercel Deploy Setup — Mint Wealth Navigator
+﻿# Vercel Deploy Setup — Mint Wealth Navigator
 
 > Step-by-step bring-up of the **Next.js 16** frontend on Vercel, talking to the
 > MyMint Supabase project (`nnwzhxfjpjbzujevwzlh`). The IRESS SOAP worker runs on
@@ -150,6 +150,9 @@ any committed file.
 | `USE_SUPABASE_QUOTES` | ⚠️ flag | `true` (LIVE) / `false` (mock preview) | Server — gates `live-queries.ts` to read `stock_intraday_c` |
 | `IRESS_MODE` | ⚠️ flag | `mock` (preview / demo) / `live` (only with creds) | Server — adapter selector |
 | `IRESS_BASE_URL` | optional | `https://webservices-ct.iress.co.za/v4` | Server — defaults to CT; set per region |
+| `IRESS_WORKER_URL` | server-only | `https://iress-ingest-1.up.railway.app` (Railway **public** domain) | Server - Path B BFF base URL. Falls back to `RAILWAY_SERVICE_URL`, then 503 `not_configured`. **Never** the `*.railway.internal` hostname - that is internal-only and does not resolve from Vercel. |
+| `WORKER_HTTP_TOKEN` | optional, paired on Vercel + Railway worker | long random string, e.g. `openssl rand -hex 32` | Server - BFF sends `Authorization: Bearer <token>`; worker 401s on mismatch. Leave unset for single-tenant deploys. |
+
 | `IRESS_PROD_URL` | optional | `https://webservices.iress.co.za/v4` | Server — production endpoint |
 | `IRESS_USERNAME` | live only | `user@company` (split by `parseIressUserCode`) | Server — **never** `NEXT_PUBLIC_*` |
 | `IRESS_PASSWORD` | live only | (LIVE password) | Server — encrypted at rest by Vercel |
@@ -354,6 +357,109 @@ Production**. No git reverts needed.
 | `Property 'Service' does not exist on type` in tests | Stale mock shape | Already fixed in `src/__tests__/worker-session.test.ts` |
 | `Warning: The "middleware" file convention is deprecated. Please use "proxy"` | Next.js 16 deprecation | Cosmetic; fix tracked in a follow-up. Build still succeeds. |
 | `Cannot find module '@/...'` during build | `tsconfig.json` paths not picked up | `tsconfig.json` already has `baseUrl: "."` + `paths: { "@/*": ["./src/*"] }` — no action |
+
+---
+
+
+## 8a. Railway public networking + Path B bring-up
+
+Railway exposes two DNS surfaces for each service:
+
+- **Internal**: `<service>.railway.internal` (e.g. `iress-worker.railway.internal`) - resolvable only from **other Railway services** in the same project. Vercel is not on Railway's network, so this hostname **does not resolve** from Vercel functions and returns `ENOTFOUND` / `EAI_AGAIN`.
+- **Public**: a generated `<service>-<n>.up.railway.app` domain on a public TCP port. This is the only address the Vercel BFF can use to call the worker.
+
+For Vercel <-> Railway you need the **public domain** (free on all Railway plans). True private connectivity requires Railway TCP Proxy / VPC peering, which is paid-tier only.
+
+### Step-by-step
+
+1. Open the Railway project (`https://railway.com/project/dacf9008-a4e8-450c-b5f0-f8a749ec47b4`) and select the `Iress-Worker` service.
+2. **Settings** -> **Networking** -> **Public Networking** -> **Generate Domain**. Railway creates something like `https://iress-ingest-1.up.railway.app`.
+3. Confirm the port: the worker listens on `WORKER_HTTP_PORT=8765` (default in `workers/iress-ingest/.env.example`). When you generate the public domain, Railway exposes that domain on the worker's primary port - set **Port = 8765** in **Settings** -> **Networking** if Railway does not pick it up automatically.
+4. Smoke-test from your laptop:
+
+   ```powershell
+   curl.exe -i https://<service>-<n>.up.railway.app/health
+   ```
+
+   Expect `200 OK` with JSON `{"ok":true,"workerId":"iress-ingest",...}`. If you get `404`, the public port is not 8765 (Railway public networking maps 443 to the service port you choose - confirm in the service Networking tab).
+5. Copy that exact URL (including the `https://`) and set it on Vercel **production**:
+
+   ```powershell
+   # From repo root
+   vercel --scope autonama-group env add IRESS_WORKER_URL production --value "https://<service>-<n>.up.railway.app" --yes
+   ```
+
+   - If your value happens to begin with `-`, PowerShell treats it as a flag - quote it: ``--value `"https://...`"`` `(outer backticks escape the leading `-`).
+   - ``--yes`` skips the interactive confirmation prompt and the hidden value prompt (the value is passed as ``--value`` instead of being typed in).
+
+
+6. **(Optional, recommended)** generate a shared bearer token so the worker 401s on unauthenticated calls. Run on Vercel and on the Railway worker with the **same** value:
+
+   ```powershell
+   $tok = [guid]::NewGuid().ToString() + ":" + [DateTime]::UtcNow.Ticks   # or: openssl rand -hex 32
+   vercel --scope autonama-group env add WORKER_HTTP_TOKEN production --value $tok --yes
+   # Paste $tok into Railway -> Iress-Worker -> Variables -> WORKER_HTTP_TOKEN
+   ```
+
+7. **Do not** set `IRESS_WORKER_URL` to the `*.railway.internal` hostname, do **not** flip `IRESS_MODE` to `live` on Vercel (the worker holds the only IRESS CT seat), and do **not** commit the token.
+
+### Re-test after the redeploy
+
+Vercel must redeploy for env changes to take effect. Either push to `main` (CI) or run:
+
+```powershell
+vercel --scope autonama-group --prod
+```
+
+Then, from your laptop:
+
+```powershell
+$url = "https://wealth-navigator-one.vercel.app"
+
+# 1. Unauthenticated probe - expect 307/302 to /login (the route is gated)
+curl.exe -i "$url/api/integration/health" | Select-Object -First 1
+
+# 2. After signing in at https://wealth-navigator-one.vercel.app/login, open:
+#      https://wealth-navigator-one.vercel.app/oems/integration
+#    The workerHealth panel should show:
+#      - workerId    : iress-ingest
+#      - iressMode   : live
+#      - sessionCached: true (after the first successful SOAP session)
+#      - services    : [IOSPlus] (or whatever the worker started)
+#      - accounts    : [ACC1, ACC2, ...] (split from IRESS_ACCOUNT_CODE)
+#      - lastQuoteSyncAt: a recent ISO timestamp
+#      - uptimeSec   : > 0
+
+# 3. If the panel shows 503 not_configured - IRESS_WORKER_URL is unset or empty on Vercel:
+vercel --scope autonama-group env ls | Select-String IRESS_WORKER_URL
+
+# 4. If 503 unreachable - the public domain is wrong, the port is not 8765, or the
+#    Railway service crashed. Check Railway -> Iress-Worker -> Logs for [iress-ingest] boot lines.
+
+# 5. If 401 unauthorized - WORKER_HTTP_TOKEN on Vercel does not match the Railway one.
+vercel --scope autonama-group env ls | Select-String WORKER_HTTP_TOKEN
+
+# 6. Live ticker spot-check (Path A - worker -> Supabase -> BFF):
+curl.exe "$url/api/quotes?symbols=NPN,BHG,AGL&exchange=JSE" | Select-String mode,supabaseCount,source
+
+# 7. Live orders spot-check (Path B - BFF -> worker -> IRESS SOAP):
+curl.exe "$url/api/orders/live?account=ACC1&filter=2" | Select-String ok,code,error
+```
+
+Successful shape from `/api/integration/health` (after a few seconds warmup):
+
+```json
+{
+  "ok": true,
+  "workerId": "iress-ingest",
+  "iressMode": "live",
+  "sessionCached": true,
+  "services": ["IOSPlus"],
+  "accounts": ["ACC1"],
+  "lastQuoteSyncAt": "2026-06-12T19:32:11.000Z",
+  "uptimeSec": 412
+}
+```
 
 ---
 

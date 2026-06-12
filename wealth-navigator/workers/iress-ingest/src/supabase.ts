@@ -29,6 +29,14 @@ export async function writeHeartbeat(
   env: WorkerEnv,
   payload: HeartbeatPayload,
 ): Promise<void> {
+  // Surface the env state the operator needs to see from the integration
+  // page: how many symbols the worker covers, which exchanges it polls,
+  // and — most importantly — whether `IRESS_ACCOUNT_CODE` is configured
+  // (the worker's order poll loop is a no-op without it).
+  const accounts = (env.iressAccountCode ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   const row = {
     worker_id: payload.workerId,
     service_name: "iress-ingest",
@@ -39,6 +47,13 @@ export async function writeHeartbeat(
     metadata: {
       ...(payload.metadata ?? {}),
       symbols_covered: payload.symbolsCovered ?? env.watchlistSymbols,
+      // Stable list of exchanges per watchlist symbol so the UI can show
+      // the rate-code routing (FX for USDZAR, MM for JIBAR_3M).
+      symbol_exchanges: env.watchlistExchanges,
+      // Order-mirror readiness — the integration page surfaces this as
+      // "open-orders panel will stay empty" when the list is empty.
+      accounts,
+      account_configured: accounts.length > 0,
     },
     updated_at: new Date().toISOString(),
   };

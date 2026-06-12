@@ -12,6 +12,7 @@ import { createWorkerSupabase, writeHeartbeat } from "./supabase";
 import { runHealthLoop } from "./health";
 import { pollAccountsForOrders } from "./orders";
 import { startHttpApi } from "./http-api";
+import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
 
 const env = loadWorkerEnv();
 
@@ -45,6 +46,7 @@ const supabase = createWorkerSupabase(env);
 let shuttingDown = false;
 let lastQuoteSyncAt: string | undefined;
 let lastAccountCode = env.iressAccountCode;
+const timeSeriesConfig = loadTimeSeriesConfig(env);
 
 function logStartup(): void {
   console.info(
@@ -129,6 +131,43 @@ async function orderLoop(): Promise<void> {
   }
 }
 
+async function timeSeriesLoop(): Promise<void> {
+  if (timeSeriesConfig.intervalSec <= 0) return;
+  while (!shuttingDown) {
+    try {
+      const result = await syncTimeSeries({
+        env,
+        config: timeSeriesConfig,
+        sessions,
+        supabase,
+      });
+      console.info(
+        JSON.stringify({
+          level: "info",
+          event: "time_series_sync_complete",
+          source: "iress-worker",
+          requested: {
+            index: result.requestedIndex,
+            sector: result.requestedSector,
+            curve: result.requestedCurve,
+          },
+          ok: {
+            index: result.indexPoints,
+            sector: result.sectorPoints,
+            curve: result.curvePoints,
+          },
+          errors: result.errors,
+          entitlementRequired: result.entitlementRequired,
+        }),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] time series sync error: ${msg}`);
+    }
+    await sleep(timeSeriesConfig.intervalSec * 1000);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -168,6 +207,7 @@ void runHealthLoop({
 });
 void quoteLoop();
 void orderLoop();
+void timeSeriesLoop();
 
 // Read-only HTTP API — bound unless explicitly disabled. The Vercel BFF
 // reverse-proxies /orders, /orders/stream, and /health from these handlers

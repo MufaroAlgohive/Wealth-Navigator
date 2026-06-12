@@ -1,6 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { IressError } from "@/lib/iress/errors";
+import type { WorkerEnv } from "../../workers/iress-ingest/src/env";
+
+/**
+ * Minimal WorkerEnv for unit tests — the worker reads more from env
+ * vars than it uses directly, and the new `watchlistEntries` /
+ * `watchlistExchanges` fields aren't read by `syncWatchlistQuotes` itself.
+ */
+function makeEnv(overrides: Partial<WorkerEnv> = {}): WorkerEnv {
+  return {
+    workerId: "w",
+    iressMode: "live",
+    dryRun: true,
+    allowWrites: false,
+    heartbeatSec: 30,
+    quoteIntervalSec: 15,
+    orderPollIntervalSec: 60,
+    watchlistSymbols: ["NPN"],
+    watchlistEntries: [{ symbol: "NPN", kind: "equity" }],
+    watchlistExchanges: {},
+    instrumentSync: false,
+    supabaseUrl: "",
+    supabaseServiceKey: "",
+    iressAccountCode: "",
+    applicationLabel: "lbl",
+    defaultExchange: "JSE",
+    fxExchange: "FX",
+    moneyMarketExchange: "MM",
+    ...overrides,
+  };
+}
 
 describe("syncWatchlistQuotes session resilience", () => {
   afterEach(() => {
@@ -25,22 +55,7 @@ describe("syncWatchlistQuotes session resilience", () => {
 
     const { syncWatchlistQuotes } = await import("../../workers/iress-ingest/src/quotes");
     const result = await syncWatchlistQuotes(
-      {
-        workerId: "w",
-        iressMode: "live",
-        dryRun: true,
-        allowWrites: false,
-        heartbeatSec: 30,
-        quoteIntervalSec: 15,
-        orderPollIntervalSec: 60,
-        watchlistSymbols: ["NPN"],
-        instrumentSync: false,
-        supabaseUrl: "",
-        supabaseServiceKey: "",
-        iressAccountCode: "",
-        applicationLabel: "lbl",
-        defaultExchange: "JSE",
-      },
+      makeEnv(),
       { withSession } as never,
       null,
     );
@@ -56,22 +71,7 @@ describe("syncWatchlistQuotes empty / error visibility", () => {
     vi.restoreAllMocks();
   });
 
-  const env = {
-    workerId: "w",
-    iressMode: "live",
-    dryRun: true,
-    allowWrites: false,
-    heartbeatSec: 30,
-    quoteIntervalSec: 15,
-    orderPollIntervalSec: 60,
-    watchlistSymbols: ["NPN"],
-    instrumentSync: false,
-    supabaseUrl: "",
-    supabaseServiceKey: "",
-    iressAccountCode: "",
-    applicationLabel: "lbl",
-    defaultExchange: "JSE",
-  };
+  const env = makeEnv();
 
   function mockClient(behavior: (securityCode: string) => Promise<unknown>) {
     return {

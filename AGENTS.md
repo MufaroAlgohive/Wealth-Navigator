@@ -1,29 +1,29 @@
 ## Learned User Preferences
 
 - IRESS Web Services credentials (`IRESS_USERNAME`, `IRESS_PASSWORD`, `IRESS_COMPANY_NAME`) are server-side SOAP session creds only — never application user login or browser pre-fill
-- App login stays dev-only `admin`/`admin` until real auth (Supabase or similar); personas live at `/oems`, `/wm`, `/strategist`, `/admin`, `/business`, `/fc/overview`
+- Replace dev `admin`/`admin` app login with Supabase Authentication for production users
 - `/oems` is the main entry after login, not a marketing landing page
 - Login page should not show demo persona cards or institutional marketing pitch blocks
 - Theme: purple accent on white (light) and dark slate-purple (dark)
 - Prefer basic IRESS endpoint lists (method names grouped by namespace) over verbose rationales for email attachments
 - IRESS follow-up emails to Charles should be reply-toned on the existing thread, not cold first-contact
-- Cannot test IRESS locally reliably; prioritize production Railway worker + Supabase ingestion over local dev polish
-- Clear LIVE vs MOCK/SEED labeling in the UI wherever data source matters
+- Do not run local live IRESS or set `IRESS_MODE=live` on Vercel while Railway worker holds the single CT seat; Vercel uses `IRESS_MODE=mock` + `USE_SUPABASE_QUOTES=true` for real worker-ingested Supabase quotes
+- Clear LIVE/MOCK/SEED/SUPABASE/STREAM/UNCONFIGURED/WORKER labels and no fake/seed data on production pages; honest empty states when source is unconfigured
 - Dispatches multi-agent workers for larger implementation batches
-- Wants explicit opt-in for LIVE writes (worker defaults `IRESS_WORKER_DRY_RUN=1` and `SUPABASE_ALLOW_WRITES=0`; production flips consciously)
-- Production go-live step 1: Railway `iress-ingest` worker connected to IRESS with endpoints verified before dashboard/UI work
+- Wants explicit opt-in for LIVE writes (worker defaults `IRESS_WORKER_DRY_RUN=1` and `SUPABASE_ALLOW_WRITES=0`; production needs both flipped for quote + `worker_session_metadata` writes)
+- Production go-live step 1: Railway `Iress-Worker` connected to IRESS with endpoints verified before dashboard/UI work
 
 ## Learned Workspace Facts
 
-- Next.js app lives in `wealth-navigator/`; root `package.json` delegates `npm run dev` via `npm --prefix wealth-navigator`
-- Stack: Vercel (Next.js 16 + Bun) + Supabase (auth/DB/audit/realtime quotes) + Railway `workers/iress-ingest/` (holds the single IRESS CT license seat; DB-first ingest path)
+- Next.js app lives in `wealth-navigator/`; root `package.json` delegates `npm run dev` via `npm --prefix wealth-navigator`; deploy from repo root: `vercel --scope autonama-group --prod` against project `autonama-group/wealth-navigator` (Root Directory `wealth-navigator`)
+- Stack: Vercel (Next.js 16 + Bun; prod `wealth-navigator-one.vercel.app`) + Supabase (auth/DB/audit/realtime quotes; production MyMint project ref `nnwzhxfjpjbzujevwzlh`, MCP `user-supabase - MyMint`; keys in gitignored `supabase_creds` `TEST_SUPABASE_*`; Railway and Vercel `SUPABASE_URL` must both point at MyMint — not `mfxnghmuccevsxwcetej`) + Railway `Iress-Worker` (service name in Railway UI; directory `workers/iress-ingest/`; Dockerfile `workers/iress-ingest/Dockerfile`; worker `tsconfig.json` needs `baseUrl: "../.."` for `@/` in Docker; single replica holds CT seat; DB-first ingest)
+- BFF API routes under `src/app/api/`: `/api/orders` (Supabase-backed), `/api/orders/live` (worker passthrough), `/api/quotes` (DB-first when `USE_SUPABASE_QUOTES=true`), `/api/worker-health` and `/api/integration/health` (worker heartbeat), plus IRESS session/legacy `/api/iress/{health,provenance,quotes,session}` and `/api/ticks` SSE; UI must call these, never raw IRESS SOAP
+- Data tiering T0–T6: T0 reference/master (`securities_c`), T1 authoritative snapshots (`stock_intraday_c` worker upsert + Realtime push), T2 display-only ticks (ephemeral SSE; do not persist), T3 orders/audit (`oems_order_audit`), T4 books/P&L, T5 vendor content (SENS/news/macro — seed until contracted), T6 synthetic/demo (PCA, fake depth)
 - OEMS trading desk is the primary product surface; IRESS V4 SOAP integration is the technical centerpiece
 - Rebuilt from Lovable Codebase (Vite/React) to Next.js 16, React 19, Bun, TypeScript strict, Tailwind, shadcn/ui
-- IRESS adapter switches mock vs live via `IRESS_MODE`; live SOAP targets `webservices-ct.iress.co.za/v4` with 17-method `IressClient` surface; `IRESSSessionStart` uses separate `UserName` + `CompanyName` (use `parseIressUserCode()` in `src/lib/iress/config.ts` to split `user@company`)
-- Product vision and IRESS reference docs live under `Documentation & Vision/` (`iress-v4-docs`, `Email`, programmers guide PDF)
-- IRESS email deliverables include `mint-iress-email.txt` plus basic endpoint lists (`mint-iress-v4-endpoints-*-basic.txt`)
-- Stack/data-source docs: `wealth-navigator/docs/STACK_ARCHITECTURE.md`, `docs/DATA_PROVENANCE.md`; go-live runbook `docs/MINT_GO_LIVE_RUNBOOK.html`
+- IRESS adapter switches mock vs live via `IRESS_MODE`; live SOAP targets `webservices-ct.iress.co.za/v4` with 17-method `IressClient` surface; `IRESSSessionStart` uses separate `UserName` + `CompanyName` (use `parseIressUserCode()` in `src/lib/iress/config.ts` to split `user@company`); `ServiceSessionStart` (IOS+/IPS/FIX+) HTTP 500 is non-fatal — quote ingest uses `PricingQuoteGet` with `IRESSSessionKey`; only Railway worker runs `IRESS_MODE=live`
+- IRESS CT row shape variance: NPN sends bare `<Last>`; AGL/FSR/MTN/SBK/BHG send `LastPrice`/`PreviousClosePrice` integer cents; worker `mapQuote`/`resolveQuoteLast` validates `Last` against the `Close` anchor and **skips writes** when only a stale `LastPrice` is present (BHG pattern)
+- Product vision and IRESS reference docs live under `Documentation & Vision/` (`iress-v4-docs`, `Email`, programmers guide PDF); IRESS email deliverables include `mint-iress-email.txt` plus basic endpoint lists (`mint-iress-v4-endpoints-*-basic.txt`); stack/data-source docs: `wealth-navigator/docs/STACK_ARCHITECTURE.md`, `docs/DATA_PROVENANCE.md`, `docs/REMAINING_GAPS.md`; go-live runbook `docs/MINT_GO_LIVE_RUNBOOK.html`; Vercel setup `wealth-navigator/docs/VERCEL_DEPLOY_SETUP.md`
 - Never put IRESS passwords or API keys in `AGENTS.md`, client bundles, or `NEXT_PUBLIC_*` variables
-- IRESS CT is single-seat; SOAP error 25008 = "No more licenses available" (orphaned sessions); probe + worker must call `IRESSSessionEnd` and wait 3s (`LICENSE_RELEASE_DELAY_MS`); if license held on another machine, log off there before starting worker
-- Supabase LIVE project ref `mfxnghmuccevsxwcetej`; TEST/E2E project ref `nnwzhxfjpjbzujevwzlh`; `supabase_creds` (gitignored) holds TEST keys (`TEST_SUPABASE_*`); LIVE keys kept separate; MyMint MCP (`user-supabase - MyMint`) for test migrations — not `plugin-supabase-supabase` (wrong project)
-- All Supabase migrations are review-only and user-pasted in SQL editor (worker never auto-applies DDL on LIVE); idempotent SQL only; ingest targets `securities_c` + `stock_intraday_c` (cents, `supabase_realtime`); `USE_SUPABASE_QUOTES=true` routes UI quote reads to Supabase
+- IRESS CT is single-seat; SOAP fault 25008 = no licenses; proper logout is `ServiceSessionEnd` × N → `IRESSSessionEnd` → 3s (`LICENSE_RELEASE_DELAY_MS`); recovery via `bun run iress:logout` or `IRESS_FORCE_KICK_ALL=1`; worker auto-kicks first-boot 25008 when `worker_session_metadata` has no `iress_session_key`; stop Railway service (scale-to-0 unavailable on some plans) to release seat
+- All Supabase migrations are review-only and user-pasted in SQL editor (worker never auto-applies DDL on LIVE); idempotent SQL only; ingest targets `securities_c` + `stock_intraday_c` (cents, `supabase_realtime`); sticky `ApplicationID` + session key in `worker_session_metadata`; `USE_SUPABASE_QUOTES=true` routes UI quote reads to Supabase

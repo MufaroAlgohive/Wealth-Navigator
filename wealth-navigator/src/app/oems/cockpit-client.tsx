@@ -69,7 +69,13 @@ interface CockpitClientProps {
   mastheadDate: string;
 }
 
-const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL"];
+/**
+ * Symbols the Cockpit polls once per quote interval. The mover set sits on
+ * the existing JSE Top-40; the FX / money-market entries (USDZAR, JIBAR_3M)
+ * ride the same `/api/quotes` call so the KPI tiles update without
+ * triggering a second BFF request.
+ */
+const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL", "USDZAR", "JIBAR_3M"];
 
 export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const { data } = useIress();
@@ -90,6 +96,43 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const moversQ = useQuery({ queryKey: ["movers"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
   const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), enabled: !realDataOnly, ...queryOpts("reference") });
   const sensQ = useQuery({ queryKey: ["sens"], queryFn: () => data.sens(), enabled: !realDataOnly, ...queryOpts("reference") });
+
+  // Tier 2 BFFs — DB-first when realDataOnly. Falls back to seed in
+  // mock/dev (realDataOnly=false). The BFF returns `source` so the panel
+  // can show a precise "TimeSeriesGet2 entitlement required" message when
+  // the table is empty.
+  const sectorsBffQ = useQuery({
+    queryKey: ["bff-sectors"],
+    queryFn: () =>
+      fetchJson<{
+        sectors: Array<{
+          code: string;
+          name: string;
+          changePct: number;
+          last: number;
+          asOf?: string;
+          sector: string;
+          weight: number;
+          change: number;
+        }>;
+        source: string;
+        message?: string;
+      }>("/api/sectors"),
+    enabled: realDataOnly,
+    refetchInterval: 30_000,
+  });
+  const curveBffQ = useQuery({
+    queryKey: ["bff-curve-zar-nss"],
+    queryFn: () => fetchJson<{ code: string; points: Array<{ tenor: string; years: number; yield: number; asOf: string }>; source: string; message?: string }>("/api/curves/ZAR_NSS"),
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
+  });
+  const alsiBffQ = useQuery({
+    queryKey: ["bff-index-J203"],
+    queryFn: () => fetchJson<{ code: string; points: Array<{ t: number; v: number }>; source: string; message?: string }>("/api/indices/J203"),
+    enabled: realDataOnly,
+    refetchInterval: 30_000,
+  });
 
   const strategies = strategiesQ.data ?? [];
   const indices = indicesQ.data ?? [];
@@ -166,12 +209,34 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               sub={`${rejected} rejected · audit`}
               tone={openOrders.length > 0 ? "warning" : "default"}
             />
-            <KpiTile icon={<Banknote className="h-3.5 w-3.5" />} label="JIBAR 3M" value="—" sub={FEED_NOT_CONFIGURED} />
+            {/*
+              JIBAR 3M + USD/ZAR wire through the worker → stock_intraday_c
+              path when the watchlist contains `JIBAR_3M` (exchange MM) and
+              `USDZAR` (exchange FX). The BFF serves the most recent intraday
+              tick for both. NumberCell renders "—" if no live tick is in
+              the stream yet; the sub-line is the honest diagnostic.
+            */}
+            <KpiTile
+              icon={<Banknote className="h-3.5 w-3.5" />}
+              label="JIBAR 3M"
+              live={{ sym: "JIBAR_3M", fallback: 0, decimals: 3, suffix: "%" }}
+              value=""
+              sub={
+                <span>
+                  IRESS <span className="font-mono">MM · JIBAR_3M</span>
+                </span>
+              }
+            />
             <KpiTile
               icon={<TrendingUp className="h-3.5 w-3.5" />}
               label="USD/ZAR"
+              live={{ sym: "USDZAR", fallback: 0, decimals: 4, showChange: true }}
               value=""
-              sub={<NumberCell sym="USDZAR" decimals={4} size="xs" showChange />}
+              sub={
+                <span>
+                  IRESS <span className="font-mono">FX · USDZAR</span>
+                </span>
+              }
             />
           </>
         ) : (
@@ -228,9 +293,43 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       {/* Row 1: heatmap | govi | movers */}
       <div className="grid grid-cols-12 gap-2.5">
         {realDataOnly ? (
-          <Panel title="Sector Heatmap" endpoint="PricingQuoteGet · sector indices" dataSource="unconfigured" className="col-span-12 lg:col-span-5 h-[300px]">
-            <EmptyDataState message="Sector index quotes require IRESS entitlement (J200 / sector indices)." />
-          </Panel>
+          sectorsBffQ.isLoading ? (
+            <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
+          ) : sectorsBffQ.isError || (sectorsBffQ.data?.source === "entitlement-required") ? (
+            <Panel
+              title="Sector Heatmap"
+              endpoint="GET /api/sectors"
+              dataSource={sectorsBffQ.data?.source === "entitlement-required" ? "unconfigured" : "unavailable"}
+              className="col-span-12 lg:col-span-5 h-[300px]"
+            >
+              <EmptyDataState
+                title={sectorsBffQ.data?.source === "entitlement-required" ? "TimeSeriesGet2 entitlement required" : "Sector data unavailable"}
+                message={
+                  sectorsBffQ.data?.message ??
+                  "Sector index quotes require TimeSeriesGet2 entitlement (J200 / sector codes). Ask Charles to enable on the production account."
+                }
+              />
+            </Panel>
+          ) : sectorsBffQ.data && sectorsBffQ.data.sectors.length > 0 ? (
+            <SectorHeatmap
+              data={sectorsBffQ.data.sectors.map((s) => ({
+                sector: s.sector,
+                weight: s.weight,
+                change: s.change,
+              }))}
+              dataSource="supabase"
+              className="col-span-12 lg:col-span-5 h-[300px]"
+            />
+          ) : (
+            <Panel
+              title="Sector Heatmap"
+              endpoint="GET /api/sectors"
+              dataSource="unconfigured"
+              className="col-span-12 lg:col-span-5 h-[300px]"
+            >
+              <EmptyDataState message="Sector index data not yet populated — worker has not synced a J200 series." />
+            </Panel>
+          )
         ) : sectorsQ.isLoading ? (
           <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
         ) : sectorsQ.isError ? (
@@ -244,9 +343,66 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         )}
 
         {realDataOnly ? (
-          <Panel title="ZAR Sovereign Curve · NSS" endpoint="TimeSeriesGet2" className="col-span-12 lg:col-span-4 h-[300px]">
-            <EmptyDataState message="Yield curve feed not configured." />
-          </Panel>
+          curveBffQ.isLoading ? (
+            <PanelSkeleton rows={4} height="h-[300px]" className="col-span-12 lg:col-span-4" />
+          ) : curveBffQ.isError || (curveBffQ.data?.source === "entitlement-required") ? (
+            <Panel
+              title="ZAR Sovereign Curve · NSS"
+              endpoint="GET /api/curves/ZAR_NSS"
+              dataSource={curveBffQ.data?.source === "entitlement-required" ? "unconfigured" : "unavailable"}
+              className="col-span-12 lg:col-span-4 h-[300px]"
+            >
+              <EmptyDataState
+                title={curveBffQ.data?.source === "entitlement-required" ? "TimeSeriesGet2 entitlement required" : "Curve data unavailable"}
+                message={
+                  curveBffQ.data?.message ??
+                  "Yield curve feed requires TimeSeriesGet2 entitlement. Ask Charles to enable on the production account."
+                }
+              />
+            </Panel>
+          ) : curveBffQ.data && curveBffQ.data.points.length > 0 ? (
+            <Panel
+              title="ZAR Sovereign Curve · NSS"
+              endpoint="GET /api/curves/ZAR_NSS"
+              dataSource="supabase"
+              className="col-span-12 lg:col-span-4 h-[300px]"
+              right={
+                <span className="font-mono">
+                  10Y ·{" "}
+                  {curveBffQ.data.points.find((p) => Math.round(p.years) === 10)?.yield.toFixed(2) ?? "—"}%
+                </span>
+              }
+            >
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={curveBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="goviGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                  <XAxis dataKey="tenor" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
+                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 0.3", "dataMax + 0.3"]} tickFormatter={(v) => `${v}%`} />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                    formatter={(v: number) => [`${v.toFixed(2)}%`, "Yield"]}
+                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
+                  />
+                  <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
+                </LineChart>
+              </ResponsiveContainer>
+            </Panel>
+          ) : (
+            <Panel
+              title="ZAR Sovereign Curve · NSS"
+              endpoint="GET /api/curves/ZAR_NSS"
+              dataSource="unconfigured"
+              className="col-span-12 lg:col-span-4 h-[300px]"
+            >
+              <EmptyDataState message="Yield curve feed not yet populated — worker has not synced a NSS series." />
+            </Panel>
+          )
         ) : curveQ.isLoading ? (
           <PanelSkeleton rows={4} height="h-[300px]" className="col-span-12 lg:col-span-4" />
         ) : (
@@ -317,13 +473,86 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       {/* Row 2: ALSI intraday | SENS feed */}
       <div className="grid grid-cols-12 gap-2.5">
         {realDataOnly ? (
-          <Panel
-            title="JSE All Share · Intraday"
-            endpoint="TimeSeriesGet2 · J203"
-            className="col-span-12 lg:col-span-8 h-[320px]"
-          >
-            <EmptyDataState message="ALSI intraday requires TimeSeriesGet2 entitlement." />
-          </Panel>
+          alsiBffQ.isLoading ? (
+            <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
+          ) : alsiBffQ.isError || (alsiBffQ.data?.source === "entitlement-required") ? (
+            <Panel
+              title="JSE All Share · Intraday"
+              endpoint="GET /api/indices/J203"
+              dataSource={alsiBffQ.data?.source === "entitlement-required" ? "unconfigured" : "unavailable"}
+              className="col-span-12 lg:col-span-8 h-[320px]"
+            >
+              <EmptyDataState
+                title={alsiBffQ.data?.source === "entitlement-required" ? "TimeSeriesGet2 entitlement required" : "ALSI data unavailable"}
+                message={
+                  alsiBffQ.data?.message ??
+                  "ALSI intraday requires TimeSeriesGet2 entitlement. Ask Charles to enable on the production account."
+                }
+              />
+            </Panel>
+          ) : alsiBffQ.data && alsiBffQ.data.points.length > 0 ? (
+            <Panel
+              title="JSE All Share · Intraday"
+              endpoint="GET /api/indices/J203"
+              dataSource="supabase"
+              className="col-span-12 lg:col-span-8 h-[320px]"
+              right={(() => {
+                const pts = alsiBffQ.data.points;
+                if (pts.length === 0) return null;
+                const last = pts[pts.length - 1];
+                const first = pts[0];
+                if (!last || !first) return null;
+                const change = last.v - first.v;
+                const changePct = first.v > 0 ? (change / first.v) * 100 : 0;
+                return (
+                  <div className="font-mono text-right">
+                    <span className="text-sm font-semibold">
+                      {last.v.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}
+                    </span>
+                    <span className={cn("ml-2 text-xs", changePct >= 0 ? "text-up" : "text-down")}>
+                      {changePct >= 0 ? "+" : ""}{change.toFixed(2)} ({formatPct(changePct)})
+                    </span>
+                  </div>
+                );
+              })()}
+            >
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={alsiBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="alsiGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                  <XAxis
+                    dataKey="t"
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    stroke="hsl(var(--border))"
+                    interval={Math.max(1, Math.floor(alsiBffQ.data.points.length / 8))}
+                    tickFormatter={(v) => new Date(v).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}
+                  />
+                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 40", "dataMax + 40"]} />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
+                    labelFormatter={(v) => new Date(v as number).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}
+                  />
+                  <ReferenceLine y={alsiBffQ.data.points[0]?.v ?? 0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" label={{ value: "Open", fontSize: 9, fill: "hsl(var(--muted-foreground))", position: "insideTopLeft" }} />
+                  <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </Panel>
+          ) : (
+            <Panel
+              title="JSE All Share · Intraday"
+              endpoint="GET /api/indices/J203"
+              dataSource="unconfigured"
+              className="col-span-12 lg:col-span-8 h-[320px]"
+            >
+              <EmptyDataState message="ALSI intraday not yet populated — worker has not synced a J203 series." />
+            </Panel>
+          )
         ) : indicesQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
         ) : (
@@ -584,6 +813,18 @@ function OrderStatePill({ state }: { state: string }) {
       {state}
     </Badge>
   );
+}
+
+/**
+ * Tiny JSON fetch helper for BFF endpoints. The standard `fetch` call is
+ * enough — we don't need to thread headers, cookies, or retries through
+ * React Query for these read-only polls. On non-2xx we throw so the
+ * `useQuery` flips to `isError` and the panel renders the error shell.
+ */
+async function fetchJson<T>(path: string): Promise<T> {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`${path} ${res.status}`);
+  return (await res.json()) as T;
 }
 
 const SENS_TONE: Record<string, "primary" | "info" | "success" | "neutral" | "warning" | "destructive"> = {

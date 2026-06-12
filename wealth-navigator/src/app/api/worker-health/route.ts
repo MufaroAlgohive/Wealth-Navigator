@@ -13,6 +13,9 @@ export interface WorkerHealthRow {
   metadata: Record<string, unknown>;
   updated_at: string;
   symbols_covered?: string[];
+  symbol_exchanges?: Record<string, string>;
+  accounts?: string[];
+  account_configured?: boolean;
 }
 
 export async function GET() {
@@ -36,10 +39,20 @@ export async function GET() {
   const workers = (data ?? []).map((row) => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const symbols = meta.symbols_covered;
+    const symbolExchanges = meta.symbol_exchanges;
+    const accounts = meta.accounts;
     return {
       ...row,
       metadata: meta,
       symbols_covered: Array.isArray(symbols) ? (symbols as string[]) : undefined,
+      symbol_exchanges:
+        symbolExchanges && typeof symbolExchanges === "object" && !Array.isArray(symbolExchanges)
+          ? (symbolExchanges as Record<string, string>)
+          : undefined,
+      accounts: Array.isArray(accounts) ? (accounts as string[]) : [],
+      account_configured: typeof meta.account_configured === "boolean"
+        ? (meta.account_configured as boolean)
+        : Array.isArray(accounts) && accounts.length > 0,
     } satisfies WorkerHealthRow;
   });
 

@@ -1199,7 +1199,7 @@ describe("resolveQuoteLast", () => {
     expect(scale).toBe(0.01);
     const num = (...keys: string[]) => {
       for (const k of keys) {
-        const v = {
+        const priceMap: Record<string, number> = {
           LastPrice: 2445,
           OpenPrice: 52800,
           PreviousClosePrice: 52850,
@@ -1207,8 +1207,9 @@ describe("resolveQuoteLast", () => {
           LowPrice: 52700,
           TotalValue: 99792000,
           TotalVolume: 189000,
-        }[k as keyof typeof v];
-        if (v !== undefined && v !== null && v !== "") {
+        };
+        const v = priceMap[k];
+        if (v !== undefined) {
           const n = Number(v);
           if (Number.isFinite(n)) return n * scale;
         }

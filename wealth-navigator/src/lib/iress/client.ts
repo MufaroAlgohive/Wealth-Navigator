@@ -93,6 +93,7 @@ export interface PricingQuoteGetRequest {
 export interface TimeSeriesGet2Request {
   Header: IressHeader;
   Code: string;
+  Exchange?: string;
   From?: string; // ISO date
   To?: string;
   Interval?: "tick" | "1m" | "5m" | "1h" | "1d";

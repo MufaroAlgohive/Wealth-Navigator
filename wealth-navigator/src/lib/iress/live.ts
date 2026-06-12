@@ -664,6 +664,7 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         }),
         parameters: {
           Code: req.Code,
+          Exchange: req.Exchange,
           From: req.From,
           To: req.To,
           Interval: req.Interval,
