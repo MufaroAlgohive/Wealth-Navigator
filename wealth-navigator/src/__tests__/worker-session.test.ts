@@ -149,6 +149,119 @@ describe("WorkerSessionManager sticky ApplicationID", () => {
     );
   });
 
+  it("purges shutdown-persisted session key before IRESSSessionStart", async () => {
+    const tearDown = vi.fn().mockResolvedValue(true);
+    const bringUp = vi.fn().mockResolvedValue({
+      iressSession: {
+        IRESSSessionKey: "KEY-FRESH@WebServicesCT",
+        SessionNumber: 5,
+        SessionTimeout: 120,
+        ApplicationID: "Mint-OEMS-Worker-railway-1",
+      },
+      serviceKeys: {},
+    });
+    const update = vi.fn().mockReturnThis();
+    const supabase = {
+      from: vi.fn(() => ({
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: {
+            application_id: "Mint-OEMS-Worker-railway-1",
+            iress_session_key: "KEY-STALE@WebServicesCT",
+            expires_at: "2026-06-12T10:00:00.000Z",
+            metadata: { shutdown: true },
+          },
+          error: null,
+        }),
+        upsert: vi.fn().mockResolvedValue({ error: null }),
+        update,
+      })),
+    };
+
+    vi.doMock("@/lib/iress/index", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("@/lib/iress/index")>();
+      return {
+        ...actual,
+        bringUpMintSessionFromEnv: bringUp,
+        tearDownIressWireSession: tearDown,
+        iressConfig: { mode: "live" },
+      };
+    });
+
+    const { WorkerSessionManager } = await import("../../workers/iress-ingest/src/session");
+    const mgr = new WorkerSessionManager({
+      workerId: "iress-ingest-railway-1",
+      node: "railway-1",
+      applicationLabel: "Mint-OEMS-Worker",
+      supabase: supabase as never,
+      allowWrites: true,
+      dryRun: false,
+    });
+
+    await mgr.getSession();
+    expect(tearDown).toHaveBeenCalledWith(
+      expect.objectContaining({ iressSessionKey: "KEY-STALE@WebServicesCT" }),
+    );
+    expect(update).toHaveBeenCalled();
+    expect(bringUp).toHaveBeenCalled();
+  });
+
+  it("recovers from logged-off PricingQuoteGet via session rebuild", async () => {
+    let bringUpCalls = 0;
+    const bringUp = vi.fn().mockImplementation(async () => {
+      bringUpCalls += 1;
+      return {
+        iressSession: {
+          IRESSSessionKey: bringUpCalls === 1 ? "KEY-DEAD@WebServicesCT" : "KEY-LIVE@WebServicesCT",
+          SessionNumber: bringUpCalls,
+          SessionTimeout: 120,
+          ApplicationID: "app",
+        },
+        serviceKeys: {},
+      };
+    });
+    const tearDown = vi.fn().mockResolvedValue(true);
+
+    vi.doMock("@/lib/iress/index", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("@/lib/iress/index")>();
+      return {
+        ...actual,
+        bringUpMintSessionFromEnv: bringUp,
+        tearDownIressWireSession: tearDown,
+        iressConfig: { mode: "live" },
+      };
+    });
+
+    const { WorkerSessionManager } = await import("../../workers/iress-ingest/src/session");
+    const mgr = new WorkerSessionManager({
+      workerId: "w-logged-off",
+      node: "n1",
+      applicationLabel: "lbl",
+      supabase: null,
+      allowWrites: false,
+      dryRun: true,
+    });
+
+    await mgr.getSession();
+    const result = await mgr.withSession(async () => {
+      if (bringUpCalls === 1) {
+        throw new IressError(
+          25022,
+          "PricingQuoteGet",
+          "soap:Receiver — not logged in. Current state: Logged off",
+        );
+      }
+      return "ok";
+    });
+
+    expect(result).toBe("ok");
+    expect(bringUp).toHaveBeenCalledTimes(2);
+    expect(tearDown).toHaveBeenCalledWith(
+      expect.objectContaining({ iressSessionKey: "KEY-DEAD@WebServicesCT" }),
+    );
+  });
+
   it("does not invalidate the cached session on non-25001 SOAP faults", async () => {
     const bringUp = vi.fn().mockResolvedValue({
       iressSession: {

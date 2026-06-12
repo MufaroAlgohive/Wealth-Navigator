@@ -14,7 +14,7 @@
 
 import { getIressClient } from "../../../src/lib/iress/index";
 import { iressQueries } from "../../../src/lib/iress/mock";
-import { IressError } from "../../../src/lib/iress/errors";
+import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import type { Order, OrderState } from "../../../src/types/iress";
 import type { WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
@@ -142,7 +142,9 @@ export async function pollAccountsForOrders(
             const rows = await fetchOrdersForAccount(session, account);
             orders = orders.concat(rows);
           } catch (err) {
-            if (err instanceof IressError && err.code === 25001) throw err; // bubble for retry
+            if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
+              throw err;
+            }
             const msg = err instanceof Error ? err.message : String(err);
             console.warn(`[iress-ingest] order poll(${account}) failed: ${msg}`);
           }

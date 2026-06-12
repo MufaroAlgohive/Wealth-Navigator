@@ -1,4 +1,5 @@
-import { getIressClient, iressConfig } from "../../../src/lib/iress/index";
+import { getIressClient, iressConfig, redactSessionKeyForLog } from "../../../src/lib/iress/index";
+import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { iressQueries } from "../../../src/lib/iress/mock";
 import type { Quote } from "../../../src/types/iress";
 import type { WorkerEnv } from "./env";
@@ -146,12 +147,16 @@ export async function syncWatchlistQuotes(
   if (isLive) {
     try {
       await sessions.withSession(async (session) => {
+        console.info(
+          `[iress-ingest] quote sync start iressKey=${redactSessionKeyForLog(session.iressSessionKey)} symbols=${env.watchlistSymbols.length}`,
+        );
         for (const symbol of env.watchlistSymbols) {
           const normalised = normaliseSymbol(symbol);
           try {
             const quote = await fetchLiveQuote(session, normalised, exchange);
             if (quote) quotes.push({ symbol: normalised, quote });
           } catch (err) {
+            if (isIressSessionDeadError(err)) throw err;
             const msg = err instanceof Error ? err.message : String(err);
             console.warn(`[iress-ingest] PricingQuoteGet(${normalised}) failed: ${msg}`);
           }

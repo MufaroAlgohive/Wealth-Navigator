@@ -12,9 +12,10 @@ import {
   bringUpMintSessionFromEnv,
   iressConfig,
   LICENSE_RELEASE_DELAY_MS,
+  redactSessionKeyForLog,
   tearDownIressWireSession,
 } from "@/lib/iress/index";
-import { IressError } from "@/lib/iress/errors";
+import { IressError, isIressSessionDeadError } from "@/lib/iress/errors";
 import type { IressService } from "../../../src/types/iress";
 import type { WorkerSupabase } from "./supabase";
 
@@ -51,6 +52,7 @@ interface PersistedSessionRow {
   application_id: string;
   expires_at: string | null;
   iress_session_key: string | null;
+  metadata?: { shutdown?: boolean; applicationLabel?: string; node?: string };
 }
 
 async function readPersistedApplicationId(
@@ -61,7 +63,7 @@ async function readPersistedApplicationId(
   try {
     const { data, error } = await supabase
       .from("worker_session_metadata")
-      .select("application_id, expires_at, iress_session_key")
+      .select("application_id, expires_at, iress_session_key, metadata")
       .eq("worker_id", workerId)
       .maybeSingle();
     if (error) {
@@ -154,6 +156,28 @@ async function persistApplicationId(
   }
 }
 
+async function clearPersistedSessionKey(deps: WorkerSessionDeps): Promise<void> {
+  if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
+    console.info(`[iress-ingest] would clear iress_session_key for ${deps.workerId}`);
+    return;
+  }
+  try {
+    const { error } = await deps.supabase
+      .from("worker_session_metadata")
+      .update({
+        iress_session_key: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("worker_id", deps.workerId);
+    if (error) {
+      console.warn(`[iress-ingest] clearPersistedSessionKey failed: ${error.message}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[iress-ingest] clearPersistedSessionKey threw: ${msg}`);
+  }
+}
+
 async function clearPersistedApplicationId(deps: WorkerSessionDeps): Promise<void> {
   if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
     console.info(`[iress-ingest] would expire worker_session_metadata for ${deps.workerId}`);
@@ -163,6 +187,7 @@ async function clearPersistedApplicationId(deps: WorkerSessionDeps): Promise<voi
     const { error } = await deps.supabase
       .from("worker_session_metadata")
       .update({
+        iress_session_key: null,
         expires_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         metadata: { shutdown: true },
@@ -178,13 +203,14 @@ async function clearPersistedApplicationId(deps: WorkerSessionDeps): Promise<voi
 }
 
 function hashForLog(value: string): string {
-  // Truncated SHA-256 of the session key for log correlation.
-  // We never log the full key.
-  let h = 0;
-  for (let i = 0; i < value.length; i++) {
-    h = (h * 31 + value.charCodeAt(i)) | 0;
-  }
-  return `kh${(h >>> 0).toString(16)}`;
+  return redactSessionKeyForLog(value);
+}
+
+function persistedSessionIsStale(row: PersistedSessionRow | null): boolean {
+  if (!row?.iress_session_key) return true;
+  if (row.metadata?.shutdown === true) return true;
+  if (row.expires_at && Date.parse(row.expires_at) < Date.now()) return true;
+  return false;
 }
 
 export class WorkerSessionManager {
@@ -226,9 +252,51 @@ export class WorkerSessionManager {
     };
   }
 
+  /** End a logged-off / shutdown-persisted key so sticky ApplicationID can mint a live session. */
+  private async purgeStaleWireSession(persisted: PersistedSessionRow): Promise<void> {
+    const staleKey = persisted.iress_session_key;
+    if (!staleKey) return;
+    const reason = persisted.metadata?.shutdown
+      ? "shutdown metadata"
+      : persisted.expires_at && Date.parse(persisted.expires_at) < Date.now()
+        ? "expired metadata"
+        : "stale persisted key";
+    console.info(
+      `[iress-ingest] purging ${reason} before IRESSSessionStart key=${hashForLog(staleKey)}`,
+    );
+    if (iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub") {
+      await tearDownIressWireSession({
+        iressSessionKey: staleKey,
+        releaseDelayMs: LICENSE_RELEASE_DELAY_MS,
+      });
+    }
+    await clearPersistedSessionKey(this.deps);
+  }
+
+  private async recoverDeadSession(staleKey: string | undefined, err: unknown): Promise<void> {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[iress-ingest] dead IRESS session (${msg}) — ending wire session and rebuilding`,
+    );
+    this.invalidate();
+    if (
+      staleKey &&
+      (iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub")
+    ) {
+      await tearDownIressWireSession({
+        iressSessionKey: staleKey,
+        releaseDelayMs: LICENSE_RELEASE_DELAY_MS,
+      });
+    }
+    await clearPersistedSessionKey(this.deps);
+  }
+
   private async startSession(): Promise<WorkerMintSession> {
     const persisted = await readPersistedApplicationId(this.deps.supabase, this.deps.workerId);
-    const neverHeldSeat = !persisted?.iress_session_key;
+    if (persisted?.iress_session_key && persistedSessionIsStale(persisted)) {
+      await this.purgeStaleWireSession(persisted);
+    }
+    const firstBootOrOrphan = persistedSessionIsStale(persisted);
     const applicationId = await this.resolveApplicationId();
     await persistStickyApplicationId(this.deps, applicationId);
     try {
@@ -236,10 +304,14 @@ export class WorkerSessionManager {
         applicationId,
         applicationLabel: this.deps.applicationLabel,
         node: this.deps.node,
-        forceKickOn25008: neverHeldSeat,
+        forceKickOn25008: firstBootOrOrphan,
       });
       this.licenseBackoffUntil = 0;
       const session = this.buildSession(iressSession, serviceKeys, applicationId);
+      const svc = Object.keys(serviceKeys).join(",") || "none";
+      console.info(
+        `[iress-ingest] session ready applicationId=${applicationId} iressKey=${hashForLog(session.iressSessionKey)} services=${svc}`,
+      );
       this.lastPersistedApplicationId = applicationId;
       await persistApplicationId(this.deps, {
         applicationId,
@@ -251,7 +323,7 @@ export class WorkerSessionManager {
     } catch (err) {
       if (err instanceof IressError && err.code === 25008) {
         this.licenseBackoffUntil = Date.now() + LICENSE_EXHAUSTED_BACKOFF_MS;
-        const hint = neverHeldSeat
+        const hint = firstBootOrOrphan
           ? "First-boot auto-kick already attempted; seat may be held by another live client."
           : "Run `bun run iress:logout` from wealth-navigator/ or stop the other IRESS client.";
         console.error(
@@ -290,11 +362,12 @@ export class WorkerSessionManager {
   }
 
   async withSession<T>(fn: (session: WorkerMintSession) => Promise<T>): Promise<T> {
+    const session = await this.getSession();
     try {
-      return await fn(await this.getSession());
+      return await fn(session);
     } catch (err) {
-      if (err instanceof IressError && err.code === 25001) {
-        this.invalidate();
+      if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
+        await this.recoverDeadSession(session.iressSessionKey, err);
         return await fn(await this.getSession());
       }
       throw err;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { IressError, IRESS_SESSION_ERRORS } from "@/lib/iress/errors";
+import { IressError, IRESS_SESSION_ERRORS, isIressSessionDeadError } from "@/lib/iress/errors";
 
 describe("IRESS_SESSION_ERRORS", () => {
   it("contains the 25001-25012 session codes the doc promises", () => {
@@ -14,6 +14,18 @@ describe("IRESS_SESSION_ERRORS", () => {
       expect(message, `code ${code} should have a message`).toBeTypeOf("string");
       expect((message as string).length, `code ${code} message should not be empty`).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("isIressSessionDeadError", () => {
+  it("matches 25014/25019/25022 and logged-off message text", () => {
+    expect(isIressSessionDeadError(new IressError(25022, "PricingQuoteGet"))).toBe(true);
+    expect(
+      isIressSessionDeadError(
+        new IressError(666, "PricingQuoteGet", "soap:Receiver — Current state: Logged off"),
+      ),
+    ).toBe(true);
+    expect(isIressSessionDeadError(new IressError(25008, "IRESSSessionStart"))).toBe(false);
   });
 });
 

@@ -42,6 +42,19 @@ export const IRESS_SESSION_ERRORS = {
 
 export type IressErrorCode = keyof typeof IRESS_SESSION_ERRORS;
 
+/** IRESS session is dead — rebuild parent session (and service sessions). */
+const IRESS_SESSION_DEAD_CODES = new Set([25014, 25019, 25022]);
+
+/** True when the parent Iress session must be recreated (not a service-only fault). */
+export function isIressSessionDeadError(err: unknown): boolean {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = Number((err as { code: unknown }).code);
+    if (IRESS_SESSION_DEAD_CODES.has(code)) return true;
+  }
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return msg.includes("logged off") || msg.includes("not logged in");
+}
+
 export class IressError extends Error {
   override readonly name = "IressError";
   constructor(

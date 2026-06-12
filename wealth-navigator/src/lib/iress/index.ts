@@ -99,6 +99,14 @@ export function buildApplicationId(envHint: "dev" | "staging" | "load" | "prod",
 export { getIressCredentialsFromEnv } from "@/lib/iress/config";
 export type { IressCredentials } from "@/lib/iress/config";
 
+/** Redact an IRESS session key for logs — never log the full token. */
+export function redactSessionKeyForLog(value: string): string {
+  const at = value.indexOf("@");
+  const prefix = value.slice(0, Math.min(12, value.length));
+  const host = at >= 0 ? value.slice(at) : "";
+  return `${prefix}…${host}`;
+}
+
 function readKickOptionsFromEnv(): Pick<IressSessionStartRequest, "SessionNumberToKick" | "KickLikeSessions"> {
   if (process.env.IRESS_FORCE_KICK_ALL === "1" || process.env.IRESS_FORCE_KICK_ALL === "true") {
     return { SessionNumberToKick: -1, KickLikeSessions: true };
@@ -208,6 +216,9 @@ export async function bringUpMintSession(
       ...kickOnFirstAttempt,
     },
     { forceKickOn25008: options?.forceKickOn25008 },
+  );
+  console.info(
+    `[mint-iress] IRESSSessionStart ok applicationId=${applicationId} sessionKey=${redactSessionKeyForLog(iressSession.IRESSSessionKey)} timeoutMin=${iressSession.SessionTimeout ?? 120}`,
   );
   const servicesToStart: Array<{ Service: IressService; Server: string }> = [
     { Service: "IOSPlus", Server: "IOSPLUSAPI" },

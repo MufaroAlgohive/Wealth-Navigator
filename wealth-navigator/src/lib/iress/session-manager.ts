@@ -11,7 +11,7 @@ import {
   LICENSE_RELEASE_DELAY_MS,
   tearDownIressWireSession,
 } from "@/lib/iress/index";
-import { IressError } from "@/lib/iress/errors";
+import { IressError, isIressSessionDeadError } from "@/lib/iress/errors";
 import type { IressService } from "@/types/iress";
 
 export { LICENSE_RELEASE_DELAY_MS };
@@ -108,6 +108,7 @@ export async function getMintSession(): Promise<MintSession> {
 }
 
 function isSessionExpired(err: unknown): boolean {
+  if (isIressSessionDeadError(err)) return true;
   if (err instanceof IressError && err.code === 25001) return true;
   return typeof err === "object" && err !== null && "code" in err && (err as { code: number }).code === 25001;
 }
