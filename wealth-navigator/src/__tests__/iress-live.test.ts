@@ -1037,11 +1037,15 @@ describe("mapQuote field-name fallback for real IRESS V4 responses", () => {
 });
 
 describe("iressQuotePriceScale", () => {
-  it("returns 0.01 when LastPrice is present without Last", () => {
+  it("returns 0.01 when LastPrice integer exceeds 4500 (cents) without Last", () => {
     expect(iressQuotePriceScale({ LastPrice: 55210 })).toBe(0.01);
+    expect(iressQuotePriceScale({ LastPrice: 120001 })).toBe(0.01);
   });
   it("returns 1 when bare Last is present", () => {
     expect(iressQuotePriceScale({ Last: 610 })).toBe(1);
+  });
+  it("returns 1 when LastPrice is already ZAR-scale (NPN ~610)", () => {
+    expect(iressQuotePriceScale({ LastPrice: 610 })).toBe(1);
   });
 });
 

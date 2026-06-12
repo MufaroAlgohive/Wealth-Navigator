@@ -125,11 +125,17 @@ const PREV_CLOSE_KEYS = [
 export function iressQuotePriceScale(row: Record<string, unknown>): number {
   const hasLast =
     row["Last"] !== undefined && row["Last"] !== null && row["Last"] !== "";
-  const hasLastPrice =
+  if (hasLast) return 1;
+  const lastPrice = Number(row["LastPrice"]);
+  if (
     row["LastPrice"] !== undefined &&
     row["LastPrice"] !== null &&
-    row["LastPrice"] !== "";
-  if (!hasLast && hasLastPrice) return 0.01;
+    row["LastPrice"] !== "" &&
+    Number.isFinite(lastPrice) &&
+    lastPrice > 4500
+  ) {
+    return 0.01;
+  }
   return 1;
 }
 
