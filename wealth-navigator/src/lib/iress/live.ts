@@ -197,6 +197,23 @@ function clusterAnchor(candidates: number[]): number {
   return consistent.reduce((sum, p) => sum + p, 0) / consistent.length;
 }
 
+/** *Price-schema row with only LastPrice/PreviousClosePrice and no session/book/volume. */
+function isStaleLastPriceOnlyRow(row: Record<string, unknown>): boolean {
+  if (hasLastField(row)) return false;
+  if (row["LastTrade"] !== undefined && row["LastTrade"] !== null && row["LastTrade"] !== "") {
+    return false;
+  }
+  const hasSessionClose = CLOSE_KEYS.some((k) => Number(row[k]) > 0);
+  if (hasSessionClose) return false;
+  const sessionKeys = [
+    "Open", "OpenPrice", "High", "HighPrice", "DayHigh", "Low", "LowPrice", "DayLow",
+    "Bid", "BidPrice", "Ask", "AskPrice", "TotalVolume", "Volume", "CumVolume",
+    "TotalValue", "MarketValue", "TotalTradedValue",
+  ];
+  if (sessionKeys.some((k) => Number(row[k]) > 0)) return false;
+  return Number(row["LastPrice"]) > 0;
+}
+
 /**
  * Pick the display price from a PricingQuoteGet row.
  *
@@ -299,6 +316,13 @@ export function resolveQuoteLast(
 function mapQuote(row: Record<string, unknown> | undefined): Quote {
   if (!row) {
     return emptyQuote();
+  }
+  if (isStaleLastPriceOnlyRow(row)) {
+    return {
+      ...emptyQuote(),
+      symbol: String(row["SecurityCode"] ?? row["Code"] ?? row["Symbol"] ?? ""),
+      marketState: (String(row["TradingStatus"] ?? row["QuoteState"] ?? row["MarketState"] ?? "HALT")) as Quote["marketState"],
+    };
   }
   const scale = iressQuotePriceScale(row);
   // Real IRESS V4 market-data responses use the bare field names (`<Last>`,

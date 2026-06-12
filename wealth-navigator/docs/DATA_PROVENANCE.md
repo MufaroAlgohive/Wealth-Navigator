@@ -144,4 +144,4 @@ IRESS CT `PricingQuoteGet` returns **two row shapes** for JSE watchlist names:
 
 **AGL (~R1,200):** CT returns internally consistent prices via `LastPrice`/`OpenPrice`/`TotalValue÷TotalVolume` VWAP (~R1,200). This is **not** seed reference (~R552) and is **not** forced to seed — the mapper reflects CT feed as-is. Confirm board / `QuotationBasisCode` with Charles if seed parity is expected.
 
-**BHG (~R528):** CT can send bogus `LastPrice=2445` (below the 4500 threshold) while OHLC clusters at ~52800 cents. Mapper detects OHLC cents cluster and prefers scaled anchor / traded VWAP.
+**BHG (~R528):** CT can send a **hollow** row — `LastPrice=PreviousClosePrice=2445` with zero Open/High/Low/Bid/Ask/Volume (no OHLC cents cluster). Mapper skips the write (`last=0`) rather than persisting R2445. Confirm `Board` / `QuotationBasisCode` / symbol entitlement with Charles.

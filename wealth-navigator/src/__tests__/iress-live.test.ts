@@ -1225,6 +1225,53 @@ describe("resolveQuoteLast", () => {
     expect(resolveQuoteLast(num, str)).toBeCloseTo(528.5, 0);
   });
 
+  it("BHG CT stale row: skips write when only LastPrice/PreviousClosePrice with zero session", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <PricingQuoteGetResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>q-bhg-stale</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows>
+                  <DataRow>
+                    <SecurityCode>BHG</SecurityCode>
+                    <Exchange>JSE</Exchange>
+                    <LastPrice>2445</LastPrice>
+                    <PreviousClosePrice>2445</PreviousClosePrice>
+                    <OpenPrice>0</OpenPrice>
+                    <HighPrice>0</HighPrice>
+                    <LowPrice>0</LowPrice>
+                    <TotalVolume>0</TotalVolume>
+                    <TotalValue>0</TotalValue>
+                    <TradingStatus>CLOSED</TradingStatus>
+                  </DataRow>
+                </DataRows>
+              </Result>
+            </Output>
+          </PricingQuoteGetResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.pricingQuoteGet({
+      Header: { SessionKey: "k", RequestID: "q-bhg-stale" },
+      SecurityCode: "BHG",
+      Exchange: "JSE",
+    });
+    expect(res.DataRows[0]?.last).toBe(0);
+  });
+
   it("uses SettlementPrice when Close is absent", () => {
     expect(
       rowNums({ Last: 120003, SettlementPrice: 552, QuoteState: "CLOSED" }),
