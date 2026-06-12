@@ -1034,6 +1034,58 @@ describe("mapQuote field-name fallback for real IRESS V4 responses", () => {
     expect(row?.bid).toBeCloseTo(551.9, 2);
     expect(row?.marketState).toBe("CLOSED");
   });
+
+  it("scales BHG when LastPrice below threshold but OHLC cluster is cents", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <PricingQuoteGetResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>q-bhg</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows>
+                  <DataRow>
+                    <SecurityCode>BHG</SecurityCode>
+                    <Exchange>JSE</Exchange>
+                    <LastPrice>2445</LastPrice>
+                    <PreviousClosePrice>52850</PreviousClosePrice>
+                    <OpenPrice>52800</OpenPrice>
+                    <HighPrice>52900</HighPrice>
+                    <LowPrice>52700</LowPrice>
+                    <BidPrice>52820</BidPrice>
+                    <AskPrice>52860</AskPrice>
+                    <TotalValue>99792000</TotalValue>
+                    <TotalVolume>189000</TotalVolume>
+                    <TradingStatus>CLOSED</TradingStatus>
+                  </DataRow>
+                </DataRows>
+              </Result>
+            </Output>
+          </PricingQuoteGetResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.pricingQuoteGet({
+      Header: { SessionKey: "k", RequestID: "q-bhg" },
+      SecurityCode: "BHG",
+      Exchange: "JSE",
+    });
+    const row = res.DataRows[0];
+    expect(row?.last).toBeCloseTo(528.5, 0);
+    expect(row?.prevClose).toBeCloseTo(528.5, 0);
+    expect(row?.open).toBeCloseTo(528, 0);
+  });
 });
 
 describe("iressQuotePriceScale", () => {
@@ -1041,11 +1093,32 @@ describe("iressQuotePriceScale", () => {
     expect(iressQuotePriceScale({ LastPrice: 55210 })).toBe(0.01);
     expect(iressQuotePriceScale({ LastPrice: 120001 })).toBe(0.01);
   });
-  it("returns 1 when bare Last is present", () => {
+  it("returns 1 when bare Last is present and OHLC is ZAR-scale", () => {
     expect(iressQuotePriceScale({ Last: 610 })).toBe(1);
+    expect(iressQuotePriceScale({ Last: 610, Open: 608, Close: 607 })).toBe(1);
   });
   it("returns 1 when LastPrice is already ZAR-scale (NPN ~610)", () => {
     expect(iressQuotePriceScale({ LastPrice: 610 })).toBe(1);
+  });
+  it("returns 0.01 when LastPrice below threshold but OHLC cluster is cents (BHG shape)", () => {
+    expect(
+      iressQuotePriceScale({
+        LastPrice: 2445,
+        OpenPrice: 52800,
+        PreviousClosePrice: 52850,
+        HighPrice: 52900,
+        LowPrice: 52700,
+      }),
+    ).toBe(0.01);
+  });
+  it("returns 0.01 when bare Last is bogus vs OHLC cents cluster (BHG Last=2445)", () => {
+    expect(
+      iressQuotePriceScale({
+        Last: 2445,
+        OpenPrice: 52800,
+        PreviousClosePrice: 52850,
+      }),
+    ).toBe(0.01);
   });
 });
 
@@ -1111,6 +1184,45 @@ describe("resolveQuoteLast", () => {
     expect(
       rowNums({ Last: 2445, Open: 528, QuoteState: "CLOSED" }),
     ).toBe(528);
+  });
+
+  it("BHG: scales OHLC cents cluster when LastPrice=2445 below threshold", () => {
+    const scale = iressQuotePriceScale({
+      LastPrice: 2445,
+      OpenPrice: 52800,
+      PreviousClosePrice: 52850,
+      HighPrice: 52900,
+      LowPrice: 52700,
+      TotalValue: 99792000,
+      TotalVolume: 189000,
+    });
+    expect(scale).toBe(0.01);
+    const num = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = {
+          LastPrice: 2445,
+          OpenPrice: 52800,
+          PreviousClosePrice: 52850,
+          HighPrice: 52900,
+          LowPrice: 52700,
+          TotalValue: 99792000,
+          TotalVolume: 189000,
+        }[k as keyof typeof v];
+        if (v !== undefined && v !== null && v !== "") {
+          const n = Number(v);
+          if (Number.isFinite(n)) return n * scale;
+        }
+      }
+      return 0;
+    };
+    const str = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = { TradingStatus: "CLOSED" }[k as keyof { TradingStatus: string }];
+        if (v) return String(v);
+      }
+      return "";
+    };
+    expect(resolveQuoteLast(num, str)).toBeCloseTo(528.5, 0);
   });
 
   it("uses SettlementPrice when Close is absent", () => {

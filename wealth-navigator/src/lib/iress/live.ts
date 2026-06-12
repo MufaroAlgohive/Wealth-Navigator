@@ -121,22 +121,69 @@ const PREV_CLOSE_KEYS = [
   "YesterdayClose",
 ] as const;
 
-/** CT returns bare `<Last>` in ZAR for some names and `<LastPrice>` integer cents for others. */
+/** OHLC / book fields used to infer integer-cent scaling when LastPrice is ambiguous. */
+const OHLC_PRICE_KEYS = [
+  "Open",
+  "OpenPrice",
+  "High",
+  "HighPrice",
+  "DayHigh",
+  "Low",
+  "LowPrice",
+  "DayLow",
+  "Close",
+  "ClosePrice",
+  "PreviousClosePrice",
+  "PreviousClose",
+  "PrevClose",
+  "SettlementPrice",
+  "BidPrice",
+  "Bid",
+  "AskPrice",
+  "Ask",
+  "VWAP",
+  "Vwap",
+  "MatchPrice",
+] as const;
+
+function rawNumericFields(row: Record<string, unknown>, keys: readonly string[]): number[] {
+  return keys
+    .map((k) => Number(row[k]))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/**
+ * CT returns bare `<Last>` in ZAR for some names and `<LastPrice>` integer cents
+ * for others. BHG can send `LastPrice=2445` (bogus / wrong scale) while
+ * `OpenPrice`/`PreviousClosePrice` cluster at ~52800 cents — detect via OHLC.
+ */
 export function iressQuotePriceScale(row: Record<string, unknown>): number {
-  const hasLast =
-    row["Last"] !== undefined && row["Last"] !== null && row["Last"] !== "";
-  if (hasLast) return 1;
-  const lastPrice = Number(row["LastPrice"]);
-  if (
-    row["LastPrice"] !== undefined &&
-    row["LastPrice"] !== null &&
-    row["LastPrice"] !== "" &&
-    Number.isFinite(lastPrice) &&
-    lastPrice > 4500
-  ) {
-    return 0.01;
+  const ohlcCluster = clusterAnchor(rawNumericFields(row, OHLC_PRICE_KEYS));
+  const lastRaw = hasLastField(row)
+    ? Number(row["Last"])
+    : row["LastPrice"] !== undefined &&
+        row["LastPrice"] !== null &&
+        row["LastPrice"] !== ""
+      ? Number(row["LastPrice"])
+      : NaN;
+  const lastPositive = Number.isFinite(lastRaw) && lastRaw > 0 ? lastRaw : 0;
+
+  if (ohlcCluster > 4500) {
+    // OHLC/book cluster in integer cents — scale when Last is absent, above
+    // threshold, or inconsistent with the cluster (e.g. BHG Last=2445 vs Open=52800).
+    if (!hasLastField(row) && lastPositive > 4500) return 0.01;
+    if (lastPositive > 0 && lastPositive < ohlcCluster / 10) return 0.01;
+    if (lastPositive === 0) return 0.01;
   }
+
+  if (hasLastField(row)) return 1;
+
+  if (lastPositive > 4500) return 0.01;
   return 1;
+}
+
+function hasLastField(row: Record<string, unknown>): boolean {
+  return row["Last"] !== undefined && row["Last"] !== null && row["Last"] !== "";
 }
 
 /** Median of price candidates that cluster within 3× of each other. */
@@ -172,8 +219,13 @@ export function resolveQuoteLast(
   const vwap = num("VWAP", "Vwap", "AveragePrice", "AvgPrice");
   const bid = num("Bid", "BidPrice", "BuyPrice");
   const ask = num("Ask", "AskPrice", "SellPrice");
-  const lastTrade = num("LastTrade", "LastPrice", "PxLast", "TradePrice");
+  const lastTrade = num("LastTrade", "LastPrice", "PxLast", "TradePrice", "MatchPrice");
   const volume = num("Volume", "TotalVolume", "CumVolume", "TotalTradedVolume");
+  const totalValue = num("TotalValue", "TotalTradedValue", "Turnover", "MarketValue");
+  const tradedVwap =
+    volume > 0 && totalValue > 0 && totalValue / volume > 0
+      ? totalValue / volume
+      : 0;
   const state = str("MarketState", "QuoteState", "State", "Status", "TradingStatus");
   const closed = /CLOSED|CLOSE|HALT|PRE[_-]?OPEN|SUSPEND/i.test(state);
 
@@ -181,7 +233,7 @@ export function resolveQuoteLast(
     bid > 0 && ask > 0 ? (bid + ask) / 2 : bid > 0 ? bid : ask > 0 ? ask : 0;
   const officialClose = close > 0 ? close : prevClose > 0 ? prevClose : 0;
   const sessionMid = high > 0 && low > 0 ? (high + low) / 2 : 0;
-  const ohlcAnchor = clusterAnchor([open, high, low, vwap, close, prevClose]);
+  const ohlcAnchor = clusterAnchor([open, high, low, vwap, close, prevClose, tradedVwap]);
   const anchor =
     officialClose > 0
       ? officialClose
@@ -202,7 +254,7 @@ export function resolveQuoteLast(
   const noAnchorSuspicious = (price: number) => {
     if (price <= 0) return false;
     if (looksLikeVolume(price)) return true;
-    const ohlcOnly = clusterAnchor([open, high, low, vwap, close, prevClose]);
+    const ohlcOnly = clusterAnchor([open, high, low, vwap, close, prevClose, tradedVwap]);
     if (ohlcOnly > 0 && (price > ohlcOnly * 3 || price < ohlcOnly / 3)) return true;
     // Watchlist JSE names: no anchor at all and Last above plausible single-name range.
     if (anchor === 0 && bookMid === 0 && price > 4500) return true;
@@ -329,9 +381,11 @@ export function describeQuoteRowNumericFields(row: unknown): Record<string, numb
 const quoteRawLogOnce = new Set<string>();
 
 function maybeLogRawQuoteRow(securityCode: string, rawRow: Record<string, unknown>): void {
+  const rawLogEnv = process.env.IRESS_QUOTE_RAW_LOG?.trim();
+  if (!rawLogEnv) return;
   const sym = String(rawRow["SecurityCode"] ?? securityCode ?? "").toUpperCase();
   if (!sym || quoteRawLogOnce.has(sym)) return;
-  const debugSymbols = (process.env.IRESS_QUOTE_RAW_LOG ?? "AGL,FSR")
+  const debugSymbols = rawLogEnv
     .split(",")
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);

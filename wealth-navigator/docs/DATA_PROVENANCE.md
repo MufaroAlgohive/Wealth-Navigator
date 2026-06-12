@@ -132,3 +132,16 @@ Quotes NPN:  OK — source=seed-fallback last=4180.55 (live=0 fallback=1)
 
 IRESS CT rejected `DFM@Mint` / `123` on `webservices-ct.iress.co.za`. The app gracefully
 falls back to seed data and shows **SEED/HYBRID** badges — never pretends quotes are live.
+
+### CT quote row shapes (2026-06-12)
+
+IRESS CT `PricingQuoteGet` returns **two row shapes** for JSE watchlist names:
+
+| Shape | Example | Price fields | Scaling |
+|-------|---------|--------------|---------|
+| Bare `Last` | NPN | `Last=610` (ZAR) | None |
+| `*Price` cents | FSR, MTN, SBK, AGL, BHG | `LastPrice`, `OpenPrice`, `PreviousClosePrice` | ÷100 when integer cents detected |
+
+**AGL (~R1,200):** CT returns internally consistent prices via `LastPrice`/`OpenPrice`/`TotalValue÷TotalVolume` VWAP (~R1,200). This is **not** seed reference (~R552) and is **not** forced to seed — the mapper reflects CT feed as-is. Confirm board / `QuotationBasisCode` with Charles if seed parity is expected.
+
+**BHG (~R528):** CT can send bogus `LastPrice=2445` (below the 4500 threshold) while OHLC clusters at ~52800 cents. Mapper detects OHLC cents cluster and prefers scaled anchor / traded VWAP.
