@@ -120,8 +120,15 @@ export function resolveQuoteLast(
   const bookMid =
     bid > 0 && ask > 0 ? (bid + ask) / 2 : bid > 0 ? bid : ask > 0 ? ask : 0;
   const officialClose = close > 0 ? close : prevClose > 0 ? prevClose : 0;
+  const anchor = officialClose > 0 ? officialClose : bookMid;
 
-  if (liveLast > 0) return liveLast;
+  const isBogusVsAnchor = (price: number) =>
+    anchor > 0 && (price > anchor * 3 || price < anchor / 3);
+
+  if (liveLast > 0) {
+    if (isBogusVsAnchor(liveLast)) return anchor;
+    return liveLast;
+  }
 
   if (closed || liveLast <= 0) {
     if (officialClose > 0) return officialClose;
@@ -129,10 +136,7 @@ export function resolveQuoteLast(
   }
 
   if (lastTrade > 0) {
-    const anchor = officialClose > 0 ? officialClose : bookMid;
-    if (anchor > 0 && (lastTrade > anchor * 3 || lastTrade < anchor / 3)) {
-      return anchor;
-    }
+    if (isBogusVsAnchor(lastTrade)) return anchor;
     return lastTrade;
   }
 

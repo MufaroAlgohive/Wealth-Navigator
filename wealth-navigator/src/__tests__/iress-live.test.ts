@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IressClient } from "@/lib/iress/client";
 import { IressError } from "@/lib/iress/errors";
-import { createLiveIressClient, liveIressClient, describeQuoteRowKeys } from "@/lib/iress/live";
+import { createLiveIressClient, liveIressClient, describeQuoteRowKeys, resolveQuoteLast } from "@/lib/iress/live";
 import { IRESS_NS, type SoapTransport, buildSoapEnvelope } from "@/lib/iress/transport";
 
 // ─── 1. Env-var detection in `index.ts` ─────────────────────────────────
@@ -869,6 +869,50 @@ describe("mapQuote field-name fallback for real IRESS V4 responses", () => {
     expect(res.DataRows[0]?.marketState).toBe("CLOSED");
   });
 
+  it("rejects bogus <Last> and uses <Close> when Last deviates >3x from Close", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <PricingQuoteGetResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>q-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows>
+                  <DataRow>
+                    <SecurityCode>AGL</SecurityCode>
+                    <Exchange>JSE</Exchange>
+                    <Last>120003</Last>
+                    <Close>552</Close>
+                    <Bid>551.5</Bid>
+                    <Ask>552.5</Ask>
+                    <QuoteState>CLOSED</QuoteState>
+                  </DataRow>
+                </DataRows>
+              </Result>
+            </Output>
+          </PricingQuoteGetResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.pricingQuoteGet({
+      Header: { SessionKey: "k", RequestID: "q-1" },
+      SecurityCode: "AGL",
+      Exchange: "JSE",
+    });
+    expect(res.DataRows[0]?.last).toBe(552);
+  });
+
   it("prefers <Last> over a stale <LastTrade> when both are present", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
@@ -938,6 +982,47 @@ describe("mapQuote field-name fallback for real IRESS V4 responses", () => {
     expect(row?.currency).toBe("ZAR");
     expect(typeof row?.ts).toBe("number");
     expect(row?.ts).toBeGreaterThan(0);
+  });
+});
+
+describe("resolveQuoteLast", () => {
+  function rowNums(row: Record<string, string | number>) {
+    const num = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = row[k];
+        if (v !== undefined && v !== null && v !== "") {
+          const n = Number(v);
+          if (Number.isFinite(n)) return n;
+        }
+      }
+      return 0;
+    };
+    const str = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = row[k];
+        if (v !== undefined && v !== null && v !== "") return String(v);
+      }
+      return "";
+    };
+    return resolveQuoteLast(num, str);
+  }
+
+  it("AGL: rejects bogus Last=120003, prefers Close=552", () => {
+    expect(
+      rowNums({ Last: 120003, Close: 552, QuoteState: "CLOSED" }),
+    ).toBe(552);
+  });
+
+  it("FSR: rejects bogus Last=4983, prefers Close=78", () => {
+    expect(
+      rowNums({ Last: 4983, Close: 78, QuoteState: "CLOSED" }),
+    ).toBe(78);
+  });
+
+  it("NPN: keeps valid Last=610 when Close=608", () => {
+    expect(
+      rowNums({ Last: 610, Close: 608, QuoteState: "CLOSED" }),
+    ).toBe(610);
   });
 });
 
