@@ -206,7 +206,7 @@ vercel env add NEXT_PUBLIC_SUPABASE_ANON_KEY production
 vercel env add SUPABASE_URL                 production
 vercel env add SUPABASE_SERVICE_ROLE_KEY    production
 vercel env add USE_SUPABASE_QUOTES          production   # value: true
-vercel env add IRESS_MODE                   production   # value: mock  (until worker is live)
+vercel env add IRESS_MODE                   production   # value: mock  (keeps Vercel off IRESS CT; quotes still from Supabase when USE_SUPABASE_QUOTES=true)
 vercel env add IRESS_BASE_URL               production   # value: https://webservices-ct.iress.co.za/v4
 
 # Preview (default to mock — preview builds should not hit LIVE IRESS)
@@ -302,7 +302,7 @@ curl.exe "$url/api/health" | Select-String "ok"
 curl.exe "$url/api/quotes?symbols=NPN,PRX,FSR,SBK,AGL&exchange=JSE" |
   Select-String "mode|source|supabaseCount|liveCount"
 
-# 4. IRESS session (mock in Production until worker is live)
+# 4. IRESS session (mock on Vercel - worker holds CT seat)
 curl.exe "$url/api/iress/session" | Select-String "mode|entitled|seat"
 
 # 5. Login → cookie round-trip
