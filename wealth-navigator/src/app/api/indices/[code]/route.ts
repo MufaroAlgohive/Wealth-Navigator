@@ -15,9 +15,9 @@
  * `<AreaChart>` can render it as-is.
  */
 
-import { isSupabaseConfigured, createServiceRoleClient } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { globalIndices } from "@/lib/iress/seed";
+import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,10 +28,7 @@ interface IndexIntradayRow {
   timestamp: string;
 }
 
-export async function GET(
-  req: Request,
-  { params }: { params: Promise<{ code: string }> },
-) {
+export async function GET(req: Request, { params }: { params: Promise<{ code: string }> }) {
   const { code: rawCode } = await params;
   const code = rawCode.toUpperCase();
   if (!code) {
@@ -89,7 +86,7 @@ export async function GET(
   const now = Date.now();
   const points = Array.from({ length: 78 }, (_, i) => ({
     t: now - (78 - i) * 60_000,
-    v: +(base * (1 + (Math.sin(i / 4) * 0.0025) + (i / 78) * 0.0048)).toFixed(2),
+    v: +(base * (1 + Math.sin(i / 4) * 0.0025 + (i / 78) * 0.0048)).toFixed(2),
   }));
   return Response.json({ code, points, source: "seed-fallback" });
 }

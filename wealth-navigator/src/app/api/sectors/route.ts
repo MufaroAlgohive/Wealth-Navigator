@@ -15,9 +15,9 @@
  * the precise "ask Charles" message.
  */
 
-import { isSupabaseConfigured, createServiceRoleClient } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { sectorHeatmap } from "@/lib/iress/seed";
+import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,10 +53,7 @@ export async function GET() {
       .order("timestamp", { ascending: false })
       .limit(200);
     if (error) {
-      return Response.json(
-        { error: error.message, sectors: [], source: "unavailable" },
-        { status: 500 },
-      );
+      return Response.json({ error: error.message, sectors: [], source: "unavailable" }, { status: 500 });
     }
     const seen = new Set<string>();
     const latest: SectorIntradayRow[] = [];

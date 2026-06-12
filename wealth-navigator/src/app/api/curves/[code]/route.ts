@@ -21,9 +21,9 @@
  * generic "Data feed not configured".
  */
 
-import { isSupabaseConfigured, createServiceRoleClient } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { zarGoviCurve } from "@/lib/iress/seed";
+import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,10 +53,7 @@ function asOfSeedCurve(code: string): { tenor: string; years: number; yield: num
   return [];
 }
 
-export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ code: string }> },
-) {
+export async function GET(_req: Request, { params }: { params: Promise<{ code: string }> }) {
   const { code: rawCode } = await params;
   const code = rawCode.toUpperCase();
   if (!code) {
