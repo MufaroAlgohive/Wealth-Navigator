@@ -86,8 +86,12 @@ bun run worker:iress
 
 ## Railway deploy
 
+**Critical:** In Railway → Settings → set **Root Directory** to `wealth-navigator` (not `workers/iress-ingest`).  
+Dockerfile path: `workers/iress-ingest/Dockerfile`.  
+If build fails with `"/src": not found` or `"/workers/iress-ingest": not found`, the root directory is wrong.
+
 1. Create a Railway service linked to this repo; set **root directory** to `wealth-navigator`.
-2. Railway reads `workers/iress-ingest/railway.toml` (Dockerfile build).
+2. Railway reads `wealth-navigator/railway.toml` (Dockerfile build).
 3. Set environment variables (see `.env.example`). The defaults in `.env.example` already target LIVE; flip `IRESS_WORKER_DRY_RUN=1` / `SUPABASE_ALLOW_WRITES=0` for staging.
 4. **Replicas: 1** — the worker holds a single IRESS license. Scaling out would create `25008` collisions. Document the constraint in the service description.
 5. Deploy — the worker registers SIGTERM → `IRESSSessionEnd` + 3 s license release delay.

@@ -1,0 +1,9 @@
+# Railway must use Root Directory = wealth-navigator (this folder).
+# Build context is wealth-navigator/ so Dockerfile COPY paths resolve correctly.
+[build]
+builder = "dockerfile"
+dockerfilePath = "workers/iress-ingest/Dockerfile"
+
+[deploy]
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
