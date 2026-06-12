@@ -98,29 +98,69 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
   if (!row) {
     return emptyQuote();
   }
-  const num = (k: string) => Number(row[k] ?? 0);
-  const str = (k: string) => String(row[k] ?? "");
+  // Real IRESS V4 market-data responses use the bare field names (`<Last>`,
+  // `<Bid>`, `<Ask>`, `<QuoteState>`, etc.). Our internal mock + WSDL samples
+  // historically used the longer camelCase names. Read the doc-canonical name
+  // first, then fall back to the real-server short names so the same mapper
+  // works against both shapes. Keys are case-sensitive — IRESS returns the
+  // exact element name as written in the WSDL.
+  const num = (...keys: string[]) => {
+    for (const k of keys) {
+      const v = row[k];
+      if (v !== undefined && v !== null && v !== "") {
+        const n = Number(v);
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return 0;
+  };
+  const str = (...keys: string[]) => {
+    for (const k of keys) {
+      const v = row[k];
+      if (v !== undefined && v !== null && v !== "") return String(v);
+    }
+    return "";
+  };
   return {
-    symbol: str("SecurityCode") || str("Code") || str("symbol"),
-    last: num("LastTrade"),
-    bid: num("Bid"),
-    ask: num("Ask"),
-    bidSize: num("BidSize"),
-    askSize: num("AskSize"),
-    open: num("Open"),
-    high: num("High"),
-    low: num("Low"),
-    close: num("Close"),
-    prevClose: num("PrevClose"),
-    change: num("NetChange"),
-    changePct: num("PercentChange"),
-    volume: num("Volume"),
-    vwap: num("VWAP"),
+    symbol: str("SecurityCode", "Code", "Symbol", "symbol"),
+    last: num("LastTrade", "Last", "LastPrice", "PxLast", "Trade", "trade"),
+    bid: num("Bid", "BidPrice", "BuyPrice"),
+    ask: num("Ask", "AskPrice", "SellPrice"),
+    bidSize: num("BidSize", "BidQty", "BuySize"),
+    askSize: num("AskSize", "AskQty", "SellSize"),
+    open: num("Open", "OpenPrice"),
+    high: num("High", "HighPrice", "DayHigh"),
+    low: num("Low", "LowPrice", "DayLow"),
+    close: num("Close", "ClosePrice", "PrevClose", "PreviousClose"),
+    prevClose: num("PrevClose", "PreviousClose", "Close"),
+    change: num("NetChange", "Change"),
+    changePct: num("PercentChange", "ChangePct"),
+    volume: num("Volume", "TotalVolume", "CumVolume"),
+    vwap: num("VWAP", "Vwap"),
     marketCap: row["MarketCap"] === undefined ? undefined : num("MarketCap"),
     currency: str("Currency") || "ZAR",
-    marketState: (str("MarketState") || "OPEN") as Quote["marketState"],
-    ts: row["LastTradeDateTime"] ? Date.parse(String(row["LastTradeDateTime"])) || Date.now() : Date.now(),
+    marketState: (str("MarketState", "QuoteState", "State", "Status") || "OPEN") as Quote["marketState"],
+    ts: row["LastTradeDateTime"] || row["LastTradeTime"] || row["UpdateTime"]
+      ? Date.parse(String(row["LastTradeDateTime"] ?? row["LastTradeTime"] ?? row["UpdateTime"])) || Date.now()
+      : Date.now(),
   };
+}
+
+/**
+ * Surface an `unknown field set` warning when a parsed quote has `last=0`.
+ *
+ * The recent Railway deploy (June 2026) was silently returning `last=0` for
+ * every NPN / watchlist symbol because the real IRESS V4 server uses bare
+ * element names (`<Last>`, `<QuoteState>`) while our mapper only knew the
+ * longer camelCase keys (`<LastTrade>`, `<MarketState>`). Now that `mapQuote`
+ * falls back to the real-server names, this helper is the safety net: if we
+ * ever land in the same situation again, the row's available keys are logged
+ * in one structured event so the next fix is a one-line addition to the
+ * `num` / `str` helper above.
+ */
+export function describeQuoteRowKeys(row: unknown): string {
+  if (!row || typeof row !== "object") return "<missing row>";
+  return Object.keys(row as Record<string, unknown>).sort().join(",") || "<empty row>";
 }
 
 function emptyQuote(): Quote {

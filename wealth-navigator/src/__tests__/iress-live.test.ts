@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IressClient } from "@/lib/iress/client";
 import { IressError } from "@/lib/iress/errors";
-import { createLiveIressClient, liveIressClient } from "@/lib/iress/live";
+import { createLiveIressClient, liveIressClient, describeQuoteRowKeys } from "@/lib/iress/live";
 import { IRESS_NS, type SoapTransport, buildSoapEnvelope } from "@/lib/iress/transport";
 
 // ─── 1. Env-var detection in `index.ts` ─────────────────────────────────
@@ -779,5 +779,88 @@ describe("pricingQuoteGet response ErrorNumber handling", () => {
     expect(res.Header.ErrorNumber).toBe(0);
     expect(res.DataRows).toHaveLength(1);
     expect(res.DataRows[0]?.last).toBe(4180.5);
+  });
+});
+
+// ─── 8. Real IRESS V4 server uses bare element names (<Last>, <QuoteState>)
+//   instead of the longer camelCase ones our mock + WSDL samples use. The
+//   mapper must fall back to the real-server names or every watchlist
+//   symbol comes back as `last=0`. These tests pin that behaviour. ─────────
+
+describe("mapQuote field-name fallback for real IRESS V4 responses", () => {
+  // Same helper as the end-to-end suite, but with the field names that the
+  // production IRESS CT server actually returns.
+  function makeRealIressQuoteXml(securityCode: string, exchange: string) {
+    return `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <PricingQuoteGetResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>q-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows>
+                  <DataRow>
+                    <SecurityCode>${securityCode}</SecurityCode>
+                    <Exchange>${exchange}</Exchange>
+                    <Last>4180.5</Last>
+                    <Bid>4179.0</Bid>
+                    <Ask>4182.0</Ask>
+                    <BidSize>100</BidSize>
+                    <AskSize>200</AskSize>
+                    <Volume>12345</Volume>
+                    <Currency>ZAR</Currency>
+                    <QuoteState>OPEN</QuoteState>
+                    <LastTradeTime>2026-06-12T07:35:12</LastTradeTime>
+                  </DataRow>
+                </DataRows>
+              </Result>
+            </Output>
+          </PricingQuoteGetResponse>
+        </soap:Body>
+      </soap:Envelope>`;
+  }
+
+  it("maps <Last>+<QuoteState> (real IRESS shape) to last=4180.5 marketState=OPEN", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(makeRealIressQuoteXml("NPN", "JSE"), {
+          status: 200,
+          headers: { "Content-Type": "text/xml" },
+        }),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.pricingQuoteGet({
+      Header: { SessionKey: "k", RequestID: "q-1" },
+      SecurityCode: "NPN",
+      Exchange: "JSE",
+    });
+    expect(res.DataRows).toHaveLength(1);
+    const row = res.DataRows[0];
+    expect(row?.symbol).toBe("NPN");
+    expect(row?.last).toBe(4180.5);
+    expect(row?.bid).toBe(4179);
+    expect(row?.ask).toBe(4182);
+    expect(row?.marketState).toBe("OPEN");
+    expect(row?.currency).toBe("ZAR");
+    expect(typeof row?.ts).toBe("number");
+    expect(row?.ts).toBeGreaterThan(0);
+  });
+});
+
+describe("describeQuoteRowKeys diagnostic helper", () => {
+  it("returns a sorted, comma-joined key list for a populated row", () => {
+    const row = { SecurityCode: "NPN", Last: 1, QuoteState: "OPEN", Bid: 2 };
+    expect(describeQuoteRowKeys(row)).toBe("Bid,Last,QuoteState,SecurityCode");
+  });
+  it("returns <empty row> when the row has no keys", () => {
+    expect(describeQuoteRowKeys({})).toBe("<empty row>");
+  });
+  it("returns <missing row> when the row is undefined", () => {
+    expect(describeQuoteRowKeys(undefined)).toBe("<missing row>");
   });
 });

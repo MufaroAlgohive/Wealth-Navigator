@@ -1,6 +1,7 @@
 import { getIressClient, iressConfig, redactSessionKeyForLog } from "../../../src/lib/iress/index";
 import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { iressQueries } from "../../../src/lib/iress/mock";
+import { describeQuoteRowKeys } from "../../../src/lib/iress/live";
 import type { Quote } from "../../../src/types/iress";
 import type { WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
@@ -24,7 +25,7 @@ async function fetchLiveQuote(
   session: WorkerMintSession,
   symbol: string,
   exchange: string,
-): Promise<{ row: Quote | null; outcome: "ok" | "no-row" | "no-trade" }> {
+): Promise<{ row: Quote | null; rowKeys: string; outcome: "ok" | "no-row" | "no-trade" }> {
   const client = getIressClient("live");
   const stripped = normaliseSymbol(symbol);
   const res = await client.pricingQuoteGet({
@@ -38,14 +39,18 @@ async function fetchLiveQuote(
   });
   const row = res.DataRows[0];
   if (!row) {
-    return { row: null, outcome: "no-row" };
+    return { row: null, rowKeys: "<no row>", outcome: "no-row" };
   }
   if (row.last <= 0) {
     // Pre-open / halt / closed — surface a warning so the worker log
-    // shows why the symbol was skipped instead of going silent.
-    return { row, outcome: "no-trade" };
+    // shows why the symbol was skipped instead of going silent. The
+    // parsed row's available keys are echoed so a future field-name
+    // mismatch (e.g. real IRESS using <Last> vs our <LastTrade> mapper)
+    // shows up in one structured line and the next fix is a one-line
+    // edit to `mapQuote` in `src/lib/iress/live.ts`.
+    return { row, rowKeys: describeQuoteRowKeys(row), outcome: "no-trade" };
   }
-  return { row: { ...row, symbol: stripped }, outcome: "ok" };
+  return { row: { ...row, symbol: stripped }, rowKeys: describeQuoteRowKeys(row), outcome: "ok" };
 }
 
 async function fetchMockQuote(symbol: string, exchange: string): Promise<Quote> {
@@ -150,7 +155,7 @@ export async function syncWatchlistQuotes(
   sessions: WorkerSessionManager,
   supabase: WorkerSupabase | null,
 ): Promise<SyncResult> {
-  const exchange = "JSE";
+  const exchange = env.defaultExchange || "JSE";
   const isLive = iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub";
   const quotes: Array<{ symbol: string; quote: Quote }> = [];
   let errorCount = 0;
@@ -161,24 +166,31 @@ export async function syncWatchlistQuotes(
     try {
       await sessions.withSession(async (session) => {
         console.info(
-          `[iress-ingest] quote sync start iressKey=${redactSessionKeyForLog(session.iressSessionKey)} symbols=${env.watchlistSymbols.length}`,
+          `[iress-ingest] quote sync start iressKey=${redactSessionKeyForLog(session.iressSessionKey)} exchange=${exchange} symbols=${env.watchlistSymbols.length}`,
         );
         for (const symbol of env.watchlistSymbols) {
           const normalised = normaliseSymbol(symbol);
           try {
-            const { row, outcome } = await fetchLiveQuote(session, normalised, exchange);
+            const { row, outcome, rowKeys } = await fetchLiveQuote(session, normalised, exchange);
             if (outcome === "ok" && row) {
               quotes.push({ symbol: normalised, quote: row });
             } else if (outcome === "no-row") {
               emptyCount += 1;
               console.warn(
-                `[iress-ingest] PricingQuoteGet(${normalised}) returned no DataRow (${exchange}) — likely unknown symbol or market closed`,
+                `[iress-ingest] PricingQuoteGet(${normalised}) returned no DataRow (${exchange}) — likely unknown symbol or market closed; rowKeys=${rowKeys}`,
               );
             } else {
               // "no-trade" — row present, last<=0. Pre-open / halt / closed.
+              // Mid-session last=0 with marketState=OPEN is a strong signal
+              // that the mapper read the wrong field name (e.g. real IRESS
+              // returns <Last> but we looked for <LastTrade>); log the
+              // available row keys so the next fix is a one-line addition
+              // to `mapQuote` in src/lib/iress/live.ts.
               emptyCount += 1;
+              const state = row?.marketState ?? "?";
+              const looksLikeFieldMismatch = state === "OPEN" && rowKeys !== "<empty row>";
               console.warn(
-                `[iress-ingest] PricingQuoteGet(${normalised}) returned no trade (marketState=${row?.marketState ?? "?"} last=0) — pre-open/halt/closed`,
+                `[iress-ingest] PricingQuoteGet(${normalised}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
               );
             }
           } catch (err) {

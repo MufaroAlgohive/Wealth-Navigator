@@ -12,6 +12,8 @@ export interface WorkerEnv {
   supabaseServiceKey: string;
   iressAccountCode: string;
   applicationLabel: string;
+  /** Default exchange passed to PricingQuoteGet (default "JSE"). */
+  defaultExchange: string;
 }
 
 function parseBool(value: string | undefined, defaultValue: boolean): boolean {
@@ -39,6 +41,7 @@ const DEFAULT_WATCHLIST = [
 export function loadWorkerEnv(): WorkerEnv {
   const supabaseUrl = process.env.SUPABASE_URL ?? "";
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+  const defaultExchange = (process.env.IRESS_DEFAULT_EXCHANGE ?? "JSE").toUpperCase().trim();
 
   return {
     workerId: process.env.WORKER_ID ?? "iress-ingest-1",
@@ -54,5 +57,6 @@ export function loadWorkerEnv(): WorkerEnv {
     supabaseServiceKey,
     iressAccountCode: process.env.IRESS_ACCOUNT_CODE ?? "",
     applicationLabel: process.env.IRESS_APPLICATION_LABEL ?? "Mint-OEMS-Worker",
+    defaultExchange: defaultExchange || "JSE",
   };
 }

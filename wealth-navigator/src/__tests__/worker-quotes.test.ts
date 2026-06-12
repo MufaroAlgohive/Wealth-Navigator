@@ -39,6 +39,7 @@ describe("syncWatchlistQuotes session resilience", () => {
         supabaseServiceKey: "",
         iressAccountCode: "",
         applicationLabel: "lbl",
+        defaultExchange: "JSE",
       },
       { withSession } as never,
       null,
@@ -69,6 +70,7 @@ describe("syncWatchlistQuotes empty / error visibility", () => {
     supabaseServiceKey: "",
     iressAccountCode: "",
     applicationLabel: "lbl",
+    defaultExchange: "JSE",
   };
 
   function mockClient(behavior: (securityCode: string) => Promise<unknown>) {

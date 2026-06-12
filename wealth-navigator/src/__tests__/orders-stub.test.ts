@@ -62,6 +62,7 @@ function makeWorkerEnv(overrides: Partial<{
     supabaseServiceKey: "sk",
     iressAccountCode: overrides.iressAccountCode ?? "ACC-1",
     applicationLabel: "Mint-OEMS-Test",
+    defaultExchange: "JSE",
   };
 }
 
