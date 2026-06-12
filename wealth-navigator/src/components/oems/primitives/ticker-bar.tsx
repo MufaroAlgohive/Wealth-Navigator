@@ -2,7 +2,7 @@
 
 import { ArrowUp, ArrowDown, Radio, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { useTick, useLastTickTs, useQuoteFeedKind } from "@/lib/store/tick-stream-provider";
+import { useTick, useLastTickTs, useQuoteFeedKind, type TickFeedKind } from "@/lib/store/tick-stream-provider";
 import { Badge } from "@/components/ui/badge";
 
 const FEED_LABELS = {
@@ -57,17 +57,22 @@ export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
       </Badge>
       <span className="shrink-0 text-muted-foreground/60">·</span>
       {items.map((it) => (
-        <TickerChip key={it.k} item={it} />
+        <TickerChip key={it.k} item={it} feedKind={feedKind} />
       ))}
     </div>
   );
 }
 
-function TickerChip({ item }: { item: TickerItem }) {
+function TickerChip({ item, feedKind }: { item: TickerItem; feedKind: TickFeedKind }) {
   const t = useTick(item.k);
-  // Use the initial base as the "prev close" for change calculation
-  const change = t.last - item.prev;
-  const changePct = (change / item.prev) * 100;
+  const change =
+    feedKind === "supabase" ? t.change : t.last - item.prev;
+  const changePct =
+    feedKind === "supabase"
+      ? t.changePct
+      : item.prev > 0
+        ? (change / item.prev) * 100
+        : 0;
   const isUp = change > 0;
   const isDown = change < 0;
   return (

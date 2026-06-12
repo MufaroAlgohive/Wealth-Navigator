@@ -88,7 +88,7 @@ function isSupabaseQuotesMode(): boolean {
 
 /** Seed or update ticks from a live-quote API response (client-side). */
 export function seedTicksFromQuotes(
-  rows: Array<{ sym: string; last: number; bid?: number; ask?: number; change?: number; changePct?: number; volume?: number; vwap?: number }>,
+  rows: Array<{ sym: string; last: number; prev?: number; bid?: number; ask?: number; change?: number; changePct?: number; volume?: number; vwap?: number }>,
   feed: TickFeedKind = "supabase",
 ) {
   if (feed === "supabase") {
@@ -97,6 +97,21 @@ export function seedTicksFromQuotes(
   }
   for (const r of rows) {
     if (!r.sym || r.last <= 0) continue;
+    const prev = r.prev ?? r.last;
+    const change = r.change ?? (prev > 0 ? r.last - prev : 0);
+    const changePct = r.changePct ?? (prev > 0 ? (change / prev) * 100 : 0);
+    if (feed === "supabase") {
+      tickMap.set(r.sym, {
+        last: r.last,
+        prev,
+        change,
+        changePct,
+        ts: Date.now(),
+        vwap: r.vwap ?? r.last,
+        volume: r.volume ?? 0,
+      });
+      continue;
+    }
     const cur = tickMap.get(r.sym);
     const base: Quote = cur ?? {
       last: r.last,
@@ -306,7 +321,9 @@ export function TickStreamProvider({ children }: { children: React.ReactNode }) 
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    // Try SSE first; fall back to local simulator.
+    // Supabase quotes: BFF poll + Realtime only — skip seed SSE/random walk.
+    if (isSupabaseQuotesMode()) return;
+
     let cancelled = false;
     try {
       const es = new EventSource("/api/ticks");
@@ -326,8 +343,7 @@ export function TickStreamProvider({ children }: { children: React.ReactNode }) 
     } catch {
       startLocalSim();
     }
-    // Local sim only when not on Supabase quotes (avoids random-walking worker prices).
-    if (!isSupabaseQuotesMode()) startLocalSim();
+    startLocalSim();
     return () => {
       cancelled = true;
       esRef.current?.close();

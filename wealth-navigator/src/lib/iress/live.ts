@@ -123,7 +123,9 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
   };
   return {
     symbol: str("SecurityCode", "Code", "Symbol", "symbol"),
-    last: num("LastTrade", "Last", "LastPrice", "PxLast", "Trade", "trade"),
+    // Real IRESS CT returns <Last> for the live quote; <LastTrade> can be stale
+    // or absent pre-open. Prefer <Last> first (see iress-live.test.ts).
+    last: num("Last", "LastTrade", "LastPrice", "PxLast"),
     bid: num("Bid", "BidPrice", "BuyPrice"),
     ask: num("Ask", "AskPrice", "SellPrice"),
     bidSize: num("BidSize", "BidQty", "BuySize"),

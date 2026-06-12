@@ -22,6 +22,7 @@ export function resolveQuoteApiMode(opts: {
 export interface NormalisedQuoteRow {
   sym: string;
   last: number;
+  prev?: number;
   bid?: number;
   ask?: number;
   change?: number;
@@ -38,8 +39,10 @@ export interface BffQuotesResponse {
   quotes: Array<{
     symbol: string;
     last_price: number;
+    prev_close?: number;
     bid?: number;
     ask?: number;
+    change?: number;
     change_pct?: number;
     ts?: number;
     source: "live" | "seed-fallback" | "mock" | "supabase";
@@ -74,8 +77,10 @@ export function normaliseBffQuotes(data: BffQuotesResponse): NormalisedQuoteRow[
   return data.quotes.map((r) => ({
     sym: r.symbol,
     last: r.last_price,
+    prev: r.prev_close,
     bid: r.bid,
     ask: r.ask,
+    change: r.change,
     changePct: r.change_pct,
     source: r.source,
   }));

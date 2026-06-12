@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const ORIGINAL_ENV = { ...process.env };
 
 interface MockPayload {
-  securities: Array<{ id: string; symbol: string; last_price: number | null; currency: string | null }>;
+  securities: Array<{ id: string; symbol: string; last_price: number | null; prev_close: number | null; currency: string | null }>;
   ticks: Array<{ security_id: string; current_price: number; timestamp: string }>;
 }
 
@@ -52,8 +52,8 @@ function makeMockSupabaseClient(payload: MockPayload, calls?: QueryCall[]) {
   return { from };
 }
 
-const SEC_1 = { id: "uuid-1", symbol: "NPN", last_price: 418055, currency: "ZAR" };
-const SEC_2 = { id: "uuid-2", symbol: "PRX", last_price: 90500, currency: "ZAR" };
+const SEC_1 = { id: "uuid-1", symbol: "NPN", last_price: 418055, prev_close: 415830, currency: "ZAR" };
+const SEC_2 = { id: "uuid-2", symbol: "PRX", last_price: 90500, prev_close: 90000, currency: "ZAR" };
 const TICK_1 = { security_id: "uuid-1", current_price: 420000, timestamp: "2026-06-12T08:30:00Z" };
 const TICK_2 = { security_id: "uuid-2", current_price: 91000, timestamp: "2026-06-12T08:30:00Z" };
 

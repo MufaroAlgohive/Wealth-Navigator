@@ -84,6 +84,7 @@ export function useLiveQuotes(symbols: string[], enabled = true) {
       q.data.rows.map((r) => ({
         sym: r.sym,
         last: r.last,
+        prev: r.prev,
         bid: r.bid,
         ask: r.ask,
         change: r.change,

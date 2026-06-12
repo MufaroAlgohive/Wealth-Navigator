@@ -58,8 +58,10 @@ export async function GET(req: Request) {
   const summaryQuotes = quotes.map((q) => ({
     symbol: q.symbol,
     last_price: q.quote.last,
+    prev_close: q.quote.prevClose,
     bid: q.quote.bid,
     ask: q.quote.ask,
+    change: q.quote.change,
     change_pct: q.quote.changePct,
     ts: q.quote.ts,
     source: q.source,

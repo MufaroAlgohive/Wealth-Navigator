@@ -59,6 +59,7 @@ interface SecurityMetaRow {
   id: string;
   symbol: string;
   last_price: number | null;
+  prev_close: number | null;
   currency: string | null;
 }
 
@@ -71,7 +72,11 @@ function buildQuoteFromIntraday(
 ): Quote {
   const priceCents = Number(intraday.current_price) || 0;
   const last = priceCents / 100;
-  const prev = meta?.last_price != null ? Number(meta.last_price) / 100 : last;
+  const prevCents = meta?.prev_close ?? null;
+  const prev =
+    prevCents != null && Number(prevCents) > 0
+      ? Number(prevCents) / 100
+      : last;
   const change = last - prev;
   const changePct = prev > 0 ? (change / prev) * 100 : 0;
   const ts = new Date(intraday.timestamp).getTime();
@@ -110,7 +115,7 @@ async function fetchQuotesFromSupabase(
 
   const { data: securities, error: secErr } = await supabase
     .from("securities_c")
-    .select("id, symbol, last_price, currency")
+    .select("id, symbol, last_price, prev_close, currency")
     .in("symbol", normalised);
   if (secErr) {
     throw new Error(`securities_c read failed: ${secErr.message}`);

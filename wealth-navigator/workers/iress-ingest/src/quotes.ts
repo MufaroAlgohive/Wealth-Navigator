@@ -305,9 +305,14 @@ export async function syncWatchlistQuotes(
       continue;
     }
 
+    const prevCloseCents =
+      quote.prevClose > 0 ? quoteToCents(quote.prevClose) : null;
     const { error: secErr } = await supabase
       .from("securities_c")
-      .update({ last_price: priceCents })
+      .update({
+        last_price: priceCents,
+        ...(prevCloseCents != null ? { prev_close: prevCloseCents } : {}),
+      })
       .eq("id", securityId);
     if (secErr) {
       console.warn(
