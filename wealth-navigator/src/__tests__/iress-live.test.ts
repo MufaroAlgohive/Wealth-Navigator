@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IressClient } from "@/lib/iress/client";
 import { IressError } from "@/lib/iress/errors";
-import { createLiveIressClient, liveIressClient, describeQuoteRowKeys, describeQuoteRowNumericFields, resolveQuoteLast } from "@/lib/iress/live";
+import { createLiveIressClient, liveIressClient, describeQuoteRowKeys, describeQuoteRowNumericFields, iressQuotePriceScale, resolveQuoteLast } from "@/lib/iress/live";
 import { IRESS_NS, type SoapTransport, buildSoapEnvelope } from "@/lib/iress/transport";
 
 // ─── 1. Env-var detection in `index.ts` ─────────────────────────────────
@@ -982,6 +982,66 @@ describe("mapQuote field-name fallback for real IRESS V4 responses", () => {
     expect(row?.currency).toBe("ZAR");
     expect(typeof row?.ts).toBe("number");
     expect(row?.ts).toBeGreaterThan(0);
+  });
+
+  it("scales CT LastPrice integer cents to ZAR when <Last> is absent (AGL shape)", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <PricingQuoteGetResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>q-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows>
+                  <DataRow>
+                    <SecurityCode>AGL</SecurityCode>
+                    <Exchange>JSE</Exchange>
+                    <LastPrice>55210</LastPrice>
+                    <PreviousClosePrice>55180</PreviousClosePrice>
+                    <OpenPrice>55100</OpenPrice>
+                    <HighPrice>55300</HighPrice>
+                    <LowPrice>55050</LowPrice>
+                    <BidPrice>55190</BidPrice>
+                    <AskPrice>55220</AskPrice>
+                    <TradingStatus>CLOSED</TradingStatus>
+                  </DataRow>
+                </DataRows>
+              </Result>
+            </Output>
+          </PricingQuoteGetResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.pricingQuoteGet({
+      Header: { SessionKey: "k", RequestID: "q-1" },
+      SecurityCode: "AGL",
+      Exchange: "JSE",
+    });
+    const row = res.DataRows[0];
+    expect(row?.last).toBeCloseTo(552.1, 2);
+    expect(row?.prevClose).toBeCloseTo(551.8, 2);
+    expect(row?.bid).toBeCloseTo(551.9, 2);
+    expect(row?.marketState).toBe("CLOSED");
+  });
+});
+
+describe("iressQuotePriceScale", () => {
+  it("returns 0.01 when LastPrice is present without Last", () => {
+    expect(iressQuotePriceScale({ LastPrice: 55210 })).toBe(0.01);
+  });
+  it("returns 1 when bare Last is present", () => {
+    expect(iressQuotePriceScale({ Last: 610 })).toBe(1);
   });
 });
 

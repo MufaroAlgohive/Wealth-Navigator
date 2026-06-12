@@ -115,10 +115,23 @@ const CLOSE_KEYS = [
 const PREV_CLOSE_KEYS = [
   "PrevClose",
   "PreviousClose",
+  "PreviousClosePrice",
   "PreviousSettlement",
   "PriorClose",
   "YesterdayClose",
 ] as const;
+
+/** CT returns bare `<Last>` in ZAR for some names and `<LastPrice>` integer cents for others. */
+export function iressQuotePriceScale(row: Record<string, unknown>): number {
+  const hasLast =
+    row["Last"] !== undefined && row["Last"] !== null && row["Last"] !== "";
+  const hasLastPrice =
+    row["LastPrice"] !== undefined &&
+    row["LastPrice"] !== null &&
+    row["LastPrice"] !== "";
+  if (!hasLast && hasLastPrice) return 0.01;
+  return 1;
+}
 
 /** Median of price candidates that cluster within 3× of each other. */
 function clusterAnchor(candidates: number[]): number {
@@ -144,7 +157,7 @@ export function resolveQuoteLast(
   num: QuoteNumReader,
   str: QuoteStrReader,
 ): number {
-  const liveLast = num("Last");
+  const liveLast = num("Last", "LastPrice");
   const close = num(...CLOSE_KEYS);
   const prevClose = num(...PREV_CLOSE_KEYS);
   const open = num("Open", "OpenPrice");
@@ -155,7 +168,7 @@ export function resolveQuoteLast(
   const ask = num("Ask", "AskPrice", "SellPrice");
   const lastTrade = num("LastTrade", "LastPrice", "PxLast", "TradePrice");
   const volume = num("Volume", "TotalVolume", "CumVolume", "TotalTradedVolume");
-  const state = str("MarketState", "QuoteState", "State", "Status");
+  const state = str("MarketState", "QuoteState", "State", "Status", "TradingStatus");
   const closed = /CLOSED|CLOSE|HALT|PRE[_-]?OPEN|SUSPEND/i.test(state);
 
   const bookMid =
@@ -229,6 +242,7 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
   if (!row) {
     return emptyQuote();
   }
+  const scale = iressQuotePriceScale(row);
   // Real IRESS V4 market-data responses use the bare field names (`<Last>`,
   // `<Bid>`, `<Ask>`, `<QuoteState>`, etc.). Our internal mock + WSDL samples
   // historically used the longer camelCase names. Read the doc-canonical name
@@ -240,7 +254,7 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
       const v = row[k];
       if (v !== undefined && v !== null && v !== "") {
         const n = Number(v);
-        if (Number.isFinite(n)) return n;
+        if (Number.isFinite(n)) return n * scale;
       }
     }
     return 0;
@@ -270,7 +284,7 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
     vwap: num("VWAP", "Vwap"),
     marketCap: row["MarketCap"] === undefined ? undefined : num("MarketCap"),
     currency: str("Currency") || "ZAR",
-    marketState: (str("MarketState", "QuoteState", "State", "Status") || "OPEN") as Quote["marketState"],
+    marketState: (str("MarketState", "QuoteState", "State", "Status", "TradingStatus") || "OPEN") as Quote["marketState"],
     ts: row["LastTradeDateTime"] || row["LastTradeTime"] || row["UpdateTime"]
       ? Date.parse(String(row["LastTradeDateTime"] ?? row["LastTradeTime"] ?? row["UpdateTime"])) || Date.now()
       : Date.now(),
