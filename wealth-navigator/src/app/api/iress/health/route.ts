@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 /**
  * IRESS WS session health check — server-side only.
  *
- * Protected by middleware (`mint-auth` cookie). Never returns passwords.
+ * Protected by middleware (Supabase session). Never returns passwords.
  * App login (`/api/auth/login`) is separate from IRESS SOAP session auth.
  */
 export async function GET() {

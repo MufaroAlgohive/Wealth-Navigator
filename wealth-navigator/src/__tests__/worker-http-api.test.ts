@@ -1,0 +1,336 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { IressError } from "@/lib/iress/errors";
+import type { Order } from "@/types/iress";
+
+const ORIGINAL_ENV = { ...process.env };
+const KEYS = [
+  "WORKER_HTTP_PORT",
+  "WORKER_HTTP_HOST",
+  "WORKER_HTTP_TOKEN",
+  "WORKER_HTTP_DISABLED",
+  "IRESS_MODE",
+  "IRESS_ACCOUNT_CODE",
+  "IRESS_WATCHLIST_SYMBOLS",
+];
+
+function clearEnv() {
+  for (const k of KEYS) delete process.env[k];
+}
+
+/** Mutable holder so the hoisted `vi.mock` factory can read per-test
+ *  client shapes. Set inside each `it` before the dynamic import. */
+const iressClientHolder: { current: unknown } = { current: null };
+
+vi.mock("@/lib/iress/index", () => ({
+  getIressClient: () => iressClientHolder.current,
+  iressConfig: { mode: "live" },
+}));
+
+afterEach(() => {
+  clearEnv();
+  process.env = { ...ORIGINAL_ENV };
+  vi.restoreAllMocks();
+  iressClientHolder.current = null;
+});
+
+interface FakeRes {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: string;
+  headersSent: boolean;
+  writeHead: (status: number, headers?: Record<string, string>) => void;
+  write: (chunk: string) => void;
+  end: (chunk?: string) => void;
+}
+
+function fakeRes(): FakeRes {
+  const res: FakeRes = {
+    statusCode: 0,
+    headers: {},
+    body: "",
+    headersSent: false,
+    writeHead(status, headers) {
+      this.statusCode = status;
+      this.headersSent = true;
+      this.headers = { ...this.headers, ...(headers ?? {}) };
+    },
+    write(chunk) {
+      this.body += chunk;
+    },
+    end(chunk) {
+      if (chunk) this.body += chunk;
+    },
+  };
+  return res;
+}
+
+function fakeReq(opts: { method?: string; url?: string; headers?: Record<string, string> } = {}): import("node:http").IncomingMessage {
+  const listeners: Record<string, Array<() => void>> = {};
+  const req = {
+    url: opts.url ?? "/",
+    method: opts.method ?? "GET",
+    headers: { ...(opts.headers ?? {}) },
+    on(event: string, cb: () => void) {
+      (listeners[event] ??= []).push(cb);
+      return req;
+    },
+  } as unknown as import("node:http").IncomingMessage;
+  return req;
+}
+
+function buildEnv(overrides: Record<string, string | number | boolean | string[]> = {}): import("../../workers/iress-ingest/src/env").WorkerEnv {
+  return {
+    workerId: "iress-ingest-test",
+    iressMode: "live",
+    dryRun: true,
+    allowWrites: false,
+    heartbeatSec: 30,
+    quoteIntervalSec: 15,
+    orderPollIntervalSec: 60,
+    watchlistSymbols: ["NPN", "PRX"],
+    instrumentSync: false,
+    supabaseUrl: "",
+    supabaseServiceKey: "",
+    iressAccountCode: "ACC1,ACC2",
+    applicationLabel: "Mint-OEMS-Worker-test",
+    defaultExchange: "JSE",
+    ...overrides,
+  };
+}
+
+function makeMockSession(): import("../../workers/iress-ingest/src/session").WorkerMintSession {
+  return {
+    iressSessionKey: "KEY-X@WebSer…@WebServicesCT",
+    applicationId: "Mint-OEMS-Worker-test",
+    sessionTimeout: 120,
+    expiresAt: Date.now() + 60 * 60_000,
+    serviceKeys: { IOSPlus: "IOS-KEY" },
+    startedAt: Date.now(),
+  };
+}
+
+describe("worker http-api /health", () => {
+  beforeEach(clearEnv);
+
+  it("returns the worker session snapshot with no IRESS call", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const session = makeMockSession();
+    const sessions = {
+      peekSession: () => session,
+      getSession: async () => session,
+      invalidate: () => undefined,
+    } as never;
+    const req = fakeReq({ url: "/health" });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(true);
+    expect(body.workerId).toBe("iress-ingest-test");
+    expect(body.iressMode).toBe("live");
+    expect(body.session.cached).toBe(true);
+    expect(body.session.applicationId).toBe("Mint-OEMS-Worker-test");
+    expect(body.session.services).toEqual(["IOSPlus"]);
+    expect(body.accounts).toEqual(["ACC1", "ACC2"]);
+    expect(body.watchlistSize).toBe(2);
+    expect(typeof body.uptimeSec).toBe("number");
+  });
+
+  it("returns 401 when WORKER_HTTP_TOKEN is set and Authorization is missing", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = fakeReq({ url: "/health" });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv(),
+      sessions: { peekSession: () => null, invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, "secret-token");
+    expect(res.statusCode).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("unauthorized");
+  });
+
+  it("accepts Bearer <token> in Authorization", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = fakeReq({ url: "/health", headers: { authorization: "Bearer secret-token" } });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv(),
+      sessions: { peekSession: () => null, invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, "secret-token");
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("accepts X-Worker-Token for SSE clients that can't set Authorization", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = fakeReq({ url: "/health", headers: { "x-worker-token": "secret-token" } });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv(),
+      sessions: { peekSession: () => null, invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, "secret-token");
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("worker http-api /orders", () => {
+  beforeEach(clearEnv);
+
+  it("returns 503 account_not_configured when no account param and no IRESS_ACCOUNT_CODE", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = fakeReq({ url: "/orders" });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv({ iressAccountCode: "" }),
+      sessions: { invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("account_not_configured");
+    expect(body.error).toContain("Order account code not configured");
+  });
+
+  it("proxies OrderPadGetByAccount and returns the orders list", async () => {
+    const orders: Order[] = [
+      {
+        id: "ORD-1",
+        account: "ACC1",
+        strategy: "test",
+        side: "BUY",
+        symbol: "NPN",
+        isin: "ZAE000015889",
+        type: "LMT",
+        tif: "DAY",
+        destination: "JSE",
+        qty: 100,
+        filled: 0,
+        limit: 4180.55,
+        stop: null,
+        avgPx: 4180.55,
+        vwap: 4180.55,
+        trader: "tester",
+        ts: Date.now(),
+        state: "WORKING",
+        orderTag: "tag-1",
+        slippageBps: 0,
+        arrivalMid: 4180.5,
+      },
+    ];
+    const orderPadGetByAccount = vi.fn().mockResolvedValue({
+      Header: { StatusCode: 2, ErrorNumber: 0 },
+      DataRows: orders,
+    });
+    iressClientHolder.current = { orderPadGetByAccount };
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      invalidate: () => undefined,
+    } as never;
+    const req = fakeReq({ url: "/orders?account=ACC1&filter=1" });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(true);
+    expect(body.orders).toHaveLength(1);
+    expect(body.orders[0].symbol).toBe("NPN");
+    expect(body.source).toBe("live");
+    expect(body.account).toBe("ACC1");
+    expect(body.filter).toBe(1);
+    expect(orderPadGetByAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ AccountCode: "ACC1", OrderFilter: 1 }),
+    );
+  });
+
+  it("returns ok=false with mock_mode shape when IRESS_MODE is mock", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = fakeReq({ url: "/orders?account=ACC1" });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv({ iressMode: "mock" }),
+      sessions: { invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(false);
+    expect(body.source).toBe("unavailable");
+    expect(body.error?.code).toBe("mock_mode");
+  });
+
+  it("returns ok=false with iress_<code> shape when the SOAP call fails", async () => {
+    const orderPadGetByAccount = vi.fn().mockRejectedValue(
+      new IressError(25032, "OrderPadGetByAccount", "Invalid account code"),
+    );
+    iressClientHolder.current = { orderPadGetByAccount };
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      invalidate: () => undefined,
+    } as never;
+    const req = fakeReq({ url: "/orders?account=ACC1" });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(false);
+    expect(body.error?.code).toBe("iress_25032");
+    expect(body.error?.message).toContain("Invalid account code");
+  });
+
+  it("invalidates the cached session on 25001", async () => {
+    const orderPadGetByAccount = vi
+      .fn()
+      .mockRejectedValue(new IressError(25001, "OrderPadGetByAccount", "session expired"));
+    iressClientHolder.current = { orderPadGetByAccount };
+    const invalidate = vi.fn();
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      invalidate,
+    } as never;
+    const req = fakeReq({ url: "/orders?account=ACC1" });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(invalidate).toHaveBeenCalled();
+  });
+});
+
+describe("worker http-api 404", () => {
+  it("returns 404 for unknown routes", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = fakeReq({ url: "/nope" });
+    const res = fakeRes();
+    await handleRequest(req, res, {
+      env: buildEnv(),
+      sessions: { invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(404);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("not_found");
+  });
+});

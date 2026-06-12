@@ -380,6 +380,15 @@ export class WorkerSessionManager {
     this.cache = null;
   }
 
+  /**
+   * Non-async accessor for the current session (no SOAP call, no expiry
+   * check). Used by the HTTP API health endpoint to surface session
+   * metadata without triggering an IRESS login.
+   */
+  peekSession(): WorkerMintSession | null {
+    return this.cache;
+  }
+
   async getSession(): Promise<WorkerMintSession> {
     if (Date.now() < this.licenseBackoffUntil) {
       const waitSec = Math.ceil((this.licenseBackoffUntil - Date.now()) / 1000);

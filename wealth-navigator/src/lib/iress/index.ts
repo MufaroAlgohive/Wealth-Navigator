@@ -269,3 +269,22 @@ export async function bringUpMintSessionFromEnv(options?: {
 }
 
 export type { IressClient } from "@/lib/iress/client";
+
+/**
+ * Re-export the read-only HTTP client used by Path B BFF passthroughs.
+ * Lives in `worker-api.ts` to keep this barrel focused on the SOAP
+ * adapter surface; importing it pulls in the data-policy module which
+ * inspects `process.env` so it stays server-only.
+ */
+export {
+  callWorker,
+  streamWorkerSse,
+  debugResolvedWorkerUrl,
+  WORKER_API_TIMEOUT_MS,
+} from "@/lib/iress/worker-api";
+export type {
+  WorkerApiOptions,
+  WorkerApiResult,
+  WorkerApiSuccess,
+  WorkerApiError,
+} from "@/lib/iress/worker-api";

@@ -5,7 +5,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Batch live quotes — server-side only, protected by mint-auth middleware.
+ * Batch live quotes — server-side only, protected by Supabase session middleware.
  *
  * GET /api/iress/quotes?symbols=NPN,PRX&exchange=JSE
  */

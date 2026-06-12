@@ -5,6 +5,93 @@ Living inventory of every data surface: what is **real IRESS**, what is **seed/m
 > Machine-readable source: `src/lib/iress/provenance.ts` · API: `GET /api/iress/provenance`  
 > **Remaining gaps:** `docs/REMAINING_GAPS.md`
 
+## Two paths: worker → Supabase → Vercel vs worker → Vercel (2026-06-12)
+
+The Vercel BFF **never** holds the IRESS CT license seat — only the Railway `iress-ingest` worker does. Every page that wants IRESS data therefore falls into one of two paths, decided by whether the data needs DB persistence or can be served ephemerally:
+
+### Path A — Worker → Supabase → Vercel (snapshots, audit, watchlist)
+
+```mermaid
+flowchart LR
+  IRESS[IRESS V4 SOAP] -->|PricingQuoteGet<br/>OrderPadGetByAccount| WORKER[Railway iress-ingest]
+  WORKER -->|upsert every 15s| SUPABASE[(Supabase Postgres<br/>securities_c / stock_intraday_c<br/>oems_order_audit<br/>integration_worker_health)]
+  SUPABASE -->|read| BFF[Vercel Next.js BFF]
+  BFF -->|JSON| UI[Desk UI]
+```
+
+Use Path A when the data is needed **in many places**, must survive a Vercel cold start, or must round-trip a long-poll into a stable shape. All `GET` reads from Vercel hit Supabase — IRESS is only ever called from the worker.
+
+| Route | What it reads | Why Path A |
+|-------|---------------|-----------|
+| `GET /api/quotes` | `stock_intraday_c` + `securities_c` | Many panels need the same row; SSE / Realtime fan-out from Supabase |
+| `GET /api/orders` | `oems_order_audit` | Historical blotter; pages need filtered + paginated reads |
+| `GET /api/worker-health` | `integration_worker_health` | Audit trail; survives worker restart, easy to diff over time |
+| Supabase Realtime | `stock_intraday_c` INSERT | Sub-second tick fan-out to multiple Vercel instances |
+
+Policy gate: `isUseSupabaseQuotesEnabled()` (server) / `isRealDataOnlyClient()` (browser) read `USE_SUPABASE_QUOTES` / `NEXT_PUBLIC_USE_SUPABASE_QUOTES`. When off, Path A degrades to the legacy `live-queries` SOAP path (still on the worker? no — that path hits IRESS directly via the in-process Vercel `IressClient`, which is for **local dev only**).
+
+### Path B — Worker → Vercel (live orders, integration health, ephemeral)
+
+```mermaid
+flowchart LR
+  IRESS[IRESS V4 SOAP] -->|OrderPadGetByAccount| WORKER[Railway iress-ingest]
+  WORKER -->|HTTP /orders<br/>HTTP /orders/stream<br/>HTTP /health| BFF[Vercel Next.js BFF]
+  BFF -->|reverse-proxy| UI[Desk UI]
+```
+
+Use Path B when the data is **live, per-request, and ephemeral** — no DB persistence needed, the worker is already a real-time source.
+
+| BFF route | Worker endpoint | What it returns | Why Path B |
+|-----------|-----------------|-----------------|-----------|
+| `GET /api/orders/live?account=ACC1&filter=1` | `GET /orders` | `OrderPadGetByAccount` for the account, in near real-time | Working pad changes every second; persisting to `oems_order_audit` is the audit mirror, the live working state doesn't need a DB row |
+| `GET /api/integration/health` | `GET /health` | In-process worker session + heartbeat (services cached, applicationId, accounts) | `integration_worker_health` is on a 30s heartbeat — too coarse for "is the worker up *right now*?" |
+| `GET /api/orders/stream?account=ACC1` | `GET /orders/stream` | SSE: `snapshot` + `update` events every `interval` seconds (default 5) | SSE is the cheapest way to push the working pad to the blotter without a polling client |
+
+Policy gate: `isWorkerLiveMode()` reads `USE_SUPABASE_QUOTES` (server-only). When on, Path B routes reverse-proxy via `IRESS_WORKER_URL` (or `RAILWAY_SERVICE_URL`); when off, Path B routes return 503 `worker_mode_off` and the UI falls back to the audit read.
+
+### Why two paths instead of one?
+
+| Concern | Path A wins | Path B wins |
+|---------|-------------|-------------|
+| License seat contention | Worker is sole SOAP caller | Same |
+| Survives Vercel cold start | Yes — DB row pre-exists | No — every cold start is a fresh fetch |
+| Multi-instance fan-out | Postgres + Realtime scale horizontally | BFF SSE holds one connection per browser |
+| History / audit / RLS | Postgres is system of record | None — working pad is volatile |
+| Network egress from Vercel | DB-only; no SOAP | SOAP via worker (worker egress only) |
+
+### Auth and credentials
+
+- IRESS creds (`IRESS_USERNAME`, `IRESS_PASSWORD`, `IRESS_COMPANY_NAME`) live **only on the worker**. Path B routes never see them — the worker owns the license seat.
+- The worker's HTTP API can require a shared `WORKER_HTTP_TOKEN` (sent as `Authorization: Bearer …` or `X-Worker-Token`). Default is "no auth" because both endpoints are private (Vercel never exposes `IRESS_WORKER_URL` to the browser).
+- The BFF does **not** expose IRESS creds or the worker token to client bundles — both are server-only env vars.
+
+### Failure modes (Path B)
+
+| Symptom | BFF response | UI behaviour |
+|---------|--------------|--------------|
+| `IRESS_WORKER_URL` unset on Vercel | 503 `not_configured` | "Railway worker not configured" empty state |
+| Worker URL set but `USE_SUPABASE_QUOTES` off | 503 `worker_mode_off` | Degrade to Path A audit read |
+| Worker unreachable / ECONNREFUSED | 503 `unreachable` | "Worker offline — using last-known audit" |
+| Worker takes > 10 s | 504 `timeout` | Surface "slow worker — retry" |
+| Worker 4xx/5xx (e.g. empty `IRESS_ACCOUNT_CODE`) | 503 `upstream_error` + upstream body | Display worker's `error.code` + `error.message` ("Order account code not configured") |
+| SSE client disconnects | Upstream `fetch` aborted; worker loop exits | Browser auto-reconnects via SSE `retry: 5000` |
+
+All failures return 503 (never 500) so the UI can render a useful empty state instead of a hard error.
+
+### Environment variables (Path B)
+
+| Var | Where | Required for | Default |
+|-----|-------|--------------|---------|
+| `IRESS_WORKER_URL` | Vercel (server) | BFF → worker proxy base URL (`https://...up.railway.app` or `http://iress-ingest.railway.internal:8765`) | unset → 503 `not_configured` |
+| `RAILWAY_SERVICE_URL` | Vercel (server) | Fallback for `IRESS_WORKER_URL` (Railway auto-injects the service URL into sibling services) | unset |
+| `WORKER_HTTP_TOKEN` | Vercel + worker | Shared bearer token; BFF sends `Authorization: Bearer …`, worker 401s if mismatch | unset → auth disabled (both must opt in) |
+| `WORKER_HTTP_DISABLED=1` | Worker only | Disables the worker's HTTP API (e.g. for ops or single-replica maintenance) | unset → HTTP API on |
+| `WORKER_HTTP_PORT` | Worker only | Port for the worker HTTP server (used by `IRESS_WORKER_URL` builder) | `8765` |
+| `USE_SUPABASE_QUOTES=true` | Vercel (server) | Gates `isWorkerLiveMode()` so Path B routes actually proxy | unset → 503 `worker_mode_off` |
+| `NEXT_PUBLIC_USE_SUPABASE_QUOTES` | Vercel (browser) | Hides Path B affordances in the UI when off (so we don't show "live" features that will 503) | unset |
+
+Worker also reads (existing): `IRESS_MODE`, `IRESS_USERNAME`, `IRESS_PASSWORD`, `IRESS_COMPANY_NAME`, `IRESS_ACCOUNT_CODE`, `IRESS_WORKER_DRY_RUN`, `SUPABASE_ALLOW_WRITES`, `TEST_SUPABASE_URL` / `TEST_SUPABASE_SERVICE_ROLE_KEY`. None of those need to be on Vercel.
+
 ## Real-data policy (2026-06-12)
 
 When `USE_SUPABASE_QUOTES=true` and `NEXT_PUBLIC_USE_SUPABASE_QUOTES=true` (Vercel production):
@@ -113,6 +200,12 @@ Production (Vercel): `IRESS_MODE=mock`, `USE_SUPABASE_QUOTES=true`, `NEXT_PUBLIC
 | Live quotes API | /api/iress/quotes | live-queries | PricingQuoteGet | LIVE |
 | Session status | /api/iress/session | session-manager | IRESSSessionStart | LIVE |
 | BFF quotes (DB-first) | /api/quotes | `fetchQuotesSafe` w/ `USE_SUPABASE_QUOTES=true` reads `stock_intraday_c`; else proxies to `live-queries` | PricingQuoteGet (worker) | HYBRID |
+| BFF live orders (Path B) | /api/orders/live | reverse-proxies worker `/orders` | OrderPadGetByAccount (worker) | LIVE |
+| BFF integration health (Path B) | /api/integration/health | reverse-proxies worker `/health` | session-manager (worker) | LIVE |
+| BFF orders SSE (Path B) | /api/orders/stream | reverse-proxies worker `/orders/stream` | OrderPadGetByAccount (worker) | LIVE |
+| Worker read-only HTTP | worker `:8765/{health,orders,orders/stream}` | `workers/iress-ingest/src/http-api.ts` | (worker-internal) | LIVE |
+| `isWorkerLiveMode()` helper | `@/lib/data-policy` | `USE_SUPABASE_QUOTES` server flag | — | — |
+| `WorkerReadOnlyApi` helper | `@/lib/iress/worker-api` | `fetch` w/ 10s timeout + error envelope | — | — |
 
 ## Persona placeholders (all SEED)
 

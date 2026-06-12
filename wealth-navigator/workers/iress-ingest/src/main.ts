@@ -11,6 +11,7 @@ import { WorkerSessionManager, LICENSE_RELEASE_DELAY_MS } from "./session";
 import { createWorkerSupabase, writeHeartbeat } from "./supabase";
 import { runHealthLoop } from "./health";
 import { pollAccountsForOrders } from "./orders";
+import { startHttpApi } from "./http-api";
 
 const env = loadWorkerEnv();
 
@@ -167,6 +168,19 @@ void runHealthLoop({
 });
 void quoteLoop();
 void orderLoop();
+
+// Read-only HTTP API — bound unless explicitly disabled. The Vercel BFF
+// reverse-proxies /orders, /orders/stream, and /health from these handlers
+// so Next.js never holds the IRESS license seat.
+if (process.env.WORKER_HTTP_DISABLED !== "1") {
+  startHttpApi(
+    { env, sessions, supabase },
+    () => lastQuoteSyncAt,
+  ).catch((err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[iress-ingest] http api failed to start: ${message}`);
+  });
+}
 
 // Allow env override at runtime (e.g. test scripts swap IRESS_ACCOUNT_CODE).
 process.env.IRESS_ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE ?? lastAccountCode;

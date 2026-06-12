@@ -53,3 +53,50 @@ export const FEED_NOT_CONFIGURED = "Data feed not configured";
 export function isProductionRealDataMode(): boolean {
   return isRealDataOnlyClient();
 }
+
+/**
+ * True when the Vercel BFF should reverse-proxy live data to the Railway
+ * `iress-ingest` worker instead of falling back to seed/mock. Path B routes
+ * (live orders, integration health) consult this before they reach for
+ * `IRESS_WORKER_URL`; Path A routes (snapshots, audit, watchlist) read
+ * Supabase via `isUseSupabaseQuotesEnabled()` and never look at the worker.
+ *
+ * Distinct from `isProductionRealDataMode()` because:
+ * - `isProductionRealDataMode` controls *UI rendering* — the chrome must
+ *   show SUPABASE / unavailable, never seed.
+ * - `isWorkerLiveMode` controls *route choice* — Path B should hit the
+ *   worker; Path A still goes through Supabase.
+ *
+ * Both are set together in production today, but they encode different
+ * invariants and may diverge (e.g. a staging env with the worker enabled
+ * but the UI flag off while we test the new BFF in isolation).
+ */
+export function isWorkerLiveMode(): boolean {
+  return isUseSupabaseQuotesEnabled();
+}
+
+/**
+ * The configured URL of the Railway `iress-ingest` worker (server-side only).
+ * Used by Path B BFF passthroughs to reverse-proxy live orders, integration
+ * health, and SSE streams — see `WorkerReadOnlyApi` in `@/lib/iress/worker-api`.
+ *
+ * Precedence:
+ * 1. `IRESS_WORKER_URL` — explicit override (e.g. staging pointing at a
+ *    non-Railway preview).
+ * 2. `RAILWAY_SERVICE_URL` — Railway's default env var for the worker's
+ *    public service URL (set automatically when services are linked).
+ * 3. Empty string — the BFF treats the worker as unreachable and the
+ *    passthroughs return 503 "Worker not configured" instead of 500.
+ */
+export function getIressWorkerUrl(): string {
+  const explicit = process.env.IRESS_WORKER_URL;
+  if (explicit && explicit.trim()) return explicit.trim().replace(/\/+$/, "");
+  const railway = process.env.RAILWAY_SERVICE_URL;
+  if (railway && railway.trim()) return railway.trim().replace(/\/+$/, "");
+  return "";
+}
+
+/** True when the worker URL is configured — needed for any Path B route. */
+export function isIressWorkerConfigured(): boolean {
+  return getIressWorkerUrl().length > 0;
+}
