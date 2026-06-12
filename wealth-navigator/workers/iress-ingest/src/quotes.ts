@@ -144,18 +144,23 @@ export async function syncWatchlistQuotes(
   const quotes: Array<{ symbol: string; quote: Quote }> = [];
 
   if (isLive) {
-    await sessions.withSession(async (session) => {
-      for (const symbol of env.watchlistSymbols) {
-        const normalised = normaliseSymbol(symbol);
-        try {
-          const quote = await fetchLiveQuote(session, normalised, exchange);
-          if (quote) quotes.push({ symbol: normalised, quote });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[iress-ingest] PricingQuoteGet(${normalised}) failed: ${msg}`);
+    try {
+      await sessions.withSession(async (session) => {
+        for (const symbol of env.watchlistSymbols) {
+          const normalised = normaliseSymbol(symbol);
+          try {
+            const quote = await fetchLiveQuote(session, normalised, exchange);
+            if (quote) quotes.push({ symbol: normalised, quote });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[iress-ingest] PricingQuoteGet(${normalised}) failed: ${msg}`);
+          }
         }
-      }
-    });
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] quote sync session failed: ${msg}`);
+    }
   } else {
     for (const raw of env.watchlistSymbols) {
       const normalised = normaliseSymbol(raw);

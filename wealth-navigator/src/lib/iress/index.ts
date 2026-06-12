@@ -208,12 +208,19 @@ export async function bringUpMintSession(
   ];
   const serviceKeys: Partial<Record<IressService, string>> = {};
   for (const { Service, Server } of servicesToStart) {
-    const { ServiceSessionKey } = await iress.serviceSessionStart({
-      IRESSSessionKey: iressSession.IRESSSessionKey,
-      Service,
-      Server,
-    });
-    serviceKeys[Service] = ServiceSessionKey;
+    try {
+      const { ServiceSessionKey } = await iress.serviceSessionStart({
+        IRESSSessionKey: iressSession.IRESSSessionKey,
+        Service,
+        Server,
+      });
+      serviceKeys[Service] = ServiceSessionKey;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[mint-iress] ServiceSessionStart(${Service}/${Server}) failed (continuing): ${message}`,
+      );
+    }
   }
   return { iressSession, serviceKeys };
 }

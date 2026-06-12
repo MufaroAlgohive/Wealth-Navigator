@@ -13,8 +13,8 @@ import {
   iressConfig,
   LICENSE_RELEASE_DELAY_MS,
   tearDownIressWireSession,
-} from "../../../src/lib/iress/index";
-import { IressError } from "../../../src/lib/iress/errors";
+} from "@/lib/iress/index";
+import { IressError } from "@/lib/iress/errors";
 import type { IressService } from "../../../src/types/iress";
 import type { WorkerSupabase } from "./supabase";
 
@@ -55,11 +55,9 @@ interface PersistedSessionRow {
 
 async function readPersistedApplicationId(
   supabase: WorkerSupabase | null,
-  allowWrites: boolean,
-  dryRun: boolean,
   workerId: string,
 ): Promise<PersistedSessionRow | null> {
-  if (!supabase || !allowWrites || dryRun) return null;
+  if (!supabase) return null;
   try {
     const { data, error } = await supabase
       .from("worker_session_metadata")
@@ -75,6 +73,39 @@ async function readPersistedApplicationId(
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[iress-ingest] readPersistedApplicationId threw: ${msg}`);
     return null;
+  }
+}
+
+/** Persist only the sticky ApplicationID — safe before IRESSSessionStart completes. */
+async function persistStickyApplicationId(
+  deps: WorkerSessionDeps,
+  applicationId: string,
+): Promise<void> {
+  if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
+    console.info(
+      "[iress-ingest] would upsert sticky application_id",
+      JSON.stringify({ worker_id: deps.workerId, application_id: applicationId }),
+    );
+    return;
+  }
+  try {
+    const { error } = await deps.supabase.from("worker_session_metadata").upsert(
+      {
+        worker_id: deps.workerId,
+        application_id: applicationId,
+        iress_hostname: deps.node,
+        last_started_at: new Date().toISOString(),
+        metadata: { applicationLabel: deps.applicationLabel, node: deps.node },
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "worker_id" },
+    );
+    if (error) {
+      console.warn(`[iress-ingest] persistStickyApplicationId failed: ${error.message}`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[iress-ingest] persistStickyApplicationId threw: ${msg}`);
   }
 }
 
@@ -165,12 +196,7 @@ export class WorkerSessionManager {
   constructor(private readonly deps: WorkerSessionDeps) {}
 
   private async resolveApplicationId(): Promise<string> {
-    const persisted = await readPersistedApplicationId(
-      this.deps.supabase,
-      this.deps.allowWrites,
-      this.deps.dryRun,
-      this.deps.workerId,
-    );
+    const persisted = await readPersistedApplicationId(this.deps.supabase, this.deps.workerId);
     if (persisted?.application_id) {
       console.info(
         `[iress-ingest] reusing sticky ApplicationID for ${this.deps.workerId}: ${persisted.application_id}`,
@@ -179,6 +205,7 @@ export class WorkerSessionManager {
     }
     const fresh = newStickyApplicationId(this.deps.node);
     console.info(`[iress-ingest] minting new ApplicationID for ${this.deps.workerId}: ${fresh}`);
+    await persistStickyApplicationId(this.deps, fresh);
     return fresh;
   }
 
@@ -201,6 +228,7 @@ export class WorkerSessionManager {
 
   private async startSession(): Promise<WorkerMintSession> {
     const applicationId = await this.resolveApplicationId();
+    await persistStickyApplicationId(this.deps, applicationId);
     try {
       const { iressSession, serviceKeys } = await bringUpMintSessionFromEnv({
         applicationId,
