@@ -1,59 +1,87 @@
-import { AUTH_COOKIE, COOKIE_MAX_AGE } from "@/middleware";
+import { createServerClient } from "@supabase/ssr";
 import { type NextRequest, NextResponse } from "next/server";
 
+import { getSupabaseAnonKey, getSupabaseUrl, isSupabaseAuthConfigured } from "@/lib/supabase/config";
+
 /**
- * Mock application login (dev-only until real auth e.g. Supabase/Clerk).
+ * Application login via Supabase Auth (email + password).
  *
- * Accepts the long-standing dev `admin` / `admin` factory default. A
- * successful response carries the `mint-auth` cookie that middleware reads
- * on subsequent requests to gate protected routes.
- *
- * This is NOT IRESS Web Services authentication. IRESS SOAP session
- * credentials live in env vars (`IRESS_USERNAME`, `IRESS_PASSWORD`,
- * `IRESS_COMPANY_NAME`) and are bootstrapped server-side via
- * `bringUpMintSessionFromEnv()` — see `/api/iress/health`.
- *
- * If a `persona` is supplied, we additionally set a `mint-persona` cookie
- * so a hard reload (e.g. opening a fresh tab) keeps the right surface
- * selected. The persona store is the richer source of truth on the
- * client; this cookie is just a hint for SSR.
- *
- * Auth failures are deliberately non-leaky: a wrong username and a wrong
- * password both surface the same generic "Invalid credentials." so the
- * endpoint can't be used to enumerate which half of the pair was wrong.
+ * Sets HttpOnly Supabase session cookies on success. This is NOT IRESS Web
+ * Services authentication — IRESS SOAP credentials remain server-side env
+ * vars for the ingest worker.
  */
 
 interface LoginBody {
-  username?: unknown;
+  email?: unknown;
   password?: unknown;
-  persona?: unknown;
 }
 
 interface LoginResponseBody {
   ok: boolean;
   error?: string;
-  user?: { username: string };
-  persona?: string | null;
+  user?: { email: string };
 }
-
-const ALLOWED_PERSONAS = new Set([
-  "oems",
-  "wealth_manager",
-  "strategist",
-  "admin",
-  "business",
-  "funeral_cover",
-]);
-
-/** Dev-only app credentials. Not related to IRESS WS session auth. */
-const ALLOWED_CREDENTIALS: ReadonlyArray<{ username: string; password: string }> = [
-  { username: "admin", password: "admin" },
-];
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function looksLikeUsername(email: string): boolean {
+  return !email.includes("@");
+}
+
+/** Map Supabase auth errors to user-safe messages (no credential oracle). */
+export function mapLoginAuthError(
+  email: string,
+  supabaseMessage?: string,
+): { error: string; status: number } {
+  if (looksLikeUsername(email)) {
+    return {
+      error:
+        'Sign in with your full email address (e.g. you@company.com). Usernames like "admin" are not valid — use the email you were given when your account was created.',
+      status: 400,
+    };
+  }
+
+  const msg = (supabaseMessage ?? "").toLowerCase();
+
+  if (msg.includes("email not confirmed")) {
+    return {
+      error:
+        "Your email is not confirmed yet. Check your inbox for a confirmation link, or ask an administrator to confirm your account in Supabase.",
+      status: 401,
+    };
+  }
+
+  if (msg.includes("invalid login credentials") || msg.includes("invalid credentials")) {
+    return {
+      error:
+        "Incorrect email or password. Use the exact email on your Supabase account — not the old dev username.",
+      status: 401,
+    };
+  }
+
+  if (msg.includes("too many requests") || msg.includes("rate limit")) {
+    return {
+      error: "Too many sign-in attempts. Please wait a moment and try again.",
+      status: 429,
+    };
+  }
+
+  return { error: "Sign-in failed. Please try again.", status: 401 };
+}
+
 export async function POST(req: NextRequest) {
+  if (!isSupabaseAuthConfigured()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "Authentication is not configured on this deployment. Contact your administrator.",
+      },
+      { status: 503 },
+    );
+  }
+
   let body: LoginBody;
   try {
     body = (await req.json()) as LoginBody;
@@ -61,53 +89,56 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const username = typeof body.username === "string" ? body.username.trim() : "";
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const password = typeof body.password === "string" ? body.password : "";
 
-  if (!username || !password) {
-    return NextResponse.json({ ok: false, error: "Username and password are required." }, { status: 400 });
+  if (!email || !password) {
+    return NextResponse.json(
+      { ok: false, error: "Email and password are required." },
+      { status: 400 },
+    );
   }
 
-  const match = ALLOWED_CREDENTIALS.find((c) => c.username === username && c.password === password);
-  if (!match) {
-    return NextResponse.json({ ok: false, error: "Invalid credentials." }, { status: 401 });
+  const usernameCheck = looksLikeUsername(email) ? mapLoginAuthError(email) : null;
+  if (usernameCheck) {
+    return NextResponse.json({ ok: false, error: usernameCheck.error }, { status: usernameCheck.status });
   }
 
-  const persona =
-    typeof body.persona === "string" && ALLOWED_PERSONAS.has(body.persona) ? body.persona : null;
+  let supabaseResponse = NextResponse.next({ request: req });
+
+  const supabase = createServerClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+    cookies: {
+      getAll() {
+        return req.cookies.getAll();
+      },
+      setAll(cookiesToSet) {
+        for (const { name, value } of cookiesToSet) {
+          req.cookies.set(name, value);
+        }
+        supabaseResponse = NextResponse.next({ request: req });
+        for (const { name, value, options } of cookiesToSet) {
+          supabaseResponse.cookies.set(name, value, options);
+        }
+      },
+    },
+  });
+
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+  if (error || !data.user) {
+    const mapped = mapLoginAuthError(email, error?.message);
+    return NextResponse.json({ ok: false, error: mapped.error }, { status: mapped.status });
+  }
 
   const responseBody: LoginResponseBody = {
     ok: true,
-    user: { username },
-    persona,
+    user: { email: data.user.email ?? email },
   };
 
-  const res = NextResponse.json(responseBody);
-
-  // Auth signal — HttpOnly so the client JS can't read or forge it,
-  // SameSite=Lax so top-level navigations send it back. Path=/ so the
-  // cookie applies to every route. 24h matches the brief.
-  res.cookies.set({
-    name: AUTH_COOKIE,
-    value: "1",
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    maxAge: COOKIE_MAX_AGE,
-  });
-
-  // Persona hint is intentionally NOT HttpOnly — the client Zustand
-  // store hydrates from it on mount so the right persona loads after
-  // a hard refresh.
-  if (persona) {
-    res.cookies.set({
-      name: "mint-persona",
-      value: persona,
-      path: "/",
-      sameSite: "lax",
-      maxAge: COOKIE_MAX_AGE,
-    });
+  const jsonResponse = NextResponse.json(responseBody);
+  for (const cookie of supabaseResponse.cookies.getAll()) {
+    jsonResponse.cookies.set(cookie);
   }
 
-  return res;
+  return jsonResponse;
 }

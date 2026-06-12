@@ -4,12 +4,38 @@
  * Service role bypasses RLS — use only in API routes, workers, and cron jobs.
  */
 
+import { createServerClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
+
+import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/supabase/config";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is not configured`);
   return value;
+}
+
+/** Cookie-backed Supabase client for Server Components and Route Handlers. */
+export async function createSupabaseServerClient(): Promise<SupabaseClient> {
+  const cookieStore = await cookies();
+
+  return createServerClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll(cookiesToSet) {
+        try {
+          for (const { name, value, options } of cookiesToSet) {
+            cookieStore.set(name, value, options);
+          }
+        } catch {
+          // setAll from a Server Component — middleware handles refresh.
+        }
+      },
+    },
+  });
 }
 
 /** Service-role client for workers and trusted server jobs. */

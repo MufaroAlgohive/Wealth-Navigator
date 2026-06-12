@@ -1,30 +1,29 @@
+import { Suspense } from "react";
+
 import LoginOne from "@/components/login-1";
 
-// `<LoginOne />` calls `useSearchParams()` to honour the `?next=` redirect
-// that middleware appends. Next.js 16 requires either a Suspense boundary
-// around the consumer or an opt-out from prerender — this page is
-// inherently dynamic, so opt out.
 export const dynamic = "force-dynamic";
 
-/**
- * /login — split-screen sign-in.
- *
- * The actual form, persona picker, mouse-driven sheen, and decorative
- * right-hand photo all live in `<LoginOne />` (the 21st.dev-derived
- * component). This page is intentionally thin so the visual update is
- * easy to revert: swap the import for the previous client component and
- * drop the wrapper.
- */
-export default function LoginPage() {
+function LoginFallback() {
   return (
     <div className="flex min-h-screen w-full items-center justify-center bg-canvas p-4 sm:p-6">
-      <LoginOne
-        photos={[
-          { src: "/login/abuti-221.jpg", alt: "Abuti at a formal event" },
-          { src: "/login/abuti-226.jpg", alt: "Abuti at a formal event" },
-        ]}
-        rotationMs={7000}
-      />
+      <div className="h-[440px] w-full max-w-5xl animate-pulse rounded-2xl border border-border bg-card" />
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFallback />}>
+      <div className="flex min-h-screen w-full items-center justify-center bg-canvas p-4 sm:p-6">
+        <LoginOne
+          photos={[
+            { src: "/login/abuti-221.jpg", alt: "Professional event photography" },
+            { src: "/login/abuti-226.jpg", alt: "Professional event photography" },
+          ]}
+          rotationMs={7000}
+        />
+      </div>
+    </Suspense>
   );
 }

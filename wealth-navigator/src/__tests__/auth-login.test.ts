@@ -1,14 +1,24 @@
 import { NextRequest } from "next/server";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { POST } from "@/app/api/auth/login/route";
-import { AUTH_COOKIE, COOKIE_MAX_AGE } from "@/middleware";
+const signInWithPassword = vi.fn();
 
-/**
- * Build a NextRequest with a JSON body that the route handler can parse.
- * The route only reads `req.json()` and the URL, so a minimal URL is
- * sufficient for the request side.
- */
+const isSupabaseAuthConfiguredMock = vi.fn(() => true);
+
+vi.mock("@/lib/supabase/config", () => ({
+  isSupabaseAuthConfigured: () => isSupabaseAuthConfiguredMock(),
+  getSupabaseUrl: () => "https://example.supabase.co",
+  getSupabaseAnonKey: () => "test-anon-key",
+}));
+
+vi.mock("@supabase/ssr", () => ({
+  createServerClient: vi.fn(() => ({
+    auth: { signInWithPassword },
+  })),
+}));
+
+import { mapLoginAuthError, POST } from "@/app/api/auth/login/route";
+
 function makeRequest(body: unknown): NextRequest {
   return new NextRequest("http://localhost:3000/api/auth/login", {
     method: "POST",
@@ -17,102 +27,109 @@ function makeRequest(body: unknown): NextRequest {
   });
 }
 
+describe("mapLoginAuthError", () => {
+  it("rejects username-style logins without @", () => {
+    const mapped = mapLoginAuthError("admin");
+    expect(mapped.status).toBe(400);
+    expect(mapped.error).toMatch(/full email/i);
+  });
+
+  it("maps email not confirmed", () => {
+    const mapped = mapLoginAuthError("user@mint.co.za", "Email not confirmed");
+    expect(mapped.status).toBe(401);
+    expect(mapped.error).toMatch(/not confirmed/i);
+  });
+
+  it("maps invalid credentials", () => {
+    const mapped = mapLoginAuthError("user@mint.co.za", "Invalid login credentials");
+    expect(mapped.status).toBe(401);
+    expect(mapped.error).toMatch(/incorrect email or password/i);
+  });
+});
+
 describe("POST /api/auth/login", () => {
-  it("authenticates the dev `admin` / `admin` credential and sets `mint-auth`", async () => {
-    const res = await POST(makeRequest({ username: "admin", password: "admin" }));
+  beforeEach(() => {
+    isSupabaseAuthConfiguredMock.mockReturnValue(true);
+    signInWithPassword.mockReset();
+  });
+
+  it("authenticates with Supabase and returns the user email", async () => {
+    signInWithPassword.mockResolvedValue({
+      data: { user: { email: "trader@mint.co.za" } },
+      error: null,
+    });
+
+    const res = await POST(makeRequest({ email: "trader@mint.co.za", password: "secret" }));
 
     expect(res.status).toBe(200);
-
-    const json = (await res.json()) as {
-      ok: boolean;
-      user?: { username: string };
-    };
+    const json = (await res.json()) as { ok: boolean; user?: { email: string } };
     expect(json.ok).toBe(true);
-    expect(json.user?.username).toBe("admin");
-
-    const auth = res.cookies.get(AUTH_COOKIE);
-    expect(auth?.value).toBe("1");
-    expect(auth?.httpOnly).toBe(true);
-    expect(auth?.sameSite).toBe("lax");
-    expect(auth?.path).toBe("/");
-    expect(auth?.maxAge).toBe(COOKIE_MAX_AGE);
+    expect(json.user?.email).toBe("trader@mint.co.za");
+    expect(signInWithPassword).toHaveBeenCalledWith({
+      email: "trader@mint.co.za",
+      password: "secret",
+    });
   });
 
-  it("rejects the right username with a wrong password with a generic 401 (no leak)", async () => {
-    const res = await POST(makeRequest({ username: "admin", password: "wrong" }));
+  it("returns 401 with a helpful message when Supabase rejects credentials", async () => {
+    signInWithPassword.mockResolvedValue({
+      data: { user: null },
+      error: { message: "Invalid login credentials" },
+    });
+
+    const res = await POST(makeRequest({ email: "trader@mint.co.za", password: "wrong" }));
 
     expect(res.status).toBe(401);
-
     const json = (await res.json()) as { ok: boolean; error?: string };
     expect(json.ok).toBe(false);
-    expect(json.error).toBe("Invalid credentials.");
-
-    expect(res.cookies.get(AUTH_COOKIE)).toBeUndefined();
+    expect(json.error).toMatch(/incorrect email or password/i);
   });
 
-  it("rejects a wrong username with the right password with the same generic 401", async () => {
-    const res = await POST(makeRequest({ username: "wrong", password: "admin" }));
-
-    expect(res.status).toBe(401);
-
-    const json = (await res.json()) as { ok: boolean; error?: string };
-    expect(json.ok).toBe(false);
-    expect(json.error).toBe("Invalid credentials.");
-
-    expect(res.cookies.get(AUTH_COOKIE)).toBeUndefined();
-  });
-
-  it("returns 400 when the username is empty (after trim)", async () => {
-    const res = await POST(makeRequest({ username: "   ", password: "admin" }));
+  it("returns 400 when email looks like a username", async () => {
+    const res = await POST(makeRequest({ email: "admin", password: "secret" }));
 
     expect(res.status).toBe(400);
-
     const json = (await res.json()) as { ok: boolean; error?: string };
-    expect(json.ok).toBe(false);
-    expect(json.error).toMatch(/required/i);
-
-    expect(res.cookies.get(AUTH_COOKIE)).toBeUndefined();
+    expect(json.error).toMatch(/full email/i);
+    expect(signInWithPassword).not.toHaveBeenCalled();
   });
 
-  it("returns 400 when the password is empty", async () => {
-    const res = await POST(makeRequest({ username: "admin", password: "" }));
+  it("returns 400 when email is empty after trim", async () => {
+    const res = await POST(makeRequest({ email: "   ", password: "secret" }));
 
     expect(res.status).toBe(400);
-
     const json = (await res.json()) as { ok: boolean; error?: string };
-    expect(json.ok).toBe(false);
     expect(json.error).toMatch(/required/i);
-
-    expect(res.cookies.get(AUTH_COOKIE)).toBeUndefined();
+    expect(signInWithPassword).not.toHaveBeenCalled();
   });
 
-  it("does NOT trim the password (leading/trailing spaces are rejected)", async () => {
-    const res = await POST(makeRequest({ username: "admin", password: " admin " }));
+  it("returns 400 when password is empty", async () => {
+    const res = await POST(makeRequest({ email: "trader@mint.co.za", password: "" }));
 
-    expect(res.status).toBe(401);
-    const json = (await res.json()) as { ok: boolean; error?: string };
-    expect(json.error).toBe("Invalid credentials.");
-    expect(res.cookies.get(AUTH_COOKIE)).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(signInWithPassword).not.toHaveBeenCalled();
   });
 
-  it("DOES trim the username so a pasted username with surrounding whitespace still works", async () => {
-    const res = await POST(makeRequest({ username: "  admin  ", password: "admin" }));
+  it("normalises email to lowercase", async () => {
+    signInWithPassword.mockResolvedValue({
+      data: { user: { email: "trader@mint.co.za" } },
+      error: null,
+    });
 
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as {
-      ok: boolean;
-      user?: { username: string };
-    };
-    expect(json.user?.username).toBe("admin");
-    expect(res.cookies.get(AUTH_COOKIE)?.value).toBe("1");
+    await POST(makeRequest({ email: "  Trader@Mint.Co.Za  ", password: "secret" }));
+
+    expect(signInWithPassword).toHaveBeenCalledWith({
+      email: "trader@mint.co.za",
+      password: "secret",
+    });
   });
 
-  it("treats the username as case-sensitive (lowercase `admin` variant is rejected)", async () => {
-    const res = await POST(makeRequest({ username: "Admin", password: "admin" }));
+  it("returns 503 when Supabase auth env is not configured", async () => {
+    isSupabaseAuthConfiguredMock.mockReturnValue(false);
 
-    expect(res.status).toBe(401);
-    const json = (await res.json()) as { ok: boolean; error?: string };
-    expect(json.error).toBe("Invalid credentials.");
-    expect(res.cookies.get(AUTH_COOKIE)).toBeUndefined();
+    const res = await POST(makeRequest({ email: "a@b.com", password: "x" }));
+
+    expect(res.status).toBe(503);
+    expect(signInWithPassword).not.toHaveBeenCalled();
   });
 });
