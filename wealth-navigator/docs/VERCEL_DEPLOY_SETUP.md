@@ -1,10 +1,10 @@
 # Vercel Deploy Setup — Mint Wealth Navigator
 
 > Step-by-step bring-up of the **Next.js 16** frontend on Vercel, talking to the
-> LIVE Supabase project (`mfxnghmuccevsxwcetej`). The IRESS SOAP worker runs on
+> MyMint Supabase project (`nnwzhxfjpjbzujevwzlh`). The IRESS SOAP worker runs on
 > Railway (separate surface — see `docs/GO_LIVE_RUNBOOK.md`).
 >
-> **Goal:** `vercel --prod` ships the app, `/api/quotes` returns live Supabase
+> **Goal:** `vercel --scope autonama-group --prod` ships the app, `/api/quotes` returns live Supabase
 > rows, and the OEMS desk renders without 127 / 404 / 500 walls.
 
 ---
@@ -17,7 +17,7 @@
 | Node | `>= 20.0.0` | Vercel Functions runtime (Vercel provides Node 22 by default). |
 | Vercel account | Hobby or Pro | One project per repo. |
 | GitHub | `edgeza/Wealth-Navigator` (or fork) | Vercel connects via the GitHub App. |
-| Supabase LIVE project | `mfxnghmuccevsxwcetej` | Anon + service-role keys (see §4). |
+| Supabase (MyMint) project | `nnwzhxfjpjbzujevwzlh` | Anon + service-role keys (see §4). |
 
 Local sanity before touching Vercel:
 
@@ -143,10 +143,10 @@ any committed file.
 
 | Variable | Required | Example / value | Where it lives |
 |---|---|---|---|
-| `NEXT_PUBLIC_SUPABASE_URL` | ✅ | `https://mfxnghmuccevsxwcetej.supabase.co` | Anon-safe — exposed to the browser |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ | `eyJhbGciOi…` (LIVE anon JWT) | Anon-safe — exposed to the browser |
-| `SUPABASE_URL` | ✅ | `https://mfxnghmuccevsxwcetej.supabase.co` | Server only — API routes, server components |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | `eyJhbGciOi…` (LIVE service-role JWT) | Server only — bypasses RLS, **never** anon |
+| `NEXT_PUBLIC_SUPABASE_URL` | ✅ | `https://nnwzhxfjpjbzujevwzlh.supabase.co` | Anon-safe — exposed to the browser |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ✅ | `eyJhbGciOi…` (MyMint anon JWT) | Anon-safe — exposed to the browser |
+| `SUPABASE_URL` | ✅ | `https://nnwzhxfjpjbzujevwzlh.supabase.co` | Server only — API routes, server components |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✅ | `eyJhbGciOi…` (MyMint service-role JWT) | Server only — bypasses RLS, **never** anon |
 | `USE_SUPABASE_QUOTES` | ⚠️ flag | `true` (LIVE) / `false` (mock preview) | Server — gates `live-queries.ts` to read `stock_intraday_c` |
 | `IRESS_MODE` | ⚠️ flag | `mock` (preview / demo) / `live` (only with creds) | Server — adapter selector |
 | `IRESS_BASE_URL` | optional | `https://webservices-ct.iress.co.za/v4` | Server — defaults to CT; set per region |
@@ -161,12 +161,43 @@ any committed file.
 | `NEXT_PUBLIC_TICK_STREAM` | optional | `/api/ticks` | Client — SSE endpoint |
 | `NEXT_PUBLIC_TICK_INTERVAL_MS` | optional | `1100` | Client — UI tick cadence |
 
-> **Secret source-of-truth:** LIVE Supabase keys live in the **Supabase
-> dashboard → Settings → API**, not in this repo. `supabase_creds` at the repo
-> root is gitignored and only holds **TEST** project keys (`nnwzhxfjpjbzujevwzlh`).
-> Pull the LIVE values from the dashboard when you set Vercel env vars.
+> **Secret source-of-truth:** MyMint keys for Vercel live in repo-root
+> `supabase_creds` (`TEST_SUPABASE_URL`, `TEST_SUPABASE_ANON_KEY`,
+> `TEST_SUPABASE_SERVICE_ROLE_KEY` - all for `nnwzhxfjpjbzujevwzlh`) or in the
+> Supabase dashboard -> Settings -> API for that project. Never commit JWTs.
+
+
+
+### IRESS_MODE=mock on Vercel is not mock quotes
+
+Production Vercel should keep **`IRESS_MODE=mock`**: the Railway `iress-ingest`
+worker holds the single IRESS CT seat, and serverless must not open live SOAP
+sessions.
+
+That flag does **not** force mock prices on the OEMS desk when
+**`USE_SUPABASE_QUOTES=true`**. `/api/quotes` reads `stock_intraday_c` via
+`SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`; a healthy response shows
+`"mode": "supabase"` and per-row `"source": "supabase"`. You only get
+`"mode": "mock"` when `USE_SUPABASE_QUOTES` is off or Supabase env vars are
+missing/wrong.
+
+`IRESS_MODE` still governs `/api/iress/*` and any in-process IRESS adapter
+calls from the Next.js app - separate from the Supabase quote path.
+
+### Align Railway SUPABASE_URL with Vercel
+
+The ingest worker writes intraday rows using **its** `SUPABASE_URL`. If Railway
+still targets a different project ref than Vercel, Production will show
+`supabaseCount: 0` (or stale rows). Set Railway to the same host as Vercel:
+`https://nnwzhxfjpjbzujevwzlh.supabase.co` plus the matching service-role key.
+The worker README still shows the eventual LIVE ref (`mfxnghmuccevsxwcetej`) in
+its live-write example - use that only when you intentionally cut Vercel + worker
+over to LIVE together.
 
 ### CLI workflow (paste the value when prompted)
+
+> From repo root: `vercel --scope autonama-group env add ...` (project `autonama-group/wealth-navigator`, prod alias `https://wealth-navigator-one.vercel.app`).
+
 
 ```powershell
 # Production
@@ -205,7 +236,7 @@ vercel env pull .env.local
 Get-Content .env.local | Select-String "SUPABASE_URL|IRESS_MODE|USE_SUPABASE"
 ```
 
-You should see the LIVE Supabase URL, `IRESS_MODE=mock`, and
+You should see the MyMint Supabase URL (nnwzhxfjpjbzujevwzlh), `IRESS_MODE=mock`, and
 `USE_SUPABASE_QUOTES=true` (Production) / `false` (Preview).
 
 ---
@@ -220,7 +251,7 @@ vercel
 # Open the URL — expect a redirect to /login and the dark-slate login page.
 
 # Promote to production
-vercel --prod
+vercel --scope autonama-group --prod
 ```
 
 What success looks like in the dashboard (Build tab):
@@ -252,7 +283,7 @@ What success looks like in the runtime:
   ```
 
   Source taxonomy: `supabase` (worker-fed), `live` (IRESS SOAP), `seed-fallback`
-  (network blip), `mock` (`IRESS_MODE=mock`).
+  (network blip), `mock` (when USE_SUPABASE_QUOTES is false — not because IRESS_MODE=mock on Vercel).
 - `/oems` loads the trading desk; the per-row **Source** badge shows
   `SUPABASE` once the worker has written `stock_intraday_c` rows.
 
@@ -262,7 +293,7 @@ What success looks like in the runtime:
 
 ```powershell
 # 1. Replace the placeholder with your real production URL
-$url = "https://mint-wealth-navigator.vercel.app"
+$url = "https://wealth-navigator-one.vercel.app"
 
 # 2. Health
 curl.exe "$url/api/health" | Select-String "ok"
@@ -333,3 +364,4 @@ Production**. No git reverts needed.
 - `docs/STACK_ARCHITECTURE.md` — why Vercel + Supabase + Railway, not all-in-one.
 - `docs/DATA_PROVENANCE.md` — `live` vs `mock` vs `seed-fallback` vs `supabase` badge semantics.
 - `TABLES.md` (repo root) — Supabase schema reference for the LIVE project.
+
