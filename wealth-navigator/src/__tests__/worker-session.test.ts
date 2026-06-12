@@ -105,6 +105,50 @@ describe("WorkerSessionManager sticky ApplicationID", () => {
     );
   });
 
+  it("requests forceKickOn25008 when worker never held a session key", async () => {
+    const bringUp = vi.fn().mockResolvedValue({
+      iressSession: {
+        IRESSSessionKey: "KEY-BOOT@WebServicesCT",
+        SessionNumber: 4,
+        SessionTimeout: 120,
+        ApplicationID: "Mint-OEMS-Worker-node-b",
+      },
+      serviceKeys: {},
+    });
+    const supabase = mockSupabase({ application_id: "Mint-OEMS-Worker-node-b" });
+    supabase._chain.maybeSingle.mockResolvedValue({
+      data: { application_id: "Mint-OEMS-Worker-node-b", iress_session_key: null, expires_at: null },
+      error: null,
+    });
+
+    vi.doMock("@/lib/iress/index", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("@/lib/iress/index")>();
+      return {
+        ...actual,
+        bringUpMintSessionFromEnv: bringUp,
+        iressConfig: { mode: "live" },
+      };
+    });
+
+    const { WorkerSessionManager } = await import("../../workers/iress-ingest/src/session");
+    const mgr = new WorkerSessionManager({
+      workerId: "iress-ingest-1",
+      node: "node-b",
+      applicationLabel: "Mint-OEMS-Worker",
+      supabase: supabase as never,
+      allowWrites: true,
+      dryRun: false,
+    });
+
+    await mgr.getSession();
+    expect(bringUp).toHaveBeenCalledWith(
+      expect.objectContaining({
+        applicationId: "Mint-OEMS-Worker-node-b",
+        forceKickOn25008: true,
+      }),
+    );
+  });
+
   it("does not invalidate the cached session on non-25001 SOAP faults", async () => {
     const bringUp = vi.fn().mockResolvedValue({
       iressSession: {

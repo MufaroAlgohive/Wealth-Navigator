@@ -95,3 +95,23 @@ If build fails with `"/src": not found` or `"/workers/iress-ingest": not found`,
 3. Set environment variables (see `.env.example`). The defaults in `.env.example` already target LIVE; flip `IRESS_WORKER_DRY_RUN=1` / `SUPABASE_ALLOW_WRITES=0` for staging.
 4. **Replicas: 1** — the worker holds a single IRESS license. Scaling out would create `25008` collisions. Document the constraint in the service description.
 5. Deploy — the worker registers SIGTERM → `IRESSSessionEnd` + 3 s license release delay.
+
+### 25008 orphan recovery
+
+If Railway crashes without `SIGTERM`, the CT license seat can stay occupied. The worker **auto-kicks on first `25008`** when `worker_session_metadata` has no `iress_session_key` (never held a successful session). After a graceful run, restarts reuse the sticky `application_id` without kicking.
+
+Manual recovery from your laptop:
+
+```bash
+# Kick orphan seat (no Supabase metadata required)
+IRESS_FORCE_KICK_ALL=1 bun run iress:logout
+
+# Verify seat is free
+bun scripts/probe-iress-login.ts
+```
+
+Railway one-time recovery (optional — worker first-boot auto-kick usually suffices):
+
+1. Set `IRESS_FORCE_KICK_ALL=1` on the Railway service.
+2. Redeploy once; confirm `[iress-ingest] quote sync complete` in logs.
+3. **Remove** `IRESS_FORCE_KICK_ALL` and redeploy again so normal restarts do not kick other sessions.

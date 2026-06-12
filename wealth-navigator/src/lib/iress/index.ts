@@ -113,12 +113,15 @@ function readKickOptionsFromEnv(): Pick<IressSessionStartRequest, "SessionNumber
 
 async function iressSessionStartWithLicenseRecovery(
   params: IressSessionStartRequest,
+  options?: { forceKickOn25008?: boolean },
 ): Promise<IressSessionStartResponse> {
   try {
     return await iress.iressSessionStart(params);
   } catch (err) {
     if (!(err instanceof IressError) || err.code !== 25008) throw err;
-    const kick = readKickOptionsFromEnv();
+    const kick = options?.forceKickOn25008
+      ? { SessionNumberToKick: -1 as const, KickLikeSessions: true }
+      : readKickOptionsFromEnv();
     if (kick.SessionNumberToKick === undefined) {
       console.error(
         "[mint-iress] 25008 license exhausted — another session holds the seat. " +
@@ -177,6 +180,8 @@ export async function bringUpMintSession(
     node?: string;
     sessionNumberToKick?: number;
     kickLikeSessions?: boolean;
+    /** Retry 25008 with SessionNumberToKick=-1 (first boot / orphan recovery). */
+    forceKickOn25008?: boolean;
   },
 ) {
   // Sticky ApplicationID for the long-running Railway worker: same
@@ -191,16 +196,19 @@ export async function bringUpMintSession(
           KickLikeSessions: options.kickLikeSessions ?? true,
         }
       : {};
-  const iressSession: IressSessionStartResponse = await iressSessionStartWithLicenseRecovery({
-    UserName: user.userName,
-    CompanyName: user.company,
-    Password: user.password,
-    ApplicationID: applicationId,
-    ApplicationLabel: applicationLabel,
-    SessionTimeout: 120,
-    Locale: "en-ZA",
-    ...kickOnFirstAttempt,
-  });
+  const iressSession: IressSessionStartResponse = await iressSessionStartWithLicenseRecovery(
+    {
+      UserName: user.userName,
+      CompanyName: user.company,
+      Password: user.password,
+      ApplicationID: applicationId,
+      ApplicationLabel: applicationLabel,
+      SessionTimeout: 120,
+      Locale: "en-ZA",
+      ...kickOnFirstAttempt,
+    },
+    { forceKickOn25008: options?.forceKickOn25008 },
+  );
   const servicesToStart: Array<{ Service: IressService; Server: string }> = [
     { Service: "IOSPlus", Server: "IOSPLUSAPI" },
     { Service: "IPS", Server: "IPSAPI" },
@@ -233,6 +241,7 @@ export async function bringUpMintSessionFromEnv(options?: {
   applicationId?: string;
   applicationLabel?: string;
   node?: string;
+  forceKickOn25008?: boolean;
 }) {
   const creds = getIressCredentialsFromEnv();
   if (!creds.userName || !creds.password) {

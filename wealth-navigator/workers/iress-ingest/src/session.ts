@@ -227,6 +227,8 @@ export class WorkerSessionManager {
   }
 
   private async startSession(): Promise<WorkerMintSession> {
+    const persisted = await readPersistedApplicationId(this.deps.supabase, this.deps.workerId);
+    const neverHeldSeat = !persisted?.iress_session_key;
     const applicationId = await this.resolveApplicationId();
     await persistStickyApplicationId(this.deps, applicationId);
     try {
@@ -234,6 +236,7 @@ export class WorkerSessionManager {
         applicationId,
         applicationLabel: this.deps.applicationLabel,
         node: this.deps.node,
+        forceKickOn25008: neverHeldSeat,
       });
       this.licenseBackoffUntil = 0;
       const session = this.buildSession(iressSession, serviceKeys, applicationId);
@@ -248,9 +251,11 @@ export class WorkerSessionManager {
     } catch (err) {
       if (err instanceof IressError && err.code === 25008) {
         this.licenseBackoffUntil = Date.now() + LICENSE_EXHAUSTED_BACKOFF_MS;
+        const hint = neverHeldSeat
+          ? "First-boot auto-kick already attempted; seat may be held by another live client."
+          : "Run `bun run iress:logout` from wealth-navigator/ or stop the other IRESS client.";
         console.error(
-          `[iress-ingest] 25008 license seat occupied — backing off ${LICENSE_EXHAUSTED_BACKOFF_MS}ms. ` +
-            "Run `bun run iress:logout` from wealth-navigator/ or stop the other IRESS client.",
+          `[iress-ingest] 25008 license seat occupied — backing off ${LICENSE_EXHAUSTED_BACKOFF_MS}ms. ${hint}`,
         );
       }
       throw err;

@@ -30,6 +30,12 @@ const DEFAULT_WATCHLIST = [
   "REM", "BID", "ABG", "SLM", "AMS", "WHL", "TBS", "GRT", "CLS", "MNP",
 ];
 
+/**
+ * `IRESS_FORCE_KICK_ALL=1` — optional Railway recovery flag. Retries `IRESSSessionStart`
+ * with `SessionNumberToKick=-1` after 25008. Set only for first deploy / orphan recovery,
+ * then unset. The worker also auto-kicks on first-boot 25008 when no `iress_session_key`
+ * exists in `worker_session_metadata`.
+ */
 export function loadWorkerEnv(): WorkerEnv {
   const supabaseUrl = process.env.SUPABASE_URL ?? "";
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";

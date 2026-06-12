@@ -135,7 +135,45 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const target = await resolveLogoutTarget(workerId);
+  const forceKickAll =
+    process.env.IRESS_FORCE_KICK_ALL === "1" || process.env.IRESS_FORCE_KICK_ALL === "true";
+
+  let target = await resolveLogoutTarget(workerId);
+  if (!target && forceKickAll) {
+    console.warn(
+      "iress-logout: no metadata row — IRESS_FORCE_KICK_ALL=1, starting session to kick orphan seat",
+    );
+    try {
+      const brought = await bringUpMintSession(
+        {
+          userName: creds.userName,
+          company: creds.company,
+          password: creds.password,
+        },
+        {
+          applicationLabel: process.env.IRESS_APPLICATION_LABEL ?? "Mint-OEMS-Kick-Recovery",
+          node: workerId,
+        },
+      );
+      target = {
+        iressSessionKey: brought.iressSession.IRESSSessionKey,
+        serviceKeys: brought.serviceKeys,
+        source: "IRESS_FORCE_KICK_ALL (orphan recovery)",
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.log(
+        JSON.stringify({
+          endpoint: baseUrl,
+          success: false,
+          workerId,
+          error: `Kick-all recovery failed: ${message}`,
+        }),
+      );
+      process.exit(1);
+    }
+  }
+
   if (!target) {
     console.log(
       JSON.stringify({
@@ -144,7 +182,8 @@ async function main(): Promise<void> {
         workerId,
         error:
           "No IRESS_SESSION_KEY, worker_session_metadata row, or application_id to reconnect. " +
-          "Set IRESS_SESSION_KEY or ensure Supabase credentials are in .env.local.",
+          "Set IRESS_SESSION_KEY, ensure Supabase credentials are in .env.local, " +
+          "or run with IRESS_FORCE_KICK_ALL=1 to kick orphan seats.",
       }),
     );
     process.exit(1);
