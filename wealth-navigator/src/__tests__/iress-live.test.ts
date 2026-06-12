@@ -1024,6 +1024,12 @@ describe("resolveQuoteLast", () => {
       rowNums({ Last: 610, Close: 608, QuoteState: "CLOSED" }),
     ).toBe(610);
   });
+
+  it("AGL: rejects bogus Last using High/Low mid when Close is absent", () => {
+    expect(
+      rowNums({ Last: 120003, High: 560, Low: 544, QuoteState: "CLOSED" }),
+    ).toBe(552);
+  });
 });
 
 describe("describeQuoteRowKeys diagnostic helper", () => {

@@ -111,6 +111,8 @@ export function resolveQuoteLast(
   const liveLast = num("Last");
   const close = num("Close", "ClosePrice");
   const prevClose = num("PrevClose", "PreviousClose");
+  const high = num("High", "HighPrice", "DayHigh");
+  const low = num("Low", "LowPrice", "DayLow");
   const bid = num("Bid", "BidPrice", "BuyPrice");
   const ask = num("Ask", "AskPrice", "SellPrice");
   const lastTrade = num("LastTrade", "LastPrice", "PxLast");
@@ -120,7 +122,9 @@ export function resolveQuoteLast(
   const bookMid =
     bid > 0 && ask > 0 ? (bid + ask) / 2 : bid > 0 ? bid : ask > 0 ? ask : 0;
   const officialClose = close > 0 ? close : prevClose > 0 ? prevClose : 0;
-  const anchor = officialClose > 0 ? officialClose : bookMid;
+  const sessionMid = high > 0 && low > 0 ? (high + low) / 2 : 0;
+  const anchor =
+    officialClose > 0 ? officialClose : sessionMid > 0 ? sessionMid : bookMid;
 
   const isBogusVsAnchor = (price: number) =>
     anchor > 0 && (price > anchor * 3 || price < anchor / 3);
