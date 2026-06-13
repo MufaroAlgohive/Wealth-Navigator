@@ -19,6 +19,7 @@ const METHOD_NAMES: Array<keyof IressClient> = [
   "orderCreate3",
   "orderAmend2",
   "orderDelete",
+  "orderNoGetByOrderTag",
   "orderPadGetByAccount",
   "orderPadGetByAccountUpdates",
   "bookingGetByOrganisation2",
@@ -102,14 +103,14 @@ describe("liveIressClient shape", () => {
     expect(typeof liveIressClient).toBe("object");
   });
 
-  it("has every one of the 17 IressClient methods", () => {
+  it("has every one of the 18 IressClient methods", () => {
     for (const name of METHOD_NAMES) {
       expect(liveIressClient, `missing method ${name}`).toHaveProperty(name);
       expect(typeof (liveIressClient as unknown as Record<string, unknown>)[name]).toBe("function");
     }
   });
 
-  it("createLiveIressClient() returns a fresh object with the same 17 methods", () => {
+  it("createLiveIressClient() returns a fresh object with the same 18 methods", () => {
     const fresh = createLiveIressClient();
     for (const name of METHOD_NAMES) {
       expect(fresh).toHaveProperty(name);
@@ -269,6 +270,18 @@ describe("validation — every method throws IressError on bad input", () => {
   it("orderDelete — missing ServiceSessionKey", async () => {
     await expect(
       fakeClient.orderDelete({ ServiceSessionKey: "", OrderNumber: "ORD-1" }),
+    ).rejects.toBeInstanceOf(IressError);
+  });
+
+  it("orderNoGetByOrderTag — missing ServiceSessionKey", async () => {
+    await expect(
+      fakeClient.orderNoGetByOrderTag({ ServiceSessionKey: "", OrderTag: "ord-1" }),
+    ).rejects.toBeInstanceOf(IressError);
+  });
+
+  it("orderNoGetByOrderTag — missing OrderTag", async () => {
+    await expect(
+      fakeClient.orderNoGetByOrderTag({ ServiceSessionKey: "ssk", OrderTag: "" }),
     ).rejects.toBeInstanceOf(IressError);
   });
 
@@ -656,6 +669,124 @@ describe("live client end-to-end with a fake transport", () => {
     expect(res.DataRows[0]?.ask).toBe(4182);
     expect(res.DataRows[0]?.currency).toBe("ZAR");
     expect(res.DataRows[0]?.marketState).toBe("OPEN");
+  });
+
+  it("orderNoGetByOrderTag returns the broker OrderNumber when the tag resolves", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <OrderNoGetByOrderTagResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>ord-tag-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows>
+                  <DataRow>
+                    <OrderNumber>ORD-44322</OrderNumber>
+                    <OrderTag>mint-ord-9f8e7d6c-b5a4-4916</OrderTag>
+                  </DataRow>
+                </DataRows>
+              </Result>
+            </Output>
+          </OrderNoGetByOrderTagResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.orderNoGetByOrderTag({
+      ServiceSessionKey: "ssk",
+      OrderTag: "mint-ord-9f8e7d6c-b5a4-4916",
+    });
+    expect(res.OrderNumber).toBe("ORD-44322");
+    expect(res.OrderTag).toBe("mint-ord-9f8e7d6c-b5a4-4916");
+    // Envelope shape — the request XML must carry the tag in the body and
+    // the service session key in the header.
+    const [urlArg, initArg] = fetchImpl.mock.calls[0] as [RequestInfo, RequestInit];
+    const url = String(urlArg);
+    const init = initArg;
+    expect(url).toContain("/SOAP.aspx");
+    expect((init.headers as Record<string, string>).SOAPAction).toContain("OrderNoGetByOrderTag");
+    expect(String(init.body)).toContain("<OrderNoGetByOrderTag");
+    expect(String(init.body)).toContain("<ServiceSessionKey>ssk</ServiceSessionKey>");
+    expect(String(init.body)).toContain("<OrderTag>mint-ord-9f8e7d6c-b5a4-4916</OrderTag>");
+  });
+
+  it("orderNoGetByOrderTag returns OrderNumber='' when the tag is unknown (200 OK + empty DataRow)", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <OrderNoGetByOrderTagResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>ord-tag-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows></DataRows>
+              </Result>
+            </Output>
+          </OrderNoGetByOrderTagResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.orderNoGetByOrderTag({
+      ServiceSessionKey: "ssk",
+      OrderTag: "unknown-tag",
+    });
+    expect(res.OrderNumber).toBe("");
+    expect(res.OrderTag).toBe("unknown-tag");
+  });
+
+  it("orderNoGetByOrderTag throws IressError when response header ErrorNumber is non-zero", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <OrderNoGetByOrderTagResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>ord-tag-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>25010</ErrorNumber>
+                  <ErrorDescription>Method not entitled</ErrorDescription>
+                </Header>
+                <DataRows></DataRows>
+              </Result>
+            </Output>
+          </OrderNoGetByOrderTagResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const err = await client
+      .orderNoGetByOrderTag({ ServiceSessionKey: "ssk", OrderTag: "ord-1" })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(IressError);
+    expect((err as IressError).code).toBe(25010);
+    expect((err as IressError).method).toBe("OrderNoGetByOrderTag");
   });
 });
 

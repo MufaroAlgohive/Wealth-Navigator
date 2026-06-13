@@ -174,6 +174,20 @@ export interface IressClient {
   orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response>;
   orderAmend2(req: OrderAmend2Request): Promise<{ OrderNumber: string }>;
   orderDelete(req: OrderDeleteRequest): Promise<void>;
+  /**
+   * Recovery lookup — given the `OrderTag` (UUID the OEMS minted) we sent
+   * in `OrderCreate3`, return the broker-assigned `OrderNumber`. The BFF
+   * uses this after a transport-level failure (HTTP 500, timeout, TCP RST)
+   * to resolve the actual broker state of a tag we may have already
+   * accepted. Returns the empty `OrderNumber` when the tag is unknown to
+   * IRESS — the BFF treats that as a hard reject.
+   *
+   * Spec: `iress-v4-docs/10-reference/quick-reference/00-master.md`.
+   */
+  orderNoGetByOrderTag(req: {
+    ServiceSessionKey: string;
+    OrderTag: string;
+  }): Promise<{ OrderNumber: string; OrderTag: string }>;
   orderPadGetByAccount(req: {
     ServiceSessionKey: string;
     AccountCode: string;

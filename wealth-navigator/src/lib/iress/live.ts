@@ -803,6 +803,40 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       }
     },
 
+    async orderNoGetByOrderTag(req: { ServiceSessionKey: string; OrderTag: string }): Promise<{ OrderNumber: string; OrderTag: string }> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "OrderNoGetByOrderTag");
+      require(req.OrderTag, "OrderTag", "OrderNoGetByOrderTag");
+      const result = await transport.call({
+        method: "OrderNoGetByOrderTag",
+        header: makeHeader({
+          serviceSessionKey: req.ServiceSessionKey,
+          requestID: newRequestID("ord-tag"),
+          timeout: 25,
+          waitForResponse: true,
+        }),
+        parameters: { OrderTag: req.OrderTag },
+      });
+      // V4 reports refused lookups via the response Header.ErrorNumber
+      // (25010 method not entitled, 25029 order not found, 25034
+      // entitlement check failed) — same shape as `PricingQuoteGet`.
+      const errorNumber = readResultHeaderNumber(result.header, "ErrorNumber");
+      if (errorNumber) {
+        const errorDescription =
+          readResultRowString(result.header, "ErrorDescription") ||
+          `OrderNoGetByOrderTag error ${errorNumber}`;
+        throw new IressError(errorNumber, "OrderNoGetByOrderTag", errorDescription);
+      }
+      const first = result.firstRow ?? {};
+      const orderNumber = String(first["OrderNumber"] ?? "").trim();
+      if (!orderNumber) {
+        // V4 returns 200 OK with an empty DataRow + ErrorNumber=0 when the
+        // tag is unknown to the broker. Bubble a typed zero-string so the
+        // BFF can distinguish "tag not found" from a transport fault.
+        return { OrderNumber: "", OrderTag: req.OrderTag };
+      }
+      return { OrderNumber: orderNumber, OrderTag: req.OrderTag };
+    },
+
     async orderPadGetByAccount(req: {
       ServiceSessionKey: string;
       AccountCode: string;

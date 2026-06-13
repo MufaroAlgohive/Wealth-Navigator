@@ -278,6 +278,12 @@ export const mockIressClient: IressClient = {
     o.state = "CANCELLED";
   },
 
+  async orderNoGetByOrderTag({ OrderTag }) {
+    const o = liveOrders.find((x) => x.orderTag === OrderTag);
+    if (!o) return { OrderNumber: "", OrderTag };
+    return { OrderNumber: o.id, OrderTag };
+  },
+
   async orderPadGetByAccount({ AccountCode, OrderFilter, Updates: _u, RequestID: _r }) {
     let rows = liveOrders.filter((o) => o.account === AccountCode);
     if (OrderFilter === 1) rows = rows.filter((o) => o.state === "WORKING" || o.state === "PARTIAL");

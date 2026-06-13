@@ -32,6 +32,7 @@ import { useIress } from "@/lib/iress/provider";
 import { formatZARExact } from "@/lib/format";
 import { useTick } from "@/lib/store/tick-stream-provider";
 import { preTradeCheck, getMarketState, type PreTradeResult } from "@/lib/iress/strategy";
+import { orderCreate3WithRecovery } from "@/lib/iress/order-recovery";
 import { cn } from "@/lib/cn";
 
 // Mock account-cash view — the dialog is the only place we know we're
@@ -92,24 +93,37 @@ export function NewOrderDialog({ onCreated }: { onCreated: () => void }) {
 
   const create = useMutation({
     mutationFn: async () => {
-      return client.orderCreate3({
-        ServiceSessionKey: "MOCK-S",
-        OrderTag: orderTag,
-        Order: {
-          AccountCode: account,
-          SecurityCode: symbol.toUpperCase(),
-          Exchange: destination === "OTC" ? "JSE" : destination,
-          BuySell: side === "BUY" ? 1 : 2,
-          OrderType: limit === "" ? "MKT" : "LMT",
-          Volume: qty,
-          Price: limit === "" ? undefined : Number(limit),
-          Destination: destination,
-          TimeInForce: tif,
+      // Place the order through the recovery helper — on a transient
+      // transport fault (HTTP 500, timeout, TCP RST) it re-queries IRESS
+      // via `OrderNoGetByOrderTag` to learn whether the broker already
+      // accepted the tag. This is the documented V4 idempotency path.
+      const result = await orderCreate3WithRecovery({
+        client,
+        request: {
+          ServiceSessionKey: "MOCK-S",
+          OrderTag: orderTag,
+          Order: {
+            AccountCode: account,
+            SecurityCode: symbol.toUpperCase(),
+            Exchange: destination === "OTC" ? "JSE" : destination,
+            BuySell: side === "BUY" ? 1 : 2,
+            OrderType: limit === "" ? "MKT" : "LMT",
+            Volume: qty,
+            Price: limit === "" ? undefined : Number(limit),
+            Destination: destination,
+            TimeInForce: tif,
+          },
         },
       });
+      return result;
     },
     onSuccess: (r) => {
-      toast.success(`Order ${r.OrderNumber} sent to ${destination}`, {
+      const recoveredNote = r.recovered
+        ? r.brokerAcceptedOnRecovery
+          ? " · recovered via OrderNoGetByOrderTag"
+          : " · recovery path used"
+        : "";
+      toast.success(`Order ${r.response.OrderNumber} sent to ${destination}${recoveredNote}`, {
         description: `${side} ${qty.toLocaleString()} ${symbol.toUpperCase()} @ ${limit === "" ? "MKT" : `R${limit}`}`,
       });
       setOpen(false);

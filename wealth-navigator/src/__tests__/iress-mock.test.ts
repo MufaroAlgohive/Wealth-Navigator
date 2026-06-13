@@ -188,6 +188,39 @@ describe("orderPadGetByAccount", () => {
   });
 });
 
+describe("orderNoGetByOrderTag", () => {
+  it("resolves a known tag to the broker OrderNumber", async () => {
+    const tag = `test-tag-${Date.now()}-${Math.random()}`;
+    const created = await mockIressClient.orderCreate3({
+      ServiceSessionKey: "ssk",
+      OrderTag: tag,
+      Order: {
+        AccountCode: "MINT-LIVE-001",
+        SecurityCode: "NPN",
+        Exchange: "JSE",
+        BuySell: 1,
+        OrderType: "LMT",
+        Volume: 50,
+        Price: 100,
+        Destination: "JSE",
+        TimeInForce: "DAY",
+      },
+    });
+    const lookup = await mockIressClient.orderNoGetByOrderTag({ ServiceSessionKey: "ssk", OrderTag: tag });
+    expect(lookup.OrderNumber).toBe(created.OrderNumber);
+    expect(lookup.OrderTag).toBe(tag);
+  });
+
+  it("returns OrderNumber='' for an unknown tag (BFF treats as hard reject)", async () => {
+    const lookup = await mockIressClient.orderNoGetByOrderTag({
+      ServiceSessionKey: "ssk",
+      OrderTag: "tag-never-existed-12345",
+    });
+    expect(lookup.OrderNumber).toBe("");
+    expect(lookup.OrderTag).toBe("tag-never-existed-12345");
+  });
+});
+
 describe("ipsTransactionGetByAccount5", () => {
   it("returns an array of transaction legs (FILLED/PARTIAL only) for the given account", async () => {
     const res = await mockIressClient.ipsTransactionGetByAccount5({
