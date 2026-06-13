@@ -170,9 +170,32 @@ export function timeSeriesFrequencyLong(token: TimeSeriesFrequency): number {
  * probe; see `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md`
  * for the candidate-vs-response table that established this value.
  *
- * The probe swept 0..20, 100, 1000. All non-daily values returned
- * `Invalid Parameter Value: <n> as Frequency`. Daily (`<n>` = this
- * value) returned `ok=true` with `dataRowCount > 0` for `J203`.
+ * **As of the June 13 2026 sweep, NO `Frequency` Long is accepted by
+ * the live CT server** — every value tried (0..32, 40, 50, 60, 64,
+ * 100, 128, 200, 255, 256, 500, 1000, 2000, 4000, 5000, 10000,
+ * 60000, 86400, 604800, 2592000, 31536000, -1, -2) returned
+ * `soap:Receiver — Invalid Parameter Value: <n> as Frequency`,
+ * and the same `Invalid Parameter Value: <empty> as Frequency`
+ * fault comes back for the V4-WSDL `<Interval>` string form
+ * (`Daily`, `Weekly`, `Monthly`, …). The probe confirmed the same
+ * fault for J203, R2030, NPN, FSR, SOL, and USDZAR — the failure is
+ * not symbol-specific.
+ *
+ * Until Charles confirms the `TimeSeriesGet2` entitlement on
+ * `DFM@Mint` and we know which `Frequency` Long the CT build
+ * actually accepts, the worker still calls `timeSeriesGet2` with
+ * this value as the best-faith daily-bucket guess. The loop's
+ * entitlement-required detection (`25014` / `25008` / "not
+ * entitled") still keeps the worker running — see
+ * `syncTimeSeries()` below. Once the entitlement is on, re-run
+ * `bun run iress:probe-frequency` (or POST to
+ * `/debug/timeseries-probe` on the worker) and update this constant
+ * to the first Long that returns `ok=true dataRowCount>0`.
+ *
+ * The probe endpoint on the worker accepts a `frequency` Long
+ * argument so future debugging can pin the correct value without
+ * redeploying the worker — see `probeTimeSeriesInterval()` in
+ * `workers/iress-ingest/src/http-api.ts`.
  */
 export const DAILY_FREQUENCY_LONG: number = 5;
 
