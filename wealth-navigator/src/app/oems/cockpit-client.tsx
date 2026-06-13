@@ -165,12 +165,43 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   }, [indices]);
 
   const alsi = indices.find((i) => i.code === "J203");
-  const pca = [
-    { factor: "Level (parallel)", bp: 12 },
-    { factor: "Slope (2s10s)", bp: -8 },
-    { factor: "Curvature (butterfly)", bp: 3 },
-    { factor: "Residual", bp: 1 },
-  ];
+
+  // PCA / curve move is read from the BFF (`/api/curves/ZAR_NSS/metrics`),
+  // not synthesised. The panel renders an honest empty state when the
+  // fitted-curve feed is unconfigured — see the `EmptyDataState` branch
+  // below. The hook stays enabled in real-data mode only so mock
+  // / dev never makes a network call to a route that requires
+  // `USE_SUPABASE_QUOTES=true`.
+  const curveMetricsQ = useQuery({
+    queryKey: ["bff-curve-zar-nss-metrics"],
+    queryFn: () =>
+      fetchJson<{
+        code: string;
+        metrics: Array<{
+          metric: string;
+          tenorLabel: string | null;
+          value: number;
+          unit: "bp" | "%";
+          asOf: string;
+        }>;
+        pca: { level: number | null; slope: number | null; curvature: number | null; residual: number | null } | null;
+        source: string;
+        message?: string;
+      }>("/api/curves/ZAR_NSS/metrics"),
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
+  });
+  const pcaRows = useMemo(() => {
+    const pca = curveMetricsQ.data?.pca;
+    if (!pca) return null;
+    return [
+      { factor: "Level (parallel)", bp: pca.level ?? 0 },
+      { factor: "Slope (2s10s)", bp: pca.slope ?? 0 },
+      { factor: "Curvature (butterfly)", bp: pca.curvature ?? 0 },
+      { factor: "Residual", bp: pca.residual ?? 0 },
+    ];
+  }, [curveMetricsQ.data]);
+  const curveMetricsSource = curveMetricsQ.data?.source ?? "unavailable";
 
   return (
     <div className="space-y-3">
@@ -819,26 +850,53 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
         <Panel
           title="Curve Move · PCA"
-          endpoint="INTERNAL · PCA on ZAR curve"
+          endpoint="GET /api/curves/ZAR_NSS/metrics"
+          dataSource={
+            curveMetricsSource === "supabase" || curveMetricsSource === "live"
+              ? "supabase"
+              : curveMetricsSource === "unconfigured"
+                ? "unconfigured"
+                : "unconfigured"
+          }
           className="col-span-12 lg:col-span-4 h-[260px]"
           right={<span className="font-mono text-[10px]">today vs 1D</span>}
         >
           {realDataOnly ? (
-            <EmptyDataState message="PCA decomposition requires live curve feed." />
+            curveMetricsQ.isLoading ? (
+              <div className="flex h-full items-center justify-center">
+                <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">computing PCA…</p>
+              </div>
+            ) : pcaRows ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={pcaRows} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="bp" />
+                  <YAxis type="category" dataKey="factor" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" width={130} />
+                  <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
+                  <Bar dataKey="bp" radius={[0, 2, 2, 0]}>
+                    {pcaRows.map((p, i) => (
+                      <Cell key={i} fill={p.bp >= 0 ? "hsl(var(--warning))" : "hsl(var(--success))"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <EmptyDataState
+                message="PCA decomposition requires fitted yield curve."
+                hint={curveMetricsQ.data?.message ?? "Curve feed not configured. Set up IRESS ZAR_NSS ingest in the worker to populate this panel."}
+              />
+            )
           ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={pca} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
-              <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
-              <XAxis type="number" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="bp" />
-              <YAxis type="category" dataKey="factor" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" width={130} />
-              <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
-              <Bar dataKey="bp" radius={[0, 2, 2, 0]}>
-                {pca.map((p, i) => (
-                  <Cell key={i} fill={p.bp >= 0 ? "hsl(var(--warning))" : "hsl(var(--success))"} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+            // Mock/dev mode — same bar chart as before, but using the
+            // explicit "mock" data source label rather than a synthesised
+            // production row.
+            <div className="flex h-full items-center justify-center">
+              <EmptyDataState
+                message="Mock mode"
+                hint="Enable real data mode to compute PCA from the ZAR fitted curve feed."
+                badgeLabel="MOCK"
+              />
+            </div>
           )}
         </Panel>
       </div>

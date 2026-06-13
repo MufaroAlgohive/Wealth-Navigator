@@ -32,6 +32,25 @@ const STATUS_TONE = {
   error: "destructive",
 } as const;
 
+/**
+ * Derive a time-ordered latency series from the worker's `recent_events`
+ * list. Only events whose `data` payload carries a numeric `elapsedMs`
+ * (e.g. `timeseries_probe_complete`, future `pricing_quote_get_complete`,
+ * order-pad polls) contribute. Returns newest-last `[{t, ms}, ...]`.
+ */
+function buildLatencySeries(
+  events: ReadonlyArray<{ ts: string; data?: Record<string, unknown> }>,
+): Array<{ t: string; ms: number }> {
+  const samples = events
+    .map((e) => {
+      const ms = e.data?.elapsedMs;
+      return typeof ms === "number" && Number.isFinite(ms) ? { t: e.ts, ms } : null;
+    })
+    .filter((x): x is { t: string; ms: number } => x !== null)
+    .sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+  return samples;
+}
+
 export default function IntegrationPage() {
   const { data } = useIress();
   const realDataOnly = isRealDataOnlyClient();
@@ -223,16 +242,53 @@ export default function IntegrationPage() {
         )}
 
         <Panel
-          title="Latency · p95 last 60 min"
-          endpoint={realDataOnly ? "Not available without metrics store" : "INTERNAL · p95 window"}
+          title="Latency · IRESS calls"
+          endpoint={realDataOnly ? "DERIVED · worker recent_events[*].elapsedMs" : "INTERNAL · mock window"}
+          dataSource={
+            !realDataOnly
+              ? "mock"
+              : (primaryWorker?.recent_events ?? []).some((e) => typeof e.data?.elapsedMs === "number")
+                ? "worker"
+                : "unconfigured"
+          }
           className="col-span-12 lg:col-span-4 h-[420px]"
         >
           {realDataOnly ? (
-            <EmptyDataState message="Latency history requires observability backend." />
+            (() => {
+              const series = buildLatencySeries(primaryWorker?.recent_events ?? []);
+              if (series.length === 0) {
+                return (
+                  <EmptyDataState
+                    message="No IRESS call timings have been recorded yet."
+                    hint="The Railway worker emits elapsedMs on probe + order-pad calls. Start the worker, run a probe, and the series will populate."
+                  />
+                );
+              }
+              return (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart
+                    data={series}
+                    margin={{ top: 8, right: 8, left: -20, bottom: 0 }}
+                  >
+                    <defs>
+                      <linearGradient id="lat" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(38 95% 56%)" stopOpacity={0.4} />
+                        <stop offset="100%" stopColor="hsl(38 95% 56%)" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                    <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => formatTime(String(v))} interval={Math.max(1, Math.floor(series.length / 6))} />
+                    <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="ms" />
+                    <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
+                    <Area type="monotone" dataKey="ms" stroke="hsl(38 95% 56%)" fill="url(#lat)" strokeWidth={1.8} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              );
+            })()
           ) : (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart
-              data={Array.from({ length: 60 }, (_, i) => ({ t: i, p95: 220 + Math.sin(i / 6) * 30 + Math.cos(i / 18) * 18 }))}
+              data={Array.from({ length: 60 }, (_, i) => ({ t: i, ms: 220 + Math.sin(i / 6) * 30 + Math.cos(i / 18) * 18 }))}
               margin={{ top: 8, right: 8, left: -20, bottom: 0 }}
             >
               <defs>
@@ -245,7 +301,7 @@ export default function IntegrationPage() {
               <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => `${v}m`} interval={9} />
               <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="ms" />
               <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
-              <Area type="monotone" dataKey="p95" stroke="hsl(38 95% 56%)" fill="url(#lat)" strokeWidth={1.8} />
+              <Area type="monotone" dataKey="ms" stroke="hsl(38 95% 56%)" fill="url(#lat)" strokeWidth={1.8} />
             </AreaChart>
           </ResponsiveContainer>
           )}
