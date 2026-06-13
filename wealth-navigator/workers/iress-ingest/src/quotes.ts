@@ -262,6 +262,20 @@ export async function syncWatchlistQuotes(
               const looksLikeFieldMismatch = state === "OPEN" && rowKeys !== "<empty row>";
               const looksLikeBogusLast =
                 state === "CLOSED" && rowKeys.includes("Last") && !rowKeys.includes("Close");
+              // "Hollow row" — the IRESS V4 server is saying the market is
+              // OPEN for this symbol but every price field in the raw row
+              // is zero / missing. The BHG (Bidcorp) case on DFM@Mint is
+              // exactly this shape: the JSE equity board returns a row
+              // whose only non-zero fields are `LastPrice` and
+              // `PreviousClosePrice` (and even then those are stale and
+              // rejected by `resolveQuoteLast`), so the mapper collapses
+              // the row to `last=0` and the worker skips the write.
+              // `marketState=OPEN` + no price data is the diagnostic
+              // signal Charles needs to confirm we are on the wrong
+              // board/exchange. Surface the full raw row so the next
+              // probe can compare against the V4 doc field list.
+              const rawHasPriceData = rawRow ? quoteRawRowHasPriceData(rawRow) : null;
+              const isHollow = state === "OPEN" && rawHasPriceData === false;
               console.warn(
                 `[iress-ingest] PricingQuoteGet(${symbol}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
               );
@@ -275,9 +289,44 @@ export async function syncWatchlistQuotes(
                   marketState: state,
                   fieldMismatchSuspected: looksLikeFieldMismatch,
                   bogusLastSuspected: looksLikeBogusLast,
-                  rawHasPriceData: rawRow ? quoteRawRowHasPriceData(rawRow) : null,
+                  rawHasPriceData,
                 },
               });
+              if (isHollow && rawRow) {
+                // Sibling event to `pricing_quote_get_no_trade` — same
+                // row, but the diagnostic shape is specific enough to
+                // deserve its own event kind so the integration page can
+                // render a focused "wrong board/exchange" hint without
+                // filtering the no-trade stream.
+                const rawRowKeys = Object.keys(rawRow).sort();
+                const rawRowNonZero: Record<string, number> = {};
+                for (const [k, v] of Object.entries(rawRow)) {
+                  if (v === undefined || v === null || v === "") continue;
+                  const n = Number(v);
+                  if (Number.isFinite(n) && n !== 0) rawRowNonZero[k] = n;
+                }
+                // Pull `marketState` from the RAW row, not the mapped
+                // quote, so the operator sees the same `MarketState` /
+                // `QuoteState` / `TradingStatus` value the raw mapper
+                // looked at. The mapped `row.marketState` is the same
+                // string after `mapQuote`, but recording both lets the
+                // integration page diff them when one is missing.
+                const rawMarketState = String(
+                  rawRow["MarketState"] ?? rawRow["QuoteState"] ?? rawRow["TradingStatus"] ?? "",
+                );
+                recordWorkerEvent({
+                  level: "warn",
+                  event: "quote_hollow_row",
+                  msg: `PricingQuoteGet(${symbol}) returned a hollow row — likely wrong Board/Exchange for this IRESS profile. Ask Charles to confirm the listing.`,
+                  data: {
+                    symbol,
+                    exchange,
+                    marketState: rawMarketState || state,
+                    rawRowKeys,
+                    rawRowNonZero,
+                  },
+                });
+              }
             }
           } catch (err) {
             if (isIressSessionDeadError(err)) throw err;
