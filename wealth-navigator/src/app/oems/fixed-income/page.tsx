@@ -9,6 +9,7 @@ import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
+import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
 import { Input } from "@/components/ui/input";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { cn } from "@/lib/cn";
@@ -201,19 +202,9 @@ export default function FixedIncomePage() {
                   ))}
                 </div>
               </Panel>
-
-              <Panel
-                title="P&L sensitivity · ±100bp"
-                endpoint="INTERNAL · DV01 + convexity"
-                dataSource="code-gap"
-                className="h-[200px]"
-              >
-                <EmptyDataState
-                  message="Per-bond KRD vector not in schema."
-                  hint="The DV01 + convexity sensitivity above is computed locally from bonds_c.dv01_cents and bonds_c.convexity. The key-rate-duration breakdown is a CODE-GAP until a per-tenor krd vector is added to the schema."
-                  badgeLabel="code-gap"
-                />
-              </Panel>
+              {/* Yellow #14 — the KRD placeholder panel was deleted
+                  in this audit. The DV01 + convexity sensitivity
+                  chart (rendered below) is the one we keep. */}
             </div>
           )}
         </div>
@@ -226,9 +217,15 @@ export default function FixedIncomePage() {
           dataSource="unconfigured"
           className="col-span-12 lg:col-span-7 h-[300px]"
         >
-          <EmptyDataState
-            message="Curve history overlay requires multi-day ZAR_GOVI points."
-            hint="yield_curve_history_c is keyed on (curve_id, as_of) — once the worker has written at least 30 days of points, the today-vs-history overlay will populate."
+          {/* Yellow #16 — the same TimeSeriesGet2 entitlement story
+              the Curves page tells, but here we use the shared
+              EntitlementRequired primitive so the message is
+              consistent across the three call-sites (Cockpit, Fixed
+              Income, Curves). */}
+          <EntitlementRequired
+            method="TimeSeriesGet2"
+            codes={["ZAR_NSS", "ZAR_GOVI"]}
+            note="Curve history requires TimeSeriesGet2 on the production IRESS V4 profile. Ask Charles."
           />
         </Panel>
 

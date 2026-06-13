@@ -199,19 +199,12 @@ export default function MoneyMarketPage() {
         </div>
       )}
 
-      <Panel
-        title="Per-mandate aggregates"
-        endpoint="oems_strategy_c (asset_class = money_market)"
-        dataSource="supabase"
-        className="col-span-12"
-      >
-        <EmptyDataState
-          message="Per-mandate aggregates derive from oems_strategy_c rows where asset_class = 'money_market'."
-          hint="Once a strategy row is seeded for each MM mandate (AUM, day P&L, MTD P&L, holdings count), this panel will render the full set."
-          badgeLabel="code-gap"
-        />
-      </Panel>
-
+      {/* Yellow #13 — per-mandate aggregates panel was deleted. The
+          "MM is a thin view" info box below already explains the
+          relationship to the Strategies page; the panel was a
+          code-gap note for an unimplemented surface. Replaced with
+          a single sub-link that points the operator to the
+          Strategies page for MM mandates. */}
       <div className="rounded-md border border-info/30 bg-info/5 p-3 text-[11.5px] text-info">
         <p className="flex items-center gap-2 font-semibold">
           <AlertCircle className="h-3.5 w-3.5" />
@@ -219,6 +212,9 @@ export default function MoneyMarketPage() {
         </p>
         <p className="mt-1 text-muted-foreground">
           The Money Market module is a thin view over the same IPS portfolio. MM-only mandates live in <span className="font-mono">oems_strategy_c</span> with <span className="font-mono">asset_class = "money_market"</span>; the audit-grade rebalance state is the same as the equity strategies view.
+        </p>
+        <p className="mt-2 text-muted-foreground">
+          → <a href="/oems/strategies" className="text-primary hover:underline">See Strategies page</a> for MM mandates.
         </p>
       </div>
     </div>

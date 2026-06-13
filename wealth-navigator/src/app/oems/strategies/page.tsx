@@ -73,6 +73,11 @@ function StrategiesPageContent() {
     // Mock/legacy mode is not the production target; redirect to the
     // new empty state with a clear "MOCK" badge so anyone visiting
     // /oems/strategies in a dev build sees the same honest UI.
+    // The `realDataOnly` flag is the only condition that flips
+    // between the mock and real-data render paths (audit #23). It is
+    // computed once at mount by `isRealDataOnlyClient()` from the
+    // NEXT_PUBLIC_USE_SUPABASE_QUOTES / Vercel env; we don't re-read
+    // it on each render.
     return (
       <div className="space-y-3">
         <header>
@@ -127,14 +132,23 @@ function StrategiesPageContent() {
           <PanelSkeleton rows={6} className="col-span-12 lg:col-span-7" />
         </div>
       ) : strategies.length === 0 ? (
+        // Audit #12 — render the typed BFF reason through to the
+        // EmptyDataState. The BFF returns one of: supabase_not_configured
+        // | supabase_query_failed (with a `migration` field) | empty.
+        // supabase_query_failed with a missing table maps to the
+        // "Run 20260613000002_oems_strategy_c.sql" hint.
         <Panel
           title="Strategy mandates"
           endpoint="GET /api/strategies"
           dataSource={strategiesQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
         >
           <EmptyDataState
-            message="No strategies ingested yet."
-            hint={strategiesQ.data?.message ?? "Seed the oems_strategy_c table or wire the worker's per-strategy rollup loop."}
+            reason={strategiesQ.data?.reason ?? "supabase_query_failed"}
+            migration={strategiesQ.data?.migration}
+            errorDetail={(strategiesQ.data as { error?: string } | undefined)?.error}
+            title="No strategies ingested yet"
+            message="Strategy mandates require the Supabase portfolio system integration."
+            hint={strategiesQ.data?.message}
           />
         </Panel>
       ) : (

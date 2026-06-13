@@ -20,7 +20,9 @@ import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { SectorHeatmap } from "@/components/oems/primitives/sector-heatmap";
 import { PanelSkeleton, KpiTileSkeleton, PanelErrorShell } from "@/components/oems/primitives/panel-skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+// Tabs/TabsList/TabsTrigger were removed with the non-functional range
+// tabs (Yellow #27). They will be re-introduced when the BFF honors
+// `?range=5D` after the TimeSeriesGet2 entitlement is flipped.
 import { useIress } from "@/lib/iress/provider";
 import { formatPct, formatTime, formatZAR, formatBps, formatPctAbs } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -30,6 +32,7 @@ import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { useTick } from "@/lib/store/tick-stream-provider";
 import { deriveDataSource } from "@/lib/hooks/quote-routing";
+import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
 import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
 import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
 import { usePortfolio } from "@/lib/hooks/use-portfolio";
@@ -177,7 +180,10 @@ function ordersEmptyMessage(
 export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const { data } = useIress();
   const realDataOnly = isRealDataOnlyClient();
-  const [range, setRange] = useState<"1D" | "5D" | "1M" | "3M">("1D");
+  // Yellow #27 — `range` state was removed when the non-functional
+  // 1D/5D/1M/3M tabs were replaced with a static "Range · 1D" label.
+  // The re-introduction is gated on the TimeSeriesGet2 entitlement
+  // being flipped (audit #27).
   const liveQuotes = useLiveQuotes(MOVER_SYMBOLS);
 
   const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), enabled: !realDataOnly, ...queryOpts("live") });
@@ -332,14 +338,12 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         </div>
         <div className="flex items-center gap-2">
           <DataSourceBadge source={cockpitDataSource} />
-          <Tabs value={range} onValueChange={(v) => setRange(v as typeof range)}>
-            <TabsList className="h-7 bg-muted">
-              <TabsTrigger value="1D" className="h-5 px-2 text-[10.5px]">1D</TabsTrigger>
-              <TabsTrigger value="5D" className="h-5 px-2 text-[10.5px]">5D</TabsTrigger>
-              <TabsTrigger value="1M" className="h-5 px-2 text-[10.5px]">1M</TabsTrigger>
-              <TabsTrigger value="3M" className="h-5 px-2 text-[10.5px]">3M</TabsTrigger>
-            </TabsList>
-          </Tabs>
+          {/* Yellow #27 — range tabs were non-functional (charts don't
+              read the range). Replaced with a static label
+              "Range · 1D" until TimeSeriesGet2 is flipped and the
+              BFF can honor `?range=5D`. The `range` state is kept
+              for the future re-introduction. */}
+          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Range · 1D</span>
         </div>
       </header>
 
@@ -476,12 +480,12 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               dataSource={sectorsBffQ.data?.source === "entitlement-required" ? "unconfigured" : "unavailable"}
               className="col-span-12 lg:col-span-5 h-[300px]"
             >
-              <EmptyDataState
-                title={sectorsBffQ.data?.source === "entitlement-required" ? "TimeSeriesGet2 entitlement required" : "Sector data unavailable"}
-                message={
-                  sectorsBffQ.data?.message ??
-                  "Sector index quotes require TimeSeriesGet2 entitlement (J200 / sector codes). Ask Charles to enable on the production account."
-                }
+              {/* Yellow #16 — same EntitlementRequired primitive the
+                  Curves and Fixed Income pages use. */}
+              <EntitlementRequired
+                method="TimeSeriesGet2"
+                codes={["J200", "J203"]}
+                note="Sector index quotes require TimeSeriesGet2 entitlement. Ask Charles to enable on the production account."
               />
             </Panel>
           ) : sectorsBffQ.data && sectorsBffQ.data.sectors.length > 0 ? (
@@ -914,7 +918,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       <div className="grid grid-cols-12 gap-2.5">
         {realDataOnly ? (
           <Panel title="News Flow · Last 60 min" endpoint="External vendor required" className="col-span-12 lg:col-span-8 h-[260px]">
-            <EmptyDataState message="News feed not configured." />
+            {/* Yellow #15 — distinguish SENS subscription from wire
+                contracts. The two are different in scope, contract,
+                and pricing. */}
+            <EmptyDataState
+              message="News feed not configured."
+              hint="SENS requires the JSE SENS Web Feed subscription. Wires require Reuters / Bloomberg / Moneyweb contracts."
+              badgeLabel="blocked-vendor"
+            />
           </Panel>
         ) : newsQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[260px]" className="col-span-12 lg:col-span-8" />

@@ -9,6 +9,7 @@ import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
+import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { queryOpts } from "@/lib/store/query-provider";
 
@@ -187,9 +188,13 @@ export default function CurvesPage() {
             dataSource="unconfigured"
             className="col-span-12 lg:col-span-8 h-[380px]"
           >
-            <EmptyDataState
-              message="No ZAR yield curve points ingested."
-              hint="The worker writes a row per (curve_id, as_of) to yield_curve_history_c via TimeSeriesGet2. Until a curve point is written, this panel stays empty."
+            {/* Yellow #16 — shared EntitlementRequired primitive. The
+                same TimeSeriesGet2 message is on the Cockpit
+                ALSI/J203 panel and the Fixed Income page. */}
+            <EntitlementRequired
+              method="TimeSeriesGet2"
+              codes={["J200", "J203", "R2030", "R2035", "R2040"]}
+              note="Ask Charles to enable TimeSeriesGet2 on the production profile. Until flipped, the ALSI intraday panel on the Cockpit also stays empty."
             />
           </Panel>
         ) : (

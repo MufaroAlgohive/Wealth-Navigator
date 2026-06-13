@@ -130,11 +130,11 @@ export default function NewsPage() {
             ))}
           </div>
         ) : filtered.length === 0 ? (
-          <EmptyDataState
-            message="No news items ingested."
-            hint={newsQ.data?.message ?? "news_item_c is empty. Wires + SENS require vendor contracts (Reuters / Bloomberg / Moneyweb) and a SENS subscription."}
-            badgeLabel="blocked-vendor"
-          />
+            <EmptyDataState
+              message="No news items ingested."
+              hint={newsQ.data?.message ?? "SENS requires the JSE SENS Web Feed subscription. Wires require Reuters / Bloomberg / Moneyweb contracts."}
+              badgeLabel="blocked-vendor"
+            />
         ) : (
           <ul className="divide-y divide-border/60">
             {filtered.map((a) => {
