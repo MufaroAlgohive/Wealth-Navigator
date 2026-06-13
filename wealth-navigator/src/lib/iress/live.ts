@@ -851,18 +851,23 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
-      // V4 server requires `Frequency` (Long, 1=Tick … 7=1h, 8=Daily … 12=Yearly).
-      // Sending an empty / undefined value returns
-      // `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`,
-      // and `0` is a reserved/invalid Long on the real server (we
-      // confirmed this against the live CT env — see Bug C follow-up).
-      // The worker pre-converts friendly values to the Long code; callers
-      // that pass a Long directly work as-is.
-      if (req.Frequency === undefined || req.Frequency === null) {
+      // V4 server requires the `Interval` STRING enum — NOT the
+      // `Frequency` (Long) field. The WSDL sample payload uses
+      // `<Interval>Daily</Interval>`. Sending `Frequency: 8` (Long) on
+      // the wire returns
+      //   `soap:Receiver — Invalid Parameter Value: 8 as Frequency`
+      // from the live CT server (the J203 / R2030 / R2035 / R2040 paths
+      // we exercise). An empty / missing value returns the same fault
+      // with `<empty>` as the value. The worker pre-converts
+      // friendly tokens ("1d" | "1h" | "5m" | "1m" | "tick" | "1w" |
+      // "1mo" | "1q" | "1y") to the wire enum via
+      // `timeSeriesIntervalString()`.
+      // Spec: `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`.
+      if (typeof req.Interval !== "string" || req.Interval.trim() === "") {
         throw new IressError(
           25018,
           "TimeSeriesGet2",
-          "TimeSeriesGet2: missing required field `Frequency` (V4 Long; 8=Daily, 1=Tick, etc.)",
+          "TimeSeriesGet2: missing required field `Interval` (V4 string enum; e.g. 'Daily')",
         );
       }
       const result = await transport.call({
@@ -882,7 +887,6 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           Exchange: req.Exchange,
           From: req.From,
           To: req.To,
-          Frequency: req.Frequency,
           Interval: req.Interval,
         },
       });

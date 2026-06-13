@@ -393,7 +393,11 @@ export async function fetchCurveSeries(
         Code: code,
         From: from,
         To: to,
-        Interval: "1d",
+        // V4 `TimeSeriesGet2` expects the `<Interval>` STRING enum, e.g.
+        // "Daily" — NOT the worker-friendly token "1d" and NOT a
+        // `Frequency` Long. See
+        // `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`.
+        Interval: "Daily",
       });
       if (res.DataRows.length > 0) {
         return { points: res.DataRows, source: "live" as const };

@@ -203,24 +203,36 @@ describe("validation — every method throws IressError on bad input", () => {
 
   it("timeSeriesGet2 — missing Header.SessionKey", async () => {
     await expect(
-      fakeClient.timeSeriesGet2({ Header: { SessionKey: "", RequestID: "r1" }, Code: "ZAR_NSS" }),
+      fakeClient.timeSeriesGet2({
+        Header: { SessionKey: "", RequestID: "r1" },
+        Code: "ZAR_NSS",
+        Interval: "Daily",
+      }),
     ).rejects.toBeInstanceOf(IressError);
   });
 
   it("timeSeriesGet2 — missing Code", async () => {
     await expect(
-      fakeClient.timeSeriesGet2({ Header: { SessionKey: "k", RequestID: "r1" }, Code: "" }),
+      fakeClient.timeSeriesGet2({
+        Header: { SessionKey: "k", RequestID: "r1" },
+        Code: "",
+        Interval: "Daily",
+      }),
     ).rejects.toBeInstanceOf(IressError);
   });
 
-  it("timeSeriesGet2 — missing Frequency throws IressError 25018", async () => {
+  it("timeSeriesGet2 — missing Interval throws IressError 25018", async () => {
     // Regression test for the V4 "Invalid Parameter Value: as Frequency" fault.
-    // The required Frequency (Long) field must be present in the request before
-    // we ever hit the wire; callers that omit it should see a clear local error.
+    // The required `Interval` STRING field must be present in the request
+    // before we ever hit the wire; callers that omit it should see a clear
+    // local error. The earlier shape used `Frequency: 8` (Long), but the
+    // V4 WSDL sample payload uses the `<Interval>Daily</Interval>` string
+    // and the live CT server rejects the Long form.
     await expect(
       fakeClient.timeSeriesGet2({
         Header: { SessionKey: "k", RequestID: "r1" },
         Code: "SOL",
+        Interval: "",
       }),
     ).rejects.toMatchObject({
       code: 25018,
@@ -228,12 +240,13 @@ describe("validation — every method throws IressError on bad input", () => {
     });
   });
 
-  it("timeSeriesGet2 — passes Frequency through to the SOAP body", async () => {
-    // Verifies that the new required `Frequency` parameter actually lands in
+  it("timeSeriesGet2 — passes Interval through to the SOAP body", async () => {
+    // Verifies that the required `Interval` parameter actually lands in
     // the outgoing XML envelope (not just in the TypeScript types). Uses
-    // the V4 Daily Long (8) — the value the worker actually sends for the
-    // 7-day rolling series (was 0, but 0 is reserved/invalid on the live
-    // server; see Bug C follow-up).
+    // the V4 `"Daily"` string — the value the worker actually sends for
+    // the 7-day rolling J203 / R2030 / R2035 / R2040 series. Earlier
+    // versions sent `Frequency: 8` (Long), which the live CT server
+    // rejects with `Invalid Parameter Value: 8 as Frequency`.
     const call = vi.fn().mockResolvedValueOnce({
       result: {},
       header: { ErrorNumber: 0 },
@@ -244,12 +257,15 @@ describe("validation — every method throws IressError on bad input", () => {
     await client.timeSeriesGet2({
       Header: { SessionKey: "k", RequestID: "r1" },
       Code: "SOL",
-      Frequency: 8, // Daily (V4 Long)
+      Interval: "Daily",
     });
     const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
       .parameters;
-    expect(params["Frequency"]).toBe(8);
+    expect(params["Interval"]).toBe("Daily");
     expect(params["Code"]).toBe("SOL");
+    // The old `Frequency` Long must not appear on the wire any more —
+    // the live CT server rejects it.
+    expect(params["Frequency"]).toBeUndefined();
   });
 
   it("timeSeriesGet2Updates — missing RequestID", async () => {

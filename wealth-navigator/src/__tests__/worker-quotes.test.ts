@@ -325,36 +325,43 @@ describe("syncWatchlistQuotes closed-market write-through (Bug B fix)", () => {
 });
 
 /**
- * Bug C regression: the V4 server rejects `0` as `Frequency` with
- * `soap:Receiver — Invalid Parameter Value: 0 as Frequency`. The fix pins
- * the V4 Long enum on `timeSeriesFrequencyLong` so a Daily/Weekly/...
- * token never produces a 0.
+ * Bug C follow-up regression: the V4 server rejects `Frequency: 8` (Long)
+ * with `soap:Receiver — Invalid Parameter Value: 8 as Frequency`. The
+ * real wire shape is the `<Interval>` STRING enum, e.g. `<Interval>Daily</Interval>`
+ * (per `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`).
+ * The fix pins `timeSeriesIntervalString` to the documented V4 strings so a
+ * `1d` / `1h` / `5m` / `1m` / `tick` / `1w` / `1mo` / `1q` / `1y` token
+ * always produces one of those — never a 0, never a Long.
  */
-describe("timeSeriesFrequencyLong (Bug C — V4 Frequency Long enum)", () => {
-  it("maps worker-friendly tokens to the V4 Long enum (no reserved 0)", async () => {
-    const { timeSeriesFrequencyLong } = await import(
+describe("timeSeriesIntervalString (V4 Interval STRING enum)", () => {
+  it("maps worker-friendly tokens to the V4 Interval string enum", async () => {
+    const { timeSeriesIntervalString } = await import(
       "../../workers/iress-ingest/src/timeseries"
     );
-    // V4 Long enum — 0 is reserved/invalid; intra-day buckets are 1..7;
-    // daily/weekly/monthly/quarterly/yearly are 8..12.
-    expect(timeSeriesFrequencyLong("tick")).toBe(1);
-    expect(timeSeriesFrequencyLong("1m")).toBe(2);
-    expect(timeSeriesFrequencyLong("5m")).toBe(3);
-    expect(timeSeriesFrequencyLong("1h")).toBe(7);
-    expect(timeSeriesFrequencyLong("1d")).toBe(8);
-    expect(timeSeriesFrequencyLong("1w")).toBe(9);
-    expect(timeSeriesFrequencyLong("1mo")).toBe(10);
-    expect(timeSeriesFrequencyLong("1q")).toBe(11);
-    expect(timeSeriesFrequencyLong("1y")).toBe(12);
+    // V4 Interval string enum — the wire shape the live CT server expects.
+    // Intra-day tokens all collapse to "IntraDay" (V4 doesn't distinguish
+    // sub-daily granularities on TimeSeriesGet2 — use PricingQuoteGet /
+    // PricingQuoteGetUpdates for L1 ticks + streaming).
+    expect(timeSeriesIntervalString("tick")).toBe("IntraDay");
+    expect(timeSeriesIntervalString("1m")).toBe("IntraDay");
+    expect(timeSeriesIntervalString("5m")).toBe("IntraDay");
+    expect(timeSeriesIntervalString("1h")).toBe("IntraDay");
+    expect(timeSeriesIntervalString("1d")).toBe("Daily");
+    expect(timeSeriesIntervalString("1w")).toBe("Weekly");
+    expect(timeSeriesIntervalString("1mo")).toBe("Monthly");
+    expect(timeSeriesIntervalString("1q")).toBe("Quarterly");
+    expect(timeSeriesIntervalString("1y")).toBe("Yearly");
   });
 
-  it("never returns 0 for any valid token (server rejects 0)", async () => {
-    const { timeSeriesFrequencyLong } = await import(
+  it("returns a non-empty V4 enum string for every valid token (server rejects empty)", async () => {
+    const { timeSeriesIntervalString } = await import(
       "../../workers/iress-ingest/src/timeseries"
     );
     const tokens = ["tick", "1m", "5m", "1h", "1d", "1w", "1mo", "1q", "1y"] as const;
     for (const t of tokens) {
-      expect(timeSeriesFrequencyLong(t)).not.toBe(0);
+      const out = timeSeriesIntervalString(t);
+      expect(typeof out).toBe("string");
+      expect(out.length).toBeGreaterThan(0);
     }
   });
 });

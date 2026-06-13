@@ -11,6 +11,11 @@
  *   GET  /health                  — heartbeat shape (no IRESS call)
  *   GET  /orders                  — `OrderPadGetByAccount` for ?account=...
  *   GET  /orders/stream           — SSE: re-polls orders and pushes deltas
+ *   POST /debug/timeseries-probe  — single-shot `TimeSeriesGet2` with the
+ *                                    caller-supplied `<Interval>` string
+ *                                    (e.g. "Daily"). Used to verify a
+ *                                    candidate V4 string against the live
+ *                                    CT server.
  *
  * Secrets policy:
  *   - The worker reads IRESS creds from env (`IRESS_USERNAME` etc.) — never
@@ -75,6 +80,32 @@ function sendError(res: ServerResponse, status: number, code: string, message: s
   send(res, status, { ok: false, status, code, error: message, ...extra });
 }
 
+async function readBodyJson(req: IncomingMessage, maxBytes = 32 * 1024): Promise<unknown> {
+  return await new Promise((resolve, reject) => {
+    let total = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error(`Request body exceeds ${maxBytes} bytes`));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf-8");
+      if (!text) return resolve({});
+      try {
+        resolve(JSON.parse(text));
+      } catch (err) {
+        reject(new Error(`Invalid JSON body: ${(err as Error).message}`));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
 interface OrdersGetResult {
   ok: boolean;
   orders: Order[];
@@ -85,6 +116,99 @@ interface OrdersGetResult {
   iressMode: string;
   error?: { code: string; message: string };
   fetchedAt: string;
+}
+
+interface TimeSeriesProbeResult {
+  ok: boolean;
+  code: string;
+  exchange: string;
+  interval: string;
+  errorNumber: number | null;
+  errorDescription: string | null;
+  rawFault: string | null;
+  dataRowCount: number;
+  firstRow: Record<string, unknown> | null;
+  iressMode: string;
+  elapsedMs: number;
+  probedAt: string;
+}
+
+/**
+ * One-shot `TimeSeriesGet2` probe with the caller-supplied `<Interval>`
+ * string.
+ *
+ * The V4 WSDL sample payload uses `<Interval>Daily</Interval>` (string),
+ * and the live CT server rejects the `Frequency` (Long) form with
+ * `Invalid Parameter Value: <n> as Frequency`. The accepted string
+ * values per the V4 WSDL are
+ * `"Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly" | "IntraDay"`.
+ *
+ * This probe is the way to verify a candidate value against the live
+ * server: pass `{interval: <candidate>}` to
+ * `POST /debug/timeseries-probe` and inspect `ok` / `errorNumber` /
+ * `rawFault` in the response. The Tier-2 worker uses
+ * `timeSeriesIntervalString()` to map the friendly token to the wire
+ * string before this call.
+ *
+ * The endpoint requires `WORKER_HTTP_TOKEN` when set (same auth as the
+ * rest of the worker HTTP surface). The response is intentionally
+ * 1:1 with the IRESS shape — no mapping, no fabrication — so the
+ * caller can identify success/failure without trusting the worker.
+ */
+async function probeTimeSeriesInterval(
+  deps: HttpApiDeps,
+  code: string,
+  exchange: string,
+  interval: string,
+): Promise<TimeSeriesProbeResult> {
+  const started = Date.now();
+  try {
+    const session = await deps.sessions.getSession();
+    const client = getIressClient("live");
+    const res = await client.timeSeriesGet2({
+      Header: {
+        SessionKey: session.iressSessionKey,
+        RequestID: newRequestID(`probe-${interval}`),
+        Timeout: 15,
+      },
+      Code: code,
+      Exchange: exchange,
+      From: new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10),
+      To: new Date().toISOString().slice(0, 10),
+      Interval: interval,
+    });
+    return {
+      ok: res.Header.ErrorNumber === 0,
+      code,
+      exchange,
+      interval,
+      errorNumber: res.Header.ErrorNumber ?? null,
+      errorDescription: res.Header.ErrorDescription ?? null,
+      rawFault: null,
+      dataRowCount: res.DataRows?.length ?? 0,
+      firstRow: (res.DataRows?.[0] as Record<string, unknown> | undefined) ?? null,
+      iressMode: deps.env.iressMode,
+      elapsedMs: Date.now() - started,
+      probedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const faultCode = err instanceof IressError ? err.code : null;
+    return {
+      ok: false,
+      code,
+      exchange,
+      interval,
+      errorNumber: faultCode,
+      errorDescription: null,
+      rawFault: msg,
+      dataRowCount: 0,
+      firstRow: null,
+      iressMode: deps.env.iressMode,
+      elapsedMs: Date.now() - started,
+      probedAt: new Date().toISOString(),
+    };
+  }
 }
 
 async function fetchLiveOrders(
@@ -290,6 +414,54 @@ export async function handleRequest(
 
   if (req.method === "GET" && path === "/orders/stream") {
     await streamOrders(req, res, deps, getLastQuoteSyncAt, url);
+    return;
+  }
+
+  if (req.method === "POST" && path === "/debug/timeseries-probe") {
+    let body: unknown;
+    try {
+      body = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    if (!body || typeof body !== "object") {
+      sendError(res, 400, "bad_request", "Body must be JSON with `code` and `interval`");
+      return;
+    }
+    const b = body as Record<string, unknown>;
+    const code = typeof b["code"] === "string" ? b["code"].trim().toUpperCase() : "";
+    const exchange = typeof b["exchange"] === "string" ? b["exchange"].trim().toUpperCase() : "JSE";
+    const intervalRaw = b["interval"];
+    const interval = typeof intervalRaw === "string" ? intervalRaw.trim() : "";
+    if (!code) {
+      sendError(res, 400, "bad_request", "`code` is required (e.g. \"J203\")");
+      return;
+    }
+    if (!interval) {
+      sendError(
+        res,
+        400,
+        "bad_request",
+        "`interval` is required (V4 string enum, e.g. \"Daily\" | \"Weekly\" | \"Monthly\" | \"Quarterly\" | \"Yearly\" | \"IntraDay\")",
+      );
+      return;
+    }
+    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+    if (!isLive) {
+      sendError(
+        res,
+        503,
+        "iress_mode_not_live",
+        `Cannot probe in iressMode=${deps.env.iressMode}; switch the worker to live`,
+        { iressMode: deps.env.iressMode },
+      );
+      return;
+    }
+    const result = await probeTimeSeriesInterval(deps, code, exchange, interval);
+    // Always 200 — the IRESS response (success or fault) IS the answer.
+    // `ok` and `errorNumber` describe the result, not the HTTP envelope.
+    send(res, 200, result);
     return;
   }
 

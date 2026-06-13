@@ -242,7 +242,11 @@ describe("ipsTransactionGetByAccount5", () => {
 
 describe("timeSeriesGet2", () => {
   it("returns an array of bars with monotonically non-decreasing timestamps for ZAR_NSS", async () => {
-    const res = await mockIressClient.timeSeriesGet2({ Header: H, Code: "ZAR_NSS" });
+    const res = await mockIressClient.timeSeriesGet2({
+      Header: H,
+      Code: "ZAR_NSS",
+      Interval: "Daily",
+    });
     expect(res.DataRows.length).toBeGreaterThan(1);
     for (let i = 1; i < res.DataRows.length; i++) {
       const prev = res.DataRows[i - 1]!;
@@ -252,7 +256,11 @@ describe("timeSeriesGet2", () => {
   });
 
   it("returns a non-empty intraday series for the ALSI index", async () => {
-    const res = await mockIressClient.timeSeriesGet2({ Header: H, Code: "J203" });
+    const res = await mockIressClient.timeSeriesGet2({
+      Header: H,
+      Code: "J203",
+      Interval: "IntraDay",
+    });
     expect(res.DataRows.length).toBe(78);
     for (let i = 1; i < res.DataRows.length; i++) {
       const prev = res.DataRows[i - 1]!;

@@ -105,27 +105,30 @@ export interface TimeSeriesGet2Request {
   From?: string; // ISO date
   To?: string;
   /**
-   * V4 server requires this field — the worker logs return
-   * `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`
-   * when it's missing, and rejects `0` as a reserved value. Mapped to the
-   * IRESS V4 Long constant table:
-   *   1 = Tick   2 = 1 minute   3 = 5 minute   4 = 10 minute
-   *   5 = 15 minute   6 = 30 minute   7 = 1 hour
-   *   8 = Daily   9 = Weekly   10 = Monthly
-   *   11 = Quarterly   12 = Yearly
-   * Worker-friendly values ("1d" | "1h" | "5m" | "1m" | "tick" | …) are
-   * converted to the Long code by the worker (`timeSeriesFrequencyLong`)
-   * before sending.
+   * V4 server requires the `<Interval>` string enum, NOT the
+   * `Frequency` (Long) field. The IRESS V4 WSDL sample payload is:
+   *
+   *   <Parameters>
+   *     <Code>SHP</Code>
+   *     <Exchange>JSE</Exchange>
+   *     <DateFrom>2025-01-01</DateFrom>
+   *     <DateTo>2025-12-12</DateTo>
+   *     <Interval>Daily</Interval>
+   *   </Parameters>
+   *
+   * The live CT server rejects `Frequency: 8` (Long) with
+   * `soap:Receiver — Invalid Parameter Value: 8 as Frequency`, and
+   * rejects an empty/missing `Interval` with the same fault. Valid
+   * values are: `"Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly"`
+   * (and `"IntraDay"` for the intra-day buckets).
+   *
+   * Worker-friendly tokens ("1d" | "1h" | "5m" | "1m" | "tick" | "1w"
+   * | "1mo" | "1q" | "1y") are converted to the wire enum by
+   * `timeSeriesIntervalString()` in the worker before sending.
+   *
+   * Spec: `Documentation & Vision/iress-v4-docs/05-services/market-data/02-time-series-get-2.md`.
    */
-  Frequency?: number;
-  /**
-   * Worker-friendly interval token. The live client maps it to the V4
-   * `Frequency` Long code via `timeSeriesFrequencyLong()` before sending.
-   * Kept as a free-form string (rather than the original narrow union)
-   * so the worker can pass weekly / monthly / quarterly / yearly tokens
-   * without an extra cast.
-   */
-  Interval?: string;
+  Interval: string;
 }
 
 // ─── Trading (IOS+) ─────────────────────────────────────────────────────

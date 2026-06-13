@@ -113,56 +113,49 @@ interface FetchSeriesResult {
 }
 
 /**
- * Map worker-friendly frequency tokens to the IRESS V4 `Frequency` Long
- * constant the SOAP body expects.
+ * Map worker-friendly frequency tokens to the IRESS V4 `Interval` STRING
+ * enum the SOAP body expects.
  *
- * The real IRESS V4 server rejects `0` (and any other reserved value) with
- * `soap:Receiver — Invalid Parameter Value: <n> as Frequency`. The V4
- * quick-reference defines the enum as 1-based, with intra-day granularities
- * first and the daily/weekly/monthly/quarterly/yearly coarser buckets
- * starting at 8:
+ * The V4 WSDL sample payload for `TimeSeriesGet2` is
+ * `<Interval>Daily</Interval>` (a string), NOT `Frequency: 8` (a Long).
+ * Sending `Frequency: 8` on the live CT server returns
+ *   `soap:Receiver — Invalid Parameter Value: 8 as Frequency`
+ * and the call fails (confirmed against the J203 / R2030 / R2035 / R2040
+ * paths in `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`).
  *
- *   1  = Tick
- *   2  = 1 minute
- *   3  = 5 minute
- *   4  = 10 minute
- *   5  = 15 minute
- *   6  = 30 minute
- *   7  = 1 hour
- *   8  = Daily
- *   9  = Weekly
- *   10 = Monthly
- *   11 = Quarterly
- *   12 = Yearly
+ * The string enum values used by the V4 server (per the WSDL sample and
+ * `iress-v4-docs/12-schemas/`):
  *
- * (The IRESS V4 sample payload uses a string `<Interval>Daily</Interval>`,
- * but the live CT server expects the numeric `Frequency` Long and rejects
- * `0` specifically, so the 1-based mapping above is what the wire expects.)
+ *   "Daily"     — end-of-day buckets
+ *   "Weekly"    — weekly buckets
+ *   "Monthly"   — monthly buckets
+ *   "Quarterly" — quarterly buckets
+ *   "Yearly"    — annual buckets
+ *   "IntraDay"  — intra-day ticks (covers tick / 1m / 5m / 1h; the V4
+ *                 server does not distinguish sub-daily granularities
+ *                 on this method — use `PricingQuoteGet` for L1 ticks
+ *                 and `PricingQuoteGetUpdates` for streaming).
  *
- * Sending an empty / undefined Frequency returns
- * `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`
- * from the real server, so this mapping is mandatory.
+ * The Tier-2 worker only ever requests `1d` for indices / sectors / ZAR
+ * curves, so `"Daily"` is the common-case output.
  */
-export function timeSeriesFrequencyLong(token: TimeSeriesFrequency): number {
+export function timeSeriesIntervalString(token: TimeSeriesFrequency): string {
   switch (token) {
     case "tick":
-      return 1; // Tick
     case "1m":
-      return 2; // 1 minute
     case "5m":
-      return 3; // 5 minute
     case "1h":
-      return 7; // 1 hour
+      return "IntraDay";
     case "1d":
-      return 8; // Daily
+      return "Daily";
     case "1w":
-      return 9; // Weekly
+      return "Weekly";
     case "1mo":
-      return 10; // Monthly
+      return "Monthly";
     case "1q":
-      return 11; // Quarterly
+      return "Quarterly";
     case "1y":
-      return 12; // Yearly
+      return "Yearly";
   }
 }
 
@@ -198,7 +191,12 @@ async function fetchSeries(
         Exchange: exchange,
         From: range.from,
         To: range.to,
-        Frequency: timeSeriesFrequencyLong(range.interval),
+        // V4 expects the `<Interval>` string enum, NOT a `Frequency` Long.
+        // Tier 2 panels (J203, R-codes) all use the 7-day daily rolling
+        // window, so this resolves to "Daily". The string mapper keeps
+        // the worker-friendly tokens stable in case we add weekly /
+        // monthly series later.
+        Interval: timeSeriesIntervalString(range.interval),
       });
       points = res.DataRows ?? [];
     });
@@ -236,11 +234,11 @@ async function fetchMockSeries(code: string, exchange: string): Promise<Array<{ 
       },
       Code: code,
       Exchange: exchange,
-      // Mock doesn't read Frequency; the live path requires it. Use the
-      // V4 Daily code (8) so the mock + live stay aligned on the same Long
-      // — older code used 0 here, but `0` is reserved/invalid on the real
-      // server and would have been a footgun if the mock ever forwards.
-      Frequency: 8,
+      // Mock doesn't read `Interval`; the live path requires it. Use the
+      // V4 `"Daily"` string so the mock + live stay aligned on the same
+      // shape — older code sent `Frequency: 8` (Long), but the live CT
+      // server rejects that with `Invalid Parameter Value: 8 as Frequency`.
+      Interval: "Daily",
     });
     return res.DataRows ?? [];
   } catch {

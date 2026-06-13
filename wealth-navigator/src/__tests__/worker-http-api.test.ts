@@ -341,3 +341,237 @@ describe("worker http-api 404", () => {
     expect(body.code).toBe("not_found");
   });
 });
+
+/**
+ * The `/debug/timeseries-probe` endpoint exists to verify a candidate
+ * V4 `<Interval>` STRING against the live CT server (the wire shape is
+ * a string, not a `Frequency` Long — the live server rejects `8 as
+ * Frequency` with `soap:Receiver — Invalid Parameter Value`). Every
+ * probed value goes through the same
+ * `getIressClient("live").timeSeriesGet2()` path the worker itself
+ * uses; the endpoint surfaces the raw IRESS response so the operator
+ * can spot the first non-fault string.
+ */
+describe("worker http-api /debug/timeseries-probe", () => {
+  function readBody(req: IncomingMessage): Promise<string> {
+    return new Promise((resolve) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+      req.on("error", () => resolve(""));
+    });
+  }
+  function postReq(body: object): IncomingMessage {
+    const listeners: Record<string, Array<() => void>> = {};
+    const text = JSON.stringify(body);
+    const req = {
+      url: "/debug/timeseries-probe",
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(text)) },
+      on(event: string, cb: (chunk?: Buffer) => void) {
+        (listeners[event] ??= []).push(cb as never);
+        return req;
+      },
+    } as unknown as IncomingMessage;
+    // Fire `data` then `end` on the next tick so the handler can attach listeners first.
+    setImmediate(() => {
+      const buf = Buffer.from(text, "utf-8");
+      for (const cb of listeners["data"] ?? []) cb(buf);
+      for (const cb of listeners["end"] ?? []) cb();
+    });
+    return req;
+  }
+  function postReqRaw(bodyText: string): IncomingMessage {
+    const listeners: Record<string, Array<() => void>> = {};
+    const req = {
+      url: "/debug/timeseries-probe",
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(bodyText)) },
+      on(event: string, cb: (chunk?: Buffer) => void) {
+        (listeners[event] ??= []).push(cb as never);
+        return req;
+      },
+    } as unknown as IncomingMessage;
+    setImmediate(() => {
+      const buf = Buffer.from(bodyText, "utf-8");
+      for (const cb of listeners["data"] ?? []) cb(buf);
+      for (const cb of listeners["end"] ?? []) cb();
+    });
+    return req;
+  }
+
+  it("returns 401 when WORKER_HTTP_TOKEN is set and Authorization is missing", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "J203", interval: "Daily" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions: { invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, "secret-token");
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("returns 400 when body is not valid JSON", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReqRaw("not-json{");
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions: { invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("bad_request");
+    expect(body.error).toMatch(/Invalid JSON/);
+  });
+
+  it("returns 400 when code is missing", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ interval: "Daily" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions: { invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("bad_request");
+    expect(body.error).toMatch(/code/);
+  });
+
+  it("returns 400 when interval is missing", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "J203" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions: { invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("bad_request");
+    expect(body.error).toMatch(/interval/);
+  });
+
+  it("returns 503 when iressMode is mock (the probe needs a live session)", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "J203", interval: "Daily" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv({ iressMode: "mock" }),
+      sessions: { invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("iress_mode_not_live");
+  });
+
+  it("calls timeSeriesGet2 with the supplied interval and surfaces the raw IRESS response", async () => {
+    const timeSeriesGet2 = vi.fn().mockResolvedValueOnce({
+      Header: { StatusCode: 2, ErrorNumber: 0, ErrorDescription: "" },
+      DataRows: [
+        { Date: "2026-06-12", Value: 78234.5 },
+        { Date: "2026-06-13", Value: 78400.0 },
+      ],
+    });
+    iressClientHolder.current = { timeSeriesGet2 };
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      peekSession: () => session,
+      invalidate: () => undefined,
+    } as never;
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "J203", interval: "Daily" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(true);
+    expect(body.errorNumber).toBe(0);
+    expect(body.dataRowCount).toBe(2);
+    expect(body.interval).toBe("Daily");
+    expect(body.code).toBe("J203");
+    expect(body.exchange).toBe("JSE"); // default
+    expect(body.iressMode).toBe("live");
+    expect(typeof body.elapsedMs).toBe("number");
+    expect(typeof body.probedAt).toBe("string");
+    // The SOAP call carried the user-supplied interval, plus the
+    // standard 14-day lookback / today range, on the JSE exchange.
+    const callArgs = timeSeriesGet2.mock.calls[0]![0] as {
+      Header: { SessionKey: string; Timeout?: number };
+      Code: string;
+      Exchange: string;
+      From: string;
+      To: string;
+      Interval: string;
+    };
+    expect(callArgs.Interval).toBe("Daily");
+    expect(callArgs.Code).toBe("J203");
+    expect(callArgs.Exchange).toBe("JSE");
+    expect(callArgs.Header.SessionKey).toBe(session.iressSessionKey);
+    expect(callArgs.Header.Timeout).toBe(15);
+  });
+
+  it("surfaces the soap:Receiver fault string verbatim when the live call throws IressError", async () => {
+    const timeSeriesGet2 = vi.fn().mockRejectedValueOnce(
+      new IressError(25018, "TimeSeriesGet2", "soap:Receiver — Invalid Parameter Value: bogus as Interval"),
+    );
+    iressClientHolder.current = { timeSeriesGet2 };
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      peekSession: () => session,
+      invalidate: () => undefined,
+    } as never;
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "J203", interval: "bogus" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(false);
+    expect(body.errorNumber).toBe(25018);
+    expect(body.rawFault).toMatch(/Invalid Parameter Value: bogus as Interval/);
+    expect(body.dataRowCount).toBe(0);
+    expect(body.firstRow).toBeNull();
+  });
+
+  it("uses the caller's exchange when supplied (bond curve code with FX/MM-specific exchange)", async () => {
+    const timeSeriesGet2 = vi.fn().mockResolvedValueOnce({
+      Header: { StatusCode: 2, ErrorNumber: 0 },
+      DataRows: [],
+    });
+    iressClientHolder.current = { timeSeriesGet2 };
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      peekSession: () => session,
+      invalidate: () => undefined,
+    } as never;
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "R2030", exchange: "JSE", interval: "Daily" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    const callArgs = timeSeriesGet2.mock.calls[0]![0] as { Exchange: string; Code: string };
+    expect(callArgs.Code).toBe("R2030");
+    expect(callArgs.Exchange).toBe("JSE");
+  });
+});

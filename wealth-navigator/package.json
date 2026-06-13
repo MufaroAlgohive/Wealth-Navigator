@@ -14,7 +14,8 @@
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "worker:iress": "bun workers/iress-ingest/src/main.ts",
-    "iress:logout": "bun scripts/iress-logout.ts"
+    "iress:logout": "bun scripts/iress-logout.ts",
+    "iress:probe-frequency": "bun scripts/probe-frequency.ts"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.2",
