@@ -53,7 +53,15 @@ export default function CurvesPage() {
       ...queryOpts("reference"),
     }),
   );
-  const [goviQ, nssQ, realQ, beQ] = curves;
+  // The map above always produces a 4-tuple (one per CURVE_CODE entry);
+  // destructure with non-null assertions to satisfy strict TS without
+  // changing the runtime shape.
+  const [goviQ, nssQ, realQ, beQ] = curves as [
+    ReturnType<typeof useQuery<CurveResponse>>,
+    ReturnType<typeof useQuery<CurveResponse>>,
+    ReturnType<typeof useQuery<CurveResponse>>,
+    ReturnType<typeof useQuery<CurveResponse>>,
+  ];
 
   const metricsQ = useQuery<CurveMetricsResponse>({
     queryKey: ["bff-curve-metrics", "ZAR_NSS"],
@@ -148,7 +156,7 @@ export default function CurvesPage() {
               label="ZAR govi 10Y"
               value={latestGovi > 0 ? `${latestGovi.toFixed(2)}%` : "—"}
               sub={move ? `${move.level >= 0 ? "+" : ""}${move.level}bp today` : "no PCA"}
-              tone={move ? (move.level > 0 ? "warning" : "positive") : "neutral"}
+              tone={move ? (move.level > 0 ? "warning" : "positive") : "default"}
             />
             <KpiTile
               label="ZAR NSS 10Y"

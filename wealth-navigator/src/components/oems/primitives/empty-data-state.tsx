@@ -41,7 +41,7 @@ export function EmptyDataState({
       {hint ? (
         <p className="max-w-xs text-[10.5px] italic text-muted-foreground/80">{hint}</p>
       ) : null}
-      {badgeLabel ? <DataSourceBadge kind={badgeLabel} /> : null}
+      {badgeLabel ? <DataSourceBadge source={badgeLabel} /> : null}
     </div>
   );
 }

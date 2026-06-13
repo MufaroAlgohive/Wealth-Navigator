@@ -894,7 +894,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               <EmptyDataState
                 message="Mock mode"
                 hint="Enable real data mode to compute PCA from the ZAR fitted curve feed."
-                badgeLabel="MOCK"
+                badgeLabel="mock"
               />
             </div>
           )}
