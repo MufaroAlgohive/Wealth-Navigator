@@ -60,7 +60,23 @@ interface DataSourceBadgeProps {
   className?: string;
 }
 
-/** Tiny pill indicating whether panel data is live, seed, mock, hybrid, or DB-first. */
+/**
+ * Tiny pill indicating whether panel data is live, seed, mock, hybrid, or
+ * DB-first. The single source of truth for the source label is
+ * `deriveDataSource()` in `src/lib/hooks/quote-routing.ts`; this primitive
+ * just renders. The rule (audit #3) is:
+ *
+ *   - worker `iress_mode = "live"` + fresh tick (<= 30s old) → "live"
+ *   - worker `iress_mode = "live"` + no fresh tick              → "supabase"
+ *   - all mock / no live                                       → "mock"
+ *   - supabase only                                            → "supabase"
+ *   - mixed (supabase + seed/mock)                             → "hybrid"
+ *   - seed-fallback only                                       → "seed"
+ *   - otherwise                                                → "mock"
+ *
+ * The `hybrid` case only fires when the response mixes live and mock
+ * ticks in the same call — the production app never does that.
+ */
 export function DataSourceBadge({ source, className }: DataSourceBadgeProps) {
   return (
     <span
