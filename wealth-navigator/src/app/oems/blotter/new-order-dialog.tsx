@@ -8,7 +8,9 @@
 //
 // We surface three checks above the Send button:
 //   1. Halt / suspension  — fed by the live tick stream
-//   2. Buying power       — qty * price vs account.cash
+//   2. Buying power       — qty * price vs account.cash (via
+//      `useAccountCash`; real IPS portfolio in real-data mode, mock
+//      fixture in demo mode)
 //   3. Mandate / concentration — symbol in strategy universe
 //
 // The pure `preTradeCheck` helper lives in `lib/iress/strategy.ts` so the
@@ -33,20 +35,8 @@ import { formatZARExact } from "@/lib/format";
 import { useTick } from "@/lib/store/tick-stream-provider";
 import { preTradeCheck, getMarketState, type PreTradeResult } from "@/lib/iress/strategy";
 import { orderCreate3WithRecovery } from "@/lib/iress/order-recovery";
+import { useAccountCash } from "@/lib/hooks/use-account-cash";
 import { cn } from "@/lib/cn";
-
-// Mock account-cash view — the dialog is the only place we know we're
-// acting on behalf of the admin user. Real impl: a `useAccountCash()`
-// hook backed by `AccountGetByUser`.
-const MOCK_ACCOUNT_CASH: Record<string, number> = {
-  "MINT-LIVE-001": 4_250_000,
-  "MINT-LIVE-002": 1_900_000,
-  "MINT-MM-001": 12_500_000,
-};
-
-function getAccountCash(username: string): number {
-  return MOCK_ACCOUNT_CASH[username] ?? 0;
-}
 
 export function NewOrderDialog({ onCreated }: { onCreated: () => void }) {
   const { client } = useIress();
@@ -80,14 +70,23 @@ export function NewOrderDialog({ onCreated }: { onCreated: () => void }) {
     return getMarketState(symbol.toUpperCase());
   }, [tick, symbol]);
 
+  // Account cash (ZAR) for the pre-trade buying-power check. In
+  // real-data mode the hook reads from the IPS portfolio mirror
+  // (`oems_account_c` via /api/portfolio); in mock mode it falls back
+  // to the seed fixture for the demo. The hook returns 0 with source
+  // "unavailable" when the account is missing from the mirror — that
+  // is what keeps the Send button disabled until the worker syncs
+  // the row.
+  const accountCash = useAccountCash(account);
+
   const preTrade: PreTradeResult = useMemo(() => {
     const px = limit === "" ? 0 : Number(limit);
     return preTradeCheck(
       { symbol: symbol.toUpperCase(), side, qty, price: px },
-      { cash: getAccountCash(account) },
+      { cash: accountCash.available },
       marketState,
     );
-  }, [symbol, side, qty, limit, account, marketState]);
+  }, [symbol, side, qty, limit, account, marketState, accountCash.available]);
 
   const blocked = preTrade.halt !== "ok" || preTrade.bp !== "ok" || preTrade.mandate === "outside";
 
@@ -255,6 +254,14 @@ export function NewOrderDialog({ onCreated }: { onCreated: () => void }) {
             <dd className="break-all">{orderTag || "—"}</dd>
             <dt className="text-muted-foreground">Account</dt>
             <dd>{account}</dd>
+            <dt className="text-muted-foreground">Cash source</dt>
+            <dd>
+              {accountCash.source === "supabase"
+                ? "IPS portfolio"
+                : accountCash.source === "mock-fallback"
+                  ? "mock fixture (demo)"
+                  : "unknown (no IPS row)"}
+            </dd>
             <dt className="text-muted-foreground">Symbol</dt>
             <dd>{symbol.toUpperCase()}</dd>
             <dt className="text-muted-foreground">Market state</dt>
