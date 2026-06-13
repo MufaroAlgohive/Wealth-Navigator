@@ -51,4 +51,32 @@ describe("worker events ring buffer", () => {
     }
     expect(recentWorkerEvents().length).toBeLessThanOrEqual(50);
   });
+
+  it("captures `iress_call_complete` events with elapsedMs for the integration latency panel", () => {
+    recordWorkerEvent({
+      level: "info",
+      event: "iress_call_complete",
+      msg: "TimeSeriesGet2(J203/JSE) returned 30 points",
+      data: { method: "TimeSeriesGet2", series: "index", code: "J203", exchange: "JSE", elapsedMs: 184, points: 30 },
+    });
+    recordWorkerEvent({
+      level: "info",
+      event: "iress_call_complete",
+      msg: "TimeSeriesGet2(R2030/JSE) returned 1 point",
+      data: { method: "TimeSeriesGet2", series: "curve", code: "R2030", exchange: "JSE", elapsedMs: 92, points: 1 },
+    });
+    const evs = recentWorkerEvents();
+    // Newest first
+    expect(evs[0]?.event).toBe("iress_call_complete");
+    expect(evs[0]?.data?.["code"]).toBe("R2030");
+    expect(typeof evs[0]?.data?.["elapsedMs"]).toBe("number");
+    // /oems/integration's `buildLatencySeries` filters on numeric
+    // `elapsedMs` — keep that invariant tight.
+    for (const e of evs) {
+      if (e.event === "iress_call_complete") {
+        expect(typeof e.data?.["elapsedMs"]).toBe("number");
+        expect(Number.isFinite(e.data?.["elapsedMs"] as number)).toBe(true);
+      }
+    }
+  });
 });

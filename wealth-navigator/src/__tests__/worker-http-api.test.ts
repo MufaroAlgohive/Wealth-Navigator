@@ -326,6 +326,125 @@ describe("worker http-api /orders", () => {
   });
 });
 
+/**
+ * `POST /orders/cancel` is the live-only path for cancelling an open
+ * order on the broker. Like `/orders`, it returns `{ ok, ... }` in a
+ * 200 envelope even when the broker says "not entitled" or "session
+ * dead" — those are real answers, not 5xx.
+ */
+describe("worker http-api POST /orders/cancel", () => {
+  function postJsonReq(url: string, body: object): import("node:http").IncomingMessage {
+    const listeners: Record<string, Array<(chunk?: Buffer) => void>> = {};
+    const text = JSON.stringify(body);
+    const req = {
+      url,
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(text)) },
+      on(event: string, cb: (chunk?: Buffer) => void) {
+        (listeners[event] ??= []).push(cb);
+        return req;
+      },
+    } as unknown as import("node:http").IncomingMessage;
+    setImmediate(() => {
+      const buf = Buffer.from(text, "utf-8");
+      for (const cb of listeners["data"] ?? []) cb(buf);
+      for (const cb of listeners["end"] ?? []) cb();
+    });
+    return req;
+  }
+
+  it("returns ok=true when the live OrderDelete call succeeds", async () => {
+    const orderDelete = vi.fn(async () => undefined);
+    iressClientHolder.current = { orderDelete };
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      invalidate: () => undefined,
+    } as never;
+    const req = postJsonReq("/orders/cancel", { orderId: "ORD-123", account: "ACC1" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(true);
+    expect(body.orderId).toBe("ORD-123");
+    expect(body.account).toBe("ACC1");
+    expect(typeof body.cancelledAt).toBe("string");
+    expect(orderDelete).toHaveBeenCalledWith(
+      expect.objectContaining({ ServiceSessionKey: "IOS-KEY", OrderNumber: "ORD-123" }),
+    );
+  });
+
+  it("returns ok=false with mock_mode when IRESS_MODE is not live", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postJsonReq("/orders/cancel", { orderId: "ORD-123", account: "ACC1" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv({ iressMode: "mock" }),
+      sessions: { getSession: async () => makeMockSession(), invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(false);
+    expect(body.error?.code).toBe("mock_mode");
+  });
+
+  it("returns 400 when orderId is missing", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postJsonReq("/orders/cancel", { account: "ACC1" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions: { getSession: async () => makeMockSession(), invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("bad_request");
+  });
+
+  it("returns 503 when no account is configured and the body omits it", async () => {
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postJsonReq("/orders/cancel", { orderId: "ORD-123" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv({ iressAccountCode: "" }),
+      sessions: { getSession: async () => makeMockSession(), invalidate: () => undefined } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(503);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("account_not_configured");
+  });
+
+  it("invalidates the session and returns ok=false when the broker says 25001", async () => {
+    const invalidate = vi.fn();
+    const orderDelete = vi.fn(async () => {
+      throw new IressError(25001, "OrderDelete", "not logged in");
+    });
+    iressClientHolder.current = { orderDelete };
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postJsonReq("/orders/cancel", { orderId: "ORD-123", account: "ACC1" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions: { getSession: async () => makeMockSession(), invalidate } as never,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(false);
+    expect(body.error?.code).toBe("iress_25001");
+    expect(invalidate).toHaveBeenCalled();
+  });
+});
+
 describe("worker http-api 404", () => {
   it("returns 404 for unknown routes", async () => {
     const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
