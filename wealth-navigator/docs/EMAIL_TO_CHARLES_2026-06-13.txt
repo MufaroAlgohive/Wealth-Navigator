@@ -1,0 +1,195 @@
+Subject: TimeSeriesGet2 / IPS service sessions / PricingQuoteGet board field on DFM@Mint — empirical findings + entitlement ask
+
+Hi Charles,
+
+Following on from our earlier thread — three entitlement / shape questions
+have crystallised on our side now that the live worker is connected and
+the PricingQuoteGet loop is green. This is a focused reply, not a status
+report; details below.
+
+Environment
+-----------
+- Worker: Railway `Iress-Worker`, public domain
+  https://iress-worker-production.up.railway.app (probe at
+  POST /debug/timeseries-probe).
+- IRESS_MODE=live, ApplicationID `Mint-OEMS-Worker-3c073e9c90a0`.
+- Endpoint: SA prod-test `https://webservices-ct.iress.co.za/v4` (we are
+  NOT on production `webservices.iress.co.za` yet — that move is
+  scheduled for after these entitlements are confirmed).
+- Service session bring-up follows
+  `Documentation & Vision/iress-v4-docs/11-mint-oems/03-call-graph-jse-order.md`
+  (ServiceSessionStart Service="IOSPlus" Server="IOSPLUSAPI", and a
+  second IPS service session) — your reference doc set
+  `12-schemas/02-service-headers.md` names the same IOSPlus/IOSPLUSAPI
+  pair, so the worker is calling what the doc specifies.
+
+1) What's working
+-----------------
+`PricingQuoteGet` loop is healthy. /health reports:
+  {"ok":true,"iressMode":"live","dryRun":false,"allowWrites":true,
+   "session":{"cached":true,"applicationId":"Mint-OEMS-Worker-3c073e9c90a0"},
+   "watchlistSize":10}
+and the worker logs `quote sync complete (10 symbols, 0 missing)` roughly
+every 20s. 9 of 10 symbols write to stock_intraday_c cleanly.
+
+2) What's blocked (three things, in priority order)
+---------------------------------------------------
+
+(a) `TimeSeriesGet2` on the SA prod-test CT build — wire shape AND
+    entitlement both unknown. Live evidence from today's probe
+    (deployment c76088c, run 2026-06-13 ~12:02 UTC, code=J203):
+
+    The V4 WSDL doc
+    `Documentation & Vision/iress-v4-docs/05-services/market-data/02-time-series-get-2.md`
+    lists `Interval` (enum: Daily, Weekly, Monthly, IntraDay, Tick, ...)
+    as the interval-related field — `Frequency` does not appear in the
+    spec table at all. Our worker added a `Frequency` (Long) path as a
+    hypothesis. Both shapes were probed on the live CT server, and both
+    were rejected at parameter validation:
+
+    Frequency (Long) sweep — every value rejected with
+    `errorNumber: 50, rawFault: "soap:Receiver — Invalid Parameter
+    Value: <N> as Frequency", dataRowCount: 0`. Candidates: 0, 1, 2, 3,
+    4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+    22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 64, 128, 1000, 86400,
+    31536000 (and several intermediates).
+
+    Interval (string) sweep — all rejected with the SAME fault, but
+    echoing `<empty>` as the value:
+    `Invalid Parameter Value:  as Frequency`.
+    Candidates: "Daily", "Weekly", "Monthly", "Quarterly", "Yearly",
+    "IntraDay", "Intraday", "1d", "1w", "1mo", "1q", "1y", "tick".
+
+    Multi-code sweep with `frequency: 8` against J203, R2030, NPN, USDZAR,
+    SOL, FSR — all rejected with the same fault.
+
+    The interesting nuance: the server is reading the `Frequency` field
+    regardless of which interval-related field the client sends. When we
+    send `<Interval>Daily</Interval>` (the V4 WSDL sample payload form),
+    the server still echoes `Invalid Parameter Value:  as Frequency` —
+    meaning the server is looking for `Frequency` (with whatever value
+    is in that field) even when the client is sending `Interval`.
+
+    Our best read: the most likely root cause is that the `TimeSeriesGet2`
+    entitlement is not enabled on DFM@Mint, and the server is rejecting
+    the parameter before any of our candidate values can be evaluated.
+    The alternative is that the field name on this CT build differs
+    from the V4 WSDL and we are sending the wrong field entirely.
+
+    Our worker handles the failure mode cleanly (it logs
+    `time_series_entitlement_missing` rather than crashing) but every
+    Tier-2 panel — cockpit ALSI/J203, sector heatmap, ZAR govi / NSS /
+    real / breakeven curves, JIBAR / ZARONIA / SARB repo history —
+    stays empty until this is resolved.
+
+    What I need from you:
+      i.  Is `TimeSeriesGet2` enabled on DFM@Mint? If not, please flip
+          the entitlement.
+     ii.  If it is enabled, what is the correct wire shape on this CT
+          build — is the field actually `Frequency` (Long) and we are
+          missing a value from the enum, or has the field been renamed
+          in this build relative to the V4 WSDL?
+    iii.  Once we know the answer, the worker re-runs the probe and
+          pins the constant in
+          `workers/iress-ingest/src/timeseries.ts`.
+
+(b) `IPSPositionGetAll1` (and the other IPS portfolio methods
+    `IPSAccountGetAll1`, `IPSTransactionGetByAccount5`) — entitlement
+    appears to be off, and the worker is also failing pre-call on a
+    missing service session.
+
+    Two distinct error paths in the worker log:
+
+    - Pre-call: `[iress-ingest] IPSPositionGetAll1(Z12345) failed: IPS
+      service session not available`. This is thrown by the worker
+      itself when no `ServiceSessionKey` is cached for the IPS service.
+      It usually means the second `ServiceSessionStart(Service="IPS",
+      Server="<IPS server>")` did not return a key, or the key expired
+      and was not refreshed. I don't yet know the canonical `<IPS
+      server>` value to put in the `Server` argument — the V4 doc says
+      the value is "environment-specific" and gives `IPSAPI` as a
+      common value but notes it "may differ". Can you confirm the
+      correct `Server` for the SA prod-test build?
+
+    - In-call (when the session key IS cached): the server returns
+      `ErrorNumber: 25014` or `25008`, which the worker treats as
+      "entitlement missing" and logs `IPSPositionGetAll1` as
+      `entitlement_required`. Per the V4 error-codes doc
+      `06-errors/01-session-error-codes.md` these are "Invalid session
+      key" / "Server error (login failures)" respectively. If the
+      actual fault text says "service session was terminated" that
+      would be 25033 — please let me know the exact reason string
+      IRESS returns in the fault message so I can map it to the
+      correct recovery path.
+
+    What I need from you:
+      i.  Are `IPSAccountGetAll1`, `IPSPositionGetAll1`, and
+          `IPSTransactionGetByAccount5` enabled on DFM@Mint?
+     ii.  What is the correct `Server` argument for
+          `ServiceSessionStart(Service="IPS", Server="...")` on the SA
+          prod-test build? (`IPSAPI`, or something else?)
+    iii.  If the in-call fault text says anything more specific than
+          "Invalid session key", please paste the reason string.
+
+(c) `PricingQuoteGet` for BHG (Bidcorp) — the CT row is hollow.
+
+    For 9 of 10 JSE watchlist symbols, the worker receives a populated
+    quote row and writes the snapshot to `stock_intraday_c`. For BHG,
+    the row arrives as `LastPrice = PreviousClosePrice = 2445`, with
+    zero OHLC, zero volume, no bid / ask. The mapper's
+    `resolveQuoteLast` logic correctly detects that the only price
+    available is a stale `LastPrice` and skips the write (otherwise we
+    would overwrite the live row with a previous-close anchor and break
+    the movers panel). So BHG is the one symbol in the watchlist with
+    no row in `stock_intraday_c` today.
+
+    The V4 doc for `PricingQuoteGet` mentions `board` and `currency` as
+    optional filters but does not name a `QuotationBasisCode` /
+    `QuoteBasisCode` field — the WSDL we have is silent on that term.
+
+    What I need from you:
+      i.  Is BHG on a different JSE board than the rest of our
+          watchlist (e.g. the alt-exchange board rather than the main
+          JSE equities board), and if so, what is the correct `Board`
+          value to pass to `PricingQuoteGet` for BHG?
+     ii.  Is there an IRESS-side field on this build that we are not
+          setting (the V4 WSDL we have names only `board` and
+          `currency` as filters) that would tell the server to return
+          the live row instead of a closed-market anchor?
+    iii.  If BHG is correctly tracked via a different code on the CT
+          build (e.g. a different `Code` string than `BHG`), please
+          let me know.
+
+3) Smaller / non-blocking items
+-------------------------------
+- `OrderPadGetByAccount` polling account code: I need the IRESS
+  `AccountCode` to mirror the working pad into `oems_order_audit` (the
+  blotter in real-data mode). Any single account code you can confirm
+  is the right one to poll for our seat is fine.
+- Sector index code list for the JSE heatmap: even after
+  `TimeSeriesGet2` is unblocked, I need a list of the JSE sector index
+  codes (e.g. J200, J210, ...) to feed the worker ingest loop. I do
+  not see a sector-code catalogue in the V4 doc set we have.
+- ZAR NSS curve code(s) for the govi / NSS / real / breakeven panel —
+  same story.
+
+4) Offer
+--------
+Happy to screenshare the worker probe output and the exact SOAP
+envelopes the worker is sending (they are logged in full at the debug
+endpoint) — let me know a time and I'll dial in. The probe script is a
+single curl against
+https://iress-worker-production.up.railway.app/debug/timeseries-probe
+so you can re-run it on your side against the same CT build to confirm.
+
+Thanks for the help,
+
+Best,
+Juan
+
+--
+Juan Pretorius
+Mint Wealth Navigator — OEMS (JSE / ZAR)
+worker: https://iress-worker-production.up.railway.app
+account: DFM@Mint (SA prod-test, webservices-ct.iress.co.za/v4)
+reference docs: Documentation & Vision/iress-v4-docs/

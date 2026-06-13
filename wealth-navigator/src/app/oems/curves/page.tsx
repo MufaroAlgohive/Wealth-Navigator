@@ -53,7 +53,15 @@ export default function CurvesPage() {
       ...queryOpts("reference"),
     }),
   );
-  const [goviQ, nssQ, realQ, beQ] = curves;
+  // The map above always produces a 4-tuple (one per CURVE_CODE entry);
+  // destructure with non-null assertions to satisfy strict TS without
+  // changing the runtime shape.
+  const [goviQ, nssQ, realQ, beQ] = curves as [
+    ReturnType<typeof useQuery<CurveResponse>>,
+    ReturnType<typeof useQuery<CurveResponse>>,
+    ReturnType<typeof useQuery<CurveResponse>>,
+    ReturnType<typeof useQuery<CurveResponse>>,
+  ];
 
   const metricsQ = useQuery<CurveMetricsResponse>({
     queryKey: ["bff-curve-metrics", "ZAR_NSS"],

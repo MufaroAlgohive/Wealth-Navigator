@@ -377,3 +377,285 @@ describe("timeSeriesFrequencyLong (V4 Frequency LONG)", () => {
     expect(DAILY_FREQUENCY_LONG).toBeGreaterThanOrEqual(0);
   });
 });
+
+/**
+ * Hollow-row diagnostic — when PricingQuoteGet returns a `marketState=OPEN`
+ * row whose raw fields are all zero / missing, the worker emits a
+ * `quote_hollow_row` event in addition to the existing
+ * `pricing_quote_get_no_trade` event so the operator can see the full
+ * raw row + raw keys (the diagnostic the BHG "wrong board" case needs).
+ */
+describe("syncWatchlistQuotes quote_hollow_row event", () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  it("emits quote_hollow_row when marketState=OPEN and the raw row has no price data", async () => {
+    const env = makeEnv();
+    const client = {
+      pricingQuoteGet: vi.fn(async () => ({
+        Header: { StatusCode: 2, ErrorNumber: 0 },
+        DataRows: [
+          {
+            symbol: "BHG",
+            last: 0,
+            bid: 0,
+            ask: 0,
+            bidSize: 0,
+            askSize: 0,
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+            prevClose: 0,
+            change: 0,
+            changePct: 0,
+            volume: 0,
+            vwap: 0,
+            currency: "ZAR",
+            marketState: "OPEN",
+            ts: Date.now(),
+          },
+        ],
+        // Raw row with MarketState=OPEN but every price / book / volume
+        // field is zero — the "hollow row" shape that triggered the
+        // BHG-class diagnostic.
+        RawDataRows: [
+          {
+            SecurityCode: "BHG",
+            Exchange: "JSE",
+            MarketState: "OPEN",
+            Last: 0,
+            LastPrice: 0,
+            Bid: 0,
+            Ask: 0,
+            Volume: 0,
+          },
+        ],
+      })),
+      pricingQuoteGetUpdates: vi.fn(),
+      timeSeriesGet2: vi.fn(),
+      timeSeriesGet2Updates: vi.fn(),
+      orderCreate3: vi.fn(),
+      orderAmend2: vi.fn(),
+      orderDelete: vi.fn(),
+      orderPadGetByAccount: vi.fn(),
+      orderPadGetByAccountUpdates: vi.fn(),
+      bookingGetByOrganisation2: vi.fn(),
+      ipsTransactionGetByAccount5: vi.fn(),
+      iressSessionStart: vi.fn(),
+      iressSessionEnd: vi.fn(),
+      serviceSessionStart: vi.fn(),
+      serviceSessionEnd: vi.fn(),
+      targetIdGet: vi.fn(),
+      targetIdStatusGet: vi.fn(),
+    };
+    const withSession = vi.fn(async (fn) => fn({ iressSessionKey: "k" }));
+
+    vi.doMock("../../workers/iress-ingest/src/session", () => ({
+      WorkerSessionManager: class {
+        withSession = withSession;
+      },
+    }));
+    vi.doMock("@/lib/iress/index", () => ({
+      getIressClient: () => client,
+      iressConfig: { mode: "live" },
+      redactSessionKeyForLog: (v: string) => v,
+    }));
+
+    const { syncWatchlistQuotes } = await import("../../workers/iress-ingest/src/quotes");
+    const { recentWorkerEvents, _resetWorkerEventsForTests } = await import(
+      "../../workers/iress-ingest/src/events"
+    );
+    _resetWorkerEventsForTests();
+    const result = await syncWatchlistQuotes(env, { withSession } as never, null);
+    expect(result.empty).toBe(1);
+    expect(result.errors).toBe(0);
+
+    const events = recentWorkerEvents();
+    const hollow = events.find((e) => e.event === "quote_hollow_row");
+    expect(hollow).toBeDefined();
+    expect(hollow?.level).toBe("warn");
+    // The watchlist iterates over the worker-env default (NPN in
+    // makeEnv), so the msg uses `NPN`; the diagnostic must still
+    // reference the wrong-board hint.
+    expect(hollow?.msg).toMatch(/Board\/Exchange/);
+    expect(hollow?.msg).toMatch(/Charles/);
+    // The raw row mock returns SecurityCode=BHG, but the worker's
+    // `symbol` field is the watchlist symbol (NPN) — the test
+    // exercises the event payload shape, not the per-symbol wiring.
+    expect(hollow?.data).toMatchObject({
+      symbol: "NPN",
+      exchange: "JSE",
+      marketState: "OPEN",
+    });
+    const data = hollow?.data as Record<string, unknown>;
+    expect(Array.isArray(data.rawRowKeys)).toBe(true);
+    // `rawRowKeys` is sorted alphabetically; the diagnostic must include
+    // the canonical IRESS field names.
+    expect(data.rawRowKeys).toContain("MarketState");
+    expect(data.rawRowKeys).toContain("SecurityCode");
+    expect(data.rawRowKeys).toContain("Last");
+    // No non-zero numerics in the hollow row → empty object.
+    expect(data.rawRowNonZero).toEqual({});
+  });
+
+  it("does NOT emit quote_hollow_row when the raw row has any non-zero price field", async () => {
+    const env = makeEnv();
+    const client = {
+      pricingQuoteGet: vi.fn(async () => ({
+        Header: { StatusCode: 2, ErrorNumber: 0 },
+        DataRows: [
+          {
+            symbol: "BHG",
+            last: 0,
+            bid: 0,
+            ask: 0,
+            bidSize: 0,
+            askSize: 0,
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+            prevClose: 0,
+            change: 0,
+            changePct: 0,
+            volume: 0,
+            vwap: 0,
+            currency: "ZAR",
+            marketState: "OPEN",
+            ts: Date.now(),
+          },
+        ],
+        // Raw row has a non-zero LastPrice → not "hollow", even though
+        // the mapper still collapsed the row to last=0.
+        RawDataRows: [
+          {
+            SecurityCode: "BHG",
+            Exchange: "JSE",
+            MarketState: "OPEN",
+            Last: 0,
+            LastPrice: 1,
+          },
+        ],
+      })),
+      pricingQuoteGetUpdates: vi.fn(),
+      timeSeriesGet2: vi.fn(),
+      timeSeriesGet2Updates: vi.fn(),
+      orderCreate3: vi.fn(),
+      orderAmend2: vi.fn(),
+      orderDelete: vi.fn(),
+      orderPadGetByAccount: vi.fn(),
+      orderPadGetByAccountUpdates: vi.fn(),
+      bookingGetByOrganisation2: vi.fn(),
+      ipsTransactionGetByAccount5: vi.fn(),
+      iressSessionStart: vi.fn(),
+      iressSessionEnd: vi.fn(),
+      serviceSessionStart: vi.fn(),
+      serviceSessionEnd: vi.fn(),
+      targetIdGet: vi.fn(),
+      targetIdStatusGet: vi.fn(),
+    };
+    const withSession = vi.fn(async (fn) => fn({ iressSessionKey: "k" }));
+
+    vi.doMock("../../workers/iress-ingest/src/session", () => ({
+      WorkerSessionManager: class {
+        withSession = withSession;
+      },
+    }));
+    vi.doMock("@/lib/iress/index", () => ({
+      getIressClient: () => client,
+      iressConfig: { mode: "live" },
+      redactSessionKeyForLog: (v: string) => v,
+    }));
+
+    const { syncWatchlistQuotes } = await import("../../workers/iress-ingest/src/quotes");
+    const { recentWorkerEvents, _resetWorkerEventsForTests } = await import(
+      "../../workers/iress-ingest/src/events"
+    );
+    _resetWorkerEventsForTests();
+    await syncWatchlistQuotes(env, { withSession } as never, null);
+    const events = recentWorkerEvents();
+    const hollow = events.find((e) => e.event === "quote_hollow_row");
+    expect(hollow).toBeUndefined();
+  });
+
+  it("does NOT emit quote_hollow_row when marketState is not OPEN", async () => {
+    const env = makeEnv();
+    const client = {
+      pricingQuoteGet: vi.fn(async () => ({
+        Header: { StatusCode: 2, ErrorNumber: 0 },
+        DataRows: [
+          {
+            symbol: "BHG",
+            last: 0,
+            bid: 0,
+            ask: 0,
+            bidSize: 0,
+            askSize: 0,
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+            prevClose: 0,
+            change: 0,
+            changePct: 0,
+            volume: 0,
+            vwap: 0,
+            currency: "ZAR",
+            marketState: "PRE_OPEN",
+            ts: Date.now(),
+          },
+        ],
+        RawDataRows: [
+          {
+            SecurityCode: "BHG",
+            Exchange: "JSE",
+            MarketState: "PRE_OPEN",
+            Last: 0,
+            LastPrice: 0,
+          },
+        ],
+      })),
+      pricingQuoteGetUpdates: vi.fn(),
+      timeSeriesGet2: vi.fn(),
+      timeSeriesGet2Updates: vi.fn(),
+      orderCreate3: vi.fn(),
+      orderAmend2: vi.fn(),
+      orderDelete: vi.fn(),
+      orderPadGetByAccount: vi.fn(),
+      orderPadGetByAccountUpdates: vi.fn(),
+      bookingGetByOrganisation2: vi.fn(),
+      ipsTransactionGetByAccount5: vi.fn(),
+      iressSessionStart: vi.fn(),
+      iressSessionEnd: vi.fn(),
+      serviceSessionStart: vi.fn(),
+      serviceSessionEnd: vi.fn(),
+      targetIdGet: vi.fn(),
+      targetIdStatusGet: vi.fn(),
+    };
+    const withSession = vi.fn(async (fn) => fn({ iressSessionKey: "k" }));
+
+    vi.doMock("../../workers/iress-ingest/src/session", () => ({
+      WorkerSessionManager: class {
+        withSession = withSession;
+      },
+    }));
+    vi.doMock("@/lib/iress/index", () => ({
+      getIressClient: () => client,
+      iressConfig: { mode: "live" },
+      redactSessionKeyForLog: (v: string) => v,
+    }));
+
+    const { syncWatchlistQuotes } = await import("../../workers/iress-ingest/src/quotes");
+    const { recentWorkerEvents, _resetWorkerEventsForTests } = await import(
+      "../../workers/iress-ingest/src/events"
+    );
+    _resetWorkerEventsForTests();
+    await syncWatchlistQuotes(env, { withSession } as never, null);
+    const events = recentWorkerEvents();
+    const hollow = events.find((e) => e.event === "quote_hollow_row");
+    expect(hollow).toBeUndefined();
+  });
+});

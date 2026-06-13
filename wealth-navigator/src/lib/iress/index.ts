@@ -220,11 +220,24 @@ export async function bringUpMintSession(
   console.info(
     `[mint-iress] IRESSSessionStart ok applicationId=${applicationId} sessionKey=${redactSessionKeyForLog(iressSession.IRESSSessionKey)} timeoutMin=${iressSession.SessionTimeout ?? 120}`,
   );
+  // IPS `Server` is environment-specific per the V4 docs. The worker reads
+  // it from `IRESS_IPS_SERVER` (default `IPSAPI`) so operators can flip
+  // the value without redeploying. Read it here too so Vercel-side callers
+  // of `bringUpMintSession` honour the same env knob.
+  const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
   const servicesToStart: Array<{ Service: IressService; Server: string }> = [
     { Service: "IOSPlus", Server: "IOSPLUSAPI" },
-    { Service: "IPS", Server: "IPSAPI" },
+    { Service: "IPS", Server: ipsServer },
     { Service: "FIXPlus", Server: "FIXPLUSAPI" },
   ];
+  // Single structured log line so the operator can see the exact `Server`
+  // value the worker tried for every service without grepping. Useful when
+  // Charles confirms a non-default value (e.g. SA prod-test uses something
+  // other than `IPSAPI`).
+  console.info(
+    `[mint-iress] ServiceSessionStart attempts ` +
+      servicesToStart.map(({ Service, Server }) => `${Service}=${Server}`).join(" "),
+  );
   const serviceKeys: Partial<Record<IressService, string>> = {};
   for (const { Service, Server } of servicesToStart) {
     try {

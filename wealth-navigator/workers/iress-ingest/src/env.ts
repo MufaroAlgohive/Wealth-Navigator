@@ -38,6 +38,14 @@ export interface WorkerEnv {
   fxExchange: string;
   /** Exchange for money-market rate codes (default "MM"). */
   moneyMarketExchange: string;
+  /**
+   * `Server` argument passed to `ServiceSessionStart(Service="IPS", …)`.
+   * Per the V4 docs the value is "environment-specific" — `IPSAPI` is
+   * the common default but the SA prod-test build may use a different
+   * identifier. Override with `IRESS_IPS_SERVER` once Charles confirms
+   * the canonical value.
+   */
+  ipsServer: string;
 }
 
 function parseBool(value: string | undefined, defaultValue: boolean): boolean {
@@ -170,5 +178,6 @@ export function loadWorkerEnv(): WorkerEnv {
     defaultExchange: defaultExchange || "JSE",
     fxExchange: fxExchange || "FX",
     moneyMarketExchange: mmExchange || "MM",
+    ipsServer: (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI",
   };
 }

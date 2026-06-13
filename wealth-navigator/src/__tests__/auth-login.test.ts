@@ -1,3 +1,11 @@
+// @vitest-environment node
+// Force the node env for this file. jsdom's `Request` / `Headers` globals
+// are a different class from the one Next.js bundles (undici), so
+// `NextResponse.next({ request })` rejects them with
+// "request.headers must be an instance of Headers". Node's native fetch
+// globals match what `next/server` expects, so the route handler's
+// middleware-field check passes. The functional code under test is
+// env-agnostic — only the `instanceof Headers` plumbing cares.
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,11 +28,18 @@ vi.mock("@supabase/ssr", () => ({
 import { mapLoginAuthError, POST } from "@/app/api/auth/login/route";
 
 function makeRequest(body: unknown): NextRequest {
-  return new NextRequest("http://localhost:3000/api/auth/login", {
+  // NextResponse.next({ request }) inside the route handler validates that
+  // `request.headers` is a real `Headers` instance. The JSdom test
+  // environment's `Request` global behaves correctly with a `Headers`
+  // object, so construct a real `Request` first and then wrap it in
+  // `NextRequest` — the wrap preserves the underlying `Headers` instead
+  // of flattening them to a plain object.
+  const req = new Request("http://localhost:3000/api/auth/login", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: new Headers({ "content-type": "application/json" }),
     body: JSON.stringify(body),
   });
+  return new NextRequest(req);
 }
 
 describe("mapLoginAuthError", () => {
