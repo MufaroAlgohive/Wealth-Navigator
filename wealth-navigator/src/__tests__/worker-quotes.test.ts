@@ -325,43 +325,55 @@ describe("syncWatchlistQuotes closed-market write-through (Bug B fix)", () => {
 });
 
 /**
- * Bug C follow-up regression: the V4 server rejects `Frequency: 8` (Long)
- * with `soap:Receiver — Invalid Parameter Value: 8 as Frequency`. The
- * real wire shape is the `<Interval>` STRING enum, e.g. `<Interval>Daily</Interval>`
- * (per `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`).
- * The fix pins `timeSeriesIntervalString` to the documented V4 strings so a
- * `1d` / `1h` / `5m` / `1m` / `tick` / `1w` / `1mo` / `1q` / `1y` token
- * always produces one of those — never a 0, never a Long.
+ * Bug C follow-up regression: the live CT server honours
+ * `<Frequency>` (Long), NOT the `<Interval>` STRING enum the V4 WSDL
+ * sample documents. Earlier Long guesses (0, 8) returned
+ * `soap:Receiver — Invalid Parameter Value: <n> as Frequency` because
+ * those specific values were wrong, not because the wire shape was.
+ * The brute-force probe pinned the daily-bucket value in
+ * `docs/TIMESERIES_PROBE_REPORT_FINAL.md`. The fix renames
+ * `timeSeriesIntervalString` (V4 string enum) to
+ * `timeSeriesFrequencyLong` (V4 Long) and pins `1d` to the probed
+ * value. Every other token is speculative — only `1d` is on the
+ * load-bearing Tier-2 path; the other entries are placeholders the
+ * next probe can validate.
  */
-describe("timeSeriesIntervalString (V4 Interval STRING enum)", () => {
-  it("maps worker-friendly tokens to the V4 Interval string enum", async () => {
-    const { timeSeriesIntervalString } = await import(
+describe("timeSeriesFrequencyLong (V4 Frequency LONG)", () => {
+  it("maps worker-friendly tokens to non-empty V4 Frequency Longs", async () => {
+    const { timeSeriesFrequencyLong } = await import(
       "../../workers/iress-ingest/src/timeseries"
     );
-    // V4 Interval string enum — the wire shape the live CT server expects.
-    // Intra-day tokens all collapse to "IntraDay" (V4 doesn't distinguish
-    // sub-daily granularities on TimeSeriesGet2 — use PricingQuoteGet /
-    // PricingQuoteGetUpdates for L1 ticks + streaming).
-    expect(timeSeriesIntervalString("tick")).toBe("IntraDay");
-    expect(timeSeriesIntervalString("1m")).toBe("IntraDay");
-    expect(timeSeriesIntervalString("5m")).toBe("IntraDay");
-    expect(timeSeriesIntervalString("1h")).toBe("IntraDay");
-    expect(timeSeriesIntervalString("1d")).toBe("Daily");
-    expect(timeSeriesIntervalString("1w")).toBe("Weekly");
-    expect(timeSeriesIntervalString("1mo")).toBe("Monthly");
-    expect(timeSeriesIntervalString("1q")).toBe("Quarterly");
-    expect(timeSeriesIntervalString("1y")).toBe("Yearly");
-  });
-
-  it("returns a non-empty V4 enum string for every valid token (server rejects empty)", async () => {
-    const { timeSeriesIntervalString } = await import(
-      "../../workers/iress-ingest/src/timeseries"
-    );
+    // The Long for every token is finite and a positive integer.
     const tokens = ["tick", "1m", "5m", "1h", "1d", "1w", "1mo", "1q", "1y"] as const;
     for (const t of tokens) {
-      const out = timeSeriesIntervalString(t);
-      expect(typeof out).toBe("string");
-      expect(out.length).toBeGreaterThan(0);
+      const out = timeSeriesFrequencyLong(t);
+      expect(typeof out).toBe("number");
+      expect(Number.isFinite(out)).toBe(true);
+      expect(Number.isInteger(out)).toBe(true);
+      expect(out).toBeGreaterThan(0);
     }
+  });
+
+  it("pins 1d to the DAILY_FREQUENCY_LONG constant (the probed value)", async () => {
+    const { timeSeriesFrequencyLong, DAILY_FREQUENCY_LONG } = await import(
+      "../../workers/iress-ingest/src/timeseries"
+    );
+    // The brute-force probe against the live CT server (June 13 2026)
+    // established that this specific Long is the value the live server
+    // accepts for the daily bucket. See
+    // `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md` for the
+    // candidate-vs-response table. The `1d` token MUST resolve to that
+    // value; if a future probe invalidates it, the report + this
+    // constant need to be updated together.
+    expect(timeSeriesFrequencyLong("1d")).toBe(DAILY_FREQUENCY_LONG);
+  });
+
+  it("DAILY_FREQUENCY_LONG is a positive integer (the wire shape is `<Frequency>N</Frequency>`)", async () => {
+    const { DAILY_FREQUENCY_LONG } = await import(
+      "../../workers/iress-ingest/src/timeseries"
+    );
+    expect(typeof DAILY_FREQUENCY_LONG).toBe("number");
+    expect(Number.isInteger(DAILY_FREQUENCY_LONG)).toBe(true);
+    expect(DAILY_FREQUENCY_LONG).toBeGreaterThanOrEqual(0);
   });
 });

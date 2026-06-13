@@ -105,8 +105,17 @@ export interface TimeSeriesGet2Request {
   From?: string; // ISO date
   To?: string;
   /**
-   * V4 server requires the `<Interval>` string enum, NOT the
-   * `Frequency` (Long) field. The IRESS V4 WSDL sample payload is:
+   * V4 Frequency field as a Long. The empirical truth (June 2026) is
+   * that the **live CT server** honours `<Frequency>` (Long) on the
+   * wire — not the `<Interval>` string the V4 WSDL sample documents.
+   * Earlier code that sent `Frequency: 0` / `Frequency: 8` was
+   * rejected with `soap:Receiver — Invalid Parameter Value: <n> as
+   * Frequency` only because those specific Long values were wrong; the
+   * actual daily-bucket Long is documented in
+   * `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md` (and
+   * surfaced via the worker's `timeSeriesFrequencyLong()` mapper).
+   *
+   * The V4 WSDL sample payload — kept for reference — is:
    *
    *   <Parameters>
    *     <Code>SHP</Code>
@@ -116,19 +125,25 @@ export interface TimeSeriesGet2Request {
    *     <Interval>Daily</Interval>
    *   </Parameters>
    *
-   * The live CT server rejects `Frequency: 8` (Long) with
-   * `soap:Receiver — Invalid Parameter Value: 8 as Frequency`, and
-   * rejects an empty/missing `Interval` with the same fault. Valid
-   * values are: `"Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly"`
-   * (and `"IntraDay"` for the intra-day buckets).
-   *
-   * Worker-friendly tokens ("1d" | "1h" | "5m" | "1m" | "tick" | "1w"
-   * | "1mo" | "1q" | "1y") are converted to the wire enum by
-   * `timeSeriesIntervalString()` in the worker before sending.
+   * When `Frequency` is set, the live client sends `<Frequency>N</Frequency>`.
+   * When `Interval` is set, the live client sends `<Interval>Daily</Interval>`
+   * (etc.). If both are set, `Frequency` wins. If neither is set, the live
+   * client throws 25018 (missing required field). Worker-friendly tokens
+   * ("1d" | "1h" | "5m" | "1m" | "tick" | "1w" | "1mo" | "1q" | "1y") are
+   * converted to the wire Long by `timeSeriesFrequencyLong()` in the worker
+   * before sending.
    *
    * Spec: `Documentation & Vision/iress-v4-docs/05-services/market-data/02-time-series-get-2.md`.
    */
-  Interval: string;
+  Frequency?: number;
+  /**
+   * Legacy V4 string-enum form of the period selector. The WSDL sample
+   * uses `<Interval>Daily</Interval>`, and some IRESS server builds may
+   * still require it (kept as a fallback for the worker + probe). On the
+   * live CT server the `Frequency` Long is the accepted shape — this
+   * field is only sent when `Frequency` is unset.
+   */
+  Interval?: string;
 }
 
 // ─── Trading (IOS+) ─────────────────────────────────────────────────────

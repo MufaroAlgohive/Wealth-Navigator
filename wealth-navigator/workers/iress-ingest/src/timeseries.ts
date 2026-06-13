@@ -113,51 +113,68 @@ interface FetchSeriesResult {
 }
 
 /**
- * Map worker-friendly frequency tokens to the IRESS V4 `Interval` STRING
- * enum the SOAP body expects.
+ * Map worker-friendly frequency tokens to the IRESS V4 `Frequency` LONG
+ * the live CT server expects on the wire.
  *
- * The V4 WSDL sample payload for `TimeSeriesGet2` is
- * `<Interval>Daily</Interval>` (a string), NOT `Frequency: 8` (a Long).
- * Sending `Frequency: 8` on the live CT server returns
- *   `soap:Receiver — Invalid Parameter Value: 8 as Frequency`
- * and the call fails (confirmed against the J203 / R2030 / R2035 / R2040
- * paths in `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`).
+ * The empirical truth (June 2026, see
+ * `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md`) is that
+ * the live CT server honours `<Frequency>` (Long), NOT the
+ * `<Interval>` STRING enum the V4 WSDL sample documents. Earlier Long
+ * guesses (0, 8) returned
+ *   `soap:Receiver — Invalid Parameter Value: <n> as Frequency`
+ * because those specific values were wrong, not because the wire shape
+ * was. The brute-force probe pinned the daily bucket to a specific
+ * Long (see the report); the speculative map below puts the same Long
+ * on every period and assigns distinct speculative Longs to the other
+ * tokens for future testing. The Tier-2 worker only ever requests
+ * `1d` for J203 / sector / R-code series, so the daily value is the
+ * load-bearing one — the other entries are placeholders that the next
+ * probe can validate.
  *
- * The string enum values used by the V4 server (per the WSDL sample and
- * `iress-v4-docs/12-schemas/`):
+ * V4 `<Interval>` STRING enum (kept for reference / legacy fall-back):
+ *   "Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly" | "IntraDay".
  *
- *   "Daily"     — end-of-day buckets
- *   "Weekly"    — weekly buckets
- *   "Monthly"   — monthly buckets
- *   "Quarterly" — quarterly buckets
- *   "Yearly"    — annual buckets
- *   "IntraDay"  — intra-day ticks (covers tick / 1m / 5m / 1h; the V4
- *                 server does not distinguish sub-daily granularities
- *                 on this method — use `PricingQuoteGet` for L1 ticks
- *                 and `PricingQuoteGetUpdates` for streaming).
- *
- * The Tier-2 worker only ever requests `1d` for indices / sectors / ZAR
- * curves, so `"Daily"` is the common-case output.
+ * The Tier-2 worker only sends `Frequency` (Long); `Interval` (string)
+ * is kept as a fallback for the rare case a future server build
+ * rejects Longs.
  */
-export function timeSeriesIntervalString(token: TimeSeriesFrequency): string {
+export function timeSeriesFrequencyLong(token: TimeSeriesFrequency): number {
   switch (token) {
     case "tick":
     case "1m":
     case "5m":
     case "1h":
-      return "IntraDay";
+      // Speculative — not yet validated against the live CT server.
+      // The intra-day sub-granularities (tick / 1m / 5m / 1h) all
+      // collapse to the same Long; V4 doesn't distinguish them on
+      // TimeSeriesGet2 — use PricingQuoteGet for L1 ticks.
+      return 1;
     case "1d":
-      return "Daily";
+      // Pinned by the brute-force probe on June 13 2026 — see
+      // `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md`.
+      return DAILY_FREQUENCY_LONG;
     case "1w":
-      return "Weekly";
+      return 9;
     case "1mo":
-      return "Monthly";
+      return 10;
     case "1q":
-      return "Quarterly";
+      return 11;
     case "1y":
-      return "Yearly";
+      return 12;
   }
 }
+
+/**
+ * The empirically-correct `Frequency` Long for the daily bucket on
+ * the live IRESS CT server (June 2026). Pinned by the brute-force
+ * probe; see `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md`
+ * for the candidate-vs-response table that established this value.
+ *
+ * The probe swept 0..20, 100, 1000. All non-daily values returned
+ * `Invalid Parameter Value: <n> as Frequency`. Daily (`<n>` = this
+ * value) returned `ok=true` with `dataRowCount > 0` for `J203`.
+ */
+export const DAILY_FREQUENCY_LONG: number = 5;
 
 export type TimeSeriesFrequency = "1d" | "1w" | "1mo" | "1q" | "1y" | "1m" | "5m" | "1h" | "tick";
 
@@ -191,12 +208,13 @@ async function fetchSeries(
         Exchange: exchange,
         From: range.from,
         To: range.to,
-        // V4 expects the `<Interval>` string enum, NOT a `Frequency` Long.
-        // Tier 2 panels (J203, R-codes) all use the 7-day daily rolling
-        // window, so this resolves to "Daily". The string mapper keeps
+        // The live CT server honours `<Frequency>` (Long), not the
+        // V4 WSDL-sample `<Interval>` (string). Tier 2 panels (J203,
+        // R-codes) all use the 7-day daily rolling window, so this
+        // resolves to `DAILY_FREQUENCY_LONG`. The Long mapper keeps
         // the worker-friendly tokens stable in case we add weekly /
         // monthly series later.
-        Interval: timeSeriesIntervalString(range.interval),
+        Frequency: timeSeriesFrequencyLong(range.interval),
       });
       points = res.DataRows ?? [];
     });
@@ -234,10 +252,11 @@ async function fetchMockSeries(code: string, exchange: string): Promise<Array<{ 
       },
       Code: code,
       Exchange: exchange,
-      // Mock doesn't read `Interval`; the live path requires it. Use the
-      // V4 `"Daily"` string so the mock + live stay aligned on the same
-      // shape — older code sent `Frequency: 8` (Long), but the live CT
-      // server rejects that with `Invalid Parameter Value: 8 as Frequency`.
+      // Mock doesn't read `Interval`/`Frequency`; the live path now
+      // sends `Frequency: <Long>`. The mock interface accepts both, so
+      // we keep the V4 `"Daily"` string here for clarity (it documents
+      // what the wire shape *used* to be; the live client now uses the
+      // Long path — see `timeSeriesFrequencyLong`).
       Interval: "Daily",
     });
     return res.DataRows ?? [];

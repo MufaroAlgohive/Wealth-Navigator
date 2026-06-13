@@ -122,7 +122,8 @@ interface TimeSeriesProbeResult {
   ok: boolean;
   code: string;
   exchange: string;
-  interval: string;
+  interval: string | null;
+  frequency: number | null;
   errorNumber: number | null;
   errorDescription: string | null;
   rawFault: string | null;
@@ -134,21 +135,25 @@ interface TimeSeriesProbeResult {
 }
 
 /**
- * One-shot `TimeSeriesGet2` probe with the caller-supplied `<Interval>`
- * string.
+ * One-shot `TimeSeriesGet2` probe with the caller-supplied period
+ * selector.
  *
- * The V4 WSDL sample payload uses `<Interval>Daily</Interval>` (string),
- * and the live CT server rejects the `Frequency` (Long) form with
- * `Invalid Parameter Value: <n> as Frequency`. The accepted string
- * values per the V4 WSDL are
- * `"Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly" | "IntraDay"`.
+ * The empirical truth (June 2026, see
+ * `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md`) is that
+ * the live CT server honours `<Frequency>` (Long), NOT the
+ * `<Interval>` string the V4 WSDL sample documents. Earlier Long
+ * guesses (0, 8) returned
+ *   `soap:Receiver — Invalid Parameter Value: <n> as Frequency`
+ * because those specific values were wrong, not because the wire shape
+ * was. The probe accepts either form so future debugging can run both
+ * shapes against the live server without redeploying the worker.
  *
- * This probe is the way to verify a candidate value against the live
- * server: pass `{interval: <candidate>}` to
- * `POST /debug/timeseries-probe` and inspect `ok` / `errorNumber` /
- * `rawFault` in the response. The Tier-2 worker uses
- * `timeSeriesIntervalString()` to map the friendly token to the wire
- * string before this call.
+ * Caller body shape (POST /debug/timeseries-probe):
+ *   { code: "J203", exchange?: "JSE", interval?: "Daily", frequency?: 5 }
+ *
+ * Precedence: when both `interval` and `frequency` are supplied, the
+ * probe sends `Frequency` (the empirically-correct live shape). When
+ * neither is supplied we return 400.
  *
  * The endpoint requires `WORKER_HTTP_TOKEN` when set (same auth as the
  * rest of the worker HTTP surface). The response is intentionally
@@ -159,29 +164,34 @@ async function probeTimeSeriesInterval(
   deps: HttpApiDeps,
   code: string,
   exchange: string,
-  interval: string,
+  interval: string | null,
+  frequency: number | null,
 ): Promise<TimeSeriesProbeResult> {
   const started = Date.now();
+  const hasFrequency = typeof frequency === "number" && Number.isFinite(frequency);
+  const hasInterval = typeof interval === "string" && interval.trim() !== "";
   try {
     const session = await deps.sessions.getSession();
     const client = getIressClient("live");
     const res = await client.timeSeriesGet2({
       Header: {
         SessionKey: session.iressSessionKey,
-        RequestID: newRequestID(`probe-${interval}`),
+        RequestID: newRequestID(`probe-${hasFrequency ? `f${frequency}` : `i${interval}`}`),
         Timeout: 15,
       },
       Code: code,
       Exchange: exchange,
       From: new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10),
       To: new Date().toISOString().slice(0, 10),
-      Interval: interval,
+      ...(hasFrequency ? { Frequency: frequency } : {}),
+      ...(hasInterval ? { Interval: interval } : {}),
     });
     return {
       ok: res.Header.ErrorNumber === 0,
       code,
       exchange,
       interval,
+      frequency,
       errorNumber: res.Header.ErrorNumber ?? null,
       errorDescription: res.Header.ErrorDescription ?? null,
       rawFault: null,
@@ -199,6 +209,7 @@ async function probeTimeSeriesInterval(
       code,
       exchange,
       interval,
+      frequency,
       errorNumber: faultCode,
       errorDescription: null,
       rawFault: msg,
@@ -426,7 +437,7 @@ export async function handleRequest(
       return;
     }
     if (!body || typeof body !== "object") {
-      sendError(res, 400, "bad_request", "Body must be JSON with `code` and `interval`");
+      sendError(res, 400, "bad_request", "Body must be JSON with `code` and `interval`/`frequency`");
       return;
     }
     const b = body as Record<string, unknown>;
@@ -434,16 +445,29 @@ export async function handleRequest(
     const exchange = typeof b["exchange"] === "string" ? b["exchange"].trim().toUpperCase() : "JSE";
     const intervalRaw = b["interval"];
     const interval = typeof intervalRaw === "string" ? intervalRaw.trim() : "";
+    // Parse the Frequency Long candidate. Accepts a JSON number OR a
+    // numeric string (curl/script-friendliness). Negative / non-integer
+    // values are coerced to the closest integer.
+    const frequencyRaw = b["frequency"];
+    let frequency: number | null = null;
+    if (typeof frequencyRaw === "number" && Number.isFinite(frequencyRaw)) {
+      frequency = Math.trunc(frequencyRaw);
+    } else if (typeof frequencyRaw === "string" && frequencyRaw.trim() !== "") {
+      const n = Number(frequencyRaw.trim());
+      if (Number.isFinite(n)) frequency = Math.trunc(n);
+    }
     if (!code) {
       sendError(res, 400, "bad_request", "`code` is required (e.g. \"J203\")");
       return;
     }
-    if (!interval) {
+    // Precedence: `frequency` wins over `interval` when both are supplied.
+    // Either one is sufficient on its own (we don't need both).
+    if (frequency === null && !interval) {
       sendError(
         res,
         400,
         "bad_request",
-        "`interval` is required (V4 string enum, e.g. \"Daily\" | \"Weekly\" | \"Monthly\" | \"Quarterly\" | \"Yearly\" | \"IntraDay\")",
+        "Supply one of: `frequency` (Long, e.g. 5) or `interval` (V4 string, e.g. \"Daily\"). `frequency` wins if both are present.",
       );
       return;
     }
@@ -458,7 +482,13 @@ export async function handleRequest(
       );
       return;
     }
-    const result = await probeTimeSeriesInterval(deps, code, exchange, interval);
+    const result = await probeTimeSeriesInterval(
+      deps,
+      code,
+      exchange,
+      frequency !== null ? null : interval,
+      frequency,
+    );
     // Always 200 — the IRESS response (success or fault) IS the answer.
     // `ok` and `errorNumber` describe the result, not the HTTP envelope.
     send(res, 200, result);

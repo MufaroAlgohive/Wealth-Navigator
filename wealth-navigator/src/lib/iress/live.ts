@@ -851,24 +851,42 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
-      // V4 server requires the `Interval` STRING enum — NOT the
-      // `Frequency` (Long) field. The WSDL sample payload uses
-      // `<Interval>Daily</Interval>`. Sending `Frequency: 8` (Long) on
-      // the wire returns
-      //   `soap:Receiver — Invalid Parameter Value: 8 as Frequency`
-      // from the live CT server (the J203 / R2030 / R2035 / R2040 paths
-      // we exercise). An empty / missing value returns the same fault
-      // with `<empty>` as the value. The worker pre-converts
-      // friendly tokens ("1d" | "1h" | "5m" | "1m" | "tick" | "1w" |
-      // "1mo" | "1q" | "1y") to the wire enum via
-      // `timeSeriesIntervalString()`.
+      // Wire shape (empirical, June 2026): the live CT server honours
+      // `<Frequency>` (Long) on the wire — the V4 WSDL sample documents
+      // `<Interval>` (string) but the live build rejects every Long we
+      // tried *except* the daily-bucket value discovered by
+      // `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md`. The
+      // worker pre-converts friendly tokens ("1d" | "1h" | "5m" | "1m" |
+      // "tick" | "1w" | "1mo" | "1q" | "1y") to the wire Long via
+      // `timeSeriesFrequencyLong()`. `Interval` (string) is kept as a
+      // fallback for older IRESS server builds that still require it.
+      //
+      // Precedence: `Frequency` wins over `Interval` when both are set.
+      // If neither is set we throw 25018 — the server treats both as
+      // required and returns 25018 missing-required.
+      //
       // Spec: `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`.
-      if (typeof req.Interval !== "string" || req.Interval.trim() === "") {
+      const hasFrequency = typeof req.Frequency === "number" && Number.isFinite(req.Frequency);
+      const hasInterval = typeof req.Interval === "string" && req.Interval.trim() !== "";
+      if (!hasFrequency && !hasInterval) {
         throw new IressError(
           25018,
           "TimeSeriesGet2",
-          "TimeSeriesGet2: missing required field `Interval` (V4 string enum; e.g. 'Daily')",
+          "TimeSeriesGet2: missing required field — supply `Frequency` (Long, e.g. 5) or `Interval` (V4 string, e.g. 'Daily')",
         );
+      }
+      const parameters: Record<string, unknown> = {
+        Code: req.Code,
+        Exchange: req.Exchange,
+        From: req.From,
+        To: req.To,
+      };
+      if (hasFrequency) {
+        parameters["Frequency"] = req.Frequency;
+        // `Frequency` wins — explicitly drop `Interval` from the wire so a
+        // strict V4 WSDL-compliant server doesn't get confused by both.
+      } else if (hasInterval) {
+        parameters["Interval"] = req.Interval;
       }
       const result = await transport.call({
         method: "TimeSeriesGet2",
@@ -882,13 +900,7 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           pagingDirection: req.Header.PagingDirection,
           waitForResponse: req.Header.WaitForResponse ?? true,
         }),
-        parameters: {
-          Code: req.Code,
-          Exchange: req.Exchange,
-          From: req.From,
-          To: req.To,
-          Interval: req.Interval,
-        },
+        parameters,
       });
       return mapResponse<{ t: number; v: number }>({
         header: result.header,

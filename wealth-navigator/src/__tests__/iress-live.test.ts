@@ -221,13 +221,30 @@ describe("validation — every method throws IressError on bad input", () => {
     ).rejects.toBeInstanceOf(IressError);
   });
 
-  it("timeSeriesGet2 — missing Interval throws IressError 25018", async () => {
-    // Regression test for the V4 "Invalid Parameter Value: as Frequency" fault.
-    // The required `Interval` STRING field must be present in the request
-    // before we ever hit the wire; callers that omit it should see a clear
-    // local error. The earlier shape used `Frequency: 8` (Long), but the
-    // V4 WSDL sample payload uses the `<Interval>Daily</Interval>` string
-    // and the live CT server rejects the Long form.
+  it("timeSeriesGet2 — missing both Frequency and Interval throws IressError 25018", async () => {
+    // Regression test for the V4 missing-required fault. Either
+    // `Frequency` (Long) or `Interval` (string) must be present in the
+    // request before we ever hit the wire; callers that omit both
+    // should see a clear local 25018 error. The V4 WSDL sample uses
+    // `<Interval>Daily</Interval>`, and the live CT server honours the
+    // `Frequency` Long path — see `docs/TIMESERIES_PROBE_REPORT_FINAL.md`.
+    await expect(
+      fakeClient.timeSeriesGet2({
+        Header: { SessionKey: "k", RequestID: "r1" },
+        Code: "SOL",
+      }),
+    ).rejects.toMatchObject({
+      code: 25018,
+      method: "TimeSeriesGet2",
+    });
+  });
+
+  it("timeSeriesGet2 — empty-string Interval still throws 25018 (Interval must be non-empty when set)", async () => {
+    // Edge case: the caller set `Interval: ""` (deliberately empty) and
+    // didn't provide `Frequency`. The local validation treats an
+    // empty-string `Interval` as "missing" rather than letting the wire
+    // carry `<Interval></Interval>` (which the server would reject as
+    // missing-required).
     await expect(
       fakeClient.timeSeriesGet2({
         Header: { SessionKey: "k", RequestID: "r1" },
@@ -243,10 +260,11 @@ describe("validation — every method throws IressError on bad input", () => {
   it("timeSeriesGet2 — passes Interval through to the SOAP body", async () => {
     // Verifies that the required `Interval` parameter actually lands in
     // the outgoing XML envelope (not just in the TypeScript types). Uses
-    // the V4 `"Daily"` string — the value the worker actually sends for
-    // the 7-day rolling J203 / R2030 / R2035 / R2040 series. Earlier
-    // versions sent `Frequency: 8` (Long), which the live CT server
-    // rejects with `Invalid Parameter Value: 8 as Frequency`.
+    // the V4 `"Daily"` string — kept as a fallback for older server
+    // builds. The live CT server honours the `Frequency` (Long) form;
+    // see the dedicated test below. Earlier versions sent
+    // `Frequency: 8` (Long) as a guess; the brute-force probe pinned
+    // the daily-bucket value in `docs/TIMESERIES_PROBE_REPORT_FINAL.md`.
     const call = vi.fn().mockResolvedValueOnce({
       result: {},
       header: { ErrorNumber: 0 },
@@ -263,9 +281,60 @@ describe("validation — every method throws IressError on bad input", () => {
       .parameters;
     expect(params["Interval"]).toBe("Daily");
     expect(params["Code"]).toBe("SOL");
-    // The old `Frequency` Long must not appear on the wire any more —
-    // the live CT server rejects it.
+    // `Frequency` is not set on the wire when the caller sends
+    // `Interval` (the `Interval` (string) path is the legacy fallback).
     expect(params["Frequency"]).toBeUndefined();
+  });
+
+  it("timeSeriesGet2 — sends Frequency (Long) on the wire when set", async () => {
+    // The live CT server honours `<Frequency>` (Long), not the
+    // `<Interval>` string the V4 WSDL sample documents. The worker
+    // always sends `Frequency`; this pins the wire shape so a future
+    // regression that drops the Long lands in the test suite.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    await client.timeSeriesGet2({
+      Header: { SessionKey: "k", RequestID: "r1" },
+      Code: "SOL",
+      Frequency: 5,
+    });
+    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
+      .parameters;
+    expect(params["Frequency"]).toBe(5);
+    expect(params["Code"]).toBe("SOL");
+    // `Interval` is not sent on the Long path — keeping the wire shape
+    // clean for the live server.
+    expect(params["Interval"]).toBeUndefined();
+  });
+
+  it("timeSeriesGet2 — prefers Frequency over Interval when both are set", async () => {
+    // Both fields are present: `Frequency` wins (the live-shape path).
+    // The probe endpoint and the worker prefer `Frequency`; the
+    // `Interval` string is only a fallback. Sending both would
+    // confuse a strict V4 WSDL-compliant server, so we explicitly drop
+    // `Interval` from the wire when `Frequency` is present.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    await client.timeSeriesGet2({
+      Header: { SessionKey: "k", RequestID: "r1" },
+      Code: "SOL",
+      Frequency: 5,
+      Interval: "Daily",
+    });
+    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
+      .parameters;
+    expect(params["Frequency"]).toBe(5);
+    expect(params["Interval"]).toBeUndefined();
   });
 
   it("timeSeriesGet2Updates — missing RequestID", async () => {

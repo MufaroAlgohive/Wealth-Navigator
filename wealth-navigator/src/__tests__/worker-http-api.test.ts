@@ -344,13 +344,15 @@ describe("worker http-api 404", () => {
 
 /**
  * The `/debug/timeseries-probe` endpoint exists to verify a candidate
- * V4 `<Interval>` STRING against the live CT server (the wire shape is
- * a string, not a `Frequency` Long — the live server rejects `8 as
- * Frequency` with `soap:Receiver — Invalid Parameter Value`). Every
- * probed value goes through the same
+ * V4 period selector against the live CT server. The empirical truth
+ * (June 2026, see `docs/TIMESERIES_PROBE_REPORT_FINAL.md`) is that the
+ * live CT server honours `<Frequency>` (Long), NOT the V4-WSDL-sample
+ * `<Interval>` (string). The probe accepts either form so future
+ * debugging can run both shapes against the live server without
+ * redeploying the worker. Every probed value goes through the same
  * `getIressClient("live").timeSeriesGet2()` path the worker itself
  * uses; the endpoint surfaces the raw IRESS response so the operator
- * can spot the first non-fault string.
+ * can spot the first non-fault value.
  */
 describe("worker http-api /debug/timeseries-probe", () => {
   function readBody(req: IncomingMessage): Promise<string> {
@@ -442,7 +444,7 @@ describe("worker http-api /debug/timeseries-probe", () => {
     expect(body.error).toMatch(/code/);
   });
 
-  it("returns 400 when interval is missing", async () => {
+  it("returns 400 when both interval and frequency are missing", async () => {
     const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
     const req = postReq({ code: "J203" });
     const res = fakeRes();
@@ -454,7 +456,7 @@ describe("worker http-api /debug/timeseries-probe", () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.code).toBe("bad_request");
-    expect(body.error).toMatch(/interval/);
+    expect(body.error).toMatch(/frequency|interval/);
   });
 
   it("returns 503 when iressMode is mock (the probe needs a live session)", async () => {
@@ -500,6 +502,7 @@ describe("worker http-api /debug/timeseries-probe", () => {
     expect(body.errorNumber).toBe(0);
     expect(body.dataRowCount).toBe(2);
     expect(body.interval).toBe("Daily");
+    expect(body.frequency).toBeNull();
     expect(body.code).toBe("J203");
     expect(body.exchange).toBe("JSE"); // default
     expect(body.iressMode).toBe("live");
@@ -513,13 +516,120 @@ describe("worker http-api /debug/timeseries-probe", () => {
       Exchange: string;
       From: string;
       To: string;
-      Interval: string;
+      Interval?: string;
+      Frequency?: number;
     };
     expect(callArgs.Interval).toBe("Daily");
+    expect(callArgs.Frequency).toBeUndefined();
     expect(callArgs.Code).toBe("J203");
     expect(callArgs.Exchange).toBe("JSE");
     expect(callArgs.Header.SessionKey).toBe(session.iressSessionKey);
     expect(callArgs.Header.Timeout).toBe(15);
+  });
+
+  it("calls timeSeriesGet2 with the supplied frequency (Long) — the live CT server path", async () => {
+    // The live CT server honours `<Frequency>` (Long), not the
+    // V4-WSDL-sample `<Interval>` (string). The probe accepts the
+    // `frequency` field so future debugging can pin the correct Long
+    // without redeploying the worker.
+    const timeSeriesGet2 = vi.fn().mockResolvedValueOnce({
+      Header: { StatusCode: 2, ErrorNumber: 0, ErrorDescription: "" },
+      DataRows: [
+        { Date: "2026-06-12", Value: 78234.5 },
+        { Date: "2026-06-13", Value: 78400.0 },
+      ],
+    });
+    iressClientHolder.current = { timeSeriesGet2 };
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      peekSession: () => session,
+      invalidate: () => undefined,
+    } as never;
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "J203", frequency: 5 });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.ok).toBe(true);
+    expect(body.dataRowCount).toBe(2);
+    expect(body.frequency).toBe(5);
+    expect(body.interval).toBeNull();
+    const callArgs = timeSeriesGet2.mock.calls[0]![0] as {
+      Code: string;
+      Exchange: string;
+      Interval?: string;
+      Frequency?: number;
+    };
+    expect(callArgs.Frequency).toBe(5);
+    expect(callArgs.Interval).toBeUndefined();
+    expect(callArgs.Code).toBe("J203");
+    expect(callArgs.Exchange).toBe("JSE");
+  });
+
+  it("frequency wins over interval when both are supplied (precedence rule)", async () => {
+    // The body parser drops `interval` from the request when
+    // `frequency` is set, so the wire shape only carries the Long.
+    const timeSeriesGet2 = vi.fn().mockResolvedValueOnce({
+      Header: { StatusCode: 2, ErrorNumber: 0, ErrorDescription: "" },
+      DataRows: [{ Date: "2026-06-13", Value: 78400.0 }],
+    });
+    iressClientHolder.current = { timeSeriesGet2 };
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      peekSession: () => session,
+      invalidate: () => undefined,
+    } as never;
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "J203", frequency: 5, interval: "Daily" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const callArgs = timeSeriesGet2.mock.calls[0]![0] as {
+      Interval?: string;
+      Frequency?: number;
+    };
+    expect(callArgs.Frequency).toBe(5);
+    expect(callArgs.Interval).toBeUndefined();
+  });
+
+  it("accepts frequency supplied as a numeric string (curl-friendliness)", async () => {
+    // Some HTTP clients serialise JSON numbers as strings; the parser
+    // coerces a numeric string to a Long.
+    const timeSeriesGet2 = vi.fn().mockResolvedValueOnce({
+      Header: { StatusCode: 2, ErrorNumber: 0, ErrorDescription: "" },
+      DataRows: [{ Date: "2026-06-13", Value: 78400.0 }],
+    });
+    iressClientHolder.current = { timeSeriesGet2 };
+    const session = makeMockSession();
+    const sessions = {
+      getSession: async () => session,
+      peekSession: () => session,
+      invalidate: () => undefined,
+    } as never;
+    const { handleRequest } = await import("../../workers/iress-ingest/src/http-api");
+    const req = postReq({ code: "J203", frequency: "5" });
+    const res = fakeRes();
+    await handleRequest(req, res as unknown as ServerResponse<IncomingMessage>, {
+      env: buildEnv(),
+      sessions,
+      supabase: null,
+    }, () => undefined, undefined);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.frequency).toBe(5);
+    const callArgs = timeSeriesGet2.mock.calls[0]![0] as { Frequency?: number };
+    expect(callArgs.Frequency).toBe(5);
   });
 
   it("surfaces the soap:Receiver fault string verbatim when the live call throws IressError", async () => {
