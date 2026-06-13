@@ -40,6 +40,7 @@ import { WorkerSessionManager, type WorkerMintSession } from "./session";
 import { getIressClient } from "../../../src/lib/iress/index";
 import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import type { Order, IressService } from "../../../src/types/iress";
+import { fetchLiveQuote } from "./quotes";
 
 /** Services whose service-session state `/debug/ips-session` surfaces. */
 const KNOWN_SERVICE_SESSIONS: ReadonlyArray<IressService> = ["IOSPlus", "IPS", "FIXPlus"];
@@ -233,6 +234,117 @@ async function probeTimeSeriesInterval(
       probedAt: new Date().toISOString(),
     };
   }
+}
+
+interface CoverageRow {
+  /** Symbol exactly as supplied by the caller (e.g. "MTN.JO"). */
+  symbol: string;
+  /** Bare IRESS code actually queried (".JO"/".JSE" stripped). */
+  iressCode: string;
+  /** True when IRESS returned a usable price (outcome ok or closed-with-data). */
+  ok: boolean;
+  outcome: string;
+  last: number | null;
+  marketState: string | null;
+  currency: string | null;
+  error: string | null;
+}
+
+interface CoverageResult {
+  ok: boolean;
+  exchange: string;
+  requested: number;
+  covered: number;
+  rows: CoverageRow[];
+  iressMode: string;
+  elapsedMs: number;
+  probedAt: string;
+}
+
+/**
+ * Dry-run coverage probe: ask IRESS `PricingQuoteGet` for each supplied
+ * symbol and report which ones it can actually price. Used to decide how
+ * much of the existing (Yahoo-sourced) retail universe IRESS can replace
+ * before any cutover. Strips a trailing `.JO` / `.JSE` to get the bare
+ * IRESS code. Reuses the worker's own `fetchLiveQuote` classification so
+ * the report matches what the ingest loop would capture. Writes nothing.
+ */
+async function probeCoverage(
+  deps: HttpApiDeps,
+  symbols: string[],
+  exchange: string,
+): Promise<CoverageResult> {
+  const started = Date.now();
+  const rows: CoverageRow[] = [];
+  let session: WorkerMintSession;
+  try {
+    session = await deps.sessions.getSession();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = err instanceof IressError ? err.code : null;
+    return {
+      ok: false,
+      exchange,
+      requested: symbols.length,
+      covered: 0,
+      rows: symbols.map((s) => ({
+        symbol: s,
+        iressCode: s.replace(/\.(JO|JSE)$/i, ""),
+        ok: false,
+        outcome: "session_error",
+        last: null,
+        marketState: null,
+        currency: null,
+        error: code ? `${code}: ${msg}` : msg,
+      })),
+      iressMode: deps.env.iressMode,
+      elapsedMs: Date.now() - started,
+      probedAt: new Date().toISOString(),
+    };
+  }
+
+  for (const sym of symbols) {
+    const iressCode = sym.replace(/\.(JO|JSE)$/i, "");
+    try {
+      const { row, outcome } = await fetchLiveQuote(session, iressCode, exchange);
+      const covered = outcome === "ok" || outcome === "closed-with-data";
+      rows.push({
+        symbol: sym,
+        iressCode,
+        ok: covered,
+        outcome,
+        last: row?.last ?? null,
+        marketState: row?.marketState ?? null,
+        currency: row?.currency ?? null,
+        error: null,
+      });
+    } catch (err) {
+      if (isIressSessionDeadError(err)) deps.sessions.invalidate();
+      const msg = err instanceof Error ? err.message : String(err);
+      const code = err instanceof IressError ? err.code : null;
+      rows.push({
+        symbol: sym,
+        iressCode,
+        ok: false,
+        outcome: "error",
+        last: null,
+        marketState: null,
+        currency: null,
+        error: code ? `${code}: ${msg}` : msg,
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    exchange,
+    requested: symbols.length,
+    covered: rows.filter((r) => r.ok).length,
+    rows,
+    iressMode: deps.env.iressMode,
+    elapsedMs: Date.now() - started,
+    probedAt: new Date().toISOString(),
+  };
 }
 
 async function fetchLiveOrders(
@@ -652,6 +764,45 @@ export async function handleRequest(
     );
     // Always 200 — the IRESS response (success or fault) IS the answer.
     // `ok` and `errorNumber` describe the result, not the HTTP envelope.
+    send(res, 200, result);
+    return;
+  }
+
+  if (req.method === "POST" && path === "/debug/coverage") {
+    let body: unknown;
+    try {
+      body = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    if (!body || typeof body !== "object") {
+      sendError(res, 400, "bad_request", "Body must be JSON with `symbols` (string[]) and optional `exchange`");
+      return;
+    }
+    const b = body as Record<string, unknown>;
+    const rawSymbols = b["symbols"];
+    if (!Array.isArray(rawSymbols) || rawSymbols.length === 0) {
+      sendError(res, 400, "bad_request", "`symbols` must be a non-empty array of strings");
+      return;
+    }
+    const symbols = rawSymbols.map((s) => String(s).trim()).filter(Boolean);
+    if (symbols.length > 80) {
+      sendError(res, 400, "too_many", "Send at most 80 symbols per request (batch the rest) to avoid SOAP timeout", {
+        max: 80,
+        got: symbols.length,
+      });
+      return;
+    }
+    const exchange = typeof b["exchange"] === "string" ? b["exchange"].trim().toUpperCase() : "JSE";
+    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+    if (!isLive) {
+      sendError(res, 503, "iress_mode_not_live", `Cannot probe coverage in iressMode=${deps.env.iressMode}; switch the worker to live`, {
+        iressMode: deps.env.iressMode,
+      });
+      return;
+    }
+    const result = await probeCoverage(deps, symbols, exchange);
     send(res, 200, result);
     return;
   }

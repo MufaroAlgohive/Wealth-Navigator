@@ -35,7 +35,7 @@ interface FetchLiveResult {
   rawRow: Record<string, unknown> | null;
 }
 
-async function fetchLiveQuote(
+export async function fetchLiveQuote(
   session: WorkerMintSession,
   symbol: string,
   exchange: string,
