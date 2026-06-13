@@ -45,6 +45,14 @@ export interface IressResponse<T> {
   };
   HeaderRow?: Record<string, unknown>;
   DataRows: T[];
+  /**
+   * Raw, untyped rows as parsed from the SOAP body, parallel to `DataRows`.
+   * Populated by the live adapter for `PricingQuoteGet` so the worker can
+   * inspect the raw `LastPrice` / `PreviousClosePrice` fields when
+   * deciding whether to write through a closed-market row whose mapped
+   * `last` collapsed to 0.
+   */
+  RawDataRows?: Array<Record<string, unknown>>;
 }
 
 // ─── Session ─────────────────────────────────────────────────────────────
@@ -96,7 +104,24 @@ export interface TimeSeriesGet2Request {
   Exchange?: string;
   From?: string; // ISO date
   To?: string;
-  Interval?: "tick" | "1m" | "5m" | "1h" | "1d";
+  /**
+   * V4 server requires this field — the worker logs return
+   * `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`
+   * when it's missing. Mapped to the IRESS constant table:
+   *   0 = Daily   1 = Weekly   2 = Monthly
+   *   3 = Quarterly   4 = Yearly   5 = Intra-Day
+   * Worker-friendly values ("1d" | "1h" | "5m" | "1m" | "tick") are
+   * converted to the Long code by the worker before sending.
+   */
+  Frequency?: number;
+  /**
+   * Worker-friendly interval token. The live client maps it to the V4
+   * `Frequency` Long code via `timeSeriesFrequencyLong()` before sending.
+   * Kept as a free-form string (rather than the original narrow union)
+   * so the worker can pass weekly / monthly / quarterly / yearly tokens
+   * without an extra cast.
+   */
+  Interval?: string;
 }
 
 // ─── Trading (IOS+) ─────────────────────────────────────────────────────
@@ -155,6 +180,58 @@ export interface IPSTransactionGetByAccount5Request {
   AccountCode: string;
   DateFrom: string;
   DateTo: string;
+}
+
+/**
+ * Legacy IPS methods (`IPSAccountGetAll1`, `IPSPositionGetAll1`) expose their
+ * paging cursor inside the `<Parameters>` block (`PreviousAccountCode` /
+ * `PreviousSecurityCode`) rather than the standard V4 header. See
+ * `Documentation & Vision/iress-v4-docs/03-paging-and-updates/04-paging-in-ips.md`.
+ * The live SOAP client handles the cursor dance in a `pagedFetch` wrapper —
+ * callers just see a flat `DataRows` array.
+ */
+export interface IPSAccountGetAll1Request {
+  ServiceSessionKey: string;
+  /** Max rows per page. CT accepts up to 500. */
+  PageSize?: number;
+  /** Cursor from the previous page's last `AccountCode`. Empty / "?" starts. */
+  PreviousAccountCode?: string;
+}
+
+export interface IPSAccountRow {
+  AccountCode: string;
+  AccountName?: string;
+  AccountType?: string;
+  Currency?: string;
+  BaseCurrency?: string;
+  Beneficiary?: string;
+  /** Free-form V4 row payload — kept so the worker can persist the full IRESS response. */
+  [k: string]: unknown;
+}
+
+export interface IPSPositionGetAll1Request {
+  ServiceSessionKey: string;
+  /** Max rows per page. CT accepts up to 500. */
+  PageSize?: number;
+  /** Cursor from the previous page's last `SecurityCode`. Empty / "?" starts. */
+  PreviousSecurityCode?: string;
+  /** Optional AccountCode filter — when set, only positions for that account are returned. */
+  AccountCode?: string;
+}
+
+export interface IPSPositionRow {
+  AccountCode: string;
+  SecurityCode: string;
+  Exchange?: string;
+  Quantity?: number;
+  /** Average open cost (currency-native, not cents). */
+  OpenAveragePrice?: number;
+  /** Mark-to-market value, currency-native. */
+  MarketValue?: number;
+  Currency?: string;
+  /** Trade date of the opening lot, ISO. */
+  OpenDate?: string;
+  [k: string]: unknown;
 }
 
 export interface IressClient {
@@ -222,6 +299,27 @@ export interface IressClient {
     Amount: number;
     Currency: string;
   }>>;
+
+  /**
+   * Returns every IPS account the user is entitled to see. Legacy paging —
+   * the live SOAP client transparently loops using the last `AccountCode` as
+   * the `PreviousAccountCode` cursor; callers receive a single flat
+   * response whose `DataRows` is the full account set.
+   *
+   * Entitlement: the user's IRESS profile must include `IPSAccountGetAll1`
+   * (Charles has to enable). 25014 → `IressError(25014, …)` bubbles up.
+   */
+  ipsAccountGetAll1(req: IPSAccountGetAll1Request): Promise<IressResponse<IPSAccountRow>>;
+
+  /**
+   * Returns every open position across the user's IPS accounts, or — when
+   * `AccountCode` is set — only that account's positions. Legacy paging —
+   * the live client loops using the last `SecurityCode` as the
+   * `PreviousSecurityCode` cursor; callers see a single flat response.
+   *
+   * Entitlement: `IPSPositionGetAll1`. 25014 → `IressError(25014, …)`.
+   */
+  ipsPositionGetAll1(req: IPSPositionGetAll1Request): Promise<IressResponse<IPSPositionRow>>;
 
   // ── FIX+ ────────────────────────────────────────────────────────
   targetIdGet(req: { ServiceSessionKey: string }): Promise<{ TargetID: string }[]>;

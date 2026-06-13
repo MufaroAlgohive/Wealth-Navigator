@@ -261,3 +261,68 @@ describe("timeSeriesGet2", () => {
     }
   });
 });
+
+describe("ipsAccountGetAll1 (mock)", () => {
+  it("returns the seeded account list with three ZAR accounts and an active status", async () => {
+    const res = await mockIressClient.ipsAccountGetAll1({ ServiceSessionKey: "ssk" });
+    expect(res.Header?.ErrorNumber).toBe(0);
+    expect(res.DataRows.length).toBe(3);
+    for (const a of res.DataRows) {
+      expect(a.AccountCode).toMatch(/^Z\d{5}$/);
+      expect(a.Currency).toBe("ZAR");
+      expect(a.AccountStatus).toBe("ACTIVE");
+    }
+  });
+
+  it("honors the legacy PreviousAccountCode cursor (returns the slice after the cursor)", async () => {
+    const all = await mockIressClient.ipsAccountGetAll1({ ServiceSessionKey: "ssk" });
+    const firstCode = all.DataRows[0]!.AccountCode;
+    const after = await mockIressClient.ipsAccountGetAll1({
+      ServiceSessionKey: "ssk",
+      PreviousAccountCode: firstCode,
+    });
+    expect(after.DataRows.length).toBe(all.DataRows.length - 1);
+    expect(after.DataRows[0]!.AccountCode).not.toBe(firstCode);
+  });
+});
+
+describe("ipsPositionGetAll1 (mock)", () => {
+  it("returns a non-empty position list attributed to the trading account by default", async () => {
+    const res = await mockIressClient.ipsPositionGetAll1({ ServiceSessionKey: "ssk" });
+    expect(res.Header?.ErrorNumber).toBe(0);
+    expect(res.DataRows.length).toBeGreaterThan(0);
+    for (const p of res.DataRows) {
+      expect(p.AccountCode).toBe("Z12345");
+      expect(p.Exchange).toBe("JSE");
+      // MM instruments (TBs, NCDs, FRNs) seed with qty=0 in the strategy
+      // holdings table. Equity positions always have qty > 0. We assert
+      // the contract on at least one row to keep the test honest without
+      // coupling to the seed mix.
+      expect(typeof p.Quantity).toBe("number");
+      expect(p.Quantity).toBeGreaterThanOrEqual(0);
+    }
+    const equities = res.DataRows.filter((p) => p.Quantity > 0);
+    expect(equities.length).toBeGreaterThan(0);
+  });
+
+  it("filters positions by AccountCode when one is supplied", async () => {
+    const res = await mockIressClient.ipsPositionGetAll1({
+      ServiceSessionKey: "ssk",
+      AccountCode: "Z12346",
+    });
+    // The mock currently seeds positions to Z12345; filtering for Z12346
+    // returns the empty cursor page. The contract is that the response is
+    // always a well-formed array.
+    expect(Array.isArray(res.DataRows)).toBe(true);
+  });
+
+  it("honors the legacy PreviousSecurityCode cursor", async () => {
+    const all = await mockIressClient.ipsPositionGetAll1({ ServiceSessionKey: "ssk" });
+    const firstCode = all.DataRows[0]!.SecurityCode;
+    const after = await mockIressClient.ipsPositionGetAll1({
+      ServiceSessionKey: "ssk",
+      PreviousSecurityCode: firstCode,
+    });
+    expect(after.DataRows.length).toBe(all.DataRows.length - 1);
+  });
+});

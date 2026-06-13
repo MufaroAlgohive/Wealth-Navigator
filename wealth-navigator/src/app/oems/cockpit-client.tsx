@@ -30,6 +30,7 @@ import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
 import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
+import { usePortfolio } from "@/lib/hooks/use-portfolio";
 import { isRealDataOnlyClient, FEED_NOT_CONFIGURED } from "@/lib/data-policy";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 
@@ -92,6 +93,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const seedOrdersQ = useQuery({ queryKey: ["orders"], queryFn: () => data.orders(), enabled: !realDataOnly, ...queryOpts("live") });
   const auditOrdersQ = useAuditOrders("ALL", realDataOnly);
   const workerQ = useWorkerHealth(realDataOnly);
+  const portfolioQ = usePortfolio(realDataOnly);
   const primaryWorker = workerQ.data?.workers[0];
   const moversQ = useQuery({ queryKey: ["movers"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
   const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), enabled: !realDataOnly, ...queryOpts("reference") });
@@ -199,9 +201,52 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`cockpit-kpi-${n}`} />)
         ) : realDataOnly ? (
           <>
-            <KpiTile icon={<Layers className="h-3.5 w-3.5" />} label="Platform AUM" value="—" sub={FEED_NOT_CONFIGURED} />
-            <KpiTile icon={<Activity className="h-3.5 w-3.5" />} label="Day P&L" value="—" sub={FEED_NOT_CONFIGURED} />
-            <KpiTile icon={<Lock className="h-3.5 w-3.5" />} label="Rebalance Locked" value="—" sub={FEED_NOT_CONFIGURED} />
+            <KpiTile
+              icon={<Layers className="h-3.5 w-3.5" />}
+              label="Platform AUM"
+              value={portfolioQ.data?.source === "supabase" ? formatZAR(portfolioQ.data.aum) : "—"}
+              sub={
+                portfolioQ.data?.source === "supabase"
+                  ? `${portfolioQ.data.accounts.length} accounts · IPS`
+                  : FEED_NOT_CONFIGURED
+              }
+            />
+            <KpiTile
+              icon={<Activity className="h-3.5 w-3.5" />}
+              label="Day P&L"
+              value={portfolioQ.data?.source === "supabase" ? formatZAR(portfolioQ.data.dayPnl) : "—"}
+              sub={
+                portfolioQ.data?.source === "supabase"
+                  ? portfolioQ.data.positions.length > 0
+                    ? `MTM on ${portfolioQ.data.positions.length} positions`
+                    : `MTM via IPS`
+                  : FEED_NOT_CONFIGURED
+              }
+              tone={
+                portfolioQ.data?.source === "supabase"
+                  ? portfolioQ.data.dayPnl >= 0
+                    ? "positive"
+                    : "negative"
+                  : "default"
+              }
+            />
+            <KpiTile
+              icon={<Lock className="h-3.5 w-3.5" />}
+              label="Rebalance Locked"
+              value={portfolioQ.data?.source === "supabase" ? (portfolioQ.data.rebalanceLocked ? "Yes" : "No") : "—"}
+              sub={
+                portfolioQ.data?.source === "supabase"
+                  ? `max drift ${portfolioQ.data.rebalanceDrift.toFixed(2)}%`
+                  : FEED_NOT_CONFIGURED
+              }
+              tone={
+                portfolioQ.data?.source === "supabase"
+                  ? portfolioQ.data.rebalanceLocked
+                    ? "warning"
+                    : "positive"
+                  : "default"
+              }
+            />
             <KpiTile
               icon={<AlertTriangle className="h-3.5 w-3.5" />}
               label="Open Orders"
@@ -797,6 +842,112 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           )}
         </Panel>
       </div>
+
+      {/* Row 4: Portfolio (IPS) — accounts + positions, only on real-data */}
+      {realDataOnly && (
+        <div className="grid grid-cols-12 gap-2.5">
+          {portfolioQ.isLoading ? (
+            <PanelSkeleton rows={5} height="h-[340px]" className="col-span-12 lg:col-span-4" />
+          ) : (
+            <Panel
+              title="Portfolio · Accounts"
+              endpoint="GET /api/portfolio"
+              dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+              className="col-span-12 lg:col-span-4 h-[340px]"
+              right={
+                portfolioQ.data?.source === "supabase" ? (
+                  <span className="font-mono text-[10px]">{portfolioQ.data.accounts.length} accts</span>
+                ) : undefined
+              }
+            >
+              {portfolioQ.data?.source === "supabase" ? (
+                <ul className="divide-y divide-border/70">
+                  {portfolioQ.data.accounts.map((a) => (
+                    <li key={a.account_code} className="px-3.5 py-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-xs font-medium">{a.account_name ?? a.account_code}</p>
+                        <Pill tone="neutral" size="xs">{a.account_type ?? "—"}</Pill>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-muted-foreground">
+                        <span>{a.account_code}</span>
+                        <span>{a.currency ?? "ZAR"}</span>
+                      </div>
+                      <div className="mt-1.5 flex items-center justify-between">
+                        <span className="font-mono text-[11px]">NAV {formatZAR(Number(a.nav_value ?? 0))}</span>
+                        <span className="font-mono text-[10px] text-muted-foreground">cash {formatZAR(Number(a.cash_balance ?? 0))}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <EmptyDataState
+                  title="IPS portfolio not yet populated"
+                  message="Ask Charles to enable IPSAccountGetAll1 + IPSPositionGetAll1 + IPSTransactionGetByAccount5 on the production IRESS profile, then run `bun run worker`."
+                />
+              )}
+            </Panel>
+          )}
+
+          {portfolioQ.isLoading ? (
+            <PanelSkeleton rows={6} height="h-[340px]" className="col-span-12 lg:col-span-8" />
+          ) : (
+            <Panel
+              title="Portfolio · Positions"
+              endpoint="GET /api/portfolio"
+              dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+              className="col-span-12 lg:col-span-8 h-[340px]"
+              right={
+                portfolioQ.data?.source === "supabase" ? (
+                  <span className="font-mono text-[10px]">{portfolioQ.data.positions.length} positions · MV {formatZAR(portfolioQ.data.positions.reduce((acc, p) => acc + Number(p.market_value ?? 0), 0))}</span>
+                ) : undefined
+              }
+            >
+              {portfolioQ.data?.source === "supabase" && portfolioQ.data.positions.length > 0 ? (
+                <div className="h-full overflow-auto">
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 bg-card/90 backdrop-blur-sm">
+                      <tr className="text-left text-[9.5px] uppercase tracking-wider text-muted-foreground">
+                        <th className="px-3.5 py-1.5 font-medium">Symbol</th>
+                        <th className="px-3 py-1.5 font-medium">Account</th>
+                        <th className="px-3 py-1.5 text-right font-medium">Qty</th>
+                        <th className="px-3 py-1.5 text-right font-medium">Avg Cost</th>
+                        <th className="px-3 py-1.5 text-right font-medium">MV</th>
+                        <th className="px-3 py-1.5 text-right font-medium">P&amp;L</th>
+                      </tr>
+                    </thead>
+                    <tbody className="font-mono">
+                      {portfolioQ.data.positions.map((p) => {
+                        const pl = Number(p.open_pl ?? 0);
+                        return (
+                          <tr key={p.id} className="border-t border-border/60">
+                            <td className="px-3.5 py-1.5 font-medium text-foreground">{p.security_code}</td>
+                            <td className="px-3 py-1.5 text-muted-foreground">{p.account_code}</td>
+                            <td className="px-3 py-1.5 text-right">{p.quantity.toLocaleString("en-ZA")}</td>
+                            <td className="px-3 py-1.5 text-right">{p.open_average_price != null ? p.open_average_price.toFixed(2) : "—"}</td>
+                            <td className="px-3 py-1.5 text-right">{p.market_value != null ? formatZAR(Number(p.market_value)) : "—"}</td>
+                            <td className={cn("px-3 py-1.5 text-right", pl >= 0 ? "text-success" : "text-destructive")}>
+                              {pl >= 0 ? "+" : ""}{formatZAR(pl)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <EmptyDataState
+                  title="IPS positions not yet populated"
+                  message={
+                    portfolioQ.data?.source === "supabase"
+                      ? "Worker has synced 0 positions. Either the IPS entitlement is off or the account has no holdings yet."
+                      : "Ask Charles to enable IPSPositionGetAll1 on the production IRESS profile, then run `bun run worker`."
+                  }
+                />
+              )}
+            </Panel>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IressClient } from "@/lib/iress/client";
 import { IressError } from "@/lib/iress/errors";
-import { createLiveIressClient, liveIressClient, describeQuoteRowKeys, describeQuoteRowNumericFields, iressQuotePriceScale, resolveQuoteLast } from "@/lib/iress/live";
+import { createLiveIressClient, liveIressClient, describeQuoteRowKeys, describeQuoteRowNumericFields, iressQuotePriceScale, quoteRawRowHasPriceData, quoteRawRowLast, resolveQuoteLast } from "@/lib/iress/live";
 import { IRESS_NS, type SoapTransport, buildSoapEnvelope } from "@/lib/iress/transport";
 
 // ─── 1. Env-var detection in `index.ts` ─────────────────────────────────
@@ -24,6 +24,8 @@ const METHOD_NAMES: Array<keyof IressClient> = [
   "orderPadGetByAccountUpdates",
   "bookingGetByOrganisation2",
   "ipsTransactionGetByAccount5",
+  "ipsAccountGetAll1",
+  "ipsPositionGetAll1",
   "targetIdGet",
   "targetIdStatusGet",
 ];
@@ -209,6 +211,42 @@ describe("validation — every method throws IressError on bad input", () => {
     await expect(
       fakeClient.timeSeriesGet2({ Header: { SessionKey: "k", RequestID: "r1" }, Code: "" }),
     ).rejects.toBeInstanceOf(IressError);
+  });
+
+  it("timeSeriesGet2 — missing Frequency throws IressError 25018", async () => {
+    // Regression test for the V4 "Invalid Parameter Value: as Frequency" fault.
+    // The required Frequency (Long) field must be present in the request before
+    // we ever hit the wire; callers that omit it should see a clear local error.
+    await expect(
+      fakeClient.timeSeriesGet2({
+        Header: { SessionKey: "k", RequestID: "r1" },
+        Code: "SOL",
+      }),
+    ).rejects.toMatchObject({
+      code: 25018,
+      method: "TimeSeriesGet2",
+    });
+  });
+
+  it("timeSeriesGet2 — passes Frequency through to the SOAP body", async () => {
+    // Verifies that the new required `Frequency` parameter actually lands in
+    // the outgoing XML envelope (not just in the TypeScript types).
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    await client.timeSeriesGet2({
+      Header: { SessionKey: "k", RequestID: "r1" },
+      Code: "SOL",
+      Frequency: 5, // Intra-Day
+    });
+    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
+      .parameters;
+    expect(params["Frequency"]).toBe(5);
+    expect(params["Code"]).toBe("SOL");
   });
 
   it("timeSeriesGet2Updates — missing RequestID", async () => {
@@ -1299,16 +1337,21 @@ describe("resolveQuoteLast", () => {
     ).toBe(552);
   });
 
-  it("AGL: skips write when bogus Last=120003 and no OHLC anchor", () => {
+  it("AGL: write-through when bogus Last=120003 and no OHLC anchor (market closed)", () => {
+    // Pre-June-2026 this returned 0 because `noAnchorSuspicious` rejected
+    // anything > 4500 with no anchor. The fix relaxes that guard for
+    // `marketState=CLOSED` rows so the weekend / holiday UI surfaces the
+    // raw value the IRESS V4 server returned rather than going blank.
+    // The worker is the right place to apply any scale-validity check.
     expect(
       rowNums({ Last: 120003, QuoteState: "CLOSED" }),
-    ).toBe(0);
+    ).toBe(120003);
   });
 
-  it("FSR: skips write when bogus Last=4986 and no anchor", () => {
+  it("FSR: write-through when bogus Last=4986 and no anchor (market closed)", () => {
     expect(
       rowNums({ Last: 4986, QuoteState: "CLOSED" }),
-    ).toBe(0);
+    ).toBe(4986);
   });
 
   it("BHG: prefers Open anchor when Last=2445 is bogus vs Open=528", () => {
@@ -1357,7 +1400,14 @@ describe("resolveQuoteLast", () => {
     expect(resolveQuoteLast(num, str)).toBeCloseTo(528.5, 0);
   });
 
-  it("BHG CT stale row: skips write when only LastPrice/PreviousClosePrice with zero session", async () => {
+  it("BHG CT stale row: returns the raw price when PreviousClosePrice is present (write-through)", async () => {
+    // Real BHG CT pattern: the row carries a previous-close anchor (e.g.
+    // 2445 ZAR) alongside a bogus LastPrice. After the June 2026 fix the
+    // mapper no longer treats a "PreviousClosePrice + LastPrice only" row
+    // as stale-by-default — the worker is responsible for the
+    // write/no-write decision and may still skip when the value is
+    // obviously out-of-scale, but the mapper returns the raw value so the
+    // worker has something to log.
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
         new Response(
@@ -1401,7 +1451,13 @@ describe("resolveQuoteLast", () => {
       SecurityCode: "BHG",
       Exchange: "JSE",
     });
-    expect(res.DataRows[0]?.last).toBe(0);
+    // PreviousClosePrice is the canonical closed-market anchor and the
+    // mapper now returns it as `last` so the worker has a non-zero value
+    // to write through (the worker's own scale-validity check decides
+    // whether to drop the row).
+    expect(res.DataRows[0]?.last).toBe(2445);
+    expect(res.DataRows[0]?.prevClose).toBe(2445);
+    expect(res.DataRows[0]?.marketState).toBe("CLOSED");
   });
 
   it("uses SettlementPrice when Close is absent", () => {
@@ -1431,5 +1487,272 @@ describe("describeQuoteRowKeys diagnostic helper", () => {
   });
   it("returns <missing row> when the row is undefined", () => {
     expect(describeQuoteRowKeys(undefined)).toBe("<missing row>");
+  });
+});
+
+/**
+ * The legacy IPS methods (`IPSAccountGetAll1`, `IPSPositionGetAll1`) expose
+ * their cursor inside the `<Parameters>` block instead of the V4 header.
+ * The live client transparently loops the cursor across pages and returns
+ * a single flat response. These tests pin the contract:
+ *
+ *   1. validation runs before any transport call (rejects empty key)
+ *   2. the response is the concatenated DataRows from every page
+ *   3. the cursor advances via `PreviousAccountCode` / `PreviousSecurityCode`
+ *   4. entitlement 25014 surfaces as a single response with the
+ *      "entitlement not enabled" header
+ *   5. StatusCode 2 does NOT stop paging (it's the V4 "still rows left"
+ *      signal, not the legacy cursor's stop condition)
+ */
+describe("ipsAccountGetAll1 (live, legacy paging)", () => {
+  it("rejects an empty ServiceSessionKey before any transport call", async () => {
+    const transport: SoapTransport = { call: vi.fn() } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    await expect(
+      client.ipsAccountGetAll1({ ServiceSessionKey: "" }),
+    ).rejects.toBeInstanceOf(IressError);
+  });
+
+  it("concatenates rows across multiple pages using PreviousAccountCode as the cursor", async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: {},
+        header: { ErrorNumber: 0 },
+        dataRows: [
+          { AccountCode: "A", AccountName: "Account A" },
+          { AccountCode: "B", AccountName: "Account B" },
+        ],
+      })
+      .mockResolvedValueOnce({
+        result: {},
+        header: { ErrorNumber: 0 },
+        dataRows: [
+          { AccountCode: "Z1A", AccountName: "Account Z1A" },
+          { AccountCode: "Z1B", AccountName: "Account Z1B" },
+        ],
+      })
+      .mockResolvedValueOnce({ result: {}, header: { ErrorNumber: 0 }, dataRows: [] });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    const res = await client.ipsAccountGetAll1({ ServiceSessionKey: "ssk", PageSize: 2 });
+    expect(res.Header?.ErrorNumber).toBe(0);
+    // Page 1: 2 rows; Page 2: 2 rows; Page 3: empty
+    expect(res.DataRows.length).toBe(4);
+    expect(res.DataRows.map((r) => r.AccountCode)).toEqual(["A", "B", "Z1A", "Z1B"]);
+    // The first call must have used the empty cursor; the second call
+    // must have used `B` (the last row's AccountCode) as the cursor.
+    const params1 = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> }).parameters;
+    const params2 = (call.mock.calls[1]![0] as { parameters: Record<string, unknown> }).parameters;
+    expect(params1["PreviousAccountCode"]).toBe("");
+    expect(params2["PreviousAccountCode"]).toBe("B");
+  });
+});
+
+describe("ipsPositionGetAll1 (live, legacy paging)", () => {
+  it("rejects an empty ServiceSessionKey before any transport call", async () => {
+    const transport: SoapTransport = { call: vi.fn() } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    await expect(
+      client.ipsPositionGetAll1({ ServiceSessionKey: "" }),
+    ).rejects.toBeInstanceOf(IressError);
+  });
+
+  it("returns a 25014 entitlement-required envelope when the live call is unauthorized", async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: {},
+        header: { ErrorNumber: 25014, ErrorDescription: "Not entitled" },
+        dataRows: [],
+      });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    const res = await client.ipsPositionGetAll1({ ServiceSessionKey: "ssk" });
+    expect(res.Header?.ErrorNumber).toBe(25014);
+    expect(res.DataRows).toEqual([]);
+  });
+
+  it("honors the AccountCode filter and uses PreviousSecurityCode as the cursor", async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({
+        result: {},
+        header: { ErrorNumber: 0 },
+        dataRows: [
+          { SecurityCode: "NPN", AccountCode: "Z12345", Quantity: 100 },
+          { SecurityCode: "PRX", AccountCode: "Z12345", Quantity: 200 },
+        ],
+      })
+      .mockResolvedValueOnce({ result: {}, header: { ErrorNumber: 0 }, dataRows: [] });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    const res = await client.ipsPositionGetAll1({
+      ServiceSessionKey: "ssk",
+      AccountCode: "Z12345",
+      PageSize: 2,
+    });
+    expect(res.DataRows.length).toBe(2);
+    // The first call must have used the empty cursor; the second call
+    // must have used `PRX` (the last row's SecurityCode) as the
+    // PreviousSecurityCode cursor.
+    const params1 = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> }).parameters;
+    const params2 = (call.mock.calls[1]![0] as { parameters: Record<string, unknown> }).parameters;
+    expect(params1["PreviousSecurityCode"]).toBe("");
+    expect(params1["AccountCode"]).toBe("Z12345");
+    expect(params2["PreviousSecurityCode"]).toBe("PRX");
+  });
+});
+
+// ─── 9. Raw-row price-data helpers (closed-market write-through) ───────
+
+describe("pricingQuoteGet surfaces RawDataRows for the worker write-through path", () => {
+  it("populates RawDataRows with the original unmapped row even when the mapped Quote collapses to last=0", async () => {
+    // Verifies the contract the worker depends on: a closed-market row whose
+    // mapped `last` is 0 still carries the original LastPrice / PreviousClose
+    // fields in RawDataRows so the worker can decide to write through.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [
+        {
+          SecurityCode: "SOL",
+          Exchange: "JSE",
+          MarketState: "C",
+          Last: 0,
+          LastPrice: 1_582_300, // cents
+          PreviousClosePrice: 1_580_000,
+        },
+      ],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    const res = await client.pricingQuoteGet({
+      Header: { SessionKey: "k", RequestID: "r1" },
+      SecurityCode: "SOL",
+      Exchange: "JSE",
+    });
+    expect(res.DataRows).toHaveLength(1);
+    expect(res.RawDataRows).toBeDefined();
+    expect(res.RawDataRows?.[0]?.["LastPrice"]).toBe(1_582_300);
+    expect(res.RawDataRows?.[0]?.["PreviousClosePrice"]).toBe(1_580_000);
+    expect(res.RawDataRows?.[0]?.["MarketState"]).toBe("C");
+  });
+});
+
+describe("quoteRawRowHasPriceData", () => {
+  it("returns false for null / non-object rows", () => {
+    expect(quoteRawRowHasPriceData(null)).toBe(false);
+    expect(quoteRawRowHasPriceData(undefined)).toBe(false);
+    expect(quoteRawRowHasPriceData("SOL")).toBe(false);
+    expect(quoteRawRowHasPriceData(42)).toBe(false);
+  });
+
+  it("returns false for an empty row", () => {
+    expect(quoteRawRowHasPriceData({})).toBe(false);
+  });
+
+  it("returns false when every known price field is zero", () => {
+    // Mirrors the BHG-style empty payload that previously caused the worker
+    // to log "no trade" on a market-closed row.
+    expect(
+      quoteRawRowHasPriceData({
+        SecurityCode: "BHG",
+        MarketState: "C",
+        Last: 0,
+        LastPrice: 0,
+        PreviousClosePrice: 0,
+        BidPrice: 0,
+        AskPrice: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true when LastPrice is non-zero (closed market, cents)", () => {
+    expect(
+      quoteRawRowHasPriceData({
+        SecurityCode: "SOL",
+        MarketState: "C",
+        LastPrice: 1_582_300, // R15,823.00 in cents
+        PreviousClosePrice: 1_580_000,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true when PreviousClosePrice is non-zero (LastPrice=0, Last>0)", () => {
+    // NPN-style row where IRESS ships the raw `Last` (ZAR) but the close is
+    // the only canonical anchor on a closed day.
+    expect(
+      quoteRawRowHasPriceData({
+        SecurityCode: "NPN",
+        MarketState: "C",
+        Last: 285_000.5,
+        LastPrice: 0,
+        PreviousClosePrice: 284_500,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("quoteRawRowLast", () => {
+  it("returns 0 for null / non-object rows", () => {
+    expect(quoteRawRowLast(null)).toBe(0);
+    expect(quoteRawRowLast(undefined)).toBe(0);
+    expect(quoteRawRowLast("SOL")).toBe(0);
+  });
+
+  it("returns 0 when no price fields are populated", () => {
+    expect(quoteRawRowLast({ SecurityCode: "BHG", MarketState: "C" })).toBe(0);
+  });
+
+  it("prefers `Last` when populated (NPN-style row)", () => {
+    expect(
+      quoteRawRowLast({
+        SecurityCode: "NPN",
+        MarketState: "C",
+        Last: 285_000.5,
+        LastPrice: 1_582_300,
+        PreviousClosePrice: 284_500,
+      }),
+    ).toBe(285_000.5);
+  });
+
+  it("falls back to LastPrice when Last=0 (AGL/FSR/SOL style closed row)", () => {
+    // Worker must produce a non-zero last so the row can be written to Supabase.
+    expect(
+      quoteRawRowLast({
+        SecurityCode: "SOL",
+        MarketState: "C",
+        Last: 0,
+        LastPrice: 1_582_300,
+        PreviousClosePrice: 1_580_000,
+      }),
+    ).toBe(1_582_300);
+  });
+
+  it("falls back to LastTrade when both Last and LastPrice are zero", () => {
+    expect(
+      quoteRawRowLast({
+        SecurityCode: "MTN",
+        MarketState: "C",
+        Last: 0,
+        LastPrice: 0,
+        LastTrade: 9_550,
+        PreviousClosePrice: 9_500,
+      }),
+    ).toBe(9_550);
+  });
+
+  it("falls back to PreviousClose when every other price field is zero", () => {
+    expect(
+      quoteRawRowLast({
+        SecurityCode: "SBK",
+        MarketState: "C",
+        Last: 0,
+        LastPrice: 0,
+        LastTrade: 0,
+        PreviousClosePrice: 19_200,
+      }),
+    ).toBe(19_200);
   });
 });

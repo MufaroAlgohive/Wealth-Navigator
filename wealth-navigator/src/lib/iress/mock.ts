@@ -334,6 +334,82 @@ export const mockIressClient: IressClient = {
     return ok(rows);
   },
 
+  // Deterministic seed accounts used by the mock. Two of these are
+  // referenced from the order book so the UI / API line up.
+  async ipsAccountGetAll1({ PreviousAccountCode }: { ServiceSessionKey: string; PageSize?: number; PreviousAccountCode?: string }) {
+    const all = [
+      {
+        AccountCode: "Z12345",
+        AccountName: "MINT Wealth Navigator Trading Account",
+        AccountType: "MARGIN",
+        Currency: "ZAR",
+        BaseCurrency: "ZAR",
+        Beneficiary: "MINT Wealth (Pty) Ltd",
+        AccountStatus: "ACTIVE",
+        OpenDate: "2024-01-15",
+        NetAssetValue: 18_475_322.40,
+        CashBalance: 2_108_554.20,
+      },
+      {
+        AccountCode: "Z12346",
+        AccountName: "MINT Wealth Navigator Income Account",
+        AccountType: "SETTLEMENT",
+        Currency: "ZAR",
+        BaseCurrency: "ZAR",
+        Beneficiary: "MINT Wealth (Pty) Ltd",
+        AccountStatus: "ACTIVE",
+        OpenDate: "2024-01-15",
+        NetAssetValue: 5_211_700.10,
+        CashBalance: 1_402_200.00,
+      },
+      {
+        AccountCode: "Z12347",
+        AccountName: "MINT Wealth Navigator Bond Account",
+        AccountType: "CUSTODY",
+        Currency: "ZAR",
+        BaseCurrency: "ZAR",
+        Beneficiary: "MINT Wealth (Pty) Ltd",
+        AccountStatus: "ACTIVE",
+        OpenDate: "2024-02-01",
+        NetAssetValue: 9_044_188.55,
+        CashBalance: 388_120.00,
+      },
+    ];
+    // Honor the legacy cursor (page-through, no full flatten in mock).
+    const start = PreviousAccountCode
+      ? all.findIndex((a) => a.AccountCode === PreviousAccountCode) + 1
+      : 0;
+    return ok(all.slice(start));
+  },
+
+  async ipsPositionGetAll1({ AccountCode, PreviousSecurityCode }: { ServiceSessionKey: string; PageSize?: number; PreviousSecurityCode?: string; AccountCode?: string }) {
+    // Build a flat position list from the strategy-holdings seed, attributing
+    // every holding to the trading account (Z12345) — the mock simulates a
+    // single-portfolio view. `initialQuotes` is a function returning a
+    // `Record<symbol, Quote>`; `strategyHoldings` is a
+    // `Record<strategyId, Holding[]>`.
+    const quotes = initialQuotes();
+    const flatHoldings = Object.values(strategyHoldings).flat();
+    const all = flatHoldings.map((h) => {
+      const last = quotes[h.symbol]?.last ?? 0;
+      return {
+        AccountCode: AccountCode ?? "Z12345",
+        SecurityCode: h.symbol,
+        Exchange: "JSE",
+        Quantity: h.qty,
+        OpenAveragePrice: h.mv / Math.max(h.qty, 1), // cost basis derived from market value
+        MarketValue: h.mv,
+        OpenPL: +(h.mv * 0.08).toFixed(2), // seed an indicative open P&L (8% gain)
+        Currency: "ZAR",
+        OpenDate: "2025-08-15",
+      };
+    });
+    const start = PreviousSecurityCode
+      ? all.findIndex((p) => p.SecurityCode === PreviousSecurityCode) + 1
+      : 0;
+    return ok(all.slice(start));
+  },
+
   // ── FIX+ ───────────────────────────────────────────────────────
   async targetIdGet() {
     return [{ TargetID: "MINT-DROPCOPY-01" }];

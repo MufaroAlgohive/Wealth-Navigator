@@ -13,6 +13,7 @@ import { runHealthLoop } from "./health";
 import { pollAccountsForOrders } from "./orders";
 import { startHttpApi } from "./http-api";
 import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
+import { loadIpsConfig, syncIps } from "./ips";
 
 const env = loadWorkerEnv();
 
@@ -47,6 +48,7 @@ let shuttingDown = false;
 let lastQuoteSyncAt: string | undefined;
 let lastAccountCode = env.iressAccountCode;
 const timeSeriesConfig = loadTimeSeriesConfig(env);
+const ipsConfig = loadIpsConfig(env);
 
 function logStartup(): void {
   console.info(
@@ -168,6 +170,39 @@ async function timeSeriesLoop(): Promise<void> {
   }
 }
 
+async function ipsLoop(): Promise<void> {
+  if (ipsConfig.intervalSec <= 0) return;
+  while (!shuttingDown) {
+    try {
+      const result = await syncIps({
+        env,
+        config: ipsConfig,
+        sessions,
+        supabase,
+      });
+      console.info(
+        JSON.stringify({
+          level: "info",
+          event: "ips_sync_complete",
+          source: "iress-worker",
+          accountsRequested: result.accountsRequested,
+          ok: {
+            accounts: result.accountsUpserted,
+            positions: result.positionsUpserted,
+            transactions: result.transactionsUpserted,
+          },
+          errors: result.errors,
+          entitlementRequired: result.entitlementRequired,
+        }),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] ips sync error: ${msg}`);
+    }
+    await sleep(ipsConfig.intervalSec * 1000);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -208,6 +243,7 @@ void runHealthLoop({
 void quoteLoop();
 void orderLoop();
 void timeSeriesLoop();
+void ipsLoop();
 
 // Read-only HTTP API — bound unless explicitly disabled. The Vercel BFF
 // reverse-proxies /orders, /orders/stream, and /health from these handlers

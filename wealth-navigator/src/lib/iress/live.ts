@@ -42,6 +42,10 @@ import type {
   ServiceSessionStartResponse,
   TimeSeriesGet2Request,
   IPSTransactionGetByAccount5Request,
+  IPSAccountGetAll1Request,
+  IPSAccountRow,
+  IPSPositionGetAll1Request,
+  IPSPositionRow,
   NewOrder,
 } from "@/lib/iress/client";
 import type { Order, OrderSide, Quote } from "@/types/iress";
@@ -205,13 +209,28 @@ function isStaleLastPriceOnlyRow(row: Record<string, unknown>): boolean {
   }
   const hasSessionClose = CLOSE_KEYS.some((k) => Number(row[k]) > 0);
   if (hasSessionClose) return false;
+  // Previous-day close anchors are real data too — `PreviousClosePrice` is
+  // the canonical field the JSE returns for `marketState=CLOSED` rows.
+  // Without this carve-out, a SOL row with `LastPrice=17500` (cents) and
+  // `PreviousClosePrice=17500` and no other fields would be mis-classified
+  // as stale and the worker would skip the write — leaving the weekend /
+  // holiday UI blank when the data is in fact present.
+  const hasPrevClose = PREV_CLOSE_KEYS.some((k) => Number(row[k]) > 0);
+  if (hasPrevClose) return false;
   const sessionKeys = [
     "Open", "OpenPrice", "High", "HighPrice", "DayHigh", "Low", "LowPrice", "DayLow",
     "Bid", "BidPrice", "Ask", "AskPrice", "TotalVolume", "Volume", "CumVolume",
     "TotalValue", "MarketValue", "TotalTradedValue",
   ];
   if (sessionKeys.some((k) => Number(row[k]) > 0)) return false;
-  return Number(row["LastPrice"]) > 0;
+  // Last-resort: a "stale-only" row is one whose only non-zero price field
+  // is `LastPrice` AND that value is implausibly small. Real closed-market
+  // rows the JSE returns carry a cents-scale LastPrice (> 4500); a value
+  // like 2445 with nothing else is the BHG bogus-scale pattern and we
+  // should still skip it.
+  const lastPrice = Number(row["LastPrice"]);
+  if (lastPrice > 0 && lastPrice < 4500) return true;
+  return false;
 }
 
 /**
@@ -274,7 +293,10 @@ export function resolveQuoteLast(
     const ohlcOnly = clusterAnchor([open, high, low, vwap, close, prevClose, tradedVwap]);
     if (ohlcOnly > 0 && (price > ohlcOnly * 3 || price < ohlcOnly / 3)) return true;
     // Watchlist JSE names: no anchor at all and Last above plausible single-name range.
-    if (anchor === 0 && bookMid === 0 && price > 4500) return true;
+    // Skip this guard when the market is closed — the real IRESS row only ships a
+    // scaled LastPrice / PreviousClosePrice at the close, no OHLC cluster. Trusting
+    // the raw Last/LastPrice is the right move for the weekend/holiday display case.
+    if (anchor === 0 && bookMid === 0 && price > 4500 && !closed) return true;
     return false;
   };
 
@@ -390,6 +412,97 @@ export function describeQuoteRowKeys(row: unknown): string {
   return Object.keys(row as Record<string, unknown>).sort().join(",") || "<empty row>";
 }
 
+/**
+ * Worker-side write-through check: a raw IRESS row carries real price data
+ * if any of the canonical price fields are non-zero. Used by the ingest
+ * loop to decide whether to write a `stock_intraday_c` row when the
+ * mapper collapsed `last` to 0 (e.g. a SOL row with `LastPrice=17500`
+ * cents, `QuoteState=CLOSED`, no other fields).
+ *
+ * A row whose ONLY non-zero price field is a small (< 4500) `LastPrice`
+ * is the BHG bogus-scale pattern — the worker should still drop it.
+ */
+export function quoteRawRowHasPriceData(row: unknown): boolean {
+  if (!row || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  const numeric = describeQuoteRowNumericFields(r);
+  // Canonical price fields we trust as "real" when present.
+  const priceKeys = [
+    "Last",
+    "LastTrade",
+    "LastPrice",
+    "Close",
+    "ClosePrice",
+    "ClosingPrice",
+    "SessionClose",
+    "SettlementPrice",
+    "OfficialClose",
+    "IndicativeClose",
+    "ReferencePrice",
+    "PrevClose",
+    "PreviousClose",
+    "PreviousClosePrice",
+    "PreviousSettlement",
+    "PriorClose",
+    "YesterdayClose",
+    "AdjustedClose",
+    "Open",
+    "OpenPrice",
+    "High",
+    "HighPrice",
+    "DayHigh",
+    "Low",
+    "LowPrice",
+    "DayLow",
+    "VWAP",
+    "Vwap",
+    "MatchPrice",
+    "BidPrice",
+    "AskPrice",
+    "TradePrice",
+    "PxLast",
+    "AveragePrice",
+    "AvgPrice",
+  ];
+  for (const k of priceKeys) {
+    const v = numeric[k] ?? 0;
+    if (v > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Extract the best-effort `last` value from a raw row using the same
+ * field order the mapper uses (`Last` first, then `LastPrice`, then
+ * `LastTrade`, etc.). Returns 0 if the row carries no usable price.
+ * Intended for the worker's write-through path when the mapped
+ * `last` is 0 but the raw row has data.
+ */
+export function quoteRawRowLast(row: unknown): number {
+  if (!row || typeof row !== "object") return 0;
+  const r = row as Record<string, unknown>;
+  const numeric = describeQuoteRowNumericFields(r);
+  const last = numeric["Last"] ?? 0;
+  if (last > 0) return last;
+  const lastPrice = numeric["LastPrice"] ?? 0;
+  if (lastPrice > 0) return lastPrice;
+  const lastTrade = numeric["LastTrade"] ?? 0;
+  if (lastTrade > 0) return lastTrade;
+  // Fall back to previous close as a last resort.
+  for (const k of [
+    "PrevClose",
+    "PreviousClose",
+    "PreviousClosePrice",
+    "PreviousSettlement",
+    "PriorClose",
+    "YesterdayClose",
+  ]) {
+    const v = numeric[k] ?? 0;
+    if (v > 0) return v;
+  }
+  return 0;
+}
+
 /** All numeric fields on a raw PricingQuoteGet row (for CT field discovery). */
 export function describeQuoteRowNumericFields(row: unknown): Record<string, number> {
   if (!row || typeof row !== "object") return {};
@@ -478,6 +591,87 @@ function mapOrder(row: Record<string, unknown>): Order {
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────
+
+/**
+ * Internal — pages through a legacy IPS method whose cursor lives in
+ * `<Parameters>` rather than the standard V4 header. Caller passes the SOAP
+ * method name + a `buildParameters(cursor, pageSize)` callback; this loop
+ * drives `PreviousKey` until the server returns a short / empty page.
+ *
+ * Doc: `Documentation & Vision/iress-v4-docs/03-paging-and-updates/04-paging-in-ips.md`.
+ *
+ * - `StatusCode = 2` is NOT a stop signal on these methods. The cursor is
+ *   the truth.
+ * - We cap the loop at `MAX_LEGACY_IPS_PAGES` to guard against a server
+ *   bug that returns the same cursor forever.
+ */
+const MAX_LEGACY_IPS_PAGES = 50;
+const DEFAULT_LEGACY_PAGE_SIZE = 200;
+
+interface PagedFetchOptions {
+  transport: SoapTransport;
+  method: string;
+  serviceSessionKey: string;
+  pageSize: number;
+  /** Build the `<Parameters>` block for a given cursor (undefined on the first page). */
+  buildParameters: (cursor: string | undefined) => Record<string, unknown>;
+  /** Read the cursor key from a result row. Called on each row of the current page. */
+  readCursor: (row: Record<string, unknown>) => string;
+  /** Label used for log + error context (e.g. "IPSAccountGetAll1"). */
+  methodLabel: string;
+}
+
+async function pagedFetchLegacyIps<T>(opts: PagedFetchOptions): Promise<{
+  dataRows: T[];
+  totalPages: number;
+  entitlementRequired: boolean;
+}> {
+  let cursor: string | undefined = undefined;
+  const all: T[] = [];
+  let pages = 0;
+  let entitlementRequired = false;
+  while (pages < MAX_LEGACY_IPS_PAGES) {
+    const result = await opts.transport.call({
+      method: opts.method,
+      header: makeHeader({
+        serviceSessionKey: opts.serviceSessionKey,
+        requestID: newRequestID(opts.method.toLowerCase()),
+        timeout: 30,
+        pageSize: 0,
+        waitForResponse: true,
+      }),
+      parameters: opts.buildParameters(cursor),
+    });
+    const errorNumber = readResultHeaderNumber(result.header, "ErrorNumber");
+    if (errorNumber === 25014 || errorNumber === 25008) {
+      entitlementRequired = true;
+      return { dataRows: all, totalPages: pages, entitlementRequired };
+    }
+    if (errorNumber && errorNumber !== 0) {
+      const desc = readResultRowString(result.header, "ErrorDescription");
+      throw new IressError(
+        errorNumber,
+        opts.methodLabel,
+        desc || `${opts.methodLabel} error ${errorNumber}`,
+      );
+    }
+    if (result.dataRows.length === 0) break;
+    let lastCursor = "";
+    for (const row of result.dataRows) {
+      all.push(row as T);
+      const next = opts.readCursor(row);
+      if (next) lastCursor = next;
+    }
+    pages += 1;
+    // The legacy cursor is the LAST row's key. If the page was short
+    // (fewer than `PageSize`), the server is signaling end-of-results.
+    if (result.dataRows.length < opts.pageSize || !lastCursor || lastCursor === cursor) {
+      break;
+    }
+    cursor = lastCursor;
+  }
+  return { dataRows: all, totalPages: pages, entitlementRequired };
+}
 
 export interface LiveClientOptions {
   /** SOAP transport (defaults to one created from `IRESS_BASE_URL`). */
@@ -614,6 +808,13 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         header: result.header,
         dataRows: result.dataRows.map((r) => mapQuote(r)),
       });
+      // Echo the raw, untyped rows so the worker can run write-through
+      // checks (`LastPrice > 0` / `PreviousClosePrice > 0`) without having
+      // to re-issue the request. The mapper collapses some shapes to 0
+      // (e.g. `marketState=CLOSED` rows with no OHLC), and the worker
+      // needs the raw fallback to decide whether the row carries
+      // anything worth persisting for the weekend / holiday UI.
+      (mapped as { RawDataRows?: Array<Record<string, unknown>> }).RawDataRows = result.dataRows;
       // V4 returns 200 OK with an empty DataRows + ErrorNumber!=0 in the
       // response header when the request is refused at the application
       // layer (e.g. 25010 method not entitled, 25034 entitlement check
@@ -650,6 +851,18 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
+      // V4 server requires `Frequency` (Long, 0=Daily, 5=Intra-Day). Sending
+      // an empty / undefined value returns
+      // `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`.
+      // The worker pre-converts friendly values to the Long code; callers
+      // that pass a Long directly work as-is.
+      if (req.Frequency === undefined || req.Frequency === null) {
+        throw new IressError(
+          25018,
+          "TimeSeriesGet2",
+          "TimeSeriesGet2: missing required field `Frequency` (use 0=Daily, 5=Intra-Day)",
+        );
+      }
       const result = await transport.call({
         method: "TimeSeriesGet2",
         header: makeHeader({
@@ -667,6 +880,7 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           Exchange: req.Exchange,
           From: req.From,
           To: req.To,
+          Frequency: req.Frequency,
           Interval: req.Interval,
         },
       });
@@ -996,6 +1210,77 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
             Currency: str("Currency") || "ZAR",
           };
         }),
+      });
+    },
+
+    /**
+     * Returns every IPS account the user is entitled to. The live SOAP
+     * client transparently loops using the last `AccountCode` as the
+     * `PreviousAccountCode` cursor (legacy paging, see IPS docs). The
+     * response is a single flat `IressResponse` whose `DataRows` holds
+     * the full account list. If the user lacks the `IPSAccountGetAll1`
+     * entitlement, the call throws `IressError(25014, …)` and `DataRows`
+     * is empty.
+     */
+    async ipsAccountGetAll1(req: IPSAccountGetAll1Request): Promise<IressResponse<IPSAccountRow>> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "IPSAccountGetAll1");
+      const pageSize = req.PageSize ?? DEFAULT_LEGACY_PAGE_SIZE;
+      const paged = await pagedFetchLegacyIps<IPSAccountRow>({
+        transport,
+        method: "IPSAccountGetAll1",
+        serviceSessionKey: req.ServiceSessionKey,
+        pageSize,
+        methodLabel: "IPSAccountGetAll1",
+        buildParameters: (cursor) => ({
+          PageSize: pageSize,
+          PreviousAccountCode: cursor ?? req.PreviousAccountCode ?? "",
+        }),
+        readCursor: (row) => String(row["AccountCode"] ?? ""),
+      });
+      return mapResponse<IPSAccountRow>({
+        header: {
+          ErrorNumber: paged.entitlementRequired ? 25014 : 0,
+          ErrorDescription: paged.entitlementRequired
+            ? "IPSAccountGetAll1 entitlement not enabled for this user"
+            : "",
+          PageCount: paged.totalPages,
+        },
+        dataRows: paged.dataRows,
+      });
+    },
+
+    /**
+     * Returns every open position across the user's IPS accounts, or — when
+     * `AccountCode` is set — only that account's positions. Legacy paging:
+     * loops using the last `SecurityCode` as the `PreviousSecurityCode`
+     * cursor. If the user lacks `IPSPositionGetAll1`, throws
+     * `IressError(25014, …)`.
+     */
+    async ipsPositionGetAll1(req: IPSPositionGetAll1Request): Promise<IressResponse<IPSPositionRow>> {
+      require(req.ServiceSessionKey, "ServiceSessionKey", "IPSPositionGetAll1");
+      const pageSize = req.PageSize ?? DEFAULT_LEGACY_PAGE_SIZE;
+      const paged = await pagedFetchLegacyIps<IPSPositionRow>({
+        transport,
+        method: "IPSPositionGetAll1",
+        serviceSessionKey: req.ServiceSessionKey,
+        pageSize,
+        methodLabel: "IPSPositionGetAll1",
+        buildParameters: (cursor) => ({
+          PageSize: pageSize,
+          PreviousSecurityCode: cursor ?? req.PreviousSecurityCode ?? "",
+          AccountCode: req.AccountCode ?? "",
+        }),
+        readCursor: (row) => String(row["SecurityCode"] ?? ""),
+      });
+      return mapResponse<IPSPositionRow>({
+        header: {
+          ErrorNumber: paged.entitlementRequired ? 25014 : 0,
+          ErrorDescription: paged.entitlementRequired
+            ? "IPSPositionGetAll1 entitlement not enabled for this user"
+            : "",
+          PageCount: paged.totalPages,
+        },
+        dataRows: paged.dataRows,
       });
     },
 
