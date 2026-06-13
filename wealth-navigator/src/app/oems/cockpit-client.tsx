@@ -814,21 +814,48 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             }
           >
             {openOrders.length === 0 ? (
-              <EmptyDataState
-                title="No open orders"
-                message={
-                  realDataOnly
-                    ? primaryWorker
-                      ? ordersEmptyMessage(primaryWorker, auditOrdersQ.data?.reason)
-                    : "Worker not heartbeating"
-                    : FEED_NOT_CONFIGURED
-                }
-                hint={
-                  realDataOnly && primaryWorker
-                    ? "Open <details> for deployment details"
-                    : undefined
-                }
-              />
+              <>
+                <EmptyDataState
+                  title="No open orders"
+                  message={
+                    realDataOnly
+                      ? primaryWorker
+                        ? ordersEmptyMessage(primaryWorker, auditOrdersQ.data?.reason)
+                      : "Worker not heartbeating"
+                      : FEED_NOT_CONFIGURED
+                  }
+                  hint={
+                    realDataOnly && primaryWorker
+                      ? undefined
+                      : undefined
+                  }
+                />
+                {/* Yellow #37 — deployment details collapsed by default.
+                    The empty-state message above is the visible copy;
+                    the deployment specifics live inside `<details>` so
+                    a trader/operator doesn't get a deployment-instruction
+                    paragraph where they expected a status message. */}
+                {realDataOnly && primaryWorker ? (
+                  <details className="mt-2 text-[10.5px] text-muted-foreground">
+                    <summary className="cursor-pointer select-none text-primary hover:underline">
+                      Show deployment details
+                    </summary>
+                    <div className="mt-1.5 space-y-1 rounded-md border border-border/60 bg-surface-2/40 p-2 font-mono text-[10px]">
+                      <p>
+                        Set <span className="text-foreground">IRESS_ACCOUNT_CODE</span> on the Railway
+                        <span className="text-foreground"> Iress-Worker </span>
+                        service to a comma-separated list of account codes (e.g.{" "}
+                        <span className="text-foreground">Z12345,Z67890</span>), then restart.
+                      </p>
+                      <p>
+                        Quote ingest keeps running independently of this env.
+                        OrderPadGetByAccount → oems_order_audit is the audit
+                        table the Cockpit Open Orders panel reads from.
+                      </p>
+                    </div>
+                  </details>
+                ) : null}
+              </>
             ) : (
             <table className="w-full font-mono text-[11px]">
               <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">

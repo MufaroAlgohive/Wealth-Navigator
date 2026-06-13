@@ -14,6 +14,20 @@ export function isUseSupabaseQuotesEnabled(): boolean {
 
 /** Client-side mirror of `NEXT_PUBLIC_USE_SUPABASE_QUOTES`. */
 export function isRealDataOnlyClient(): boolean {
+  // Yellow #24 — dev-only override. `?mock=1` (or `?mock=true`) in the
+  // URL forces the mock path even when the production flag is set.
+  // The override is browser-only and is *never* honoured on the
+  // server (Vercel BFFs read `USE_SUPABASE_QUOTES` directly). The
+  // mock path renders a yellow "DEV · MOCK" banner in dev mode so
+  // a dev visiting the page on production Vercel can still poke at
+  // the seed UI without flipping the env. The same flag also
+  // accepts `?mock=0` to force the real path off the env.
+  if (typeof window !== "undefined") {
+    const params = new URLSearchParams(window.location.search);
+    const flag = params.get("mock");
+    if (flag === "1" || flag?.toLowerCase() === "true") return false;
+    if (flag === "0" || flag?.toLowerCase() === "false") return true;
+  }
   if (typeof window === "undefined") {
     const raw = process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES;
     return raw === "1" || raw?.toLowerCase() === "true";
@@ -21,6 +35,19 @@ export function isRealDataOnlyClient(): boolean {
   const raw = process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES;
   if (!raw) return false;
   return raw === "1" || raw.toLowerCase() === "true";
+}
+
+/**
+ * Yellow #24 — the visual "DEV · MOCK" banner. The Banner is only
+ * rendered when the URL carries `?mock=1` AND we're not in a
+ * production build (`process.env.NODE_ENV !== "production"`). On
+ * production Vercel the override is honoured but the banner is
+ * suppressed so visitors don't see dev chrome.
+ */
+export function isMockOverrideActive(): boolean {
+  if (typeof window === "undefined") return false;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("mock") === "1" || params.get("mock")?.toLowerCase() === "true";
 }
 
 /** Zero quote — safe to render as "—" in NumberCell (ts === 0). */
