@@ -8,6 +8,7 @@
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
+import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -93,14 +94,19 @@ export async function GET() {
       .limit(60),
   ]);
   if (instRes.error || jibarRes.error) {
+    const firstErr = instRes.error ?? jibarRes.error;
     return Response.json(
       {
         instruments: [],
         jibar: [],
         source: "unavailable",
-        error: instRes.error?.message ?? jibarRes.error?.message,
+        reason: "supabase_query_failed" as BffUnavailableReason,
+        error: firstErr?.message,
+        migration: isSupabaseSchemaMissing(firstErr)
+          ? "supabase/migrations/20260613000005_money_market_universe.sql"
+          : undefined,
       },
-      { status: 500 },
+      { status: 200 },
     );
   }
   const instruments = ((instRes.data ?? []) as InstrumentRow[]).map(mapInstrument);
@@ -109,6 +115,7 @@ export async function GET() {
     instruments,
     jibar,
     source: instruments.length > 0 || jibar.length > 0 ? "supabase" : "unavailable",
+    reason: instruments.length === 0 && jibar.length === 0 ? "empty" : undefined,
     message:
       instruments.length === 0 && jibar.length === 0
         ? "MM instruments + JIBAR fixings require the IRESS rate entitlement or a vendor contract (e.g. SARB daily feed)."

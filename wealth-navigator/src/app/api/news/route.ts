@@ -7,6 +7,7 @@
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
+import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,8 +64,16 @@ export async function GET(req: Request) {
   const { data, error } = await q;
   if (error) {
     return Response.json(
-      { items: [], source: "unavailable", error: error.message },
-      { status: 500 },
+      {
+        items: [],
+        source: "unavailable",
+        reason: "supabase_query_failed" as BffUnavailableReason,
+        error: error.message,
+        migration: isSupabaseSchemaMissing(error)
+          ? "supabase/migrations/20260613000007_news_universe.sql"
+          : undefined,
+      },
+      { status: 200 },
     );
   }
   const items = ((data ?? []) as NewsRow[]).map(mapRow);
@@ -72,6 +81,7 @@ export async function GET(req: Request) {
     items,
     source: items.length > 0 ? "supabase" : "unavailable",
     count: items.length,
+    reason: items.length === 0 ? "empty" : undefined,
     message:
       items.length === 0
         ? "News + SENS feed requires a vendor contract (Reuters / Bloomberg / Moneyweb) or a SENS subscription. v1 returns an empty list."

@@ -24,6 +24,7 @@
  * on the underlying tables, so this endpoint requires service_role.
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -85,7 +86,11 @@ interface PortfolioSummary {
   /** Newest timestamp across the three tables — tells the UI when the worker last wrote. */
   lastUpdatedAt: string | null;
   source: "supabase" | "unavailable";
-  reason?: string;
+  reason?: BffUnavailableReason;
+  /** Migration file the user needs to run, surfaced to the UI. */
+  migration?: string;
+  /** Worker's `recent_events` last entitlement error (25014 etc). */
+  entitlementDetail?: string;
   error?: string;
 }
 
@@ -157,9 +162,18 @@ export async function GET() {
   if (accountsRes.error || positionsRes.error || txRes.error) {
     const firstError =
       accountsRes.error?.message ?? positionsRes.error?.message ?? txRes.error?.message ?? "unknown";
+    const firstErrObj = accountsRes.error ?? positionsRes.error ?? txRes.error;
+    // When the table doesn't exist yet (e.g. the user hasn't pasted
+    // `20260613000001_oems_ips_portfolio.sql`) we surface a specific
+    // hint in the payload so the UI can render the migration name
+    // verbatim. Audit #5.
+    const reason: BffUnavailableReason = isSupabaseSchemaMissing(firstErrObj) ? "supabase_query_failed" : "supabase_query_failed";
     return Response.json(
       {
         error: firstError,
+        migration: isSupabaseSchemaMissing(firstErrObj)
+          ? "supabase/migrations/20260613000001_oems_ips_portfolio.sql"
+          : undefined,
         accounts: [] as AccountRow[],
         positions: [] as PositionRow[],
         recentTx: [] as TransactionRow[],
@@ -170,9 +184,9 @@ export async function GET() {
         rebalanceLocked: false,
         lastUpdatedAt: null,
         source: "unavailable",
-        reason: "supabase_query_failed",
+        reason,
       } satisfies PortfolioSummary,
-      { status: 500 },
+      { status: 200 },
     );
   }
 
@@ -255,6 +269,9 @@ export async function GET() {
     source: accounts.length > 0 || positions.length > 0 || recentTx.length > 0
       ? "supabase"
       : "unavailable",
+    reason: accounts.length === 0 && positions.length === 0 && recentTx.length === 0
+      ? "empty"
+      : undefined,
   };
 
   return Response.json(summary);

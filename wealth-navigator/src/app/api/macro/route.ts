@@ -7,6 +7,7 @@
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
+import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -103,14 +104,19 @@ export async function GET() {
       .limit(50),
   ]);
   if (indRes.error || relRes.error) {
+    const firstErr = indRes.error ?? relRes.error;
     return Response.json(
       {
         indicators: [],
         releases: [],
         source: "unavailable",
-        error: indRes.error?.message ?? relRes.error?.message,
+        reason: "supabase_query_failed" as BffUnavailableReason,
+        error: firstErr?.message,
+        migration: isSupabaseSchemaMissing(firstErr)
+          ? "supabase/migrations/20260613000006_macro_universe.sql"
+          : undefined,
       },
-      { status: 500 },
+      { status: 200 },
     );
   }
   const indicators = ((indRes.data ?? []) as IndicatorRow[]).map(mapIndicator);
@@ -119,6 +125,7 @@ export async function GET() {
     indicators,
     releases,
     source: indicators.length > 0 || releases.length > 0 ? "supabase" : "unavailable",
+    reason: indicators.length === 0 && releases.length === 0 ? "empty" : undefined,
     message:
       indicators.length === 0 && releases.length === 0
         ? "Macro indicators + release calendar require a vendor contract (SARB / StatsSA / Reuters). v1 returns an empty list with the honest 'vendor not configured' empty state."

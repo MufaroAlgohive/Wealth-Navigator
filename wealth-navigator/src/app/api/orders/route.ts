@@ -1,4 +1,5 @@
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 import type { Order, OrderDestination, OrderSide, OrderState, OrderTIF, OrderType } from "@/types/iress";
 
 export const runtime = "nodejs";
@@ -78,7 +79,16 @@ function mapAuditRow(row: AuditRow): Order {
  */
 export async function GET(req: Request) {
   if (!isSupabaseConfigured()) {
-    return Response.json({ error: "Supabase not configured", orders: [] as Order[], source: "unavailable" }, { status: 503 });
+    return Response.json(
+      {
+        error: "Supabase not configured",
+        orders: [] as Order[],
+        source: "unavailable",
+        reason: "supabase_not_configured",
+        migration: "supabase/migrations/20260613000000_oems_order_audit.sql",
+      },
+      { status: 503 },
+    );
   }
 
   const url = new URL(req.url);
@@ -97,7 +107,19 @@ export async function GET(req: Request) {
 
   const { data, error } = await query;
   if (error) {
-    return Response.json({ error: error.message, orders: [] as Order[], source: "unavailable" }, { status: 500 });
+    const reason: BffUnavailableReason = "supabase_query_failed";
+    return Response.json(
+      {
+        error: error.message,
+        orders: [] as Order[],
+        source: "unavailable",
+        reason,
+        migration: isSupabaseSchemaMissing(error)
+          ? "supabase/migrations/20260613000000_oems_order_audit.sql"
+          : undefined,
+      },
+      { status: 200 },
+    );
   }
 
   let orders = ((data ?? []) as AuditRow[]).map(mapAuditRow);
@@ -110,5 +132,6 @@ export async function GET(req: Request) {
     orders,
     count: orders.length,
     source: orders.length > 0 ? "supabase" : "unavailable",
+    reason: orders.length === 0 ? "empty" : undefined,
   });
 }

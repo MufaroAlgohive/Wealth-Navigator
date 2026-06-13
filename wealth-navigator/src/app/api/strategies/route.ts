@@ -22,6 +22,7 @@
  *   }
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -122,14 +123,18 @@ export async function GET() {
     .order("aum_cents", { ascending: false });
 
   if (error) {
+    const reason: BffUnavailableReason = "supabase_query_failed";
     return Response.json(
       {
         error: error.message,
         strategies: [],
         source: "unavailable",
-        reason: "supabase_query_failed",
+        reason,
+        migration: isSupabaseSchemaMissing(error)
+          ? "supabase/migrations/20260613000002_oems_strategy_c.sql"
+          : undefined,
       },
-      { status: 500 },
+      { status: 200 },
     );
   }
 
@@ -138,7 +143,7 @@ export async function GET() {
     strategies: rows.map(mapRow),
     source: rows.length > 0 ? "supabase" : "unavailable",
     count: rows.length,
-    reason: rows.length === 0 ? "no_strategy_rows" : undefined,
+    reason: rows.length === 0 ? "empty" : undefined,
     lastUpdatedAt:
       rows.length > 0
         ? rows.reduce<string | null>((acc, r) => {

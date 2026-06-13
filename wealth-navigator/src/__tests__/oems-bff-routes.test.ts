@@ -119,7 +119,7 @@ describe("GET /api/strategies", () => {
     const body = await res.json();
     expect(body.source).toBe("unavailable");
     expect(body.strategies).toEqual([]);
-    expect(body.reason).toBe("no_strategy_rows");
+    expect(body.reason).toBe("empty");
   });
 
   it("returns mapped rows when oems_strategy_c has data", async () => {

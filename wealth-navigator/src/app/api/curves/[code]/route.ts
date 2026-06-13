@@ -24,6 +24,7 @@
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { zarGoviCurve } from "@/lib/iress/seed";
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -65,8 +66,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
   if (useSupabase) {
     if (!isSupabaseConfigured()) {
       return Response.json(
-        { error: "USE_SUPABASE_QUOTES=true but Supabase not configured", code, points: [] },
-        { status: 500 },
+        { error: "USE_SUPABASE_QUOTES=true but Supabase not configured", code, points: [], source: "unavailable", reason: "supabase_not_configured" as BffUnavailableReason },
+        { status: 503 },
       );
     }
     const supabase = createServiceRoleClient();
@@ -85,8 +86,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
         .limit(1);
       if (latestErr) {
         return Response.json(
-          { error: latestErr.message, code, points: [], source: "unavailable" },
-          { status: 500 },
+          {
+            error: latestErr.message,
+            code,
+            points: [],
+            source: "unavailable",
+            reason: "supabase_query_failed" as BffUnavailableReason,
+            migration: isSupabaseSchemaMissing(latestErr)
+              ? "supabase/migrations/20260612000007_yield_curve_history_c.sql"
+              : undefined,
+          },
+          { status: 200 },
         );
       }
       const latest = (latestRows ?? [])[0] as { as_of: string } | undefined;
@@ -95,6 +105,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
           code,
           points: [],
           source: useSupabase ? "entitlement-required" : "seed-fallback",
+          reason: "entitlement_blocked" as BffUnavailableReason,
           message:
             "TimeSeriesGet2 entitlement required for ZAR sovereign curve. " +
             "Ask Charles to enable TimeSeriesGet2 for the NSS / GOVI codes on the production account.",
@@ -109,8 +120,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
         .order("tenor_years", { ascending: true });
       if (rowsErr) {
         return Response.json(
-          { error: rowsErr.message, code, points: [], source: "unavailable" },
-          { status: 500 },
+          {
+            error: rowsErr.message,
+            code,
+            points: [],
+            source: "unavailable",
+            reason: "supabase_query_failed" as BffUnavailableReason,
+            migration: isSupabaseSchemaMissing(rowsErr)
+              ? "supabase/migrations/20260612000007_yield_curve_history_c.sql"
+              : undefined,
+          },
+          { status: 200 },
         );
       }
       const points = ((rows ?? []) as YieldCurveRow[]).map((r) => ({
@@ -124,6 +144,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
         points,
         asOf: latest.as_of,
         source: points.length > 0 ? "supabase" : "entitlement-required",
+        reason: points.length === 0 ? ("entitlement_blocked" as BffUnavailableReason) : undefined,
       });
     }
 
@@ -136,8 +157,17 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
       .limit(1);
     if (bondErr) {
       return Response.json(
-        { error: bondErr.message, code, points: [], source: "unavailable" },
-        { status: 500 },
+        {
+          error: bondErr.message,
+          code,
+          points: [],
+          source: "unavailable",
+          reason: "supabase_query_failed" as BffUnavailableReason,
+          migration: isSupabaseSchemaMissing(bondErr)
+            ? "supabase/migrations/20260612000007_yield_curve_history_c.sql"
+            : undefined,
+        },
+        { status: 200 },
       );
     }
     const points = ((rows ?? []) as YieldCurveRow[]).map((r) => ({
@@ -151,6 +181,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
         code,
         points: [],
         source: "entitlement-required",
+        reason: "entitlement_blocked" as BffUnavailableReason,
         message:
           "TimeSeriesGet2 entitlement required for bond series. " +
           "Ask Charles to enable TimeSeriesGet2 for the R-bond codes on the production account.",
@@ -166,5 +197,6 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
     code,
     points,
     source: points.length > 0 ? "seed-fallback" : "unavailable",
+    reason: points.length === 0 ? "empty" : undefined,
   });
 }

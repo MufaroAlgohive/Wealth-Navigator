@@ -9,6 +9,7 @@
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
+import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -81,8 +82,16 @@ export async function GET() {
     .order("ytm_pct", { ascending: false });
   if (error) {
     return Response.json(
-      { bonds: [], source: "unavailable", error: error.message },
-      { status: 500 },
+      {
+        bonds: [],
+        source: "unavailable",
+        reason: "supabase_query_failed" as BffUnavailableReason,
+        error: error.message,
+        migration: isSupabaseSchemaMissing(error)
+          ? "supabase/migrations/20260613000004_oems_instrument_universe.sql"
+          : undefined,
+      },
+      { status: 200 },
     );
   }
   const rows = (data ?? []) as BondRow[];
@@ -90,7 +99,7 @@ export async function GET() {
     bonds: rows.map(mapRow),
     source: rows.length > 0 ? "supabase" : "unavailable",
     count: rows.length,
-    reason: rows.length === 0 ? "no_bond_rows" : undefined,
+    reason: rows.length === 0 ? "empty" : undefined,
     message:
       rows.length === 0
         ? "Bond universe requires the IRESS bond entitlement (or an upstream bond vendor). Paste supabase/migrations/20260613000004_oems_instrument_universe.sql and ask Charles to enable bond prices on the production profile."

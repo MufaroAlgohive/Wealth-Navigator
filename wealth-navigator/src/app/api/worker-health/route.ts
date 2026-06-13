@@ -74,7 +74,31 @@ export async function GET() {
     return Response.json({ error: error.message, workers: [] as WorkerHealthRow[] }, { status: 500 });
   }
 
-  const workers = (data ?? []).map((row) => {
+  // Audit #2 — ghost-worker filter. Railway's deploy-hooks can leave a
+  // prior replica's heartbeat row in `integration_worker_health` if its
+  // `main.ts` shutdown handler didn't run (or ran but the final upsert
+  // never landed). Until the operator deletes the ghost service, that
+  // row is still a valid `last_heartbeat_at` candidate and the page
+  // renders two workers. Filter here:
+  //   1. Drop `status = "stopped"` rows (worker shut down cleanly).
+  //   2. Pick the single most-recent `service_name` and keep only rows
+  //      for that service. A "service" is one Railway deployment with
+  //      one or more replicas sharing the same `service_name`.
+  const rawRows = (data ?? []).filter((r) => String(r.status ?? "").toLowerCase() !== "stopped");
+  // Use the most-recent row's `service_name` (Railway gives each
+  // deployment a stable service name like "Iress-Worker") as the
+  // primary identity. If multiple replicas of the same service are
+  // heartbeating, the operator wants to see all of them — the page
+  // aggregates the timestamps into "primary worker" via
+  // `pickPrimaryWorker` in `src/lib/hooks/use-worker-health.ts`.
+  const primary = rawRows[0];
+  const primaryService = primary?.service_name ?? null;
+  const primaryWorkerId = primary?.worker_id ?? null;
+  const liveRows = rawRows.filter(
+    (r) => primaryService == null || r.service_name === primaryService || r.worker_id === primaryWorkerId,
+  );
+
+  const workers = liveRows.map((row) => {
     const meta = (row.metadata ?? {}) as Record<string, unknown>;
     const symbols = meta.symbols_covered;
     const symbolExchanges = meta.symbol_exchanges;
@@ -95,5 +119,14 @@ export async function GET() {
     } satisfies WorkerHealthRow;
   });
 
-  return Response.json({ workers, count: workers.length });
+  return Response.json({
+    workers,
+    count: workers.length,
+    /**
+     * Number of rows dropped by the ghost filter. Surfaced in the
+     * integration page as a "n ghost worker rows hidden" notice so the
+     * operator knows the safety net is doing its job.
+     */
+    ghostRowsHidden: (data ?? []).length - workers.length,
+  });
 }
