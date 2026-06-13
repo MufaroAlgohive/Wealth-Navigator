@@ -3,42 +3,76 @@
 import { Suspense, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
-import { Lock, RefreshCw, Users, Target, Activity, ShieldCheck, ChevronRight } from "lucide-react";
+import { Lock, RefreshCw, ShieldCheck } from "lucide-react";
 
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
-import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
-import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { useIress } from "@/lib/iress/provider";
-import { canRebalance, rebalanceBlockReason, rebalanceBlockTooltip } from "@/lib/iress/strategy";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatPct, formatZAR } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import type { Strategy } from "@/types/iress";
 import { queryOpts } from "@/lib/store/query-provider";
 
+/**
+ * Strategy aggregate row — the slim Supabase-backed shape.
+ * Maps 1:1 to `oems_strategy_c` columns. The IPS portfolio
+ * (`oems_position_c` / `oems_transaction_c`) holds the per-investor
+ * holdings; this row is the *desk's* aggregate view.
+ */
+interface StrategyRow {
+  strategy_id: string;
+  name: string;
+  status: "live" | "paper" | "halted";
+  asset_class: "equity" | "money_market" | "balanced" | "fixed_income";
+  manager: string | null;
+  benchmark: string | null;
+  aum_cents: number;
+  pnl_today_cents: number;
+  pnl_mtd_cents: number;
+  pnl_ytd_pct: number;
+  nav_value_cents: number;
+  investor_count: number;
+  holdings_count: number;
+  cash_weight_pct: number;
+  deployed_at: string | null;
+  last_rebalanced_at: string | null;
+}
+
+interface StrategiesResponse {
+  strategies: StrategyRow[];
+  source: string;
+  message?: string;
+}
+
 function StrategiesPageContent() {
-  const { data } = useIress();
   const realDataOnly = isRealDataOnlyClient();
-  const strategiesQ = useQuery({
-    queryKey: ["strategies"],
-    queryFn: () => data.strategies(),
-    enabled: !realDataOnly,
-    ...queryOpts("live"),
+  const strategiesQ = useQuery<StrategiesResponse>({
+    queryKey: ["bff-strategies"],
+    queryFn: async () => {
+      const r = await fetch("/api/strategies", { cache: "no-store" });
+      if (!r.ok) throw new Error(`Strategies BFF ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
+    ...queryOpts("reference"),
   });
-  const strategies = strategiesQ.data ?? [];
+  const strategies = strategiesQ.data?.strategies ?? [];
   const focusId = useSearchParams().get("focus");
   const [selected, setSelected] = useState<string>(
-    (focusId && strategies.find((s) => s.id === focusId)?.id) || strategies[0]?.id || "",
+    (focusId && strategies.find((s) => s.strategy_id === focusId)?.strategy_id) ||
+      strategies[0]?.strategy_id ||
+      "",
   );
-  const active = strategies.find((s) => s.id === selected) ?? strategies[0];
+  const active = strategies.find((s) => s.strategy_id === selected) ?? strategies[0];
 
-  if (realDataOnly) {
+  if (!realDataOnly) {
+    // Mock/legacy mode is not the production target; redirect to the
+    // new empty state with a clear "MOCK" badge so anyone visiting
+    // /oems/strategies in a dev build sees the same honest UI.
     return (
       <div className="space-y-3">
         <header>
@@ -47,8 +81,12 @@ function StrategiesPageContent() {
             Rebalance gated on linked investors · pre-trade mandate & halt checks via IRESS
           </p>
         </header>
-        <Panel title="Strategy mandates" endpoint="Portfolio system">
-          <EmptyDataState message="Strategy AUM, holdings, and rebalance state require portfolio system integration." />
+        <Panel title="Strategy mandates" endpoint="oems_strategy_c">
+          <EmptyDataState
+            message="Mock mode disables the strategies module."
+            hint="Switch to real-data mode and ensure the worker has written oems_strategy_c rows."
+            badgeLabel="mock"
+          />
         </Panel>
       </div>
     );
@@ -88,15 +126,26 @@ function StrategiesPageContent() {
           </div>
           <PanelSkeleton rows={6} className="col-span-12 lg:col-span-7" />
         </div>
+      ) : strategies.length === 0 ? (
+        <Panel
+          title="Strategy mandates"
+          endpoint="GET /api/strategies"
+          dataSource={strategiesQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+        >
+          <EmptyDataState
+            message="No strategies ingested yet."
+            hint={strategiesQ.data?.message ?? "Seed the oems_strategy_c table or wire the worker's per-strategy rollup loop."}
+          />
+        </Panel>
       ) : (
         <div className="grid grid-cols-12 gap-3">
           <div className="col-span-12 lg:col-span-5 space-y-2">
             {strategies.map((s) => (
               <StrategyCard
-                key={s.id}
+                key={s.strategy_id}
                 s={s}
-                active={selected === s.id}
-                onSelect={() => setSelected(s.id)}
+                active={selected === s.strategy_id}
+                onSelect={() => setSelected(s.strategy_id)}
               />
             ))}
           </div>
@@ -116,8 +165,8 @@ export default function StrategiesPage() {
   );
 }
 
-function StrategyCard({ s, active, onSelect }: { s: Strategy; active: boolean; onSelect: () => void }) {
-  const rebal = canRebalance(s);
+function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean; onSelect: () => void }) {
+  const rebal = s.status === "live" && s.investor_count > 0;
   return (
     <button
       onClick={onSelect}
@@ -129,17 +178,19 @@ function StrategyCard({ s, active, onSelect }: { s: Strategy; active: boolean; o
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-semibold">{s.name}</p>
-          <p className="text-[10.5px] text-muted-foreground">{s.manager} · bench {s.benchmark}</p>
+          <p className="text-[10.5px] text-muted-foreground">
+            {s.manager ?? "—"} {s.benchmark ? `· bench ${s.benchmark}` : ""}
+          </p>
         </div>
-        <Pill tone={s.kind === "equity" ? "primary" : "warning"} size="xs">
-          {s.kind === "equity" ? "EQUITY" : "MONEY MKT"}
+        <Pill tone={s.asset_class === "equity" ? "primary" : s.asset_class === "money_market" ? "warning" : "neutral"} size="xs">
+          {s.asset_class.replace("_", " ").toUpperCase()}
         </Pill>
       </div>
       <div className="mt-2.5 grid grid-cols-4 gap-2 text-[10.5px]">
-        <Stat label="AUM" value={s.aum > 0 ? formatZAR(s.aum) : "—"} />
-        <Stat label="YTD" value={formatPct(s.ytd)} positive={s.ytd >= 0} />
-        <Stat label="Day P&L" value={s.dayPnl !== 0 ? formatZAR(s.dayPnl) : "—"} positive={s.dayPnl >= 0} />
-        <Stat label="Investors" value={s.investorCount.toString()} />
+        <Stat label="AUM" value={s.aum_cents > 0 ? formatZAR(s.aum_cents / 100) : "—"} />
+        <Stat label="YTD" value={formatPct(s.pnl_ytd_pct / 100)} positive={s.pnl_ytd_pct >= 0} />
+        <Stat label="Day P&L" value={s.pnl_today_cents !== 0 ? formatZAR(s.pnl_today_cents / 100) : "—"} positive={s.pnl_today_cents >= 0} />
+        <Stat label="Investors" value={s.investor_count.toString()} />
       </div>
       <div className="mt-2.5 flex items-center justify-between border-t border-border/60 pt-2">
         <Pill
@@ -161,13 +212,17 @@ function StrategyCard({ s, active, onSelect }: { s: Strategy; active: boolean; o
           <TooltipProvider delayDuration={150}>
             <Tooltip>
               <TooltipTrigger asChild>
-                <button type="button" aria-label={rebalanceBlockTooltip(s)} className="cursor-help">
+                <button type="button" aria-label={`Rebalance locked — ${s.status === "halted" ? "halted" : "no investors"}`} className="cursor-help">
                   <Pill tone="destructive" size="xs" dot>
-                    REBALANCE LOCKED — {rebalanceBlockReason(s) === "halted" ? "halted" : "no investors"}
+                    REBALANCE LOCKED — {s.status === "halted" ? "halted" : "no investors"}
                   </Pill>
                 </button>
               </TooltipTrigger>
-              <TooltipContent className="max-w-[260px]">{rebalanceBlockTooltip(s)}</TooltipContent>
+              <TooltipContent className="max-w-[260px]">
+                {s.status === "halted"
+                  ? "Strategy halted by Risk. Re-deploy after compliance sign-off."
+                  : "No underlying investors linked. Rebalance is meaningless without subscribed capital."}
+              </TooltipContent>
             </Tooltip>
           </TooltipProvider>
         )}
@@ -193,95 +248,73 @@ function Stat({ label, value, positive }: { label: string; value: string; positi
   );
 }
 
-function StrategyDetail({ strategy }: { strategy: Strategy }) {
-  const { data } = useIress();
-  const holdingsQ = useQuery({
-    queryKey: ["strategies", strategy.id, "holdings"],
-    queryFn: () => data.strategyHoldings(strategy.id),
-    ...queryOpts("reference"),
-  });
-  const holdings = holdingsQ.data ?? [];
-  const rebal = canRebalance(strategy);
-
+function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
+  const rebal = strategy.status === "live" && strategy.investor_count > 0;
   return (
     <div className="col-span-12 lg:col-span-7 space-y-3">
       <Panel
         title={`${strategy.name} · detail`}
-        endpoint="GET /v1/positions?strategy={id}"
-        right={<Pill tone={strategy.kind === "equity" ? "primary" : "warning"} size="xs">{strategy.kind.toUpperCase()}</Pill>}
+        endpoint={`oems_strategy_c[${strategy.strategy_id}]`}
+        dataSource="supabase"
+        right={
+          <Pill
+            tone={strategy.asset_class === "equity" ? "primary" : strategy.asset_class === "money_market" ? "warning" : "neutral"}
+            size="xs"
+          >
+            {strategy.asset_class.replace("_", " ").toUpperCase()}
+          </Pill>
+        }
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <KpiSmall label="Sharpe" value={strategy.sharpe.toFixed(2)} />
-          <KpiSmall label="Max DD" value={formatPct(strategy.maxDD)} negative />
-          <KpiSmall label="Cash" value={`${strategy.cashWeight.toFixed(1)}%`} />
-          <KpiSmall label="Last rebal" value={strategy.lastRebalanced} />
-          {strategy.kind === "money_market" && (
-            <>
-              <KpiSmall label="WAY" value={`${strategy.weightedAvgYield?.toFixed(2)}%`} />
-              <KpiSmall label="WAM" value={`${strategy.weightedAvgDuration?.toFixed(2)}y`} />
-            </>
-          )}
-          {strategy.trackingError !== undefined && (
-            <KpiSmall label="Tracking error" value={`${strategy.trackingError.toFixed(1)}%`} />
-          )}
-          <KpiSmall label="Holdings" value={strategy.holdingsCount.toString()} />
+          <KpiSmall label="AUM" value={formatZAR(strategy.aum_cents / 100)} />
+          <KpiSmall label="YTD" value={formatPct(strategy.pnl_ytd_pct / 100)} negative={strategy.pnl_ytd_pct < 0} />
+          <KpiSmall label="MTD P&L" value={formatZAR(strategy.pnl_mtd_cents / 100)} negative={strategy.pnl_mtd_cents < 0} />
+          <KpiSmall label="NAV" value={formatZAR(strategy.nav_value_cents / 100)} />
+          <KpiSmall label="Cash" value={`${strategy.cash_weight_pct.toFixed(1)}%`} />
+          <KpiSmall label="Holdings" value={strategy.holdings_count.toString()} />
+          <KpiSmall label="Investors" value={strategy.investor_count.toString()} />
+          <KpiSmall
+            label="Last rebal"
+            value={strategy.last_rebalanced_at ? new Date(strategy.last_rebalanced_at).toISOString().slice(0, 10) : "—"}
+          />
         </div>
         {!rebal && (
           <div className="mt-3 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/5 p-2.5 text-[11.5px] text-warning">
             <Lock className="h-3.5 w-3.5" />
-            <span>Rebalance disabled — {strategy.investorCount === 0 ? "no underlying investors linked" : "strategy halted by Risk"}.</span>
+            <span>
+              Rebalance disabled —{" "}
+              {strategy.status === "halted"
+                ? "strategy halted by Risk"
+                : strategy.investor_count === 0
+                  ? "no underlying investors linked"
+                  : "strategy not yet deployed"}
+              .
+            </span>
           </div>
         )}
         {rebal && (
           <div className="mt-3 flex items-center gap-2 rounded-md border border-success/30 bg-success/5 p-2.5 text-[11.5px] text-success">
             <ShieldCheck className="h-3.5 w-3.5" />
-            <span>All pre-trade checks passed · {strategy.investorCount} investors · {strategy.holdingsCount} holdings · {strategy.kind === "money_market" ? "issuer concentration OK" : "HALTED/SUSPENDED/NON-TRADEABLE check OK"}.</span>
+            <span>
+              All pre-trade checks passed · {strategy.investor_count} investors · {strategy.holdings_count} holdings
+              {strategy.asset_class === "money_market" ? " · issuer concentration OK" : " · HALTED/SUSPENDED check OK"}.
+            </span>
           </div>
         )}
       </Panel>
 
       <Panel
-        title={`Holdings · Target vs Actual`}
-        endpoint="GET /v1/positions?strategy={id}"
+        title="Holdings · target vs actual"
+        endpoint="oems_position_c ?strategy_id = {id}"
+        dataSource="unconfigured"
         density="scroll"
         className="h-[420px]"
-        right={<span className="font-mono text-[10px]">{holdings.length} positions</span>}
+        right={<span className="font-mono text-[10px]">{strategy.holdings_count} positions (from oems_position_c)</span>}
       >
-        {holdings.length === 0 ? (
-          <p className="p-4 text-xs text-muted-foreground">No holdings published for this strategy yet.</p>
-        ) : (
-          <table className="w-full font-mono text-[11px]">
-            <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
-              <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-                <th className="px-2.5 py-1.5 text-left">Symbol</th>
-                <th className="px-2.5 py-1.5 text-left">Name</th>
-                <th className="px-2.5 py-1.5 text-right">Qty</th>
-                <th className="px-2.5 py-1.5 text-right">MV</th>
-                <th className="px-2.5 py-1.5 text-right">Target</th>
-                <th className="px-2.5 py-1.5 text-right">Actual</th>
-                <th className="px-2.5 py-1.5 text-left">Drift</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/60">
-              {holdings.map((h) => {
-                const drift = h.actual - h.target;
-                return (
-                  <tr key={h.symbol}>
-                    <td className="px-2.5 py-1.5 font-semibold">{h.symbol}</td>
-                    <td className="px-2.5 py-1.5 text-muted-foreground">{h.name}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{h.qty.toLocaleString()}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZAR(h.mv)}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums text-muted-foreground">{h.target.toFixed(1)}%</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{h.actual.toFixed(1)}%</td>
-                    <td className="px-2.5 py-1.5">
-                      <DriftBar drift={drift} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+        <EmptyDataState
+          message="Per-investor holdings not yet published for this strategy."
+          hint="The worker computes target vs actual from oems_position_c and oems_transaction_c per investor — wire the per-strategy rollup in the worker to populate this panel."
+        />
       </Panel>
     </div>
   );
@@ -292,31 +325,6 @@ function KpiSmall({ label, value, negative }: { label: string; value: string; ne
     <div className="rounded-md border border-border/60 bg-surface-2/40 p-2">
       <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{label}</p>
       <p className={cn("mt-0.5 font-mono text-sm font-semibold", negative && "text-down")}>{value}</p>
-    </div>
-  );
-}
-
-function DriftBar({ drift }: { drift: number }) {
-  const widthPct = Math.min(Math.abs(drift) * 8, 48);
-  const isOver = drift >= 0;
-  const isMaterial = Math.abs(drift) > 0.5;
-  return (
-    <div className="flex items-center gap-1.5">
-      <div className="relative h-1.5 flex-1 rounded bg-muted">
-        <div className="absolute left-1/2 top-0 h-full w-px bg-muted-foreground/50" />
-        <div
-          className={cn("absolute top-0 h-full rounded", isOver ? "left-1/2 bg-success" : "right-1/2 bg-destructive")}
-          style={{ width: `${widthPct}%` }}
-        />
-      </div>
-      <span
-        className={cn(
-          "w-12 text-right font-mono text-[10px] tabular-nums",
-          isMaterial ? (isOver ? "text-success" : "text-destructive") : "text-muted-foreground",
-        )}
-      >
-        {drift >= 0 ? "+" : ""}{drift.toFixed(2)}
-      </span>
     </div>
   );
 }

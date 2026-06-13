@@ -9,40 +9,65 @@ import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
-import { useIress } from "@/lib/iress/provider";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
-import { formatBps } from "@/lib/format";
 import { queryOpts } from "@/lib/store/query-provider";
 
+interface CurveResponse {
+  code: string;
+  points: Array<{ tenor: string; years: number; yield: number; asOf: string }>;
+  source: string;
+  message?: string;
+}
+
+interface CurveMetricsResponse {
+  code: string;
+  metrics: Array<{
+    metric: string;
+    tenorLabel: string | null;
+    value: number;
+    unit: "bp" | "%";
+    asOf: string;
+  }>;
+  pca: { level: number | null; slope: number | null; curvature: number | null; residual: number | null } | null;
+  source: string;
+  message?: string;
+}
+
+const CURVE_CODES = ["ZAR_GOVI", "ZAR_NSS", "ZAR_REAL", "ZAR_BREAKEVEN"] as const;
+
 export default function CurvesPage() {
-  const { data } = useIress();
   const realDataOnly = isRealDataOnlyClient();
-  const goviQ = useQuery({
-    queryKey: ["govi"],
-    queryFn: () => data.zarGoviCurve(),
-    enabled: !realDataOnly,
-    ...queryOpts("reference"),
-  });
-  const swapQ = useQuery({
-    queryKey: ["swap"],
-    queryFn: () => data.zarSwapCurve(),
-    enabled: !realDataOnly,
-    ...queryOpts("reference"),
-  });
-  const realQ = useQuery({
-    queryKey: ["real"],
-    queryFn: () => data.zarRealCurve(),
-    enabled: !realDataOnly,
-    ...queryOpts("reference"),
-  });
-  const breakevenQ = useQuery({
-    queryKey: ["breakeven"],
-    queryFn: () => data.zarBreakeven(),
-    enabled: !realDataOnly,
+
+  const curves = CURVE_CODES.map((code) =>
+    // hooks must be called unconditionally — we gate fetch via `enabled`
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    useQuery<CurveResponse>({
+      queryKey: ["bff-curve", code],
+      queryFn: async () => {
+        const r = await fetch(`/api/curves/${code}`, { cache: "no-store" });
+        if (!r.ok) throw new Error(`Curve BFF ${code} ${r.status}`);
+        return r.json();
+      },
+      enabled: realDataOnly,
+      refetchInterval: 60_000,
+      ...queryOpts("reference"),
+    }),
+  );
+  const [goviQ, nssQ, realQ, beQ] = curves;
+
+  const metricsQ = useQuery<CurveMetricsResponse>({
+    queryKey: ["bff-curve-metrics", "ZAR_NSS"],
+    queryFn: async () => {
+      const r = await fetch("/api/curves/ZAR_NSS/metrics", { cache: "no-store" });
+      if (!r.ok) throw new Error(`Metrics BFF ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
     ...queryOpts("reference"),
   });
 
-  if (realDataOnly) {
+  if (!realDataOnly) {
     return (
       <div className="space-y-3">
         <header>
@@ -51,37 +76,59 @@ export default function CurvesPage() {
             Nelson-Siegel-Svensson fitted · ZAR govi · swap · real · breakeven · PCA decomposition
           </p>
         </header>
-        <Panel title="ZAR yield curves" endpoint="TimeSeriesGet2">
-          <EmptyDataState message="Yield curve feed not configured." />
+        <Panel title="ZAR yield curves" endpoint="oems_strategy_c → yield_curve_history_c">
+          <EmptyDataState
+            message="Mock mode disables the curves module."
+            hint="Switch to real-data mode and ensure the worker has written yield_curve_history_c rows for ZAR_NSS."
+            badgeLabel="mock"
+          />
         </Panel>
       </div>
     );
   }
 
-  const govi = goviQ.data ?? [];
-  const swap = swapQ.data ?? [];
-  const real = realQ.data ?? [];
-  const breakeven = breakevenQ.data ?? [];
+  const govi = goviQ.data?.points ?? [];
+  const nss = nssQ.data?.points ?? [];
+  const real = realQ.data?.points ?? [];
+  const be = beQ.data?.points ?? [];
 
-  const combined = useMemo(() => govi.map((p, i) => ({
-    tenor: p.tenor,
-    govi: p.yield,
-    swap: swap[i]?.yield,
-    real: real[i]?.yield,
-    breakeven: breakeven[i]?.breakeven,
-  })), [govi, swap, real, breakeven]);
+  // Align the four series on the *same* tenor list so the LineChart has
+  // a consistent x-axis. We use the NSS canonical tenors as the spine;
+  // series with shorter tenor lists leave the unmatched indices as
+  // `undefined` (recharts will gap the line).
+  const combined = useMemo(() => {
+    if (nss.length === 0) return [];
+    return nss.map((p, i) => ({
+      tenor: p.tenor,
+      govi: govi[i]?.yield,
+      swap: nss[i]?.yield,
+      real: real[i]?.yield,
+      breakeven: be[i]?.yield,
+    }));
+  }, [govi, nss, real, be]);
 
-  const move = govi.length > 1 ? {
-    level: 12,
-    slope: -8,
-    curvature: 3,
-    residual: 1,
-  } : { level: 0, slope: 0, curvature: 0, residual: 0 };
+  const pca = metricsQ.data?.pca;
+  const move = pca
+    ? {
+        level: pca.level ?? 0,
+        slope: pca.slope ?? 0,
+        curvature: pca.curvature ?? 0,
+        residual: pca.residual ?? 0,
+      }
+    : null;
 
+  const ois3m = metricsQ.data?.metrics.find((m) => m.metric === "ois_spread_3m")?.value;
+  const ois12m = metricsQ.data?.metrics.find((m) => m.metric === "ois_spread_12m")?.value;
+  const carry3m = metricsQ.data?.metrics.find((m) => m.metric === "carry_3m")?.value;
+  const carry12m = metricsQ.data?.metrics.find((m) => m.metric === "carry_12m")?.value;
+  const rolldown3m = metricsQ.data?.metrics.find((m) => m.metric === "rolldown_3m")?.value;
+  const rolldown12m = metricsQ.data?.metrics.find((m) => m.metric === "rolldown_12m")?.value;
+
+  const latestNss = nss[nss.length - 1]?.yield ?? 0;
   const latestGovi = govi[govi.length - 1]?.yield ?? 0;
-  const latestSwap = swap[swap.length - 1]?.yield ?? 0;
   const latestReal = real[real.length - 1]?.yield ?? 0;
-  const latestBE = breakeven[breakeven.length - 1]?.breakeven ?? 0;
+  const latestBE = be[be.length - 1]?.yield ?? 0;
+  const isLoadingCurves = goviQ.isLoading || nssQ.isLoading || realQ.isLoading || beQ.isLoading;
 
   return (
     <div className="space-y-3">
@@ -93,25 +140,55 @@ export default function CurvesPage() {
       </header>
 
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
-        {goviQ.isLoading ? (
+        {isLoadingCurves ? (
           [0, 1, 2, 3].map((n) => <KpiTileSkeleton key={`curves-kpi-${n}`} />)
         ) : (
           <>
-            <KpiTile label="ZAR govi 10Y" value={`${latestGovi.toFixed(2)}%`} sub={formatBps(move.level)} tone={move.level > 0 ? "warning" : "positive"} />
-            <KpiTile label="ZAR swap 10Y" value={`${latestSwap.toFixed(2)}%`} sub="vs govi" />
-            <KpiTile label="ZAR real 10Y" value={`${latestReal.toFixed(2)}%`} sub="ILB yield" />
-            <KpiTile label="Breakeven 10Y" value={`${latestBE.toFixed(2)}%`} sub="expected CPI" />
+            <KpiTile
+              label="ZAR govi 10Y"
+              value={latestGovi > 0 ? `${latestGovi.toFixed(2)}%` : "—"}
+              sub={move ? `${move.level >= 0 ? "+" : ""}${move.level}bp today` : "no PCA"}
+              tone={move ? (move.level > 0 ? "warning" : "positive") : "neutral"}
+            />
+            <KpiTile
+              label="ZAR NSS 10Y"
+              value={latestNss > 0 ? `${latestNss.toFixed(2)}%` : "—"}
+              sub={move ? `${move.slope >= 0 ? "+" : ""}${move.slope}bp slope` : "no PCA"}
+            />
+            <KpiTile
+              label="ZAR real 10Y"
+              value={latestReal > 0 ? `${latestReal.toFixed(2)}%` : "—"}
+              sub="ILB yield"
+            />
+            <KpiTile
+              label="Breakeven 10Y"
+              value={latestBE > 0 ? `${latestBE.toFixed(2)}%` : "—"}
+              sub="expected CPI"
+            />
           </>
         )}
       </div>
 
       <div className="grid grid-cols-12 gap-2.5">
-        {goviQ.isLoading || swapQ.isLoading || realQ.isLoading || breakevenQ.isLoading ? (
+        {isLoadingCurves ? (
           <PanelSkeleton rows={4} height="h-[380px]" className="col-span-12 lg:col-span-8" />
+        ) : nss.length === 0 ? (
+          <Panel
+            title="Combined · govi · NSS · real · breakeven"
+            endpoint="GET /api/curves/{code}"
+            dataSource="unconfigured"
+            className="col-span-12 lg:col-span-8 h-[380px]"
+          >
+            <EmptyDataState
+              message="No ZAR yield curve points ingested."
+              hint="The worker writes a row per (curve_id, as_of) to yield_curve_history_c via TimeSeriesGet2. Until a curve point is written, this panel stays empty."
+            />
+          </Panel>
         ) : (
           <Panel
-            title="Combined · govi · swap · real · breakeven"
-            endpoint="GET /v1/yieldcurve/zar?bundled"
+            title="Combined · govi · NSS · real · breakeven"
+            endpoint="GET /api/curves/{code}"
+            dataSource={goviQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
             className="col-span-12 lg:col-span-8 h-[380px]"
           >
             <ResponsiveContainer width="100%" height="100%">
@@ -122,7 +199,7 @@ export default function CurvesPage() {
                 <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} formatter={(v: number) => `${v.toFixed(2)}%`} />
                 <Legend wrapperStyle={{ fontSize: 10, paddingTop: 4 }} />
                 <Line type="monotone" dataKey="govi" name="Govi" stroke="hsl(38 95% 56%)" strokeWidth={2.2} dot={{ r: 2 }} />
-                <Line type="monotone" dataKey="swap" name="Swap" stroke="hsl(263 80% 65%)" strokeWidth={1.6} dot={false} />
+                <Line type="monotone" dataKey="swap" name="NSS" stroke="hsl(263 80% 65%)" strokeWidth={1.6} dot={false} />
                 <Line type="monotone" dataKey="real" name="Real (ILB)" stroke="hsl(180 60% 50%)" strokeWidth={1.4} dot={false} strokeDasharray="4 4" />
                 <Line type="monotone" dataKey="breakeven" name="Breakeven" stroke="hsl(351 90% 60%)" strokeWidth={1.2} dot={false} strokeDasharray="2 4" />
               </LineChart>
@@ -132,85 +209,117 @@ export default function CurvesPage() {
 
         <Panel
           title="PCA · today's curve move"
-          endpoint="INTERNAL · PCA on ZAR curve"
+          endpoint="GET /api/curves/ZAR_NSS/metrics"
+          dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
           className="col-span-12 lg:col-span-4 h-[380px]"
           right={<span className="font-mono text-[10px]">3-factors + residual</span>}
         >
-          <div className="grid grid-cols-1 gap-1.5 text-xs">
-            {[
-              { k: "Level (parallel)", v: move.level, help: "whole curve shift" },
-              { k: "Slope (2s10s)", v: move.slope, help: "short vs long" },
-              { k: "Curvature (fly)", v: move.curvature, help: "belly twist" },
-              { k: "Residual", v: move.residual, help: "unexplained" },
-            ].map((row) => (
-              <div key={row.k} className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold">{row.k}</p>
-                    <p className="text-[9.5px] text-muted-foreground">{row.help}</p>
+          {move ? (
+            <div className="grid grid-cols-1 gap-1.5 text-xs">
+              {[
+                { k: "Level (parallel)", v: move.level, help: "whole curve shift" },
+                { k: "Slope (2s10s)", v: move.slope, help: "short vs long" },
+                { k: "Curvature (fly)", v: move.curvature, help: "belly twist" },
+                { k: "Residual", v: move.residual, help: "unexplained" },
+              ].map((row) => (
+                <div key={row.k} className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-semibold">{row.k}</p>
+                      <p className="text-[9.5px] text-muted-foreground">{row.help}</p>
+                    </div>
+                    <p className={`font-mono text-base font-semibold ${row.v >= 0 ? "text-up" : "text-down"}`}>
+                      {row.v >= 0 ? "+" : ""}{row.v}bp
+                    </p>
                   </div>
-                  <p className={`font-mono text-base font-semibold ${row.v >= 0 ? "text-up" : "text-down"}`}>
-                    {row.v >= 0 ? "+" : ""}{row.v}bp
-                  </p>
+                  <div className="mt-1.5 h-1 overflow-hidden rounded bg-muted">
+                    <div
+                      className={row.v >= 0 ? "h-full bg-success" : "h-full bg-destructive"}
+                      style={{ width: `${Math.min(100, Math.abs(row.v) * 6)}%` }}
+                    />
+                  </div>
                 </div>
-                <div className="mt-1.5 h-1 overflow-hidden rounded bg-muted">
-                  <div
-                    className={row.v >= 0 ? "h-full bg-success" : "h-full bg-destructive"}
-                    style={{ width: `${Math.min(100, Math.abs(row.v) * 6)}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyDataState
+              message="PCA decomposition requires fitted yield curve + derived metrics."
+              hint={metricsQ.data?.message ?? "Wire TimeSeriesGet2 + the curve-derived metrics loop in the worker."}
+            />
+          )}
         </Panel>
       </div>
 
       <div className="grid grid-cols-12 gap-2.5">
         <Panel
-          title="ZAR-OIS spread · 3M · 12M · 5Y"
-          endpoint="GET /v1/yieldcurve/zar/ois?spread=irs"
+          title="ZAR-OIS spread · 3M · 12M"
+          endpoint="GET /api/curves/ZAR_NSS/metrics?metric=ois_spread_*"
+          dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
           className="col-span-12 lg:col-span-6 h-[300px]"
         >
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={Array.from({ length: 60 }, (_, i) => ({ t: i, spread: 0.45 + Math.sin(i / 6) * 0.12 + Math.cos(i / 18) * 0.08 }))} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
-              <defs>
-                <linearGradient id="oisGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
-                  <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-              <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => `${v}m`} interval={9} />
-              <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="%" />
-              <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
-              <Area type="monotone" dataKey="spread" stroke="hsl(263 80% 65%)" fill="url(#oisGrad)" strokeWidth={1.6} />
-            </AreaChart>
-          </ResponsiveContainer>
+          {ois3m !== undefined || ois12m !== undefined ? (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {[
+                ["OIS spread (3M)", ois3m !== undefined ? `${ois3m.toFixed(2)}%` : "—"],
+                ["OIS spread (12M)", ois12m !== undefined ? `${ois12m.toFixed(2)}%` : "—"],
+                ["OIS spread (5Y)", "—"],
+                ["OIS spread (10Y)", "—"],
+                ["OIS spread (delta 3M→12M)", ois3m !== undefined && ois12m !== undefined ? `${(ois12m - ois3m).toFixed(2)}%` : "—"],
+                ["Source", "oems_curve_metric_c"],
+              ].map(([l, v]) => (
+                <div key={l} className="flex items-center justify-between rounded-md border border-border/60 bg-surface-2/30 p-2">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{l}</p>
+                  <p className="font-mono font-semibold">{v}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyDataState
+              message="No OIS spread metrics recorded."
+              hint="The worker's curve-derived metrics loop writes ois_spread_3m and ois_spread_12m to oems_curve_metric_c. Run the loop to populate."
+            />
+          )}
         </Panel>
 
         <Panel
           title="Carry & rolldown · key 5Y vertex"
-          endpoint="INTERNAL · carry rolldown"
+          endpoint="GET /api/curves/ZAR_NSS/metrics?metric=carry_*"
+          dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
           className="col-span-12 lg:col-span-6 h-[300px]"
-          right={<Pill tone="success" size="xs">+0.62% T+3M</Pill>}
+          right={
+            carry3m !== undefined && rolldown3m !== undefined ? (
+              <Pill tone="success" size="xs">
+                {((carry3m + rolldown3m) >= 0 ? "+" : "") + (carry3m + rolldown3m).toFixed(2)}% T+3M
+              </Pill>
+            ) : (
+              <Pill tone="neutral" size="xs">—</Pill>
+            )
+          }
         >
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            {[
-              ["Carry (3M)", "+0.55%"],
-              ["Rolldown (3M)", "+0.07%"],
-              ["Total (3M)", "+0.62%"],
-              ["Carry (12M)", "+2.18%"],
-              ["Rolldown (12M)", "+0.31%"],
-              ["Total (12M)", "+2.49%"],
-              ["Annualized (3M)", "+2.47%"],
-              ["Annualized (12M)", "+2.49%"],
-            ].map(([l, v]) => (
-              <div key={l} className="flex items-center justify-between rounded-md border border-border/60 bg-surface-2/30 p-2">
-                <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{l}</p>
-                <p className="font-mono font-semibold">{v}</p>
-              </div>
-            ))}
-          </div>
+          {carry3m !== undefined || carry12m !== undefined ? (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {[
+                ["Carry (3M)", carry3m !== undefined ? `${carry3m >= 0 ? "+" : ""}${carry3m.toFixed(2)}%` : "—"],
+                ["Rolldown (3M)", rolldown3m !== undefined ? `${rolldown3m >= 0 ? "+" : ""}${rolldown3m.toFixed(2)}%` : "—"],
+                ["Total (3M)", carry3m !== undefined && rolldown3m !== undefined ? `${(carry3m + rolldown3m) >= 0 ? "+" : ""}${(carry3m + rolldown3m).toFixed(2)}%` : "—"],
+                ["Carry (12M)", carry12m !== undefined ? `${carry12m >= 0 ? "+" : ""}${carry12m.toFixed(2)}%` : "—"],
+                ["Rolldown (12M)", rolldown12m !== undefined ? `${rolldown12m >= 0 ? "+" : ""}${rolldown12m.toFixed(2)}%` : "—"],
+                ["Total (12M)", carry12m !== undefined && rolldown12m !== undefined ? `${(carry12m + rolldown12m) >= 0 ? "+" : ""}${(carry12m + rolldown12m).toFixed(2)}%` : "—"],
+                ["Annualised (3M)", carry3m !== undefined && rolldown3m !== undefined ? `${((carry3m + rolldown3m) * 4).toFixed(2)}%` : "—"],
+                ["Annualised (12M)", carry12m !== undefined && rolldown12m !== undefined ? `${(carry12m + rolldown12m).toFixed(2)}%` : "—"],
+              ].map(([l, v]) => (
+                <div key={l} className="flex items-center justify-between rounded-md border border-border/60 bg-surface-2/30 p-2">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{l}</p>
+                  <p className="font-mono font-semibold">{v}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyDataState
+              message="No carry/rolldown metrics recorded."
+              hint="The worker's curve-derived metrics loop writes carry_3m/carry_12m/rolldown_3m/rolldown_12m to oems_curve_metric_c."
+            />
+          )}
         </Panel>
       </div>
     </div>
