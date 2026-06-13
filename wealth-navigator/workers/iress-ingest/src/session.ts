@@ -254,8 +254,29 @@ export class WorkerSessionManager {
   private inflight: Promise<WorkerMintSession> | null = null;
   private lastPersistedApplicationId: string | null = null;
   private licenseBackoffUntil = 0;
+  /**
+   * Most recent entitlement-required or session-dead error the worker
+   * surfaced (25008 license exhausted, 25001 invalid session, 25014
+   * entitlement required, 25033 service session terminated, or any
+   * `isIressSessionDeadError`). Surfaced by `/debug/ips-session` for the
+   * BFF diagnostic so the operator can see *why* the IPS / IOSPlus
+   * service keys are missing without tailing Railway logs. Cleared on a
+   * successful session bring-up so the field is honest about "no
+   * recent failure".
+   */
+  private lastSessionError: { code: number | null; message: string; ts: string } | null = null;
 
   constructor(private readonly deps: WorkerSessionDeps) {}
+
+  private recordSessionError(err: unknown): void {
+    const code = err instanceof IressError ? err.code : null;
+    const message = err instanceof Error ? err.message : String(err);
+    this.lastSessionError = { code, message, ts: new Date().toISOString() };
+  }
+
+  private clearSessionError(): void {
+    this.lastSessionError = null;
+  }
 
   private async resolveApplicationId(): Promise<string> {
     const persisted = await readPersistedApplicationId(this.deps.supabase, this.deps.workerId);
@@ -317,6 +338,7 @@ export class WorkerSessionManager {
     console.warn(
       `[iress-ingest] dead IRESS session (${msg}) — ending wire session and rebuilding`,
     );
+    this.recordSessionError(err);
     this.invalidate();
     if (
       staleKey &&
@@ -346,6 +368,7 @@ export class WorkerSessionManager {
         forceKickOn25008: firstBootOrOrphan,
       });
       this.licenseBackoffUntil = 0;
+      this.clearSessionError();
       const session = this.buildSession(iressSession, serviceKeys, applicationId);
       const svc = Object.keys(serviceKeys).join(",") || "none";
       console.info(
@@ -374,6 +397,7 @@ export class WorkerSessionManager {
       });
       return session;
     } catch (err) {
+      this.recordSessionError(err);
       if (err instanceof IressError && err.code === 25008) {
         this.licenseBackoffUntil = Date.now() + LICENSE_EXHAUSTED_BACKOFF_MS;
         const hint = firstBootOrOrphan
@@ -410,14 +434,26 @@ export class WorkerSessionManager {
     return this.cache;
   }
 
+  /**
+   * Snapshot of the most recent entitlement-required / session-dead
+   * error the worker observed, for `/debug/ips-session` to surface.
+   * `null` when no such error has been recorded (or the most recent
+   * `startSession` succeeded and cleared it).
+   */
+  peekLastSessionError(): { code: number | null; message: string; ts: string } | null {
+    return this.lastSessionError;
+  }
+
   async getSession(): Promise<WorkerMintSession> {
     if (Date.now() < this.licenseBackoffUntil) {
       const waitSec = Math.ceil((this.licenseBackoffUntil - Date.now()) / 1000);
-      throw new IressError(
+      const backoffErr = new IressError(
         25008,
         "IRESSSessionStart",
         `License seat occupied — retry in ~${waitSec}s or run bun run iress:logout`,
       );
+      this.recordSessionError(backoffErr);
+      throw backoffErr;
     }
     if (this.cache && Date.now() < this.cache.expiresAt - EXPIRY_BUFFER_MS) {
       return this.cache;

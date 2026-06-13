@@ -9,6 +9,10 @@
  *
  * Endpoints (all require `WORKER_HTTP_TOKEN` if set):
  *   GET  /health                  — heartbeat shape (no IRESS call)
+ *   GET  /debug/ips-session       — IPS / IOSPlus / FIXPlus service session
+ *                                    state (no IRESS call; reads the cached
+ *                                    session). Used by the BFF
+ *                                    `/api/integration/diagnostics` route.
  *   GET  /orders                  — `OrderPadGetByAccount` for ?account=...
  *   GET  /orders/stream           — SSE: re-polls orders and pushes deltas
  *   POST /debug/timeseries-probe  — single-shot `TimeSeriesGet2` with the
@@ -35,7 +39,16 @@ import { writeHeartbeat, type WorkerSupabase } from "./supabase";
 import { WorkerSessionManager, type WorkerMintSession } from "./session";
 import { getIressClient } from "../../../src/lib/iress/index";
 import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
-import type { Order } from "../../../src/types/iress";
+import type { Order, IressService } from "../../../src/types/iress";
+
+/** Services whose service-session state `/debug/ips-session` surfaces. */
+const KNOWN_SERVICE_SESSIONS: ReadonlyArray<IressService> = ["IOSPlus", "IPS", "FIXPlus"];
+
+/** Redact a session key to its first 8 chars (or null when absent). */
+function redactServiceKey(key: string | undefined): string | null {
+  if (!key) return null;
+  return key.slice(0, 8);
+}
 
 /** OrderFilter values (1=WORKING, 2=OPEN, 3=ALL, 4=AMENDED, 5=HISTORICAL). */
 type OrderFilter = 1 | 2 | 3 | 4 | 5;
@@ -448,6 +461,43 @@ export async function handleRequest(
   if (req.method === "GET" && path === "/health") {
     const snapshot = buildHealthSnapshot(deps, deps.sessions.peekSession(), getLastQuoteSyncAt());
     send(res, 200, snapshot);
+    return;
+  }
+
+  if (req.method === "GET" && path === "/debug/ips-session") {
+    // Read-only snapshot of the cached IRESS service-session state. No
+    // SOAP call, no IRESS login — answers "which IOSPlus/IPS/FIXPlus
+    // keys are currently in the worker's memory" so the BFF
+    // `/api/integration/diagnostics` route can surface it without
+    // round-tripping IRESS. The IPS service session is the one the
+    // IPSAccountGetAll1 / IPSPositionGetAll1 / IPSTransactionGetByAccount5
+    // entitlement ask is centred on; the route name is intentionally
+    // broader (`/debug/ips-session`) so the same endpoint reports the
+    // IOSPlus / FIXPlus entitlement state too.
+    const session = deps.sessions.peekSession();
+    const lastError = deps.sessions.peekLastSessionError();
+    const serviceKeys: Record<string, string | null> = {};
+    const services: string[] = [];
+    for (const svc of KNOWN_SERVICE_SESSIONS) {
+      const raw = session?.serviceKeys[svc];
+      const redacted = redactServiceKey(raw);
+      serviceKeys[svc] = redacted;
+      if (raw) services.push(svc);
+    }
+    // The "primary" service key the BFF should highlight — IOSPlus is
+    // what OrderPadGetByAccount uses, so it's the one operators usually
+    // want to see first. Falls back to the first cached service key,
+    // then null.
+    const primaryCached = session?.serviceKeys.IOSPlus;
+    send(res, 200, {
+      ok: true,
+      serviceKeyCached: redactServiceKey(primaryCached),
+      services,
+      serviceKeys,
+      applicationId: session?.applicationId ?? null,
+      iressMode: deps.env.iressMode,
+      lastError,
+    });
     return;
   }
 
