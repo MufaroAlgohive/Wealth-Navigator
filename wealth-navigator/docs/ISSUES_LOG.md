@@ -2,6 +2,44 @@
 
 Generated 2026-06-13 (UTC+2). Scoped to OEMS cockpit + BFF + Railway worker + Supabase MyMint (`nnwzhxfjpjbzujevwzlh`). Read time ~5 min.
 
+## 0. UI-honesty pass — completed (2026-06-13)
+
+All 7 RED findings (#1–#7) and 25 YELLOW findings (#8–#32, plus #33–#37) from the
+UI audit are committed. The full mapping lives in
+`wealth-navigator/docs/UI_AUDIT_FIX_LOG.md` (every audit # → commit hash
+→ file:line).
+
+Key shifts:
+- **Adapter-mode tile** now reads from `primaryWorker.iress_mode` (Railway env),
+  not `iressConfig.mode` (Vercel env) — so it shows `LIVE` while the worker
+  is heartbeating.
+- **BFF ghost-worker filter** drops `status="stopped"` rows and primary
+  `service_name`/`worker_id` mismatch. The worker also writes
+  `status="stopped"` on clean shutdown (new `gracefulStop()` helper).
+- **`deriveDataSource`** returns `LIVE` when the worker is `iress_mode = "live"`
+  AND at least one row has a tick fresher than 30s. The `HYBRID` case is
+  reserved for actual live + mock mixing (production never does this).
+- **Shared `JSE_TRACKED_UNIVERSE`** module (10 JSE equities + 2 rate codes)
+  consumed by both the worker `DEFAULT_WATCHLIST` and the UI Security/Cockpit
+  watchlists. Watchlist-size mismatch is closed.
+- **Empty-state reason taxonomy** (`supabase_not_configured` | `supabase_query_failed`
+  with `migration` | `empty` | `entitlement_blocked` | `worker_not_running`) is
+  threaded through every BFF that returns `source: "unavailable"`. The
+  Cockpit AUM, Day P&L, Open Orders, JIBAR/USDZAR tiles, Strategies, Fixed
+  Income, Money Market, Curves, Macro, News all render cause-based messages.
+- **Shared `EntitlementRequired` primitive** for the three TimeSeriesGet2
+  call-sites (Cockpit Sector Heatmap, Fixed Income ZAR govi, Curves Combined).
+- **Worker events** now carry `elapsedMs` (`quote_sync_complete`,
+  `ips_sync_complete`, `time_series_sync_complete`) so the integration
+  page's latency chart populates.
+- **Equity row "no tick" pill** distinguishes BHG-style hollow rows from
+  genuine missing values.
+- **Dev-mode mock override** (`?mock=1` / `?mock=0` query param) lets a dev
+  force the seed path on production Vercel without flipping env. Banner
+  suppressed in production builds.
+
+12 atomic commits on `main` (no push). 350/350 vitest tests pass.
+
 ---
 
 ## 1. TL;DR
