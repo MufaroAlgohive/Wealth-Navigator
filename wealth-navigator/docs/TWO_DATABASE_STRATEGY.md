@@ -1,6 +1,7 @@
 # Two-Database Strategy — Mint Consumer + Mint OEMS / Wealth Navigator
 
-> **Status:** Draft strategy memo for the user's review. Strategy only — no migrations or code changes proposed beyond planning.  
+> **⚠️ SUPERSEDED (2026-06-13) by [`DB_TOPOLOGY_DECISION.md`](DB_TOPOLOGY_DECISION.md).** Final decision is a **3-database** topology (retail prod `mfxng…` / institutional prod `nnwz…` promoted from test / fresh staging), driven by a hard compliance requirement that institutional and retail data live in separate DBs. This memo's "keep separate, bridge via `mint_number`, defer" analysis remains useful background; where it conflicts with the decision doc, the decision doc wins.
+> **Status (original):** Draft strategy memo for the user's review. Strategy only — no migrations or code changes proposed beyond planning.  
 > **Author:** data-architecture strategist  
 > **Date:** 2026-06-13  
 > **Projects in scope:**

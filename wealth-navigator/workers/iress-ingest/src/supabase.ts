@@ -4,16 +4,40 @@ import { recentWorkerEvents } from "./events";
 
 export type WorkerSupabase = SupabaseClient;
 
-export function createWorkerSupabase(env: WorkerEnv): WorkerSupabase | null {
-  if (!env.supabaseUrl || !env.supabaseServiceKey) {
+function makeClient(url: string, key: string, label: string): WorkerSupabase | null {
+  if (!url || !key) {
     console.warn(
-      "[iress-ingest] SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set — heartbeat + writes disabled",
+      `[iress-ingest] ${label} Supabase URL / service key not set — writes to this target disabled`,
     );
     return null;
   }
-  return createClient(env.supabaseUrl, env.supabaseServiceKey, {
+  return createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+}
+
+/**
+ * INSTITUTIONAL prod (nnwz…) — desk trading book + analytics + worker ops
+ * (oems_*, integration_worker_health, worker_session_metadata, curves, …).
+ */
+export function createInstitutionalSupabase(env: WorkerEnv): WorkerSupabase | null {
+  return makeClient(env.institutionalSupabaseUrl, env.institutionalSupabaseKey, "INSTITUTIONAL");
+}
+
+/**
+ * RETAIL prod (mfxng…) — shared price tables securities_c / stock_intraday_c.
+ * Used by the quote-ingest loop once `RETAIL_SUPABASE_*` is configured.
+ */
+export function createRetailSupabase(env: WorkerEnv): WorkerSupabase | null {
+  return makeClient(env.retailSupabaseUrl, env.retailSupabaseKey, "RETAIL");
+}
+
+/**
+ * @deprecated Back-compat alias → INSTITUTIONAL. Prefer
+ * `createInstitutionalSupabase()` / `createRetailSupabase()`.
+ */
+export function createWorkerSupabase(env: WorkerEnv): WorkerSupabase | null {
+  return createInstitutionalSupabase(env);
 }
 
 export interface HeartbeatPayload {

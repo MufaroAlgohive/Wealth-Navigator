@@ -1,6 +1,6 @@
 import { iressConfig } from "@/lib/iress";
 import { fetchQuotesSafe, type QuoteWithSource } from "@/lib/iress/live-queries";
-import { isSupabaseConfigured } from "@/lib/supabase/server";
+import { isRetailSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,10 +43,11 @@ export async function GET(req: Request) {
 
   const useSupabase = isUseSupabaseQuotesEnabled();
 
-  if (useSupabase && !isSupabaseConfigured()) {
+  if (useSupabase && !isRetailSupabaseConfigured()) {
     return Response.json(
       {
-        error: "USE_SUPABASE_QUOTES=true but Supabase not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)",
+        error:
+          "USE_SUPABASE_QUOTES=true but retail Supabase not configured (RETAIL_SUPABASE_URL / RETAIL_SUPABASE_SERVICE_ROLE_KEY, or legacy SUPABASE_*)",
         useSupabase: true,
       },
       { status: 500 },

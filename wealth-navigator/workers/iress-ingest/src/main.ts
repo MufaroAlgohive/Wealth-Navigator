@@ -8,7 +8,7 @@
 import { loadWorkerEnv } from "./env";
 import { syncWatchlistQuotes } from "./quotes";
 import { WorkerSessionManager, LICENSE_RELEASE_DELAY_MS } from "./session";
-import { createWorkerSupabase, writeHeartbeat } from "./supabase";
+import { createInstitutionalSupabase, createRetailSupabase, writeHeartbeat } from "./supabase";
 import { runHealthLoop, gracefulStop } from "./health";
 import { pollAccountsForOrders } from "./orders";
 import { startHttpApi } from "./http-api";
@@ -39,9 +39,14 @@ const sessions = new WorkerSessionManager({
   allowWrites: env.allowWrites,
   dryRun: env.dryRun,
 });
-const supabase = createWorkerSupabase(env);
+// 3-DB topology (docs/DB_TOPOLOGY_DECISION.md): the trading book + analytics +
+// worker ops live on the INSTITUTIONAL prod (nnwz…); live prices land on the
+// RETAIL prod (mfxng…). Both fall back to the legacy SUPABASE_* pair until the
+// split vars are set, so this is a no-op until RETAIL_SUPABASE_* points at mfxng.
+const supabase = createInstitutionalSupabase(env);
+const quotesSupabase = createRetailSupabase(env);
 
-// Rebind supabase on the session manager now that it exists.
+// Rebind supabase on the session manager now that it exists (worker_session_metadata is institutional).
 (sessions as unknown as { deps: { supabase: typeof supabase } }).deps.supabase = supabase;
 
 let shuttingDown = false;
@@ -76,7 +81,7 @@ function logStartup(): void {
 async function quoteLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
-      const result = await syncWatchlistQuotes(env, sessions, supabase);
+      const result = await syncWatchlistQuotes(env, sessions, quotesSupabase);
       // Always stamp lastQuoteSyncAt + a complete log — even on synced=0 —
       // so the heartbeat can flip to healthy and the operator can see
       // that the loop ran end-to-end. The detail line is emitted from

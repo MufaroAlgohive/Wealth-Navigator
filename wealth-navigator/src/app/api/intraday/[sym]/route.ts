@@ -22,7 +22,7 @@
  * vs `prevClose`. Points are returned newest-first then re-sorted
  * oldest-first by the chart wrapper for the line series.
  */
-import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 
 export const runtime = "nodejs";
@@ -58,14 +58,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
       { status: 200 },
     );
   }
-  if (!isSupabaseConfigured()) {
+  if (!isRetailSupabaseConfigured()) {
     return Response.json(
       { symbol: sym, securityId: null, prevClose: null, points: [], asOf: null, source: "unavailable", reason: "supabase_not_configured" },
       { status: 503 },
     );
   }
 
-  const supabase = createServiceRoleClient();
+  const supabase = createRetailServiceRoleClient();
   const { data: secRows, error: secErr } = await supabase
     .from("securities_c")
     .select("id, symbol, prev_close")

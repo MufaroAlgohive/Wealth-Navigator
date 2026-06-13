@@ -23,11 +23,16 @@ function makeEnv(overrides: Partial<WorkerEnv> = {}): WorkerEnv {
     instrumentSync: false,
     supabaseUrl: "",
     supabaseServiceKey: "",
+    retailSupabaseUrl: "",
+    retailSupabaseKey: "",
+    institutionalSupabaseUrl: "",
+    institutionalSupabaseKey: "",
     iressAccountCode: "",
     applicationLabel: "lbl",
     defaultExchange: "JSE",
     fxExchange: "FX",
     moneyMarketExchange: "MM",
+    ipsServer: "IPSAPI",
     ...overrides,
   };
 }

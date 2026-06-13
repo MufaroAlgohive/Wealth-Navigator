@@ -1,5 +1,6 @@
 # Two-Database Strategy — Mint Consumer (Eververse) vs. MyMint OEMS
 
+> **⚠️ SUPERSEDED (2026-06-13) by [`DB_TOPOLOGY_DECISION.md`](DB_TOPOLOGY_DECISION.md)** — final decision is a 3-DB topology (retail prod `mfxng…` / institutional prod `nnwz…` promoted from test / fresh staging), driven by a compliance separation requirement. Background only below.
 > **Audience:** Mint / MyMint product + engineering leads.
 > **Scope:** Strategic recommendation for the relationship between the **Mint consumer app** Supabase project (ref `mfxnghmuccevsxwcetej`, "Eververse") and the **MyMint OEMS** Supabase project (ref `nnwzhxfjpjbzujevwzlh`, "MyMint").
 > **Decision required this week.** See §10 for the 3-paragraph executive summary.

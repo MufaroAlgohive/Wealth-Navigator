@@ -65,9 +65,14 @@ function makeWorkerEnv(overrides: Partial<{
     instrumentSync: false,
     supabaseUrl: "https://example.supabase.co",
     supabaseServiceKey: "sk",
+    retailSupabaseUrl: "https://example.supabase.co",
+    retailSupabaseKey: "sk",
+    institutionalSupabaseUrl: "https://example.supabase.co",
+    institutionalSupabaseKey: "sk",
     iressAccountCode: overrides.iressAccountCode ?? "ACC-1",
     applicationLabel: "Mint-OEMS-Test",
     defaultExchange: "JSE",
+    ipsServer: "IPSAPI",
   };
 }
 

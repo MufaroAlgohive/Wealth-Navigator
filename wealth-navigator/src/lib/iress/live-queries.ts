@@ -17,7 +17,7 @@ import { IressError } from "@/lib/iress/errors";
 import { getMintSession, withMintSession, invalidateMintSession } from "@/lib/iress/session-manager";
 import { emptyQuote, isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { initialQuotes, zarGoviCurve } from "@/lib/iress/seed";
-import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 import type { Order, Quote } from "@/types/iress";
 
 export type QuoteSource = "live" | "seed-fallback" | "mock" | "supabase" | "unavailable";
@@ -105,10 +105,12 @@ async function fetchQuotesFromSupabase(
   symbols: string[],
   exchange = "JSE",
 ): Promise<QuoteWithSource[]> {
-  if (!isSupabaseConfigured()) {
-    throw new Error("Supabase not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)");
+  if (!isRetailSupabaseConfigured()) {
+    throw new Error(
+      "Retail Supabase not configured (RETAIL_SUPABASE_URL / RETAIL_SUPABASE_SERVICE_ROLE_KEY, or legacy SUPABASE_*)",
+    );
   }
-  const supabase = createServiceRoleClient();
+  const supabase = createRetailServiceRoleClient();
   const normalised = Array.from(new Set(symbols.map(normaliseSymbol)));
   if (normalised.length === 0) return [];
 

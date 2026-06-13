@@ -51,10 +51,13 @@ export default function EquitiesPage() {
   }, [equitiesQ.data, realDataOnly]);
   const symbols = useMemo(() => equities.map((e) => e.symbol), [equities]);
   const liveQuotes = useLiveQuotes(symbols, symbols.length > 0);
-  // Audit #34 — read equity KPIs from the same /api/portfolio BFF
-  // the Cockpit uses. In real-data mode the BFF filters to asset_class
-  // = "equity" server-side and surfaces the cause-based reason when
-  // the portfolio migration hasn't been applied.
+  // Audit #34 — read equity KPIs from the same /api/portfolio BFF the
+  // Cockpit uses. NOTE (v1): /api/portfolio does NOT filter by asset
+  // class — `oems_position_c` has no asset_class column — so these KPIs
+  // are portfolio-wide, not equity-only. Treat "Equity AUM/P&L" as the
+  // whole book until per-asset-class classification (security_code →
+  // securities_c.asset_type) is wired. The BFF still surfaces the
+  // cause-based reason when the portfolio migration hasn't been applied.
   const portfolioQ = usePortfolio(realDataOnly);
 
   const totalAum = strategies.reduce((s, x) => s + x.aum, 0);

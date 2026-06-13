@@ -32,6 +32,12 @@ export interface WorkerEnv {
   instrumentSync: boolean;
   supabaseUrl: string;
   supabaseServiceKey: string;
+  /** RETAIL prod (mfxng…) — shared price tables securities_c / stock_intraday_c. */
+  retailSupabaseUrl: string;
+  retailSupabaseKey: string;
+  /** INSTITUTIONAL prod (nnwz…) — desk trading book + analytics + worker ops. */
+  institutionalSupabaseUrl: string;
+  institutionalSupabaseKey: string;
   iressAccountCode: string;
   applicationLabel: string;
   /** Default exchange passed to PricingQuoteGet (default "JSE"). */
@@ -111,6 +117,14 @@ const DEFAULT_WATCHLIST: WatchlistEntry[] = [
 export function loadWorkerEnv(): WorkerEnv {
   const supabaseUrl = process.env.SUPABASE_URL ?? "";
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+  // 3-DB topology (docs/DB_TOPOLOGY_DECISION.md): prices → RETAIL prod (mfxng…),
+  // everything else → INSTITUTIONAL prod (nnwz…). Both fall back to the legacy
+  // single pair, so behaviour is unchanged until the split vars are set on Railway.
+  const institutionalSupabaseUrl = process.env.INSTITUTIONAL_SUPABASE_URL ?? supabaseUrl;
+  const institutionalSupabaseKey =
+    process.env.INSTITUTIONAL_SUPABASE_SERVICE_ROLE_KEY ?? supabaseServiceKey;
+  const retailSupabaseUrl = process.env.RETAIL_SUPABASE_URL ?? supabaseUrl;
+  const retailSupabaseKey = process.env.RETAIL_SUPABASE_SERVICE_ROLE_KEY ?? supabaseServiceKey;
   const defaultExchange = (process.env.IRESS_DEFAULT_EXCHANGE ?? "JSE").toUpperCase().trim();
   const fxExchange = (process.env.IRESS_FX_EXCHANGE ?? "FX").toUpperCase().trim();
   const mmExchange = (process.env.IRESS_MM_EXCHANGE ?? "MM").toUpperCase().trim();
@@ -154,6 +168,10 @@ export function loadWorkerEnv(): WorkerEnv {
     instrumentSync: parseBool(process.env.IRESS_WORKER_INSTRUMENT_SYNC, false),
     supabaseUrl,
     supabaseServiceKey,
+    retailSupabaseUrl,
+    retailSupabaseKey,
+    institutionalSupabaseUrl,
+    institutionalSupabaseKey,
     iressAccountCode: process.env.IRESS_ACCOUNT_CODE ?? "",
     applicationLabel: process.env.IRESS_APPLICATION_LABEL ?? "Mint-OEMS-Worker",
     defaultExchange: defaultExchange || "JSE",
