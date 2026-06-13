@@ -396,11 +396,25 @@ export default function IntegrationPage() {
                   <span className="font-mono text-foreground">stock_intraday_c</span>.
                 </li>
                 <li>
-                  Watchlist size:{" "}
+                  {/* Yellow #25 — render the watchlist breakdown: equity
+                      count + rate-code count (FX/MM) + symbols the
+                      UI doesn't poll. The previous copy just said
+                      "22 symbols" which the UI could not back up
+                      (it only shows 10). After the shared
+                      JSE_TRACKED_UNIVERSE module, the breakdown
+                      is clean. */}
+                  Watchlist:{" "}
                   <span className="font-mono text-foreground">
                     {primaryWorker?.symbols_covered?.length ?? "—"}
                   </span>{" "}
-                  symbols. Rate codes (USDZAR → <span className="font-mono text-foreground">FX</span>, JIBAR_3M → <span className="font-mono text-foreground">MM</span>)
+                  ({primaryWorker
+                    ? `${(primaryWorker.symbols_covered ?? []).filter((s) => !["USDZAR", "JIBAR_3M"].includes(s)).length} JSE equities`
+                    : "—"}
+                  {" · "}
+                  {primaryWorker
+                    ? `${(primaryWorker.symbols_covered ?? []).filter((s) => ["USDZAR", "JIBAR_3M"].includes(s)).length} rate codes (FX/MM)`
+                    : "—"}
+                  ). Rate codes (USDZAR → <span className="font-mono text-foreground">FX</span>, JIBAR_3M → <span className="font-mono text-foreground">MM</span>)
                   ride the same <span className="font-mono text-foreground">PricingQuoteGet</span> loop — no extra entitlement needed.
                 </li>
                 <li>
