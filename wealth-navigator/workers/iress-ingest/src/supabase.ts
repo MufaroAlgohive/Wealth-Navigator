@@ -18,7 +18,11 @@ export function createWorkerSupabase(env: WorkerEnv): WorkerSupabase | null {
 
 export interface HeartbeatPayload {
   workerId: string;
-  status: "healthy" | "degraded" | "error";
+  // Audit #2 — `stopped` is the clean-shutdown state the new
+  // `gracefulStop()` helper writes; the BFF ghost filter treats
+  // it the same as "error" (filter it out) but a human reading
+  // `integration_worker_health` directly sees the right value.
+  status: "healthy" | "degraded" | "error" | "stopped";
   iressMode: string;
   lastQuoteSyncAt?: string;
   symbolsCovered?: string[];

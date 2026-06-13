@@ -45,6 +45,11 @@ interface StrategiesResponse {
   strategies: StrategyRow[];
   source: string;
   message?: string;
+  // Audit #12 — the BFF returns the typed reason + migration hint
+  // for the empty/una­vailable case.
+  reason?: import("@/lib/bff-reasons").BffUnavailableReason;
+  migration?: string;
+  error?: string;
 }
 
 function StrategiesPageContent() {

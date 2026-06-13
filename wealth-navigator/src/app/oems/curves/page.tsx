@@ -204,6 +204,14 @@ export default function CurvesPage() {
             dataSource={goviQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
             className="col-span-12 lg:col-span-8 h-[380px]"
           >
+            {/* Yellow #28 — the combined chart and the Cockpit's
+                J203 ALSI intraday panel share the same ZAR index
+                series (separate BFF: `/api/indices/J203`). Add a
+                small help tooltip so the operator doesn't think
+                these are two different things. */}
+            <p className="mb-1 text-[10px] text-muted-foreground">
+              <span className="font-mono">ⓘ</span> ALSI intraday (separate source) is the same series on the Cockpit's J203 panel.
+            </p>
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={combined} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
                 <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />

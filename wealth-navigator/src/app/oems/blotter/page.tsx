@@ -85,6 +85,15 @@ export default function BlotterPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Yellow #30 — back-link to the Cockpit. The Cockpit Open
+              Orders right-link goes to Blotter; the reverse link
+              lives here so navigation is symmetric. */}
+          <Link
+            href="/oems"
+            className="text-[10.5px] text-muted-foreground hover:text-primary hover:underline"
+          >
+            ← Cockpit
+          </Link>
           {!realDataOnly && (
             <>
               <ConfirmDestructive
