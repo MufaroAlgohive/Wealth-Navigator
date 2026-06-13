@@ -442,9 +442,23 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
 
   for (const code of config.indexCodes) {
     try {
+      const t0 = Date.now();
       const res = isLive
         ? await fetchSeries(sessions, code, "JSE")
         : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
+      recordWorkerEvent({
+        level: "info",
+        event: "iress_call_complete",
+        msg: `TimeSeriesGet2(${code}/JSE) returned ${res.points.length} points`,
+        data: {
+          method: "TimeSeriesGet2",
+          series: "index",
+          code,
+          exchange: "JSE",
+          elapsedMs: Date.now() - t0,
+          points: res.points.length,
+        },
+      });
       if (res.entitlementRequired) entitlementRequired = true;
       if (res.points.length === 0) {
         console.warn(
@@ -481,9 +495,23 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
 
   for (const code of config.sectorCodes) {
     try {
+      const t0 = Date.now();
       const res = isLive
         ? await fetchSeries(sessions, code, "JSE")
         : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
+      recordWorkerEvent({
+        level: "info",
+        event: "iress_call_complete",
+        msg: `TimeSeriesGet2(${code}/JSE) returned ${res.points.length} points`,
+        data: {
+          method: "TimeSeriesGet2",
+          series: "sector",
+          code,
+          exchange: "JSE",
+          elapsedMs: Date.now() - t0,
+          points: res.points.length,
+        },
+      });
       if (res.entitlementRequired) entitlementRequired = true;
       if (res.points.length === 0) {
         console.warn(
@@ -520,9 +548,23 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
 
   for (const code of config.curveCodes) {
     try {
+      const t0 = Date.now();
       const res = isLive
         ? await fetchSeries(sessions, code, "JSE")
         : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
+      recordWorkerEvent({
+        level: "info",
+        event: "iress_call_complete",
+        msg: `TimeSeriesGet2(${code}/JSE) returned ${res.points.length} points`,
+        data: {
+          method: "TimeSeriesGet2",
+          series: "curve",
+          code,
+          exchange: "JSE",
+          elapsedMs: Date.now() - t0,
+          points: res.points.length,
+        },
+      });
       if (res.entitlementRequired) entitlementRequired = true;
       if (res.points.length === 0) {
         console.warn(

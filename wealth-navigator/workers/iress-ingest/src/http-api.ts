@@ -301,6 +301,76 @@ async function fetchLiveOrders(
   }
 }
 
+interface OrderCancelResult {
+  ok: boolean;
+  orderId: string;
+  account: string;
+  cancelledAt: string;
+  workerId: string;
+  iressMode: string;
+  error?: { code: string; message: string };
+}
+
+/**
+ * Forward an `OrderDelete` to IRESS via the IOS+ service session.
+ * Same live-only gate as `fetchLiveOrders`: in mock / non-live modes
+ * the route returns 200 with `ok: false` and `error.code: "mock_mode"`.
+ * Session-death detection invalidates the cached session so the next
+ * call gets a fresh one.
+ */
+async function cancelLiveOrder(
+  deps: HttpApiDeps,
+  account: string,
+  orderId: string,
+): Promise<OrderCancelResult> {
+  const baseError = (code: string, message: string): OrderCancelResult => ({
+    ok: false,
+    orderId,
+    account,
+    cancelledAt: new Date().toISOString(),
+    workerId: deps.env.workerId,
+    iressMode: deps.env.iressMode,
+    error: { code, message },
+  });
+  const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+  if (!isLive) {
+    return baseError("mock_mode", "Worker is running in mock mode; no live orders available");
+  }
+  try {
+    const session = await deps.sessions.getSession();
+    const iosKey = session.serviceKeys.IOSPlus;
+    if (!iosKey) {
+      return baseError(
+        "ios_unavailable",
+        "IOSPlus service session not available; order pad not entitled",
+      );
+    }
+    const client = getIressClient("live");
+    // OrderDelete signature is the V4 minimum: session key + the
+    // broker-assigned order number. The full method shape is defined
+    // on the live IressClient (`orderDelete`).
+    await client.orderDelete({
+      ServiceSessionKey: iosKey,
+      OrderNumber: orderId,
+    });
+    return {
+      ok: true,
+      orderId,
+      account,
+      cancelledAt: new Date().toISOString(),
+      workerId: deps.env.workerId,
+      iressMode: deps.env.iressMode,
+    };
+  } catch (err) {
+    if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
+      deps.sessions.invalidate();
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const code = err instanceof IressError ? `iress_${err.code}` : "cancel_failed";
+    return baseError(code, message);
+  }
+}
+
 interface HealthSnapshot {
   ok: boolean;
   workerId: string;
@@ -425,6 +495,47 @@ export async function handleRequest(
 
   if (req.method === "GET" && path === "/orders/stream") {
     await streamOrders(req, res, deps, getLastQuoteSyncAt, url);
+    return;
+  }
+
+  if (req.method === "POST" && path === "/orders/cancel") {
+    let cancelBody: unknown;
+    try {
+      cancelBody = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    if (!cancelBody || typeof cancelBody !== "object") {
+      sendError(res, 400, "bad_request", "Body must be JSON with `orderId` (and optional `account`)");
+      return;
+    }
+    const cb = cancelBody as Record<string, unknown>;
+    const orderIdRaw = cb["orderId"];
+    const orderId = typeof orderIdRaw === "string" ? orderIdRaw.trim() : "";
+    if (!orderId) {
+      sendError(res, 400, "bad_request", "`orderId` is required");
+      return;
+    }
+    const accountRaw = cb["account"];
+    const account =
+      (typeof accountRaw === "string" && accountRaw.trim()) ||
+      deps.env.iressAccountCode.split(",")[0]?.trim() ||
+      "";
+    if (!account) {
+      sendError(
+        res,
+        503,
+        "account_not_configured",
+        "Order account code not configured (set IRESS_ACCOUNT_CODE on the worker)",
+      );
+      return;
+    }
+    const cancelResult = await cancelLiveOrder(deps, account, orderId);
+    // Same envelope as /orders: 200 with ok=false when the broker
+    // answered "not entitled" / "order not found" / "session dead" —
+    // those are real answers, not failures.
+    send(res, 200, cancelResult);
     return;
   }
 
