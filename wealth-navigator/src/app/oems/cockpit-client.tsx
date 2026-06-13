@@ -28,6 +28,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
+import { useTick } from "@/lib/store/tick-stream-provider";
+import { deriveDataSource } from "@/lib/hooks/quote-routing";
 import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
 import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
 import { usePortfolio } from "@/lib/hooks/use-portfolio";
@@ -78,6 +80,100 @@ interface CockpitClientProps {
  */
 const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL", "USDZAR", "JIBAR_3M"];
 
+/**
+ * Cause-based subtext for the AUM tile (audit #5). Reads the BFF's
+ * `reason` + `migration` + `error` fields and returns a JSX
+ * snippet the KpiTile can render as a single line. The migration
+ * filename is rendered in a monospace pill so the operator can
+ * copy-paste it.
+ */
+function portfolioAumSub(portfolio: { source: string; reason?: string; migration?: string; error?: string; accounts?: unknown[] } | undefined): React.ReactNode {
+  if (!portfolio) return "Loading portfolio…";
+  if (portfolio.source === "supabase") return `${(portfolio.accounts ?? []).length} accounts · IPS`;
+  if (portfolio.reason === "supabase_not_configured") return <span>Set <span className="font-mono">SUPABASE_URL</span> + <span className="font-mono">SUPABASE_SERVICE_ROLE_KEY</span> on Vercel</span>;
+  if (portfolio.reason === "supabase_query_failed") return (
+    <span>Run <span className="font-mono">{portfolio.migration ?? "supabase migration"}</span></span>
+  );
+  if (portfolio.reason === "empty") return <span>No portfolio rows yet — <span className="font-mono">IPSAccountGetAll1</span> returns no data</span>;
+  if (portfolio.reason === "entitlement_blocked") return <span>Ask Charles to enable <span className="font-mono">IPSAccountGetAll1</span> + <span className="font-mono">IPSPositionGetAll1</span></span>;
+  if (portfolio.reason === "worker_not_running") return <span>Railway iress-ingest offline — start the worker</span>;
+  return FEED_NOT_CONFIGURED;
+}
+
+function portfolioDayPnlSub(portfolio: { source: string; reason?: string; migration?: string; positions?: unknown[] } | undefined): React.ReactNode {
+  if (!portfolio) return "Loading…";
+  if (portfolio.source === "supabase") {
+    const n = (portfolio.positions ?? []).length;
+    return n > 0 ? `MTM on ${n} positions` : "MTM via IPS";
+  }
+  if (portfolio.reason === "supabase_query_failed") return (
+    <span>Run <span className="font-mono">{portfolio.migration ?? "migration"}</span> first</span>
+  );
+  return portfolioAumSub(portfolio);
+}
+
+function portfolioRebalanceSub(portfolio: { source: string; reason?: string; migration?: string; rebalanceDrift?: number } | undefined): React.ReactNode {
+  if (!portfolio) return "Loading…";
+  if (portfolio.source === "supabase") return `max drift ${(portfolio.rebalanceDrift ?? 0).toFixed(2)}%`;
+  if (portfolio.reason === "supabase_query_failed") return (
+    <span>Run <span className="font-mono">{portfolio.migration ?? "migration"}</span> first</span>
+  );
+  return portfolioAumSub(portfolio);
+}
+
+/**
+ * Yellow #6 / #32 — JIBAR 3M + USDZAR subtext. Picks one of:
+ *   "Live tick from stock_intraday_c" (when fresh)
+ *   "Worker has not polled this symbol" (worker running, no tick)
+ *   "Worker not configured" (no heartbeat)
+ *   "Migration pending" (intraday table missing)
+ *
+ * Uses the shared tick stream (audit #1) so we don't add a second
+ * subscription. Renders a stable short string under 60 chars so it
+ * fits the KpiTile's single-line sub slot.
+ */
+function JibarOrUsdzarSub({
+  sym,
+  primaryWorker,
+}: {
+  sym: string;
+  primaryWorker: { last_heartbeat_at: string } | null | undefined;
+}): React.ReactNode {
+  const tick = useTick(sym);
+  const fresh = tick && tick.ts && Date.now() - tick.ts < 60_000;
+  if (fresh) {
+    return <span>Live tick from <span className="font-mono">stock_intraday_c</span></span>;
+  }
+  if (!primaryWorker) {
+    return <span>Worker not configured — start Railway <span className="font-mono">Iress-Worker</span></span>;
+  }
+  return <span>Worker has not polled <span className="font-mono">{sym}</span> yet</span>;
+}
+
+/**
+ * Audit #7 + #31 — open-orders empty state. Distinguishes between:
+ *   - worker_not_running        (no heartbeat)
+ *   - entitlement_blocked       (worker healthy but IOS+ 500)
+ *   - no_iress_account_code     (worker healthy, account missing)
+ *   - empty                     (worker healthy, audit table is empty)
+ */
+function ordersEmptyMessage(
+  primaryWorker: { status?: string; account_configured?: boolean; last_heartbeat_at: string; accounts?: string[] } | null,
+  reason: string | undefined,
+): string {
+  if (reason === "supabase_query_failed") return "Run supabase/migrations/20260613000000_oems_order_audit.sql first";
+  if (!primaryWorker) return "Worker not heartbeating";
+  if (primaryWorker.status === "healthy" && primaryWorker.account_configured === false)
+    return "Set IRESS_ACCOUNT_CODE on the Railway worker";
+  if (primaryWorker.status === "healthy" && primaryWorker.account_configured === true) {
+    // Yellow #31 — third branch: worker is healthy + account is set
+    // but the table is still empty. The most common cause is the
+    // IOS+ service session failing (HTTP 500 on ServiceSessionStart).
+    return "IOS+ service session entitlement off — ask Charles";
+  }
+  return `Worker ${primaryWorker.status ?? "unknown"} · no open orders for this account`;
+}
+
 export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const { data } = useIress();
   const realDataOnly = isRealDataOnlyClient();
@@ -94,7 +190,28 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const auditOrdersQ = useAuditOrders("ALL", realDataOnly);
   const workerQ = useWorkerHealth(realDataOnly);
   const portfolioQ = usePortfolio(realDataOnly);
-  const primaryWorker = workerQ.data?.workers[0];
+  // Audit #3 — derive the Cockpit top-right data source badge label
+  // from the worker's `iress_mode` and the response freshness. The
+  // routing layer (`deriveDataSource`) is the single source of truth
+  // for badge labels; both the Cockpit and Integration pages feed it
+  // the worker mode + tick timestamps.
+  const primaryWorker = workerQ.data?.workers?.[0] ?? null;
+  const wsDataSource = deriveDataSource(
+    ((liveQuotes.data as unknown) as { rows?: Array<{ sym: string; last: number; ts?: number; source: "live" | "supabase" | "mock" | "seed-fallback" | "unavailable" }> })?.rows ?? [],
+    {
+      liveCount: (liveQuotes.data as { liveCount?: number } | undefined)?.liveCount ?? 0,
+      fallbackCount: (liveQuotes.data as { fallbackCount?: number } | undefined)?.fallbackCount ?? 0,
+      supabaseCount: (liveQuotes.data as { supabaseCount?: number } | undefined)?.supabaseCount ?? 0,
+      mockCount: (liveQuotes.data as { mockCount?: number } | undefined)?.mockCount ?? 0,
+      unavailableCount: (liveQuotes.data as { unavailableCount?: number } | undefined)?.unavailableCount ?? 0,
+    },
+    { workerIrEssMode: primaryWorker?.iress_mode ?? null },
+  );
+  // Use the new derivation when the worker is live AND we have a
+  // BFF response; otherwise fall back to the existing hook output
+  // (the seed/mock path). The hook internally calls the legacy
+  // `deriveDataSource` which is fine for non-live modes.
+  const cockpitDataSource = primaryWorker?.iress_mode === "live" ? wsDataSource : (liveQuotes.dataSource ?? "mock");
   const moversQ = useQuery({ queryKey: ["movers"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
   const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), enabled: !realDataOnly, ...queryOpts("reference") });
   const sensQ = useQuery({ queryKey: ["sens"], queryFn: () => data.sens(), enabled: !realDataOnly, ...queryOpts("reference") });
@@ -214,7 +331,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <DataSourceBadge source={liveQuotes.dataSource} />
+          <DataSourceBadge source={cockpitDataSource} />
           <Tabs value={range} onValueChange={(v) => setRange(v as typeof range)}>
             <TabsList className="h-7 bg-muted">
               <TabsTrigger value="1D" className="h-5 px-2 text-[10.5px]">1D</TabsTrigger>
@@ -236,23 +353,13 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               icon={<Layers className="h-3.5 w-3.5" />}
               label="Platform AUM"
               value={portfolioQ.data?.source === "supabase" ? formatZAR(portfolioQ.data.aum) : "—"}
-              sub={
-                portfolioQ.data?.source === "supabase"
-                  ? `${portfolioQ.data.accounts.length} accounts · IPS`
-                  : FEED_NOT_CONFIGURED
-              }
+              sub={portfolioAumSub(portfolioQ.data)}
             />
             <KpiTile
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Day P&L"
               value={portfolioQ.data?.source === "supabase" ? formatZAR(portfolioQ.data.dayPnl) : "—"}
-              sub={
-                portfolioQ.data?.source === "supabase"
-                  ? portfolioQ.data.positions.length > 0
-                    ? `MTM on ${portfolioQ.data.positions.length} positions`
-                    : `MTM via IPS`
-                  : FEED_NOT_CONFIGURED
-              }
+              sub={portfolioDayPnlSub(portfolioQ.data)}
               tone={
                 portfolioQ.data?.source === "supabase"
                   ? portfolioQ.data.dayPnl >= 0
@@ -265,11 +372,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               icon={<Lock className="h-3.5 w-3.5" />}
               label="Rebalance Locked"
               value={portfolioQ.data?.source === "supabase" ? (portfolioQ.data.rebalanceLocked ? "Yes" : "No") : "—"}
-              sub={
-                portfolioQ.data?.source === "supabase"
-                  ? `max drift ${portfolioQ.data.rebalanceDrift.toFixed(2)}%`
-                  : FEED_NOT_CONFIGURED
-              }
+              sub={portfolioRebalanceSub(portfolioQ.data)}
               tone={
                 portfolioQ.data?.source === "supabase"
                   ? portfolioQ.data.rebalanceLocked
@@ -290,29 +393,24 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               path when the watchlist contains `JIBAR_3M` (exchange MM) and
               `USDZAR` (exchange FX). The BFF serves the most recent intraday
               tick for both. NumberCell renders "—" if no live tick is in
-              the stream yet; the sub-line is the honest diagnostic.
+              the stream yet; the sub-line is the honest diagnostic per
+              Yellow #6 / #32 — chosen from {live tick / worker not
+              polled this symbol / worker not configured / migration
+              pending}.
             */}
             <KpiTile
               icon={<Banknote className="h-3.5 w-3.5" />}
               label="JIBAR 3M"
               live={{ sym: "JIBAR_3M", fallback: 0, decimals: 3, suffix: "%" }}
               value=""
-              sub={
-                <span>
-                  IRESS <span className="font-mono">MM · JIBAR_3M</span>
-                </span>
-              }
+              sub={<JibarOrUsdzarSub sym="JIBAR_3M" primaryWorker={workerQ.data?.workers?.[0]} />}
             />
             <KpiTile
               icon={<TrendingUp className="h-3.5 w-3.5" />}
               label="USD/ZAR"
               live={{ sym: "USDZAR", fallback: 0, decimals: 4, showChange: true }}
               value=""
-              sub={
-                <span>
-                  IRESS <span className="font-mono">FX · USDZAR</span>
-                </span>
-              }
+              sub={<JibarOrUsdzarSub sym="USDZAR" primaryWorker={workerQ.data?.workers?.[0]} />}
             />
           </>
         ) : (
@@ -701,7 +799,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         ) : (
           <Panel
             title={`Open Orders · ${openOrders.length}`}
-            endpoint="OrderPadGetByAccount → oems_order_audit"
+            endpoint="Order audit table · oems_order_audit"
             dataSource={realDataOnly ? "supabase" : "seed"}
             className="col-span-12 lg:col-span-8 h-[340px]"
             density="scroll"
@@ -717,13 +815,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 message={
                   realDataOnly
                     ? primaryWorker
-                      ? `Worker ${primaryWorker.status} · last quote sync ${
-                          primaryWorker.last_quote_sync_at
-                            ? formatTime(new Date(primaryWorker.last_quote_sync_at).getTime())
-                            : "never"
-                        }. Orders mirror when Railway has IRESS_ACCOUNT_CODE and SUPABASE_ALLOW_WRITES=1.`
-                      : "No worker heartbeat yet. Set IRESS_ACCOUNT_CODE on Railway iress-ingest and enable writes to populate oems_order_audit."
+                      ? ordersEmptyMessage(primaryWorker, auditOrdersQ.data?.reason)
+                    : "Worker not heartbeating"
                     : FEED_NOT_CONFIGURED
+                }
+                hint={
+                  realDataOnly && primaryWorker
+                    ? "Open <details> for deployment details"
+                    : undefined
                 }
               />
             ) : (

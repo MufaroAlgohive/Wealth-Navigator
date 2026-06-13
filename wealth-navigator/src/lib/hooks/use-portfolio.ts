@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { queryOpts } from "@/lib/store/query-provider";
+import type { BffUnavailableReason } from "@/lib/bff-reasons";
 
 export interface PortfolioAccount {
   account_code: string;
@@ -59,7 +60,8 @@ export interface PortfolioSummary {
   rebalanceLocked: boolean;
   lastUpdatedAt: string | null;
   source: "supabase" | "unavailable";
-  reason?: string;
+  reason?: BffUnavailableReason;
+  migration?: string;
   error?: string;
 }
 
@@ -73,9 +75,13 @@ async function fetchPortfolio(): Promise<PortfolioSummary> {
 /**
  * Pulls the IPS portfolio mirror from `oems_account_c` /
  * `oems_position_c` / `oems_transaction_c` via the `/api/portfolio` BFF.
+ *
  * Refreshes every 30s — same cadence as `useWorkerHealth` so the
  * Platform AUM / Day P&L / Rebalance Locked tiles and the Portfolio
- * section stay in sync with the worker's `ipsLoop` writes.
+ * section stay in sync with the worker's `ipsLoop` writes. The 30s
+ * interval is intentional: faster polling just burns the React Query
+ * cache without surfacing fresh `lastUpdatedAt` (the worker writes
+ * every ~60s). Audit #35.
  */
 export function usePortfolio(enabled = true) {
   return useQuery({

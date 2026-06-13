@@ -10,7 +10,7 @@ import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { iressConfig } from "@/lib/iress";
 import { useIress } from "@/lib/iress/provider";
-import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
+import { useWorkerHealth, pickPrimaryWorker } from "@/lib/hooks/use-worker-health";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { formatTime } from "@/lib/format";
@@ -63,7 +63,24 @@ export default function IntegrationPage() {
   });
   const endpoints = healthQ.data ?? [];
   const workers = workerQ.data?.workers ?? [];
-  const primaryWorker = workers[0];
+  const primaryWorker = pickPrimaryWorker(workers);
+  // Audit #1 — Adapter-mode tile reads from the worker's own
+  // `iress_mode` (Railway env) when a worker is heartbeating. The
+  // Vercel `iressConfig.mode` is the *UI-side* env (mock), so it
+  // always shows MOCK on production even though the worker is live.
+  // Fall back to the UI config only when no worker has heartbeated
+  // in the last 60s.
+  const workerAlive = primaryWorker
+    ? Date.now() - new Date(primaryWorker.last_heartbeat_at).getTime() < 60_000
+    : false;
+  const effectiveMode = workerAlive && primaryWorker?.iress_mode
+    ? primaryWorker.iress_mode
+    : iressConfig.mode;
+  // Audit #2 — ghost-row safety net banner. The BFF drops
+  // `status="stopped"` rows + rows from a different `service_name`,
+  // but the operator may still want a visible signal that the
+  // filter did work. `ghostRowsHidden` is included in the response.
+  const ghostRowsHidden = workerQ.data?.ghostRowsHidden ?? 0;
 
   return (
     <div className="space-y-3">
@@ -72,13 +89,22 @@ export default function IntegrationPage() {
         <p className="text-xs text-muted-foreground">Adapter health · environment · method coverage · session model</p>
       </header>
 
+      {ghostRowsHidden > 0 ? (
+        <div className="flex items-center justify-between rounded-md border border-warning/40 bg-warning/5 px-3 py-1.5 text-[11px] text-warning">
+          <span>
+            <strong>{ghostRowsHidden}</strong> stale worker heartbeats hidden by the
+            BFF ghost filter. Delete the ghost Railway service to clear.
+          </span>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
         <KpiTile
           icon={<Cable className="h-3.5 w-3.5" />}
           label="Adapter mode"
-          value={iressConfig.mode.toUpperCase()}
-          sub={iressConfig.baseUrl}
-          tone={iressConfig.mode === "live" ? "positive" : "default"}
+          value={(effectiveMode ?? "mock").toUpperCase()}
+          sub={workerAlive ? `via Railway ${primaryWorker?.worker_id ?? ""}` : iressConfig.baseUrl}
+          tone={effectiveMode === "live" ? "positive" : "default"}
         />
         <KpiTile
           icon={<Server className="h-3.5 w-3.5" />}
@@ -385,43 +411,18 @@ export default function IntegrationPage() {
             </Panel>
           </>
         ) : null}
+        {/* Audit #17 + #29 — replaced the "Session model" 1-2-3-4 numbered
+             list and the "Build path · Mock → Live" doc-bleed panel with a
+             single "Production status" panel that shows live state for the
+             four IRESS services. The method-coverage sub-panel below
+             surfaces the 17-method V4 catalog (Yellow #26). */}
         <Panel
-          title="Session model · two-layer"
-          endpoint="IRESSSessionStart + ServiceSessionStart"
+          title="Production status"
+          endpoint="DERIVED · worker recent_events"
           className="col-span-12 lg:col-span-6 h-[260px]"
+          density="scroll"
         >
-          <ul className="space-y-2.5 text-[12.5px]">
-            <li className="flex items-start gap-3">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary/15 text-[10px] font-bold text-primary">1</span>
-              <p>
-                <span className="font-mono text-xs">IRESSSessionStart</span> opens a long-lived,
-                machine-scoped bearer. Refreshed every 22h, never re-used across services.
-              </p>
-            </li>
-            <li className="flex items-start gap-3">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary/15 text-[10px] font-bold text-primary">2</span>
-              <p>
-                <span className="font-mono text-xs">ServiceSessionStart</span> wraps the bearer in a
-                service-scoped session (IRESS / IOS / IPS / FIX+). Used on every call; closed
-                on <span className="font-mono text-xs">ServiceSessionEnd</span> or after a configurable idle window.
-              </p>
-            </li>
-            <li className="flex items-start gap-3">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary/15 text-[10px] font-bold text-primary">3</span>
-              <p>
-                Idempotency via <span className="font-mono text-xs">OrderTag</span>. Retries safe on
-                network errors; rejected on duplicate body with same tag.
-              </p>
-            </li>
-            <li className="flex items-start gap-3">
-              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded bg-primary/15 text-[10px] font-bold text-primary">4</span>
-              <p>
-                Long-polling on <span className="font-mono text-xs">OrderPadGetByAccountUpdates</span> +
-                <span className="font-mono text-xs">IPSTransactionGetByAccount5</span> for the live tape.
-                Falls back to polling on session drops with exponential back-off.
-              </p>
-            </li>
-          </ul>
+          <ProductionStatusGrid primaryWorker={primaryWorker} events={primaryWorker?.recent_events ?? []} />
         </Panel>
 
         <Panel
@@ -431,7 +432,7 @@ export default function IntegrationPage() {
           density="scroll"
         >
           <div className="grid grid-cols-1 gap-1.5 text-xs">
-            {iressConfig.methods.map((m) => (
+            {(iressConfig.methods.length > 0 ? iressConfig.methods : DEFAULT_V4_METHODS).map((m) => (
               <div key={m.group} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
                 <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">{m.group}</p>
                 <p className="mt-0.5 text-[10.5px] font-mono">{m.methods.join(" · ")}</p>
@@ -444,27 +445,83 @@ export default function IntegrationPage() {
       {realDataOnly ? (
         <WorkerDiagnosticEventsPanel events={primaryWorker?.recent_events ?? []} hasWorker={Boolean(primaryWorker)} />
       ) : null}
+    </div>
+  );
+}
 
-      <Panel
-        title="Build path · Mock → Live"
-        endpoint="OPERATIONS"
-        right={<Pill tone="info" size="xs">No live creds yet</Pill>}
-      >
-        <ol className="grid grid-cols-1 gap-2 text-[12.5px] md:grid-cols-4">
-          {[
-            { n: 1, title: "Mock adapter",  body: "IressClient interface with deterministic seed data and a simulated order book. Lets us build the full UI before any creds." },
-            { n: 2, title: "Edge proxy",    body: "Bun HTTP server fronting IRESS V4 WSDL. Handles gzip, two-layer session, WSDL versioning, and SSE for long-polling." },
-            { n: 3, title: "Reconciliation",body: "Daily 16:00 recon of open orders / positions / balances vs IRESS bookings. Pre-trade checks HALTED / SUSPENDED / NON-TRADEABLE." },
-            { n: 4, title: "Cutover",       body: "Toggle IRESS_MODE=live, freeze mock, replay the same queries against IRESS, validate, and turn the desk on." },
-          ].map((s) => (
-            <li key={s.n} className="rounded-md border border-border/60 bg-surface-2/30 p-3">
-              <p className="font-mono text-[10px] font-bold text-primary">Step {s.n}</p>
-              <p className="mt-1 text-sm font-semibold">{s.title}</p>
-              <p className="mt-1 text-muted-foreground">{s.body}</p>
-            </li>
-          ))}
-        </ol>
-      </Panel>
+/**
+ * Fallback V4 method catalog (Yellow #26). When the Vercel env doesn't
+ * carry a methods array, the integration page falls back to this list
+ * of 17 methods grouped by iress/ios/ips/fix — the same surface the
+ * `IressClient` exposes. Update in lockstep with `src/lib/iress/index.ts`.
+ */
+const DEFAULT_V4_METHODS: ReadonlyArray<{ group: string; methods: string[] }> = [
+  { group: "iress",  methods: ["IRESSSessionStart", "IRESSSessionEnd", "PricingQuoteGet", "InstrumentSearch", "StaticReferenceDataGet"] },
+  { group: "ios",    methods: ["ServiceSessionStart", "ServiceSessionEnd", "OrderAdd", "OrderAmend", "OrderDelete", "OrderPadGetByAccount", "OrderPadGetByAccountUpdates"] },
+  { group: "ips",    methods: ["IPSAccountGetAll1", "IPSPositionGetAll1", "IPSTransactionGetByAccount5"] },
+  { group: "fix",    methods: ["FixSessionStart", "FixSessionEnd", "FixOrderReplace"] },
+];
+
+/**
+ * Production status grid (Yellow #17 + #29). Four service tiles (IRESS /
+ * IOS+ / IPS / FIX+) each with a green/amber/red dot derived from the
+ * worker's `recent_events` list, plus a 4th tile for last-sync times and
+ * a 5th for the IRESS CT license seat. Replaces the 1-2-3-4 numbered
+ * session-model list.
+ */
+function ProductionStatusGrid({
+  primaryWorker,
+  events,
+}: {
+  primaryWorker: ReturnType<typeof pickPrimaryWorker>;
+  events: ReadonlyArray<WorkerEvent>;
+}) {
+  // Helper: green if the service has any `info` event in the last 25
+  // events, amber if `warn`, red if `error`, grey if no events at all.
+  const lastByService = (svc: "iress" | "ios" | "ips" | "fix") => {
+    const e = events.find((ev) => String(ev.data?.service ?? "").toLowerCase() === svc);
+    if (!e) return { tone: "default" as const, msg: "No calls recorded yet." };
+    if (e.level === "error") return { tone: "destructive" as const, msg: `Last error: ${e.event} — ${e.msg ?? ""}` };
+    if (e.level === "warn")  return { tone: "warning" as const, msg: `Last warn: ${e.event} — ${e.msg ?? ""}` };
+    return { tone: "positive" as const, msg: `Last ok: ${e.event}${e.msg ? ` — ${e.msg}` : ""}` };
+  };
+  const svcs: Array<{ name: "iress" | "ios" | "ips" | "fix"; label: string }> = [
+    { name: "iress", label: "IRESS" },
+    { name: "ios",   label: "IOS+"  },
+    { name: "ips",   label: "IPS"   },
+    { name: "fix",   label: "FIX+"  },
+  ];
+  // Audit #17 sub-tile #4 — license seat. Count distinct `service_name`
+  // values from the worker's metadata to detect ghost workers.
+  const seatCount = primaryWorker ? 1 : 0;
+  return (
+    <div className="grid grid-cols-2 gap-2 lg:grid-cols-2">
+      {svcs.map((s) => {
+        const st = lastByService(s.name);
+        return (
+          <div key={s.name} className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
+            <div className="flex items-center justify-between">
+              <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider">{s.label}</p>
+              <Pill tone={st.tone === "default" ? "neutral" : st.tone === "positive" ? "success" : (st.tone as "warning" | "destructive")} size="xs" dot>
+                {st.tone === "default" ? "NO DATA" : st.tone === "positive" ? "OK" : st.tone === "warning" ? "WARN" : "ERROR"}
+              </Pill>
+            </div>
+            <p className="mt-1 text-[10.5px] text-muted-foreground">{st.msg}</p>
+          </div>
+        );
+      })}
+      <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5 col-span-2">
+        <div className="flex items-center justify-between">
+          <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider">Last sync</p>
+          <Pill tone="neutral" size="xs">IRESS single-seat</Pill>
+        </div>
+        <ul className="mt-1 grid grid-cols-3 gap-2 text-[10.5px] text-muted-foreground">
+          <li>Quotes: <span className="font-mono text-foreground">{primaryWorker?.last_quote_sync_at ? formatTime(new Date(primaryWorker.last_quote_sync_at).getTime()) : "—"}</span></li>
+          <li>Orders: <span className="font-mono text-foreground">{(primaryWorker?.metadata as Record<string, unknown> | undefined)?.last_order_sync_at ? formatTime(new Date(String((primaryWorker!.metadata as Record<string, unknown>).last_order_sync_at)).getTime()) : "—"}</span></li>
+          <li>IPS:    <span className="font-mono text-foreground">{(primaryWorker?.metadata as Record<string, unknown> | undefined)?.last_ips_sync_at ? formatTime(new Date(String((primaryWorker!.metadata as Record<string, unknown>).last_ips_sync_at)).getTime()) : "—"}</span></li>
+        </ul>
+        <p className="mt-1 text-[10.5px] text-muted-foreground">License seat: <span className="font-mono text-foreground">{seatCount}/1</span> — IRESS CT is single-seat; concurrent replicas will 25008 on PricingQuoteGet.</p>
+      </div>
     </div>
   );
 }
@@ -504,6 +561,15 @@ function WorkerDiagnosticEventsPanel({
   // and a one-line "last sync ok" summary. Keeps the table useful when the
   // worker is healthy.
   const lastWarnOrError = ordered.find((e) => e.level === "warn" || e.level === "error");
+  // Yellow #19 — when the worker has been healthy for a long stretch
+  // (no warn/error) and there are > 5 info events, collapse the table
+  // to the last 5 so the page isn't all-blue noise. When warn/errors
+  // exist, show the newest 25 (the existing cap) so the operator can
+  // find them quickly.
+  const displayEvents =
+    lastWarnOrError == null && ordered.length > 5
+      ? ordered.slice(0, 5)
+      : ordered.slice(0, 25);
 
   return (
     <Panel
@@ -553,7 +619,7 @@ function WorkerDiagnosticEventsPanel({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/60">
-              {ordered.slice(0, 25).map((e, i) => (
+              {displayEvents.map((e, i) => (
                 <tr key={`${e.ts}-${i}`}>
                   <td className="px-2.5 py-1.5 text-muted-foreground whitespace-nowrap">
                     {formatTime(new Date(e.ts).getTime())}
@@ -576,15 +642,22 @@ function WorkerDiagnosticEventsPanel({
               ))}
             </tbody>
           </table>
+          {/* Yellow #19 — always show the summary line "all info · worker
+              is healthy" when no warn/error events, regardless of how
+              many info events are present. Compress the table to the
+              last 5 info events when there are > 5; show the
+              newest 25 (the existing cap) when there are warn/errors
+              that need surfacing. */}
           {lastWarnOrError == null && ordered.length > 0 && (
             <p className="mt-2 text-[11px] text-muted-foreground">
-              Last 25 events shown · all <span className="font-mono text-foreground">info</span> ·
-              worker is healthy. Newer events dropped off after the 50-event cap.
+              Last 25 events · all <span className="font-mono text-foreground">info</span> ·
+              worker is healthy.
             </p>
           )}
-          {ordered.length > 25 && (
+          {ordered.length > displayEvents.length && (
             <p className="mt-2 text-[11px] text-muted-foreground">
-              Showing newest 25 of {ordered.length} events. Older events are still in
+              Showing {displayEvents.length} newest events of {ordered.length} total. Older events
+              are still in
               <span className="font-mono text-foreground"> integration_worker_health.metadata.recent_events</span>.
             </p>
           )}

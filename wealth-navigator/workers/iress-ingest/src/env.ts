@@ -93,11 +93,11 @@ function parseExchangeMap(value: string | undefined): Record<string, string> {
 const DEFAULT_WATCHLIST: WatchlistEntry[] = [
   ...JSE_TRACKED_UNIVERSE.map<WatchlistEntry>((e) => ({
     symbol: e.symbol,
-    kind: e.kind === "equity" ? "equity" : e.kind === "fx" ? "fx" : e.kind === "mm" ? "money-market" : "equity",
+    kind: e.kind,
   })),
   ...JSE_RATE_CODES.map<WatchlistEntry>((e) => ({
     symbol: e.symbol,
-    kind: e.kind === "fx" ? "fx" : "money-market",
+    kind: e.kind,
     exchange: e.kind === "fx" ? "FX" : "MM",
   })),
 ];
@@ -130,7 +130,7 @@ export function loadWorkerEnv(): WorkerEnv {
   const exchangesFromEnv = parseExchangeMap(process.env.IRESS_WATCHLIST_EXCHANGES);
   const entries: WatchlistEntry[] = baseEntries.map((e) => {
     const overrideExchange = exchangesFromEnv[e.symbol];
-    const kindExchange = e.kind === "fx" ? fxExchange : e.kind === "money-market" ? mmExchange : undefined;
+    const kindExchange = e.kind === "fx" ? fxExchange : e.kind === "mm" ? mmExchange : undefined;
     const exchange = overrideExchange ?? e.exchange ?? kindExchange;
     return { ...e, exchange };
   });

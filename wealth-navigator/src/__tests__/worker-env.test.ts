@@ -123,7 +123,7 @@ describe("loadWorkerEnv watchlist parsing", () => {
     expect(env.watchlistExchanges.USDZAR).toBe("FX");
     expect(env.watchlistExchanges.JIBAR_3M).toBe("MM");
     expect(env.watchlistEntries.find((e) => e.symbol === "USDZAR")?.kind).toBe("fx");
-    expect(env.watchlistEntries.find((e) => e.symbol === "JIBAR_3M")?.kind).toBe("money-market");
+    expect(env.watchlistEntries.find((e) => e.symbol === "JIBAR_3M")?.kind).toBe("mm");
     // Equities default to defaultExchange (JSE) and are not pinned in the
     // per-symbol map because they all share the same value.
     expect(env.watchlistExchanges.NPN).toBeUndefined();
