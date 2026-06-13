@@ -6,6 +6,8 @@ import { useTick, useLastTickTs, useQuoteFeedKind, type TickFeedKind } from "@/l
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { Badge } from "@/components/ui/badge";
+import { Pill } from "@/components/oems/primitives/pill";
+import { WORKER_TRACKED_SYMBOL_SET } from "@/lib/iress/universe";
 
 const FEED_LABELS = {
   supabase: "SUPABASE",
@@ -13,10 +15,12 @@ const FEED_LABELS = {
   mock: "MOCK",
 } as const;
 
-/** Railway worker watchlist — symbols that may have Supabase ticks. */
-const WORKER_WATCHLIST = new Set([
-  "NPN", "PRX", "FSR", "SBK", "AGL", "BHG", "MTN", "SOL", "SHP", "CPI",
-]);
+/** Symbols the worker may have Supabase ticks for — derived from the shared
+ *  `JSE_TRACKED_UNIVERSE` so the UI never subscribes to a name the worker
+ *  isn't polling. The static hardcoded set used to be a 10-name slice of
+ *  the worker watchlist that excluded the rate codes; the shared module
+ *  is now the single source of truth. */
+const WORKER_WATCHLIST = WORKER_TRACKED_SYMBOL_SET;
 
 interface TickerItem {
   k: string;
@@ -82,9 +86,9 @@ export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
       {hasHiddenSim && (
         <>
           <span className="shrink-0 text-muted-foreground/60">·</span>
-          <span className="shrink-0 text-[9.5px] uppercase tracking-wider text-muted-foreground/80">
-            FX/indices feed not configured
-          </span>
+          <Pill tone="neutral" size="xs" dot>
+            FX/INDICES OFF
+          </Pill>
         </>
       )}
     </div>

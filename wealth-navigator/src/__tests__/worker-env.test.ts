@@ -85,10 +85,10 @@ describe("loadWorkerEnv watchlist parsing", () => {
     expect(env.watchlistSymbols).toEqual(["NPN.JSE", "PRX.JSE"]);
   });
 
-  it("falls back to the production watchlist (20 JSE + USDZAR + JIBAR_3M) when env var is missing", () => {
+  it("falls back to the production watchlist (10 JSE + USDZAR + JIBAR_3M = 12) when env var is missing", () => {
     clearEnv();
     const env = loadWorkerEnv();
-    expect(env.watchlistSymbols.length).toBe(22);
+    expect(env.watchlistSymbols.length).toBe(12);
     expect(env.watchlistSymbols).toContain("NPN");
     expect(env.watchlistSymbols).toContain("PRX");
     expect(env.watchlistSymbols).toContain("USDZAR");
@@ -103,7 +103,7 @@ describe("loadWorkerEnv watchlist parsing", () => {
     clearEnv();
     process.env.IRESS_WATCHLIST_SYMBOLS = "";
     const env = loadWorkerEnv();
-    expect(env.watchlistSymbols.length).toBe(22);
+    expect(env.watchlistSymbols.length).toBe(12);
   });
 
   it("parses the production 10-symbol JSE watchlist used on Railway", () => {

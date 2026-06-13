@@ -1,3 +1,5 @@
+import { JSE_RATE_CODES, JSE_TRACKED_UNIVERSE, type UniverseEntry as SharedUniverseEntry } from "../../../src/lib/iress/universe";
+
 /**
  * A symbol on the worker watchlist. `exchange` lets us mix JSE equities with
  * rate codes on a vendor-specific exchange (e.g. "FX" for cross-currency
@@ -13,7 +15,7 @@ export interface WatchlistEntry {
    * place (equity tile, FX rate, MM rate, etc.) when the symbol's IRESS
    * code is opaque. Pure metadata; the worker doesn't branch on it.
    */
-  kind?: "equity" | "fx" | "money-market" | "index" | "sector" | "bond";
+  kind?: SharedUniverseEntry["kind"];
 }
 
 export interface WorkerEnv {
@@ -81,44 +83,23 @@ function parseExchangeMap(value: string | undefined): Record<string, string> {
 /**
  * Default watchlist for a production deploy.
  *
- * - 20-name JSE Top-40 subset (matches what the Cockpit quotes tile
- *   polls with `useLiveQuotes`).
- * - `USDZAR` cross-currency rate (IRESS reference-data; exchange `FX`).
- * - `JIBAR_3M` 3-month Johannesburg Interbank Agreed Rate (IRESS
- *   reference-data; exchange `MM` for money-market).
- *
- * Both `USDZAR` and `JIBAR_3M` are real IRESS code strings the worker can
- * call `PricingQuoteGet` on; the vendor maps them to the correct
- * rate-feed behind the scenes. We do NOT need `TimeSeriesGet2` for the
- * L1 spot fix — that's only needed for EOD history (curves, ALSI
- * intraday), which is a Tier 2 wiring item.
- *
- * The user can override this list with `IRESS_WATCHLIST_SYMBOLS` and
- * the per-symbol exchange with `IRESS_WATCHLIST_EXCHANGES`.
+ * Sourced from `src/lib/iress/universe.ts` so the worker and the Next.js
+ * UI always quote the same 10-name JSE equity baseline + 2 rate codes
+ * (12 total). The operator can override the symbol set at runtime with
+ * `IRESS_WATCHLIST_SYMBOLS` and the per-symbol exchange with
+ * `IRESS_WATCHLIST_EXCHANGES` — the env wins, but the module is the
+ * resting state.
  */
 const DEFAULT_WATCHLIST: WatchlistEntry[] = [
-  { symbol: "NPN", kind: "equity" },
-  { symbol: "PRX", kind: "equity" },
-  { symbol: "FSR", kind: "equity" },
-  { symbol: "SBK", kind: "equity" },
-  { symbol: "AGL", kind: "equity" },
-  { symbol: "BHG", kind: "equity" },
-  { symbol: "MTN", kind: "equity" },
-  { symbol: "SOL", kind: "equity" },
-  { symbol: "SHP", kind: "equity" },
-  { symbol: "CPI", kind: "equity" },
-  { symbol: "REM", kind: "equity" },
-  { symbol: "BID", kind: "equity" },
-  { symbol: "ABG", kind: "equity" },
-  { symbol: "SLM", kind: "equity" },
-  { symbol: "AMS", kind: "equity" },
-  { symbol: "WHL", kind: "equity" },
-  { symbol: "TBS", kind: "equity" },
-  { symbol: "GRT", kind: "equity" },
-  { symbol: "CLS", kind: "equity" },
-  { symbol: "MNP", kind: "equity" },
-  { symbol: "USDZAR", kind: "fx", exchange: "FX" },
-  { symbol: "JIBAR_3M", kind: "money-market", exchange: "MM" },
+  ...JSE_TRACKED_UNIVERSE.map<WatchlistEntry>((e) => ({
+    symbol: e.symbol,
+    kind: e.kind === "equity" ? "equity" : e.kind === "fx" ? "fx" : e.kind === "mm" ? "money-market" : "equity",
+  })),
+  ...JSE_RATE_CODES.map<WatchlistEntry>((e) => ({
+    symbol: e.symbol,
+    kind: e.kind === "fx" ? "fx" : "money-market",
+    exchange: e.kind === "fx" ? "FX" : "MM",
+  })),
 ];
 
 /**

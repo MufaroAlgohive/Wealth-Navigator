@@ -19,6 +19,7 @@ import { useTick, useTickSeries } from "@/lib/store/tick-stream-provider";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
+import { JSE_TRACKED_UNIVERSE } from "@/lib/iress/universe";
 
 function SecurityPageContent() {
   const { data } = useIress();
@@ -27,6 +28,12 @@ function SecurityPageContent() {
   const equities = equitiesQ.data ?? [];
   const searchParams = useSearchParams();
   const [sym, setSym] = useState("NPN");
+
+  // Subscribe to the entire JSE universe on mount so a click on any
+  // watchlist row in the panel is instant — no per-symbol BFF round-trip
+  // for the first click. `useLiveQuotes` is a no-op when
+  // `realDataOnly=false`, so the dev path stays cheap. Audit #22.
+  useLiveQuotes(JSE_TRACKED_UNIVERSE.map((e) => e.symbol));
 
   useEffect(() => {
     const fromUrl = searchParams.get("sym");
@@ -73,7 +80,7 @@ function SecurityPageContent() {
             density="scroll"
           >
             <ul className="divide-y divide-border/60">
-              {equities.slice(0, 13).map((m) => (
+              {equities.slice(0, JSE_TRACKED_UNIVERSE.length).map((m) => (
                 <li key={m.symbol}>
                   <button
                     onClick={() => setSym(m.symbol)}
@@ -239,8 +246,30 @@ function FundamentalsGrid({
 }
 
 function SecurityChart({ sym, realDataOnly }: { sym: string; realDataOnly: boolean }) {
+  // In real-data mode the chart pulls from `/api/intraday/[sym]` (DB-first
+  // read of `stock_intraday_c`) so the line series is sourced from the
+  // worker's actual upserts, not the noisy live-tick buffer. Audit #10.
+  const intradayQ = useQuery<{
+    points: Array<{ t: number; v: number }>;
+    prevClose: number | null;
+    source: string;
+  }>({
+    queryKey: ["bff-intraday", sym],
+    queryFn: async () => {
+      const r = await fetch(`/api/intraday/${encodeURIComponent(sym)}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`intraday ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 15_000,
+    ...queryOpts("live"),
+  });
   const fallback = realDataOnly ? 0 : (initialQuotes()[sym]?.last ?? seedLastFor(sym));
-  const points = useTickSeries(sym, fallback, 90);
+  const livePoints = useTickSeries(sym, fallback, 90);
+  const points = realDataOnly
+    ? (intradayQ.data?.points ?? []).map((p) => p.v)
+    : livePoints;
+  const prevClose = intradayQ.data?.prevClose ?? null;
   if (points.length < 2 || (realDataOnly && points.every((p) => p === 0))) {
     return realDataOnly ? null : null;
   }
@@ -274,6 +303,16 @@ function SecurityChart({ sym, realDataOnly }: { sym: string; realDataOnly: boole
       ))}
       <path d={area} fill={`url(#sec-${sym})`} />
       <path d={path} fill="none" stroke={up ? "hsl(152 70% 50%)" : "hsl(351 90% 60%)"} strokeWidth={1.6} />
+      {realDataOnly && prevClose != null && prevClose >= min && prevClose <= max && (
+        <line
+          x1={0}
+          x2={w}
+          y1={h - ((prevClose - min) / range) * (h - 24) - 12}
+          y2={h - ((prevClose - min) / range) * (h - 24) - 12}
+          stroke="hsl(var(--muted-foreground))"
+          strokeDasharray="3 3"
+        />
+      )}
     </svg>
   );
 }
