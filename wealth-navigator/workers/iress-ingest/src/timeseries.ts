@@ -43,6 +43,7 @@ import { mockIressClient } from "../../../src/lib/iress/mock";
 import type { WorkerEnv } from "./env";
 import type { WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
+import { recordWorkerEvent } from "./events";
 
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -358,6 +359,14 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
               : `No data returned for ${code} — likely no entitlement, holiday, or market closed.`,
           }),
         );
+        recordWorkerEvent({
+          level: "warn",
+          event: res.entitlementRequired ? "time_series_entitlement_missing" : "time_series_no_data",
+          msg: res.entitlementRequired
+            ? `TimeSeriesGet2 entitlement required for ${code} — ask Charles to enable`
+            : `No data returned for ${code} — likely no entitlement, holiday, or market closed`,
+          data: { series: "index", code, iressMode: env.iressMode },
+        });
         continue;
       }
       indexPoints += await insertIndexPoints(supabase, env, code, res.points);
@@ -389,6 +398,14 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
               : `No data returned for ${code} — likely no entitlement, holiday, or market closed.`,
           }),
         );
+        recordWorkerEvent({
+          level: "warn",
+          event: res.entitlementRequired ? "time_series_entitlement_missing" : "time_series_no_data",
+          msg: res.entitlementRequired
+            ? `TimeSeriesGet2 entitlement required for ${code} (sector) — ask Charles to enable`
+            : `No data returned for ${code} (sector) — likely no entitlement, holiday, or market closed`,
+          data: { series: "sector", code, iressMode: env.iressMode },
+        });
         continue;
       }
       sectorPoints += await insertSectorPoints(supabase, env, code, res.points);
@@ -420,6 +437,14 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
               : `No data returned for ${code} — likely no entitlement, holiday, or market closed.`,
           }),
         );
+        recordWorkerEvent({
+          level: "warn",
+          event: res.entitlementRequired ? "time_series_entitlement_missing" : "time_series_no_data",
+          msg: res.entitlementRequired
+            ? `TimeSeriesGet2 entitlement required for ${code} (curve) — ask Charles to enable`
+            : `No data returned for ${code} (curve) — likely no entitlement, holiday, or market closed`,
+          data: { series: "curve", code, iressMode: env.iressMode },
+        });
         continue;
       }
       curvePoints += await insertCurvePoints(supabase, env, code, res.points);

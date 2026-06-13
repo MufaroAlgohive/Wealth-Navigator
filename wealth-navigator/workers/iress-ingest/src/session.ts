@@ -18,6 +18,7 @@ import {
 import { IressError, isIressSessionDeadError } from "@/lib/iress/errors";
 import type { IressService } from "../../../src/types/iress";
 import type { WorkerSupabase } from "./supabase";
+import { recordWorkerEvent } from "./events";
 
 export { LICENSE_RELEASE_DELAY_MS };
 const EXPIRY_BUFFER_MS = 30_000;
@@ -361,6 +362,16 @@ export class WorkerSessionManager {
           shutdown: false,
         },
       });
+      recordWorkerEvent({
+        level: "info",
+        event: "iress_session_ready",
+        msg: `IRESSSessionStart OK — applicationId=${applicationId} services=${svc}`,
+        data: {
+          applicationId,
+          services: Object.keys(serviceKeys),
+          sessionTimeoutMin: session.sessionTimeout,
+        },
+      });
       return session;
     } catch (err) {
       if (err instanceof IressError && err.code === 25008) {
@@ -371,6 +382,16 @@ export class WorkerSessionManager {
         console.error(
           `[iress-ingest] 25008 license seat occupied — backing off ${LICENSE_EXHAUSTED_BACKOFF_MS}ms. ${hint}`,
         );
+        recordWorkerEvent({
+          level: "error",
+          event: "license_seat_occupied",
+          msg: `25008 license seat occupied — backing off ${LICENSE_EXHAUSTED_BACKOFF_MS}ms. ${hint}`,
+          data: {
+            code: 25008,
+            backoffMs: LICENSE_EXHAUSTED_BACKOFF_MS,
+            firstBootOrOrphan,
+          },
+        });
       }
       throw err;
     }

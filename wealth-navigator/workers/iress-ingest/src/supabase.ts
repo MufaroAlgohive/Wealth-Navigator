@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { WorkerEnv } from "./env";
+import { recentWorkerEvents } from "./events";
 
 export type WorkerSupabase = SupabaseClient;
 
@@ -54,6 +55,14 @@ export async function writeHeartbeat(
       // "open-orders panel will stay empty" when the list is empty.
       accounts,
       account_configured: accounts.length > 0,
+      // Most recent structured events (`time_series_entitlement_missing`,
+      // `quote_sync_complete`, 25008 back-off, PricingQuoteGet failures,
+      // …) capped at 50 newest-first. Surfaced in
+      // `/oems/integration` so the operator can diagnose ingest failures
+      // without tailing Railway logs. Read by the BFF at heartbeat time
+      // and stored verbatim in this JSONB column — no separate table
+      // needed.
+      recent_events: recentWorkerEvents(),
     },
     updated_at: new Date().toISOString(),
   };

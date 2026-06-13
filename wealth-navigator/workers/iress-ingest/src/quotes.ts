@@ -6,6 +6,7 @@ import type { Quote } from "../../../src/types/iress";
 import type { WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
+import { recordWorkerEvent } from "./events";
 
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -180,18 +181,36 @@ export async function syncWatchlistQuotes(
               console.warn(
                 `[iress-ingest] PricingQuoteGet(${symbol}) returned no DataRow (${exchange}) — likely unknown symbol or market closed; rowKeys=${rowKeys}`,
               );
-            } else {
-              // "no-trade" — row present, last<=0. Pre-open / halt / closed, or
-              // bogus Last rejected by resolveQuoteLast (no anchor to salvage).
-              emptyCount += 1;
-              const state = row?.marketState ?? "?";
-              const looksLikeFieldMismatch = state === "OPEN" && rowKeys !== "<empty row>";
-              const looksLikeBogusLast =
-                state === "CLOSED" && rowKeys.includes("Last") && !rowKeys.includes("Close");
-              console.warn(
-                `[iress-ingest] PricingQuoteGet(${symbol}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
-              );
-            }
+              recordWorkerEvent({
+                level: "warn",
+                event: "pricing_quote_get_no_row",
+                msg: `PricingQuoteGet(${symbol}) returned no DataRow (${exchange}) — likely unknown symbol or market closed`,
+                data: { symbol, exchange, rowKeys },
+              });
+    } else {
+      // "no-trade" — row present, last<=0. Pre-open / halt / closed, or
+      // bogus Last rejected by resolveQuoteLast (no anchor to salvage).
+      emptyCount += 1;
+      const state = row?.marketState ?? "?";
+      const looksLikeFieldMismatch = state === "OPEN" && rowKeys !== "<empty row>";
+      const looksLikeBogusLast =
+        state === "CLOSED" && rowKeys.includes("Last") && !rowKeys.includes("Close");
+      console.warn(
+        `[iress-ingest] PricingQuoteGet(${symbol}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
+      );
+      recordWorkerEvent({
+        level: "warn",
+        event: "pricing_quote_get_no_trade",
+        msg: `PricingQuoteGet(${symbol}) no trade (marketState=${state})`,
+        data: {
+          symbol,
+          exchange,
+          marketState: state,
+          fieldMismatchSuspected: looksLikeFieldMismatch,
+          bogusLastSuspected: looksLikeBogusLast,
+        },
+      });
+    }
           } catch (err) {
             if (isIressSessionDeadError(err)) throw err;
             errorCount += 1;
@@ -201,6 +220,19 @@ export async function syncWatchlistQuotes(
               `[iress-ingest] PricingQuoteGet(${symbol}) failed: ${msg}`,
               stack ?? "",
             );
+            // Surface for the integration page so the operator can see
+            // "PricingQuoteGet failed for NPN (25034 entitlement check
+            // failed)" without tailing Railway logs.
+            const code =
+              err && typeof err === "object" && "code" in err
+                ? Number((err as { code: unknown }).code)
+                : 0;
+            recordWorkerEvent({
+              level: "warn",
+              event: "pricing_quote_get_failed",
+              msg: `PricingQuoteGet(${symbol}) failed: ${msg}`,
+              data: { symbol, exchange, code },
+            });
           }
         }
       });
@@ -208,6 +240,16 @@ export async function syncWatchlistQuotes(
       const msg = err instanceof Error ? err.message : String(err);
       sessionFatal = msg;
       console.warn(`[iress-ingest] quote sync session failed: ${msg}`);
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? Number((err as { code: unknown }).code)
+          : 0;
+      recordWorkerEvent({
+        level: code === 25008 ? "error" : "warn",
+        event: "quote_sync_session_failed",
+        msg,
+        data: { code, iressMode: env.iressMode },
+      });
     }
   } else {
     for (const entry of env.watchlistEntries) {
@@ -232,6 +274,23 @@ export async function syncWatchlistQuotes(
       sessionFatal: sessionFatal ?? null,
     }),
   );
+  recordWorkerEvent({
+    level: errorCount > 0 || sessionFatal ? "warn" : "info",
+    event: "quote_sync_complete",
+    msg:
+      errorCount > 0
+        ? `Watchlist sync: ${errorCount} errors`
+        : emptyCount === env.watchlistSymbols.length && env.watchlistSymbols.length > 0
+          ? `Watchlist sync: every symbol returned no trade (${emptyCount}/${env.watchlistSymbols.length}) — likely entitlement / market closed`
+          : `Watchlist sync: ${quotes.length} ok / ${emptyCount} empty / ${errorCount} errors`,
+    data: {
+      requested: env.watchlistSymbols.length,
+      ok: quotes.length,
+      empty: emptyCount,
+      errors: errorCount,
+      sessionFatal: sessionFatal ?? null,
+    },
+  });
 
   if (quotes.length === 0) {
     return {

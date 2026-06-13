@@ -16,6 +16,7 @@ import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { formatTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
+import type { WorkerEvent } from "@/app/api/worker-health/route";
 
 const STATUS_ICON = {
   ok:      CheckCircle2,
@@ -384,6 +385,10 @@ export default function IntegrationPage() {
         </Panel>
       </div>
 
+      {realDataOnly ? (
+        <WorkerDiagnosticEventsPanel events={primaryWorker?.recent_events ?? []} hasWorker={Boolean(primaryWorker)} />
+      ) : null}
+
       <Panel
         title="Build path · Mock → Live"
         endpoint="OPERATIONS"
@@ -405,5 +410,130 @@ export default function IntegrationPage() {
         </ol>
       </Panel>
     </div>
+  );
+}
+
+/**
+ * "Worker diagnostic events" panel — surfaces the worker's in-process
+ * structured event ring buffer. Today the operator has to tail Railway
+ * logs to see `time_series_entitlement_missing`, 25008 license seat
+ * back-off, and `quote_sync_complete` summaries. Storing those events
+ * inside `integration_worker_health.metadata.recent_events` and showing
+ * them here means the desk can answer "why isn't the worker getting
+ * data" without leaving the app.
+ *
+ * Events are newest-first, capped at 50 in the worker. The panel collapses
+ * the high-volume `info` events to a single summary row when nothing more
+ * recent is a `warn`/`error` so the page doesn't drown in successful
+ * sync pings.
+ */
+function WorkerDiagnosticEventsPanel({
+  events,
+  hasWorker,
+}: {
+  events: WorkerEvent[];
+  hasWorker: boolean;
+}) {
+  const ordered = events ?? [];
+  const counts = ordered.reduce(
+    (acc, e) => {
+      acc[e.level] += 1;
+      return acc;
+    },
+    { info: 0, warn: 0, error: 0 },
+  );
+  const hasEvents = ordered.length > 0;
+  // Heuristic: if the latest event is `info` and the most recent warn/error
+  // is older than the most recent 4 events, surface only the top warn/error
+  // and a one-line "last sync ok" summary. Keeps the table useful when the
+  // worker is healthy.
+  const lastWarnOrError = ordered.find((e) => e.level === "warn" || e.level === "error");
+
+  return (
+    <Panel
+      title="Worker diagnostic events"
+      endpoint="metadata.recent_events on integration_worker_health"
+      dataSource="supabase"
+      right={
+        <div className="flex items-center gap-1.5">
+          {counts.error > 0 && (
+            <Pill tone="destructive" size="xs" dot>
+              {counts.error} error{counts.error === 1 ? "" : "s"}
+            </Pill>
+          )}
+          {counts.warn > 0 && (
+            <Pill tone="warning" size="xs" dot>
+              {counts.warn} warn{counts.warn === 1 ? "" : "s"}
+            </Pill>
+          )}
+          {counts.info > 0 && (
+            <Pill tone="info" size="xs">
+              {counts.info} info
+            </Pill>
+          )}
+        </div>
+      }
+    >
+      {!hasWorker ? (
+        <p className="text-[12px] text-muted-foreground">
+          No worker heartbeat row yet — start the Railway <span className="font-mono text-foreground">Iress-Worker</span>{" "}
+          service to begin ingesting.
+        </p>
+      ) : !hasEvents ? (
+        <p className="text-[12px] text-muted-foreground">
+          Worker has not emitted any structured events since the last restart — that usually means the
+          IRESS session hasn't started yet, or the first quote sync is in flight.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full font-mono text-[11px]">
+            <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
+              <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
+                <th className="px-2.5 py-1.5 text-left">Time</th>
+                <th className="px-2.5 py-1.5 text-left">Level</th>
+                <th className="px-2.5 py-1.5 text-left">Event</th>
+                <th className="px-2.5 py-1.5 text-left">Message</th>
+                <th className="px-2.5 py-1.5 text-left">Data</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/60">
+              {ordered.slice(0, 25).map((e, i) => (
+                <tr key={`${e.ts}-${i}`}>
+                  <td className="px-2.5 py-1.5 text-muted-foreground whitespace-nowrap">
+                    {formatTime(new Date(e.ts).getTime())}
+                  </td>
+                  <td className="px-2.5 py-1.5">
+                    <Pill
+                      tone={e.level === "error" ? "destructive" : e.level === "warn" ? "warning" : "info"}
+                      size="xs"
+                      dot
+                    >
+                      {e.level}
+                    </Pill>
+                  </td>
+                  <td className="px-2.5 py-1.5 font-semibold">{e.event}</td>
+                  <td className="px-2.5 py-1.5 text-muted-foreground">{e.msg ?? ""}</td>
+                  <td className="px-2.5 py-1.5 text-muted-foreground">
+                    {e.data ? <pre className="whitespace-pre-wrap break-words">{JSON.stringify(e.data)}</pre> : ""}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {lastWarnOrError == null && ordered.length > 0 && (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Last 25 events shown · all <span className="font-mono text-foreground">info</span> ·
+              worker is healthy. Newer events dropped off after the 50-event cap.
+            </p>
+          )}
+          {ordered.length > 25 && (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Showing newest 25 of {ordered.length} events. Older events are still in
+              <span className="font-mono text-foreground"> integration_worker_health.metadata.recent_events</span>.
+            </p>
+          )}
+        </div>
+      )}
+    </Panel>
   );
 }
