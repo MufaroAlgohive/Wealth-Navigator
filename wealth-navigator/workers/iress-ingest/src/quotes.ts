@@ -1,7 +1,11 @@
 import { getIressClient, iressConfig, redactSessionKeyForLog } from "../../../src/lib/iress/index";
 import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { iressQueries } from "../../../src/lib/iress/mock";
-import { describeQuoteRowKeys } from "../../../src/lib/iress/live";
+import {
+  describeQuoteRowKeys,
+  quoteRawRowHasPriceData,
+  quoteRawRowLast,
+} from "../../../src/lib/iress/live";
 import type { Quote } from "../../../src/types/iress";
 import type { WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
@@ -22,11 +26,20 @@ export function normaliseSymbol(raw: string): string {
   return raw.replace(/\.JSE$/i, "").replace(/\s+/g, "").toUpperCase();
 }
 
+type FetchLiveOutcome = "ok" | "no-row" | "no-trade" | "closed-with-data";
+
+interface FetchLiveResult {
+  row: Quote | null;
+  rowKeys: string;
+  outcome: FetchLiveOutcome;
+  rawRow: Record<string, unknown> | null;
+}
+
 async function fetchLiveQuote(
   session: WorkerMintSession,
   symbol: string,
   exchange: string,
-): Promise<{ row: Quote | null; rowKeys: string; outcome: "ok" | "no-row" | "no-trade" }> {
+): Promise<FetchLiveResult> {
   const client = getIressClient("live");
   const stripped = normaliseSymbol(symbol);
   const res = await client.pricingQuoteGet({
@@ -39,19 +52,39 @@ async function fetchLiveQuote(
     Exchange: exchange,
   });
   const row = res.DataRows[0];
+  const rawRow = res.RawDataRows?.[0] ?? null;
   if (!row) {
-    return { row: null, rowKeys: "<no row>", outcome: "no-row" };
+    return { row: null, rowKeys: "<no row>", outcome: "no-row", rawRow: null };
   }
-  if (row.last <= 0) {
-    // Pre-open / halt / closed — surface a warning so the worker log
-    // shows why the symbol was skipped instead of going silent. The
-    // parsed row's available keys are echoed so a future field-name
-    // mismatch (e.g. real IRESS using <Last> vs our <LastTrade> mapper)
-    // shows up in one structured line and the next fix is a one-line
-    // edit to `mapQuote` in `src/lib/iress/live.ts`.
-    return { row, rowKeys: describeQuoteRowKeys(row), outcome: "no-trade" };
+  if (row.last > 0) {
+    return { row: { ...row, symbol: stripped }, rowKeys: describeQuoteRowKeys(row), outcome: "ok", rawRow };
   }
-  return { row: { ...row, symbol: stripped }, rowKeys: describeQuoteRowKeys(row), outcome: "ok" };
+  // row.last <= 0. Closed market, pre-open, halt, or bogus Last. Before we
+  // give up, peek at the raw row: the IRESS V4 server returns a non-zero
+  // `LastPrice` / `PreviousClosePrice` even when the live `Last` is empty
+  // (weekends, holidays, the close-of-day snapshot). The mapper collapses
+  // these to `last=0` when there's no OHLC anchor to verify the scale, so
+  // the worker must inspect the raw row to decide whether the data is
+  // worth persisting for the weekend / holiday UI.
+  if (rawRow && quoteRawRowHasPriceData(rawRow)) {
+    const rawLast = quoteRawRowLast(rawRow);
+    const synthetic: Quote = {
+      ...row,
+      symbol: stripped,
+      last: rawLast,
+      // Preserve the existing close/prevClose the mapper already extracted.
+      prevClose: row.prevClose > 0 ? row.prevClose : rawLast,
+      close: row.close > 0 ? row.close : rawLast,
+    };
+    return {
+      row: synthetic,
+      rowKeys: describeQuoteRowKeys(row),
+      outcome: "closed-with-data",
+      rawRow,
+    };
+  }
+  // Truly no data — pre-open / halt / closed with empty fields.
+  return { row, rowKeys: describeQuoteRowKeys(row), outcome: "no-trade", rawRow };
 }
 
 async function fetchMockQuote(symbol: string, exchange: string): Promise<Quote> {
@@ -97,6 +130,10 @@ export interface SyncResult {
   requested: number;
   errors: number;
   empty: number;
+  /** Number of writes that came from a `marketState=CLOSED` row with raw
+   *  `LastPrice` / `PreviousClosePrice` data but no mapped `last`. These
+   *  are real prices the UI should display during weekends / holidays. */
+  closedWithData: number;
   plans: QuoteUpsertPlan[];
   missingInstruments: MissingInstrument[];
 }
@@ -161,6 +198,7 @@ export async function syncWatchlistQuotes(
   const quotes: Array<{ symbol: string; quote: Quote; exchange: string }> = [];
   let errorCount = 0;
   let emptyCount = 0;
+  let closedWithDataCount = 0;
   let sessionFatal: string | null = null;
 
   if (isLive) {
@@ -173,9 +211,36 @@ export async function syncWatchlistQuotes(
           const symbol = normaliseSymbol(entry.symbol);
           const exchange = entry.exchange ?? defaultExchange;
           try {
-            const { row, outcome, rowKeys } = await fetchLiveQuote(session, symbol, exchange);
+            const { row, outcome, rowKeys, rawRow } = await fetchLiveQuote(
+              session,
+              symbol,
+              exchange,
+            );
             if (outcome === "ok" && row) {
               quotes.push({ symbol, quote: row, exchange });
+            } else if (outcome === "closed-with-data" && row) {
+              // IRESS V4 returns a `marketState=CLOSED` row whose mapped
+              // `last` collapsed to 0 (no OHLC anchor) but whose raw
+              // `LastPrice` / `PreviousClosePrice` carry real numbers.
+              // The `fetchLiveQuote` helper built a synthetic Quote with
+              // `last` extracted from the raw row, so we treat this as
+              // a normal write — the weekend / holiday UI will then
+              // surface the prior close instead of going blank.
+              closedWithDataCount += 1;
+              quotes.push({ symbol, quote: row, exchange });
+              console.info(
+                JSON.stringify({
+                  level: "info",
+                  event: "pricing_quote_get_closed_with_data",
+                  source: "iress-worker",
+                  symbol,
+                  exchange,
+                  last: row.last,
+                  prevClose: row.prevClose,
+                  marketState: row.marketState,
+                  rowKeys,
+                }),
+              );
             } else if (outcome === "no-row") {
               emptyCount += 1;
               console.warn(
@@ -187,30 +252,33 @@ export async function syncWatchlistQuotes(
                 msg: `PricingQuoteGet(${symbol}) returned no DataRow (${exchange}) — likely unknown symbol or market closed`,
                 data: { symbol, exchange, rowKeys },
               });
-    } else {
-      // "no-trade" — row present, last<=0. Pre-open / halt / closed, or
-      // bogus Last rejected by resolveQuoteLast (no anchor to salvage).
-      emptyCount += 1;
-      const state = row?.marketState ?? "?";
-      const looksLikeFieldMismatch = state === "OPEN" && rowKeys !== "<empty row>";
-      const looksLikeBogusLast =
-        state === "CLOSED" && rowKeys.includes("Last") && !rowKeys.includes("Close");
-      console.warn(
-        `[iress-ingest] PricingQuoteGet(${symbol}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
-      );
-      recordWorkerEvent({
-        level: "warn",
-        event: "pricing_quote_get_no_trade",
-        msg: `PricingQuoteGet(${symbol}) no trade (marketState=${state})`,
-        data: {
-          symbol,
-          exchange,
-          marketState: state,
-          fieldMismatchSuspected: looksLikeFieldMismatch,
-          bogusLastSuspected: looksLikeBogusLast,
-        },
-      });
-    }
+            } else {
+              // "no-trade" — row present, mapped last<=0, raw row has no
+              // price fields either. Pre-open / halt / closed with empty
+              // fields, or a bogus Last rejected by resolveQuoteLast with
+              // no anchor to salvage.
+              emptyCount += 1;
+              const state = row?.marketState ?? "?";
+              const looksLikeFieldMismatch = state === "OPEN" && rowKeys !== "<empty row>";
+              const looksLikeBogusLast =
+                state === "CLOSED" && rowKeys.includes("Last") && !rowKeys.includes("Close");
+              console.warn(
+                `[iress-ingest] PricingQuoteGet(${symbol}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
+              );
+              recordWorkerEvent({
+                level: "warn",
+                event: "pricing_quote_get_no_trade",
+                msg: `PricingQuoteGet(${symbol}) no trade (marketState=${state})`,
+                data: {
+                  symbol,
+                  exchange,
+                  marketState: state,
+                  fieldMismatchSuspected: looksLikeFieldMismatch,
+                  bogusLastSuspected: looksLikeBogusLast,
+                  rawHasPriceData: rawRow ? quoteRawRowHasPriceData(rawRow) : null,
+                },
+              });
+            }
           } catch (err) {
             if (isIressSessionDeadError(err)) throw err;
             errorCount += 1;
@@ -269,6 +337,7 @@ export async function syncWatchlistQuotes(
       source: "iress-worker",
       requested: env.watchlistSymbols.length,
       ok: quotes.length,
+      closedWithData: closedWithDataCount,
       empty: emptyCount,
       errors: errorCount,
       sessionFatal: sessionFatal ?? null,
@@ -282,10 +351,11 @@ export async function syncWatchlistQuotes(
         ? `Watchlist sync: ${errorCount} errors`
         : emptyCount === env.watchlistSymbols.length && env.watchlistSymbols.length > 0
           ? `Watchlist sync: every symbol returned no trade (${emptyCount}/${env.watchlistSymbols.length}) — likely entitlement / market closed`
-          : `Watchlist sync: ${quotes.length} ok / ${emptyCount} empty / ${errorCount} errors`,
+          : `Watchlist sync: ${quotes.length} ok / ${closedWithDataCount} closed-with-data / ${emptyCount} empty / ${errorCount} errors`,
     data: {
       requested: env.watchlistSymbols.length,
       ok: quotes.length,
+      closedWithData: closedWithDataCount,
       empty: emptyCount,
       errors: errorCount,
       sessionFatal: sessionFatal ?? null,
@@ -298,6 +368,7 @@ export async function syncWatchlistQuotes(
       requested: env.watchlistSymbols.length,
       errors: errorCount,
       empty: emptyCount,
+      closedWithData: closedWithDataCount,
       plans: [],
       missingInstruments: [],
     };
@@ -385,6 +456,7 @@ export async function syncWatchlistQuotes(
     requested: env.watchlistSymbols.length,
     errors: errorCount,
     empty: emptyCount,
+    closedWithData: closedWithDataCount,
     plans,
     missingInstruments,
   };

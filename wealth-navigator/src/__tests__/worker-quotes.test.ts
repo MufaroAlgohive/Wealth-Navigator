@@ -219,3 +219,107 @@ describe("syncWatchlistQuotes empty / error visibility", () => {
     warn.mockRestore();
   });
 });
+
+describe("syncWatchlistQuotes closed-market write-through (Bug B fix)", () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  it("counts a closed-with-data row in the result and surfaces it in the quote_sync_complete log", async () => {
+    // Bug B regression: a SOL row with marketState=C used to be logged as
+    // "no trade" and the worker dropped the write. The fix routes the raw
+    // LastPrice/PreviousClosePrice through `quoteRawRowLast` so the weekend
+    // / holiday UI keeps showing a real number.
+    const env = makeEnv();
+    const client = {
+      pricingQuoteGet: vi.fn(async () => ({
+        Header: { StatusCode: 2, ErrorNumber: 0 },
+        DataRows: [
+          {
+            symbol: "NPN",
+            last: 0,
+            bid: 0,
+            ask: 0,
+            bidSize: 0,
+            askSize: 0,
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+            prevClose: 15_800,
+            change: 0,
+            changePct: 0,
+            volume: 0,
+            vwap: 0,
+            currency: "ZAR",
+            marketState: "CLOSED",
+            ts: Date.now(),
+          },
+        ],
+        RawDataRows: [
+          {
+            SecurityCode: "NPN",
+            Exchange: "JSE",
+            MarketState: "C",
+            Last: 0,
+            LastPrice: 1_582_300, // R15,823.00 in cents
+            PreviousClosePrice: 1_580_000,
+          },
+        ],
+      })),
+      pricingQuoteGetUpdates: vi.fn(),
+      timeSeriesGet2: vi.fn(),
+      timeSeriesGet2Updates: vi.fn(),
+      orderCreate3: vi.fn(),
+      orderAmend2: vi.fn(),
+      orderDelete: vi.fn(),
+      orderPadGetByAccount: vi.fn(),
+      orderPadGetByAccountUpdates: vi.fn(),
+      bookingGetByOrganisation2: vi.fn(),
+      ipsTransactionGetByAccount5: vi.fn(),
+      iressSessionStart: vi.fn(),
+      iressSessionEnd: vi.fn(),
+      serviceSessionStart: vi.fn(),
+      serviceSessionEnd: vi.fn(),
+      targetIdGet: vi.fn(),
+      targetIdStatusGet: vi.fn(),
+    };
+    const withSession = vi.fn(async (fn) => fn({ iressSessionKey: "k" }));
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    vi.doMock("../../workers/iress-ingest/src/session", () => ({
+      WorkerSessionManager: class {
+        withSession = withSession;
+      },
+    }));
+    vi.doMock("@/lib/iress/index", () => ({
+      getIressClient: () => client,
+      iressConfig: { mode: "live" },
+      redactSessionKeyForLog: (v: string) => v,
+    }));
+
+    const { syncWatchlistQuotes } = await import("../../workers/iress-ingest/src/quotes");
+    const result = await syncWatchlistQuotes(env, { withSession } as never, null);
+
+    expect(result.closedWithData).toBe(1);
+    expect(result.empty).toBe(0);
+    expect(result.errors).toBe(0);
+    // The worker must produce a non-zero upsert plan for the closed row so
+    // the writer can persist it and the UI can show the prior close during
+    // the weekend (instead of dropping the symbol entirely).
+    expect(result.plans).toHaveLength(1);
+    expect(result.plans[0]?.symbol).toBe("NPN");
+    // `quoteToCents(last)` is the canonical cents shape the upsert plan stores.
+    expect(result.plans[0]?.currentPriceCents).toBeGreaterThan(0);
+    // The structured log line must report the new counter.
+    const completeLine = info.mock.calls
+      .map((c) => c[0])
+      .find((m) => typeof m === "string" && m.includes("quote_sync_complete"));
+    expect(completeLine).toBeDefined();
+    const parsed = JSON.parse(completeLine as string);
+    expect(parsed.closedWithData).toBe(1);
+    expect(parsed.ok).toBe(1);
+    info.mockRestore();
+  });
+});

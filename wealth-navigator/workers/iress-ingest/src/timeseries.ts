@@ -113,6 +113,39 @@ interface FetchSeriesResult {
 }
 
 /**
+ * Map worker-friendly frequency tokens to the IRESS V4 `Frequency` Long
+ * constant the SOAP body expects.
+ *
+ *   0 = Daily   1 = Weekly   2 = Monthly
+ *   3 = Quarterly   4 = Yearly   5 = Intra-Day
+ *
+ * Sending an empty / undefined Frequency returns
+ * `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`
+ * from the real server, so this mapping is mandatory.
+ */
+export function timeSeriesFrequencyLong(token: TimeSeriesFrequency): number {
+  switch (token) {
+    case "1d":
+      return 0; // Daily
+    case "1w":
+      return 1; // Weekly
+    case "1mo":
+      return 2; // Monthly
+    case "1q":
+      return 3; // Quarterly
+    case "1y":
+      return 4; // Yearly
+    case "1m":
+    case "5m":
+    case "1h":
+    case "tick":
+      return 5; // Intra-Day
+  }
+}
+
+export type TimeSeriesFrequency = "1d" | "1w" | "1mo" | "1q" | "1y" | "1m" | "5m" | "1h" | "tick";
+
+/**
  * Fetch a single series via `TimeSeriesGet2`. Returns an empty point set
  * (with `entitlementRequired=true`) when the entitlement is missing —
  * the caller logs the event and moves on without crashing the loop.
@@ -121,7 +154,7 @@ async function fetchSeries(
   sessions: WorkerSessionManager,
   code: string,
   exchange: string,
-  range: { from: string; to: string; interval: "1d" | "1h" } = {
+  range: { from: string; to: string; interval: TimeSeriesFrequency } = {
     from: new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10),
     to: new Date().toISOString().slice(0, 10),
     interval: "1d",
@@ -142,7 +175,7 @@ async function fetchSeries(
         Exchange: exchange,
         From: range.from,
         To: range.to,
-        Interval: range.interval,
+        Frequency: timeSeriesFrequencyLong(range.interval),
       });
       points = res.DataRows ?? [];
     });
@@ -180,6 +213,8 @@ async function fetchMockSeries(code: string, exchange: string): Promise<Array<{ 
       },
       Code: code,
       Exchange: exchange,
+      // Mock doesn't read Frequency; the live path requires it.
+      Frequency: 0,
     });
     return res.DataRows ?? [];
   } catch {
