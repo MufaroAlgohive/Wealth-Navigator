@@ -851,16 +851,18 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
-      // V4 server requires `Frequency` (Long, 0=Daily, 5=Intra-Day). Sending
-      // an empty / undefined value returns
-      // `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`.
+      // V4 server requires `Frequency` (Long, 1=Tick … 7=1h, 8=Daily … 12=Yearly).
+      // Sending an empty / undefined value returns
+      // `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`,
+      // and `0` is a reserved/invalid Long on the real server (we
+      // confirmed this against the live CT env — see Bug C follow-up).
       // The worker pre-converts friendly values to the Long code; callers
       // that pass a Long directly work as-is.
       if (req.Frequency === undefined || req.Frequency === null) {
         throw new IressError(
           25018,
           "TimeSeriesGet2",
-          "TimeSeriesGet2: missing required field `Frequency` (use 0=Daily, 5=Intra-Day)",
+          "TimeSeriesGet2: missing required field `Frequency` (V4 Long; 8=Daily, 1=Tick, etc.)",
         );
       }
       const result = await transport.call({

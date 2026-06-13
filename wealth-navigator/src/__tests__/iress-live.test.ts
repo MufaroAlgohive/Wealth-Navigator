@@ -230,7 +230,10 @@ describe("validation — every method throws IressError on bad input", () => {
 
   it("timeSeriesGet2 — passes Frequency through to the SOAP body", async () => {
     // Verifies that the new required `Frequency` parameter actually lands in
-    // the outgoing XML envelope (not just in the TypeScript types).
+    // the outgoing XML envelope (not just in the TypeScript types). Uses
+    // the V4 Daily Long (8) — the value the worker actually sends for the
+    // 7-day rolling series (was 0, but 0 is reserved/invalid on the live
+    // server; see Bug C follow-up).
     const call = vi.fn().mockResolvedValueOnce({
       result: {},
       header: { ErrorNumber: 0 },
@@ -241,11 +244,11 @@ describe("validation — every method throws IressError on bad input", () => {
     await client.timeSeriesGet2({
       Header: { SessionKey: "k", RequestID: "r1" },
       Code: "SOL",
-      Frequency: 5, // Intra-Day
+      Frequency: 8, // Daily (V4 Long)
     });
     const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
       .parameters;
-    expect(params["Frequency"]).toBe(5);
+    expect(params["Frequency"]).toBe(8);
     expect(params["Code"]).toBe("SOL");
   });
 

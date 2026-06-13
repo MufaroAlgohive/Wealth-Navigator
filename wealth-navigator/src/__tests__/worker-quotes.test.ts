@@ -323,3 +323,38 @@ describe("syncWatchlistQuotes closed-market write-through (Bug B fix)", () => {
     info.mockRestore();
   });
 });
+
+/**
+ * Bug C regression: the V4 server rejects `0` as `Frequency` with
+ * `soap:Receiver — Invalid Parameter Value: 0 as Frequency`. The fix pins
+ * the V4 Long enum on `timeSeriesFrequencyLong` so a Daily/Weekly/...
+ * token never produces a 0.
+ */
+describe("timeSeriesFrequencyLong (Bug C — V4 Frequency Long enum)", () => {
+  it("maps worker-friendly tokens to the V4 Long enum (no reserved 0)", async () => {
+    const { timeSeriesFrequencyLong } = await import(
+      "../../workers/iress-ingest/src/timeseries"
+    );
+    // V4 Long enum — 0 is reserved/invalid; intra-day buckets are 1..7;
+    // daily/weekly/monthly/quarterly/yearly are 8..12.
+    expect(timeSeriesFrequencyLong("tick")).toBe(1);
+    expect(timeSeriesFrequencyLong("1m")).toBe(2);
+    expect(timeSeriesFrequencyLong("5m")).toBe(3);
+    expect(timeSeriesFrequencyLong("1h")).toBe(7);
+    expect(timeSeriesFrequencyLong("1d")).toBe(8);
+    expect(timeSeriesFrequencyLong("1w")).toBe(9);
+    expect(timeSeriesFrequencyLong("1mo")).toBe(10);
+    expect(timeSeriesFrequencyLong("1q")).toBe(11);
+    expect(timeSeriesFrequencyLong("1y")).toBe(12);
+  });
+
+  it("never returns 0 for any valid token (server rejects 0)", async () => {
+    const { timeSeriesFrequencyLong } = await import(
+      "../../workers/iress-ingest/src/timeseries"
+    );
+    const tokens = ["tick", "1m", "5m", "1h", "1d", "1w", "1mo", "1q", "1y"] as const;
+    for (const t of tokens) {
+      expect(timeSeriesFrequencyLong(t)).not.toBe(0);
+    }
+  });
+});

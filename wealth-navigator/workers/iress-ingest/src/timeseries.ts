@@ -116,8 +116,28 @@ interface FetchSeriesResult {
  * Map worker-friendly frequency tokens to the IRESS V4 `Frequency` Long
  * constant the SOAP body expects.
  *
- *   0 = Daily   1 = Weekly   2 = Monthly
- *   3 = Quarterly   4 = Yearly   5 = Intra-Day
+ * The real IRESS V4 server rejects `0` (and any other reserved value) with
+ * `soap:Receiver — Invalid Parameter Value: <n> as Frequency`. The V4
+ * quick-reference defines the enum as 1-based, with intra-day granularities
+ * first and the daily/weekly/monthly/quarterly/yearly coarser buckets
+ * starting at 8:
+ *
+ *   1  = Tick
+ *   2  = 1 minute
+ *   3  = 5 minute
+ *   4  = 10 minute
+ *   5  = 15 minute
+ *   6  = 30 minute
+ *   7  = 1 hour
+ *   8  = Daily
+ *   9  = Weekly
+ *   10 = Monthly
+ *   11 = Quarterly
+ *   12 = Yearly
+ *
+ * (The IRESS V4 sample payload uses a string `<Interval>Daily</Interval>`,
+ * but the live CT server expects the numeric `Frequency` Long and rejects
+ * `0` specifically, so the 1-based mapping above is what the wire expects.)
  *
  * Sending an empty / undefined Frequency returns
  * `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`
@@ -125,21 +145,24 @@ interface FetchSeriesResult {
  */
 export function timeSeriesFrequencyLong(token: TimeSeriesFrequency): number {
   switch (token) {
-    case "1d":
-      return 0; // Daily
-    case "1w":
-      return 1; // Weekly
-    case "1mo":
-      return 2; // Monthly
-    case "1q":
-      return 3; // Quarterly
-    case "1y":
-      return 4; // Yearly
-    case "1m":
-    case "5m":
-    case "1h":
     case "tick":
-      return 5; // Intra-Day
+      return 1; // Tick
+    case "1m":
+      return 2; // 1 minute
+    case "5m":
+      return 3; // 5 minute
+    case "1h":
+      return 7; // 1 hour
+    case "1d":
+      return 8; // Daily
+    case "1w":
+      return 9; // Weekly
+    case "1mo":
+      return 10; // Monthly
+    case "1q":
+      return 11; // Quarterly
+    case "1y":
+      return 12; // Yearly
   }
 }
 
@@ -213,8 +236,11 @@ async function fetchMockSeries(code: string, exchange: string): Promise<Array<{ 
       },
       Code: code,
       Exchange: exchange,
-      // Mock doesn't read Frequency; the live path requires it.
-      Frequency: 0,
+      // Mock doesn't read Frequency; the live path requires it. Use the
+      // V4 Daily code (8) so the mock + live stay aligned on the same Long
+      // — older code used 0 here, but `0` is reserved/invalid on the real
+      // server and would have been a footgun if the mock ever forwards.
+      Frequency: 8,
     });
     return res.DataRows ?? [];
   } catch {

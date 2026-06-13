@@ -107,11 +107,15 @@ export interface TimeSeriesGet2Request {
   /**
    * V4 server requires this field — the worker logs return
    * `soap:Receiver — Invalid Parameter Value: <empty> as Frequency`
-   * when it's missing. Mapped to the IRESS constant table:
-   *   0 = Daily   1 = Weekly   2 = Monthly
-   *   3 = Quarterly   4 = Yearly   5 = Intra-Day
-   * Worker-friendly values ("1d" | "1h" | "5m" | "1m" | "tick") are
-   * converted to the Long code by the worker before sending.
+   * when it's missing, and rejects `0` as a reserved value. Mapped to the
+   * IRESS V4 Long constant table:
+   *   1 = Tick   2 = 1 minute   3 = 5 minute   4 = 10 minute
+   *   5 = 15 minute   6 = 30 minute   7 = 1 hour
+   *   8 = Daily   9 = Weekly   10 = Monthly
+   *   11 = Quarterly   12 = Yearly
+   * Worker-friendly values ("1d" | "1h" | "5m" | "1m" | "tick" | …) are
+   * converted to the Long code by the worker (`timeSeriesFrequencyLong`)
+   * before sending.
    */
   Frequency?: number;
   /**
