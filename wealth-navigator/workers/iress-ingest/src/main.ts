@@ -9,7 +9,7 @@ import { loadWorkerEnv } from "./env";
 import { syncWatchlistQuotes } from "./quotes";
 import { WorkerSessionManager, LICENSE_RELEASE_DELAY_MS } from "./session";
 import { createWorkerSupabase, writeHeartbeat } from "./supabase";
-import { runHealthLoop } from "./health";
+import { runHealthLoop, gracefulStop } from "./health";
 import { pollAccountsForOrders } from "./orders";
 import { startHttpApi } from "./http-api";
 import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
@@ -211,17 +211,14 @@ async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.error(`[iress-ingest] ${signal}: releasing IRESS license…`);
-  try {
-    await writeHeartbeat(supabase, env, {
-      workerId: env.workerId,
-      status: "error",
-      iressMode: env.iressMode,
-      lastQuoteSyncAt,
-      metadata: { shutdown: signal },
-    });
-  } catch {
-    /* best-effort */
-  }
+  // Audit #2 — on a clean shutdown, write a final heartbeat with
+  // `status: "stopped"` (not `"error"`) so the BFF ghost filter
+  // recognizes this as a graceful exit. Railway redeploys can
+  // leave the prior replica heartbeating if shutdown isn't clean;
+  // the BFF filter (see `src/app/api/worker-health/route.ts`) is
+  // the safety net for that case. We do both — mark ourselves
+  // `stopped` here AND rely on the BFF filter for true ghosts.
+  await gracefulStop({ supabase, env, lastQuoteSyncAt, signal });
   await sessions.tearDown(LICENSE_RELEASE_DELAY_MS);
   process.exit(0);
 }

@@ -175,6 +175,9 @@ export interface IpsSyncOptions {
  */
 export async function syncIps(opts: IpsSyncOptions): Promise<IpsSyncResult> {
   const { env, config, sessions, supabase } = opts;
+  // Yellow #18 — measure wall-clock for the latency chart. The
+  // integration page's `buildLatencySeries` reads `data.elapsedMs`.
+  const t0 = Date.now();
   const isLive = env.iressMode === "live" || env.iressMode === "wsdl-stub";
 
   let accountsUpserted = 0;
@@ -493,6 +496,24 @@ export async function syncIps(opts: IpsSyncOptions): Promise<IpsSyncResult> {
       }
     }
   }
+
+  // Yellow #18 — surface elapsedMs in the IPS sync-complete event so
+  // the integration page's latency chart picks up the IPS cycle.
+  const elapsedMs = Date.now() - t0;
+  recordWorkerEvent({
+    level: errors > 0 || entitlementRequired ? "warn" : "info",
+    event: "ips_sync_complete",
+    msg: `IPS sync: ${accountsUpserted} accounts / ${positionsUpserted} positions / ${transactionsUpserted} transactions (${elapsedMs}ms)`,
+    data: {
+      accountsUpserted,
+      positionsUpserted,
+      transactionsUpserted,
+      accountsRequested: accountsToPoll.length,
+      entitlementRequired,
+      errors,
+      elapsedMs,
+    },
+  });
 
   return {
     accountsUpserted,

@@ -476,11 +476,13 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
         );
         recordWorkerEvent({
           level: "warn",
-          event: res.entitlementRequired ? "time_series_entitlement_missing" : "time_series_no_data",
+          event: res.entitlementRequired ? "time_series_entitlement_missing" : "time_series_sync_complete",
           msg: res.entitlementRequired
             ? `TimeSeriesGet2 entitlement required for ${code} — ask Charles to enable`
             : `No data returned for ${code} — likely no entitlement, holiday, or market closed`,
-          data: { series: "index", code, iressMode: env.iressMode },
+          // Yellow #18 — surface elapsedMs + points so the
+          // integration page's latency chart picks up these events.
+          data: { series: "index", code, iressMode: env.iressMode, elapsedMs: Date.now() - t0, points: 0 },
         });
         continue;
       }

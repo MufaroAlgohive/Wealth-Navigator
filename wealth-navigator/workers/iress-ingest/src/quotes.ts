@@ -193,6 +193,11 @@ export async function syncWatchlistQuotes(
   sessions: WorkerSessionManager,
   supabase: WorkerSupabase | null,
 ): Promise<SyncResult> {
+  // Yellow #18 — measure wall-clock for the latency chart. The
+  // integration page's `buildLatencySeries` filters events whose
+  // `data` payload carries a numeric `elapsedMs`. Adding the field
+  // here populates the chart with one point per sync cycle.
+  const t0 = Date.now();
   const defaultExchange = env.defaultExchange || "JSE";
   const isLive = iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub";
   const quotes: Array<{ symbol: string; quote: Quote; exchange: string }> = [];
@@ -379,6 +384,7 @@ export async function syncWatchlistQuotes(
   // Always log the sync outcome so Railway logs show the loop finished —
   // even when no quotes landed (gating this on synced>0 is what hid the
   // "no rows" failure mode from the user).
+  const elapsedMs = Date.now() - t0; // Yellow #18
   console.info(
     JSON.stringify({
       level: "info",
@@ -389,6 +395,7 @@ export async function syncWatchlistQuotes(
       closedWithData: closedWithDataCount,
       empty: emptyCount,
       errors: errorCount,
+      elapsedMs,
       sessionFatal: sessionFatal ?? null,
     }),
   );
@@ -400,13 +407,14 @@ export async function syncWatchlistQuotes(
         ? `Watchlist sync: ${errorCount} errors`
         : emptyCount === env.watchlistSymbols.length && env.watchlistSymbols.length > 0
           ? `Watchlist sync: every symbol returned no trade (${emptyCount}/${env.watchlistSymbols.length}) — likely entitlement / market closed`
-          : `Watchlist sync: ${quotes.length} ok / ${closedWithDataCount} closed-with-data / ${emptyCount} empty / ${errorCount} errors`,
+          : `Watchlist sync: ${quotes.length} ok / ${closedWithDataCount} closed-with-data / ${emptyCount} empty / ${errorCount} errors (${elapsedMs}ms)`,
     data: {
       requested: env.watchlistSymbols.length,
       ok: quotes.length,
       closedWithData: closedWithDataCount,
       empty: emptyCount,
       errors: errorCount,
+      elapsedMs, // Yellow #18 — surfaces in the integration page's latency chart
       sessionFatal: sessionFatal ?? null,
     },
   });
