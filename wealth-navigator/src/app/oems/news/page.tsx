@@ -72,9 +72,9 @@ export default function NewsPage() {
   const [tab, setTab] = useState<"all" | "sens" | "wire">("all");
   const [q, setQ] = useState("");
 
-  // The BFF exposes one `news_item_c` table that holds both wires and SENS.
-  // We bucket client-side by category — `category = "SENS"` is the SENS tape,
-  // everything else is the wire / vendor feed.
+  // /api/news returns the Alliance News wire from the retail News_articles feed,
+  // tagged category "WIRE". SENS (category "SENS") needs a separate JSE SENS
+  // subscription, so that bucket is empty for now. Bucket client-side.
   const sens = items.filter((n) => n.category.toUpperCase() === "SENS");
   const wire = items.filter((n) => n.category.toUpperCase() !== "SENS");
 
@@ -175,10 +175,10 @@ export default function NewsPage() {
       <div className="rounded-md border border-info/30 bg-info/5 p-3 text-[11.5px] text-info">
         <p className="flex items-center gap-2 font-semibold">
           <AlertCircle className="h-3.5 w-3.5" />
-          News is vendor-tape + SENS
+          News tape = Alliance News wire (live) + SENS (pending)
         </p>
         <p className="mt-1 text-muted-foreground">
-          The news BFF reads <span className="font-mono">news_item_c</span> — one row per wire or SENS item. v1 has no contracted vendor, so the tape renders the honest <span className="font-mono">BLOCKED-VENDOR</span> state. SENS is the JSE regulatory announcement tape.
+          The wire tape reads the <span className="font-mono">News_articles</span> feed (Alliance News) from the retail DB — live. The <span className="font-mono">SENS</span> tab is the JSE regulatory announcement tape, which needs a separate JSE SENS Web Feed subscription, so it stays empty until that lands.
         </p>
       </div>
     </div>
