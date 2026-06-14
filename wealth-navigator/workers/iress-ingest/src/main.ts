@@ -280,7 +280,7 @@ void retailIngestLoop();
 if (retailIngestEnabled) {
   console.warn(
     `[iress-ingest] RETAIL INGEST ENABLED → ${process.env.RETAIL_SUPABASE_URL} ` +
-      `(${env.dryRun || !env.allowWrites ? "shadow/dry-run" : "LIVE WRITES"}). Interval ${retailIngestIntervalSec}s.`,
+      `(${process.env.IRESS_RETAIL_DRY_RUN === "0" ? "LIVE WRITES" : "shadow/dry-run"}). Interval ${retailIngestIntervalSec}s.`,
   );
 }
 

@@ -12,8 +12,10 @@
  *  - DORMANT unless `IRESS_RETAIL_INGEST=1` AND `RETAIL_SUPABASE_URL` is
  *    explicitly set (no legacy fallback) — both checked in main.ts before this
  *    loop is ever started.
- *  - Honours `env.dryRun` / `env.allowWrites`: by default it shadow-logs the
- *    IRESS-vs-Yahoo comparison and writes NOTHING.
+ *  - Gated by its OWN switch `IRESS_RETAIL_DRY_RUN` (default: shadow), separate
+ *    from the worker-wide dryRun/allowWrites (which govern the institutional
+ *    feed). Default behaviour shadow-logs the IRESS-vs-Yahoo comparison and
+ *    writes NOTHING; only `IRESS_RETAIL_DRY_RUN=0` enables live retail writes.
  *  - Touches ONLY `securities_c.last_price` and `stock_intraday_c` — the same
  *    fields the Yahoo feed already writes. It NEVER reads or writes any customer
  *    table (profiles / wallets / holdings / transactions / KYC).
@@ -76,7 +78,10 @@ export async function syncRetailPrices(opts: {
 }): Promise<RetailSyncResult> {
   const { env, sessions, retail } = opts;
   const exchange = opts.exchange ?? env.defaultExchange ?? "JSE";
-  const writesOn = !env.dryRun && env.allowWrites && Boolean(retail);
+  // Retail writes use their OWN explicit gate (default: shadow), independent of
+  // the worker-wide dryRun/allowWrites that govern the institutional feed. Flip
+  // IRESS_RETAIL_DRY_RUN=0 only after the shadow run validates coverage + scaling.
+  const writesOn = process.env.IRESS_RETAIL_DRY_RUN === "0" && Boolean(retail);
   const setSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
 
   if (!retail) {
