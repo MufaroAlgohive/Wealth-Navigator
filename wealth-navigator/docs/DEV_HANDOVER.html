@@ -222,7 +222,7 @@
     <tr><td>Cockpit — Top Movers, Security watchlist + intraday</td><td><span class="badge b-live">LIVE</span> retail quotes</td></tr>
     <tr><td>News &amp; SENS (Wires tab)</td><td><span class="badge b-live">LIVE</span> Alliance News</td></tr>
     <tr><td>Integration / worker health</td><td><span class="badge b-live">LIVE</span></td></tr>
-    <tr><td>Equities 246 · Cockpit Sector Heatmap · Security fundamentals · Platform AUM</td><td><span class="badge b-wire">WIRING</span> data ready (<code>/api/equities</code>, <code>securities_c</code>, client book)</td></tr>
+    <tr><td>Equities 246 · Cockpit Sector Heatmap · Security fundamentals · Platform AUM / Day P&amp;L</td><td><span class="badge b-live">LIVE</span> retail (<code>/api/equities</code>, <code>securities_c</code>, <code>/api/client-book</code>)</td></tr>
     <tr><td>Blotter / Open Orders · Portfolio (AUM/P&amp;L/positions)</td><td><span class="badge b-charles">IRESS</span> IOS+/IPS</td></tr>
     <tr><td>Curves · ALSI · Sectors (official) · Money Market · Macro</td><td><span class="badge b-charles">IRESS</span> TimeSeriesGet2</td></tr>
     <tr><td>SENS regulatory tab · Macro vendor feed</td><td><span class="badge b-vendor">VENDOR</span></td></tr>
@@ -241,8 +241,8 @@
 
   <h2 id="status">9 · Current status</h2>
   <div class="grid2">
-    <div class="card"><h3 style="margin-top:0">✅ Live</h3><p class="small">Retail quotes (movers/watchlist/intraday), News wire, Integration/worker health, IRESS session + PricingQuoteGet.</p></div>
-    <div class="card"><h3 style="margin-top:0">🟦 Wiring (us)</h3><p class="small">Equities 246, Sector Heatmap, Top Movers→246 + sign fix, Security fundamentals, Platform AUM. Data + routes ready.</p></div>
+    <div class="card"><h3 style="margin-top:0">✅ Live</h3><p class="small">Retail quotes (movers/watchlist/intraday), Equities 246 + Sector Heatmap, Security fundamentals, Platform AUM / Day P&amp;L (client book), News wire, Integration/worker health, IRESS session + PricingQuoteGet.</p></div>
+    <div class="card"><h3 style="margin-top:0">🟦 Wiring (us)</h3><p class="small">Retail read-path wiring complete. Remaining is the Yahoo→IRESS price cut-over (§8): shadow → validate → flip.</p></div>
     <div class="card"><h3 style="margin-top:0">🟥 IRESS (Charles)</h3><p class="small">Orders, portfolio, curves, ALSI, sectors, money-market, macro, L2 — see §4 + the Charles ask doc.</p></div>
     <div class="card"><h3 style="margin-top:0">🟨 Vendor</h3><p class="small">SENS regulatory feed; macro provider.</p></div>
   </div>

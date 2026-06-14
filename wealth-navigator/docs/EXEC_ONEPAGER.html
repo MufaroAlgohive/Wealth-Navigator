@@ -48,17 +48,18 @@
       <h3><span class="dot g"></span> Live now (real data)</h3>
       <ul>
         <li>JSE equity prices — watchlist, movers, security charts</li>
+        <li>Full 246-stock universe + sector heatmap</li>
+        <li>Stock fundamentals (P/E, yield, beta, ISIN)</li>
+        <li>Platform AUM / Day P&amp;L from the client book</li>
         <li>Market news tape (~4,800 wire articles)</li>
-        <li>System / integration health monitoring</li>
-        <li>IRESS connection + live equity quotes</li>
+        <li>System / integration health + live IRESS quotes</li>
       </ul>
     </div>
     <div class="box blue">
       <h3><span class="dot b"></span> In build — our side (days)</h3>
       <ul>
-        <li>Full 246-stock universe + sector heatmap</li>
-        <li>Stock fundamentals (P/E, yield, beta, ISIN)</li>
-        <li>Platform AUM / P&amp;L from the client book</li>
+        <li>Yahoo → IRESS price cut-over (validate, then flip)</li>
+        <li>Shadow-mode diff already runnable on the worker</li>
         <li>No external dependency — data already in our DB</li>
       </ul>
     </div>
@@ -94,7 +95,7 @@
   <h2>Path to production</h2>
   <table>
     <tr><th>Owner</th><th>Action</th><th>When</th></tr>
-    <tr><td class="who">Us</td><td>Wire the remaining retail panels (universe, sectors, fundamentals, AUM)</td><td>This week</td></tr>
+    <tr><td class="who">Us</td><td>Retail panels (universe, sectors, fundamentals, AUM) — <strong>done, live</strong></td><td>✓ 14 Jun</td></tr>
     <tr><td class="who">Us</td><td>Switch live prices from Yahoo → IRESS (validated, then flip)</td><td>Mon (market hours)</td></tr>
     <tr><td class="who">IRESS / Charles</td><td>The 5-item unlock list above</td><td>ASAP — gates most of the desk</td></tr>
     <tr><td class="who">Vendor</td><td>SENS feed + macro provider</td><td>Procurement track</td></tr>
