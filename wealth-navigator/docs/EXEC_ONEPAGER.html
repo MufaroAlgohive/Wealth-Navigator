@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MINT OEMS — Production Readiness (one page)</title>
+<style>
+  :root{--bg:#fff;--ink:#15202b;--muted:#5b6b7a;--line:#e3e8ee;
+    --green:#1a7f37;--blue:#0b69d4;--red:#c4320a;--amber:#9a6700;
+    --greenbg:#eaf6ec;--bluebg:#e9f2fd;--redbg:#fdede8;--amberbg:#fdf6e3;}
+  *{box-sizing:border-box}
+  body{margin:0;background:#f4f6f8;color:var(--ink);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .sheet{max-width:920px;margin:24px auto;background:var(--bg);border:1px solid var(--line);
+    border-radius:14px;padding:30px 38px;box-shadow:0 2px 18px rgba(20,40,60,.06)}
+  h1{font-size:24px;margin:0 0 2px}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 18px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:24px 0 8px}
+  .quad{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .box{border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .box h3{margin:0 0 8px;font-size:15px;display:flex;align-items:center;gap:8px}
+  .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+  .g{background:var(--green)}.b{background:var(--blue)}.r{background:var(--red)}.a{background:var(--amber)}
+  .box.green{background:var(--greenbg);border-color:#bfe3c6}
+  .box.blue{background:var(--bluebg);border-color:#bcd9f7}
+  .box.red{background:var(--redbg);border-color:#f3c4b5}
+  .box.amber{background:var(--amberbg);border-color:#eddca0}
+  ul{margin:6px 0 0;padding-left:18px}
+  li{margin:3px 0}
+  .who{font-weight:700}
+  table{border-collapse:collapse;width:100%;margin-top:8px;font-size:13px}
+  td,th{border:1px solid var(--line);padding:7px 10px;text-align:left}
+  th{background:#f7f9fb;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  .ask li{margin:5px 0}
+  .ask b{color:var(--ink)}
+  .foot{color:var(--muted);font-size:11.5px;margin-top:22px;border-top:1px solid var(--line);padding-top:10px}
+  @media print{body{background:#fff}.sheet{box-shadow:none;border:0;margin:0;border-radius:0}}
+</style>
+</head>
+<body>
+<div class="sheet">
+  <h1>MINT OEMS — Production Readiness</h1>
+  <p class="sub">Institutional JSE trading desk · IRESS V4 integration · status as of 14 June 2026</p>
+
+  <h2>Where we are</h2>
+  <div class="quad">
+    <div class="box green">
+      <h3><span class="dot g"></span> Live now (real data)</h3>
+      <ul>
+        <li>JSE equity prices — watchlist, movers, security charts</li>
+        <li>Market news tape (~4,800 wire articles)</li>
+        <li>System / integration health monitoring</li>
+        <li>IRESS connection + live equity quotes</li>
+      </ul>
+    </div>
+    <div class="box blue">
+      <h3><span class="dot b"></span> In build — our side (days)</h3>
+      <ul>
+        <li>Full 246-stock universe + sector heatmap</li>
+        <li>Stock fundamentals (P/E, yield, beta, ISIN)</li>
+        <li>Platform AUM / P&amp;L from the client book</li>
+        <li>No external dependency — data already in our DB</li>
+      </ul>
+    </div>
+    <div class="box red">
+      <h3><span class="dot r"></span> Blocked — needs IRESS (Charles)</h3>
+      <ul>
+        <li>Order management &amp; the blotter</li>
+        <li>Portfolio / positions (AUM, P&amp;L)</li>
+        <li>Yield curves, ALSI index, sector indices</li>
+        <li>Money-market rates, macro time-series</li>
+      </ul>
+    </div>
+    <div class="box amber">
+      <h3><span class="dot a"></span> Blocked — needs a vendor</h3>
+      <ul>
+        <li>SENS regulatory announcement tape</li>
+        <li>Macro indicators feed (SARB / StatsSA)</li>
+        <li>(Wire news already covered)</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>What we need from IRESS — the unblock list</h2>
+  <ol class="ask">
+    <li><b>Turn on the service sessions (IOS+, IPS, FIX+).</b> They return server error 500. This single fix unlocks <b>orders, blotter, and the whole portfolio view.</b></li>
+    <li><b>Enable &amp; clarify TimeSeriesGet2.</b> Every request is rejected; the live system differs from IRESS's own docs. Unlocks <b>curves, indices, sectors, money-market, macro.</b></li>
+    <li><b>Confirm the trading account code(s)</b> for order &amp; portfolio calls.</li>
+    <li><b>Confirm coverage</b> of the full JSE board + ETFs.</li>
+    <li><b>Confirm market depth (L2)</b> availability in V4.</li>
+  </ol>
+  <p style="font-size:12.5px;color:var(--muted)">Items 1 &amp; 2 unlock the majority of the desk. Everything is proven with a live, re-runnable diagnostic — no guesswork.</p>
+
+  <h2>Path to production</h2>
+  <table>
+    <tr><th>Owner</th><th>Action</th><th>When</th></tr>
+    <tr><td class="who">Us</td><td>Wire the remaining retail panels (universe, sectors, fundamentals, AUM)</td><td>This week</td></tr>
+    <tr><td class="who">Us</td><td>Switch live prices from Yahoo → IRESS (validated, then flip)</td><td>Mon (market hours)</td></tr>
+    <tr><td class="who">IRESS / Charles</td><td>The 5-item unlock list above</td><td>ASAP — gates most of the desk</td></tr>
+    <tr><td class="who">Vendor</td><td>SENS feed + macro provider</td><td>Procurement track</td></tr>
+  </table>
+
+  <p class="foot">One-page summary. Full technical detail: <b>DEV_HANDOVER.html</b>. IRESS specifics: <b>STATUS_AND_CHARLES_ASK_2026-06-14.md</b> + <b>EMAIL_TO_CHARLES_2026-06-14.txt</b>.</p>
+</div>
+</body>
+</html>
