@@ -1,0 +1,79 @@
+Subject: MINT OEMS — IRESS V4 production blockers (service sessions + TimeSeriesGet2 + entitlements)
+
+Hi Charles,
+
+We're connected live to the CT endpoint and PricingQuoteGet is working for JSE
+equities. Three things are blocking the rest of the desk from going live. Each
+has a concrete error from our production worker (account DFM@Mint), below.
+
+────────────────────────────────────────────────────────────────────────
+1. SERVICE SESSIONS — ServiceSessionStart returns HTTP 500 for IOS+, IPS, FIX+
+────────────────────────────────────────────────────────────────────────
+Exact faults (2026-06-14, live CT):
+  ServiceSessionStart(Service="IOSPlus", Server="IOSPLUSAPI")  -> soap:Receiver — HTTP 500
+  ServiceSessionStart(Service="IPS",     Server="IPSAPI")      -> soap:Receiver — HTTP 500
+  ServiceSessionStart(Service="FIXPlus", Server="FIXPLUSAPI")  -> soap:Receiver — HTTP 500
+
+Because no service session is created, every IOS+/IPS call then fails, e.g.:
+  IPSAccountGetAll1 -> "IPS service session not available"
+  OrderPadGetByAccount -> blocked (no IOS+ session)
+
+Please confirm:
+  (a) Are IOSPlus, IPS and FIXPlus entitled on the DFM@Mint account?
+  (b) What are the correct `Server` identifiers for each on this CT instance?
+      We are guessing IOSPLUSAPI / IPSAPI / FIXPLUSAPI — if those are wrong,
+      that alone would explain the HTTP 500.
+
+This blocks: order management (OrderPadGetByAccount, OrderCreate3/Amend2/Delete,
+BookingGetByOrganisation2) and the whole portfolio view (IPSAccountGetAll1,
+IPSPositionGetAll1, IPSTransactionGetByAccount5).
+
+────────────────────────────────────────────────────────────────────────
+2. TimeSeriesGet2 — every request rejected, both wire shapes, all codes
+────────────────────────────────────────────────────────────────────────
+Exact fault (2026-06-14, live CT):
+  TimeSeriesGet2(Code="J203", Frequency=5) -> soap:Receiver — Invalid Parameter Value: 5 as Frequency
+
+We have tried every Frequency Long (0..32, 40, 50, 60, 64, 100, 128, 200, 255,
+256, 500, 1000, 2000, 4000, 5000, 10000, 86400, 604800, …) AND the V4 WSDL
+`<Interval>` strings ("Daily", "Weekly", …). All return the same fault, across
+J203, R2030, R2035, R2040, NPN, FSR, SOL, USDZAR — so it is not symbol-specific.
+
+Please confirm:
+  (a) Is TimeSeriesGet2 entitled on DFM@Mint?
+  (b) What is the EXACT request shape the CT build expects — is the period
+      selector `Frequency` (xsd:long) or `Interval` (string), and what are the
+      valid values? A single working example request/response for a daily J203
+      series would unblock us immediately.
+
+This blocks: JSE All Share / index intraday (J203), sector heatmap (J200/J2xx),
+ZAR sovereign yield curves (NSS / GOVI / R-codes), money-market fixings (JIBAR),
+and the curve PCA / carry analytics derived from them.
+
+────────────────────────────────────────────────────────────────────────
+3. PricingQuoteGet coverage — confirm the full board + ETFs
+────────────────────────────────────────────────────────────────────────
+PricingQuoteGet works for the large-cap JSE names. We need the desk to price the
+full equity board plus the JSE-listed ETFs our portfolios hold (Satrix, Sygnia,
+1nvest, etc. — e.g. STXWDM, ETFGLD, STX40, SYGEMF). Please confirm the
+entitlement covers all JSE equities + ETFs, and flag any that need a separate
+subscription.
+
+────────────────────────────────────────────────────────────────────────
+4. Trading account code(s)
+────────────────────────────────────────────────────────────────────────
+For OrderPadGetByAccount / IPS calls, please confirm the production account
+code(s) we should use (we are currently using a placeholder).
+
+────────────────────────────────────────────────────────────────────────
+5. (If available) Market depth (L2) + time & sales
+────────────────────────────────────────────────────────────────────────
+Is full order-book depth (L2) and trade-by-trade (time & sales) available via
+PricingQuoteExGet or a separate feed? If not exposed in V4, we'll plan a
+separate JSE depth feed.
+
+Priority order for us: (1) service sessions, (2) TimeSeriesGet2, (3) account
+codes — those three light up the bulk of the desk. Happy to hop on a call.
+
+Thanks,
+MINT
