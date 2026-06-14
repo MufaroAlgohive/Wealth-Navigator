@@ -1,45 +1,46 @@
 /**
  * GET /api/news
  *
- * DB-first read of `news_item_c` (wire / SENS / regulatory news).
- * Empty in v1; the page renders the "News feed not configured" empty
- * state.
+ * DB-first read of the retail `News_articles` table (Alliance News wire feed,
+ * ~4,800 rows) from the RETAIL prod DB. Maps the wire schema to the NewsItem
+ * shape the UI expects.
+ *
+ * NOTE: this is editorial / wire news — NOT JSE SENS regulatory announcements
+ * (which require a separate SENS subscription). Everything here is tagged
+ * category "WIRE", so a SENS-only tab stays empty until a SENS feed lands.
  */
-import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
-import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
+import { type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 interface NewsRow {
-  item_id: string;
-  source: string;
-  category: string | null;
-  severity: string | null;
-  ticker: string | null;
-  issuer: string | null;
-  headline: string;
-  body: string | null;
-  url: string | null;
+  id: string;
+  source: string | null;
+  title: string;
+  body_text: string | null;
   published_at: string;
+  companies: string[] | null;
 }
 
 function mapRow(r: NewsRow) {
+  const tickers = Array.isArray(r.companies) ? r.companies.filter(Boolean) : [];
   return {
-    id: r.item_id,
-    source: r.source,
-    category: r.category ?? "GENERAL",
-    severity: r.severity ?? "low",
-    ticker: r.ticker ?? null,
-    issuer: r.issuer ?? null,
-    headline: r.headline,
-    body: r.body ?? null,
-    url: r.url ?? null,
+    id: r.id,
+    source: r.source ?? "Wire",
+    category: "WIRE",
+    severity: "low",
+    ticker: tickers[0] ?? null,
+    issuer: null,
+    headline: r.title,
+    body: r.body_text ?? null,
+    url: null,
     publishedAt: r.published_at,
     ts: new Date(r.published_at).getTime(),
-    priority: r.severity === "regulatory" || r.severity === "high" ? "high" : "low",
-    tickers: r.ticker ? [r.ticker] : [],
+    priority: "low",
+    tickers,
   };
 }
 
@@ -51,17 +52,23 @@ export async function GET(req: Request) {
   if (!isUseSupabaseQuotesEnabled()) {
     return Response.json({ items: [], source: "unavailable", reason: "supabase_quotes_disabled" });
   }
-  if (!isSupabaseConfigured()) {
+  if (!isRetailSupabaseConfigured()) {
     return Response.json(
       { items: [], source: "unavailable", reason: "supabase_not_configured" },
       { status: 503 },
     );
   }
-  const supabase = createServiceRoleClient();
-  let q = supabase.from("news_item_c").select("*").order("published_at", { ascending: false });
-  if (category) q = q.eq("category", category);
-  q = q.limit(limit);
-  const { data, error } = await q;
+  // These are wire articles only — a SENS-specific request has no data yet.
+  if (category && category.toUpperCase() === "SENS") {
+    return Response.json({ items: [], source: "unavailable", count: 0, reason: "empty" });
+  }
+
+  const supabase = createRetailServiceRoleClient();
+  const { data, error } = await supabase
+    .from("News_articles")
+    .select("id, source, title, body_text, published_at, companies")
+    .order("published_at", { ascending: false })
+    .limit(limit);
   if (error) {
     return Response.json(
       {
@@ -69,9 +76,6 @@ export async function GET(req: Request) {
         source: "unavailable",
         reason: "supabase_query_failed" as BffUnavailableReason,
         error: error.message,
-        migration: isSupabaseSchemaMissing(error)
-          ? "supabase/migrations/20260613000007_news_universe.sql"
-          : undefined,
       },
       { status: 200 },
     );
@@ -82,9 +86,5 @@ export async function GET(req: Request) {
     source: items.length > 0 ? "supabase" : "unavailable",
     count: items.length,
     reason: items.length === 0 ? "empty" : undefined,
-    message:
-      items.length === 0
-        ? "News + SENS feed requires a vendor contract (Reuters / Bloomberg / Moneyweb) or a SENS subscription. v1 returns an empty list."
-        : undefined,
   });
 }
