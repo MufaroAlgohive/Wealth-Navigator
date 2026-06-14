@@ -58,8 +58,9 @@ interface SecurityMetaRow {
   id: string;
   symbol: string;
   last_price: number | null;
-  prev_close: number | null;
-  currency: string | null;
+  // Retail securities_c carries change_price/change_percent (Yahoo), not prev_close/currency.
+  change_price: number | null;
+  change_percent: number | null;
 }
 
 /** Build a Quote from a Supabase intraday tick + securities_c metadata. */
@@ -69,15 +70,15 @@ function buildQuoteFromIntraday(
   symbol: string,
   exchange: string,
 ): Quote {
-  const priceCents = Number(intraday.current_price) || 0;
+  // Retail securities_c has last_price + change_percent (Yahoo); no prev_close
+  // column, so derive the prior close from the day change %.
+  const tickCents = Number(intraday.current_price) || 0;
+  const metaCents = Number(meta?.last_price) || 0;
+  const priceCents = tickCents > 0 ? tickCents : metaCents;
   const last = priceCents / 100;
-  const prevCents = meta?.prev_close ?? null;
-  const prev =
-    prevCents != null && Number(prevCents) > 0
-      ? Number(prevCents) / 100
-      : last;
+  const changePct = Number(meta?.change_percent) || 0;
+  const prev = changePct !== 0 ? last / (1 + changePct / 100) : last;
   const change = last - prev;
-  const changePct = prev > 0 ? (change / prev) * 100 : 0;
   const ts = new Date(intraday.timestamp).getTime();
   return {
     symbol,
@@ -95,7 +96,7 @@ function buildQuoteFromIntraday(
     changePct,
     volume: 0,
     vwap: last,
-    currency: meta?.currency ?? "ZAR",
+    currency: "ZAR",
     marketState: "OPEN",
     ts,
   };
@@ -114,10 +115,16 @@ async function fetchQuotesFromSupabase(
   const normalised = Array.from(new Set(symbols.map(normaliseSymbol)));
   if (normalised.length === 0) return [];
 
+  // Retail securities_c stores JSE tickers with a `.JO` suffix (e.g. NPN.JO)
+  // while callers pass bare codes (NPN). Query both forms and key results back
+  // to the bare code the caller asked for.
+  const bareKey = (s: string) => normaliseSymbol(s).replace(/\.(JO|JSE)$/i, "");
+  const candidates = Array.from(new Set(normalised.flatMap((s) => [s, `${s}.JO`])));
+
   const { data: securities, error: secErr } = await supabase
     .from("securities_c")
-    .select("id, symbol, last_price, prev_close, currency")
-    .in("symbol", normalised);
+    .select("id, symbol, last_price, change_price, change_percent")
+    .in("symbol", candidates);
   if (secErr) {
     throw new Error(`securities_c read failed: ${secErr.message}`);
   }
@@ -144,11 +151,11 @@ async function fetchQuotesFromSupabase(
     }
   }
 
-  const metaBySymbol = new Map(metaRows.map((m) => [m.symbol, m]));
+  const metaByBare = new Map(metaRows.map((m) => [bareKey(m.symbol), m]));
   const out: QuoteWithSource[] = [];
 
   for (const sym of normalised) {
-    const meta = metaBySymbol.get(sym);
+    const meta = metaByBare.get(sym);
     if (!meta) {
       out.push(unavailableQuote(sym, exchange));
       continue;
@@ -159,8 +166,8 @@ async function fetchQuotesFromSupabase(
       continue;
     }
     out.push({
-      symbol: meta.symbol,
-      quote: buildQuoteFromIntraday(meta, tick, meta.symbol, exchange),
+      symbol: sym,
+      quote: buildQuoteFromIntraday(meta, tick, sym, exchange),
       source: "supabase",
     });
   }

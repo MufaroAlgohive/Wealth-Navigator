@@ -39,7 +39,9 @@ interface IntradayRow {
 interface SecurityRow {
   id: string;
   symbol: string;
-  prev_close: number | null;
+  // Retail securities_c has last_price + change_percent (Yahoo), not prev_close.
+  last_price: number | null;
+  change_percent: number | null;
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ sym: string }> }) {
@@ -66,10 +68,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
   }
 
   const supabase = createRetailServiceRoleClient();
+  // Retail securities_c stores JSE tickers with a `.JO` suffix — match both forms.
   const { data: secRows, error: secErr } = await supabase
     .from("securities_c")
-    .select("id, symbol, prev_close")
-    .eq("symbol", sym)
+    .select("id, symbol, last_price, change_percent")
+    .in("symbol", [sym, `${sym}.JO`])
     .limit(1);
   if (secErr) {
     return Response.json(
@@ -100,6 +103,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
     });
   }
 
+  // Retail has no prev_close column — derive the prior close from change_percent.
+  const lastR = (Number(security.last_price) || 0) / 100;
+  const pct = Number(security.change_percent) || 0;
+  const prevCloseRands = lastR > 0 ? (pct !== 0 ? lastR / (1 + pct / 100) : lastR) : null;
+
   const { data: tickRows, error: tickErr } = await supabase
     .from("stock_intraday_c")
     .select("security_id, current_price, timestamp")
@@ -111,7 +119,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
       {
         symbol: sym,
         securityId: security.id,
-        prevClose: security.prev_close != null ? Number(security.prev_close) / 100 : null,
+        prevClose: prevCloseRands,
         points: [],
         asOf: null,
         source: "unavailable",
@@ -132,7 +140,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
   return Response.json({
     symbol: sym,
     securityId: security.id,
-    prevClose: security.prev_close != null ? Number(security.prev_close) / 100 : null,
+    prevClose: prevCloseRands,
     points,
     asOf: rows.length > 0 ? new Date(rows[0]!.timestamp).toISOString() : null,
     source: points.length > 0 ? "supabase" : "unavailable",
