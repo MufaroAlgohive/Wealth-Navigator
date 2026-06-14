@@ -11,6 +11,7 @@ import type { WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
+import { chooseDisplayCents } from "./scale";
 
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -101,22 +102,31 @@ export interface QuoteUpsertPlan {
 interface SecurityRow {
   id: string;
   symbol: string;
+  last_price: number | null;
+}
+
+export interface SecurityRef {
+  id: string;
+  /** Existing reference price in cents (Yahoo-sourced today) — anchors IRESS scaling. */
+  lastPriceCents: number;
 }
 
 async function loadSecurityMap(
   supabase: WorkerSupabase,
   symbols: string[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, SecurityRef>> {
   const { data, error } = await supabase
     .from("securities_c")
-    .select("id, symbol")
+    .select("id, symbol, last_price")
     .in("symbol", symbols);
   if (error) {
     console.error(`[iress-ingest] securities_c lookup failed: ${error.message}`);
     return new Map();
   }
   const rows = (data ?? []) as SecurityRow[];
-  return new Map(rows.map((row) => [row.symbol, row.id]));
+  return new Map(
+    rows.map((row) => [row.symbol, { id: row.id, lastPriceCents: Number(row.last_price) || 0 }]),
+  );
 }
 
 export interface MissingInstrument {
@@ -432,7 +442,7 @@ export async function syncWatchlistQuotes(
   }
 
   const symbols = quotes.map((q) => q.symbol);
-  let securityMap = new Map<string, string>();
+  let securityMap = new Map<string, SecurityRef>();
   if (supabase && env.allowWrites && !env.dryRun) {
     securityMap = await loadSecurityMap(supabase, symbols);
   }
@@ -442,8 +452,13 @@ export async function syncWatchlistQuotes(
   const missingInstruments: MissingInstrument[] = [];
 
   for (const { symbol, quote, exchange: qExchange } of quotes) {
-    const securityId = securityMap.get(symbol);
-    const priceCents = quoteToCents(quote.last);
+    const ref = securityMap.get(symbol);
+    const securityId = ref?.id;
+    // Reference-anchored scaling: pick the cents value whose magnitude matches
+    // the existing securities_c.last_price, fixing the 100x cents/Rand
+    // mis-scale (see scale.ts). Falls back to Rands->cents with no reference.
+    const choice = chooseDisplayCents(quote.last, ref?.lastPriceCents ?? 0);
+    const priceCents = choice.cents;
     const plan: QuoteUpsertPlan = {
       symbol,
       securityId: securityId ?? `unknown-${symbol}`,
@@ -455,7 +470,7 @@ export async function syncWatchlistQuotes(
     if (env.dryRun || !env.allowWrites) {
       console.info(
         `[iress-ingest] would upsert stock_intraday_c`,
-        JSON.stringify({ ...plan, exchange: qExchange }),
+        JSON.stringify({ ...plan, exchange: qExchange, scaleBasis: choice.basis }),
       );
       continue;
     }
@@ -493,7 +508,7 @@ export async function syncWatchlistQuotes(
     }
 
     const prevCloseCents =
-      quote.prevClose > 0 ? quoteToCents(quote.prevClose) : null;
+      quote.prevClose > 0 ? Math.round(quote.prevClose * choice.centsMultiplier) : null;
     const { error: secErr } = await supabase
       .from("securities_c")
       .update({
