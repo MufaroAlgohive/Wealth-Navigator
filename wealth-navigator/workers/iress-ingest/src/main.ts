@@ -14,6 +14,7 @@ import { pollAccountsForOrders } from "./orders";
 import { startHttpApi } from "./http-api";
 import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
 import { loadIpsConfig, syncIps } from "./ips";
+import { syncRetailPrices } from "./retail-ingest";
 
 const env = loadWorkerEnv();
 
@@ -39,12 +40,21 @@ const sessions = new WorkerSessionManager({
   allowWrites: env.allowWrites,
   dryRun: env.dryRun,
 });
-// 3-DB topology (docs/DB_TOPOLOGY_DECISION.md): the trading book + analytics +
-// worker ops live on the INSTITUTIONAL prod (nnwz…); live prices land on the
-// RETAIL prod (mfxng…). Both fall back to the legacy SUPABASE_* pair until the
-// split vars are set, so this is a no-op until RETAIL_SUPABASE_* points at mfxng.
+// 3-DB topology (docs/DB_TOPOLOGY_DECISION.md): trading book + analytics +
+// worker ops on the INSTITUTIONAL prod (nnwz…); the live retail price feed
+// (the Yahoo replacement) lands on the RETAIL prod (mfxng…) via retailIngestLoop().
 const supabase = createInstitutionalSupabase(env);
-const quotesSupabase = createRetailSupabase(env);
+// Retail price-feed target. createRetailSupabase falls back to the legacy pair,
+// so we ALSO require an explicit RETAIL_SUPABASE_URL + IRESS_RETAIL_INGEST=1
+// before the retail loop runs — guaranteeing no accidental writes to the live
+// consumer DB until we deliberately enable it. Writes still honour dryRun/allowWrites.
+const retailSupabase = createRetailSupabase(env);
+const retailIngestEnabled =
+  process.env.IRESS_RETAIL_INGEST === "1" && Boolean(process.env.RETAIL_SUPABASE_URL);
+const retailIngestIntervalSec = Math.max(
+  60,
+  Number(process.env.IRESS_RETAIL_INGEST_INTERVAL_SEC ?? "300"),
+);
 
 // Rebind supabase on the session manager now that it exists (worker_session_metadata is institutional).
 (sessions as unknown as { deps: { supabase: typeof supabase } }).deps.supabase = supabase;
@@ -81,7 +91,7 @@ function logStartup(): void {
 async function quoteLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
-      const result = await syncWatchlistQuotes(env, sessions, quotesSupabase);
+      const result = await syncWatchlistQuotes(env, sessions, supabase);
       // Always stamp lastQuoteSyncAt + a complete log — even on synced=0 —
       // so the heartbeat can flip to healthy and the operator can see
       // that the loop ran end-to-end. The detail line is emitted from
@@ -208,6 +218,26 @@ async function ipsLoop(): Promise<void> {
   }
 }
 
+async function retailIngestLoop(): Promise<void> {
+  // Dormant unless explicitly enabled (IRESS_RETAIL_INGEST=1 + RETAIL_SUPABASE_URL).
+  // This is the only path that writes to the live retail consumer DB, and it
+  // still honours dryRun/allowWrites — shadow-only until both are flipped.
+  if (!retailIngestEnabled) return;
+  while (!shuttingDown) {
+    try {
+      const r = await syncRetailPrices({ env, sessions, retail: retailSupabase });
+      console.info(
+        `[iress-ingest] retail price ingest ${r.dryRun ? "(shadow)" : "(WRITE)"}: ` +
+          `${r.covered}/${r.requested} covered, ${r.written} written, ${r.skipped} skipped`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] retail ingest error: ${msg}`);
+    }
+    await sleep(retailIngestIntervalSec * 1000);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -246,6 +276,13 @@ void quoteLoop();
 void orderLoop();
 void timeSeriesLoop();
 void ipsLoop();
+void retailIngestLoop();
+if (retailIngestEnabled) {
+  console.warn(
+    `[iress-ingest] RETAIL INGEST ENABLED → ${process.env.RETAIL_SUPABASE_URL} ` +
+      `(${env.dryRun || !env.allowWrites ? "shadow/dry-run" : "LIVE WRITES"}). Interval ${retailIngestIntervalSec}s.`,
+  );
+}
 
 // Read-only HTTP API — bound unless explicitly disabled. The Vercel BFF
 // reverse-proxies /orders, /orders/stream, and /health from these handlers

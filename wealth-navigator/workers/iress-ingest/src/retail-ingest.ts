@@ -1,0 +1,153 @@
+/**
+ * Retail price ingest — the IRESS replacement for the Yahoo feed.
+ *
+ * Reads the retail `securities_c` universe (`.JO` symbols), polls IRESS
+ * `PricingQuoteGet` per symbol (bare code), reference-anchors the price to the
+ * existing `securities_c.last_price` (see scale.ts), and — only when writes are
+ * explicitly enabled — updates `securities_c.last_price` + appends
+ * `stock_intraday_c` for the symbols IRESS can price. Symbols IRESS does not
+ * cover are left untouched, so Yahoo keeps them fresh and nothing goes stale.
+ *
+ * ── SAFETY (this writes to a LIVE consumer DB, so the guards are strict) ──────
+ *  - DORMANT unless `IRESS_RETAIL_INGEST=1` AND `RETAIL_SUPABASE_URL` is
+ *    explicitly set (no legacy fallback) — both checked in main.ts before this
+ *    loop is ever started.
+ *  - Honours `env.dryRun` / `env.allowWrites`: by default it shadow-logs the
+ *    IRESS-vs-Yahoo comparison and writes NOTHING.
+ *  - Touches ONLY `securities_c.last_price` and `stock_intraday_c` — the same
+ *    fields the Yahoo feed already writes. It NEVER reads or writes any customer
+ *    table (profiles / wallets / holdings / transactions / KYC).
+ *  - No DDL. `price_source` is written only when `RETAIL_PRICE_SOURCE_COL=1`
+ *    (i.e. after the review-only migration is applied), so an unmigrated DB
+ *    can never error on an unknown column.
+ *  - Per-symbol authority: only symbols IRESS prices (outcome ok /
+ *    closed-with-data, last > 0) are written; everything else is skipped.
+ */
+import { fetchLiveQuote, normaliseSymbol } from "./quotes";
+import { chooseDisplayCents } from "./scale";
+import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
+import type { WorkerEnv } from "./env";
+import type { WorkerSessionManager } from "./session";
+import type { WorkerSupabase } from "./supabase";
+import { recordWorkerEvent } from "./events";
+
+export interface RetailSecurity {
+  id: string;
+  symbol: string;
+  isin: string | null;
+  last_price: number | null;
+}
+
+/** "MTN.JO" / " stx40.jo " -> "MTN" / "STX40" (bare IRESS code). */
+export function toIressCode(symbol: string): string {
+  // Normalise (trim whitespace + uppercase) BEFORE stripping the suffix, so a
+  // trailing space can't defeat the end-anchored `.JO`/`.JSE` match.
+  return normaliseSymbol(symbol).replace(/\.(JO|JSE)$/i, "");
+}
+
+export interface RetailSyncResult {
+  requested: number;
+  covered: number;
+  written: number;
+  skipped: number;
+  /** True when no live write was performed (dry-run / writes disabled). */
+  dryRun: boolean;
+  sample: Array<{ symbol: string; iressCents: number; yahooCents: number | null; basis: string }>;
+}
+
+export async function loadRetailUniverse(retail: WorkerSupabase): Promise<RetailSecurity[]> {
+  const { data, error } = await retail
+    .from("securities_c")
+    .select("id, symbol, isin, last_price");
+  if (error) {
+    console.error(`[retail-ingest] securities_c read failed: ${error.message}`);
+    return [];
+  }
+  return (data ?? []) as RetailSecurity[];
+}
+
+export async function syncRetailPrices(opts: {
+  env: WorkerEnv;
+  sessions: WorkerSessionManager;
+  retail: WorkerSupabase | null;
+  exchange?: string;
+  /** Optional cap (e.g. a small shadow run). */
+  limit?: number;
+}): Promise<RetailSyncResult> {
+  const { env, sessions, retail } = opts;
+  const exchange = opts.exchange ?? env.defaultExchange ?? "JSE";
+  const writesOn = !env.dryRun && env.allowWrites && Boolean(retail);
+  const setSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
+
+  if (!retail) {
+    return { requested: 0, covered: 0, written: 0, skipped: 0, dryRun: true, sample: [] };
+  }
+
+  const universe = await loadRetailUniverse(retail);
+  const list = opts.limit && opts.limit > 0 ? universe.slice(0, opts.limit) : universe;
+  const ts = new Date().toISOString();
+
+  let covered = 0;
+  let written = 0;
+  let skipped = 0;
+  const sample: RetailSyncResult["sample"] = [];
+
+  await sessions.withSession(async (session) => {
+    for (const sec of list) {
+      const iressCode = toIressCode(sec.symbol);
+      let lastRands = 0;
+      let outcome = "error";
+      try {
+        const r = await fetchLiveQuote(session, iressCode, exchange);
+        outcome = r.outcome;
+        lastRands = r.row?.last ?? 0;
+      } catch (err) {
+        if (isIressSessionDeadError(err)) throw err; // let withSession recover + retry
+        skipped += 1;
+        continue;
+      }
+
+      const isCovered = (outcome === "ok" || outcome === "closed-with-data") && lastRands > 0;
+      if (!isCovered) {
+        skipped += 1; // IRESS can't price it now → leave Yahoo's value untouched
+        continue;
+      }
+      covered += 1;
+
+      const refCents = Number(sec.last_price) || 0;
+      const choice = chooseDisplayCents(lastRands, refCents);
+      if (sample.length < 15) {
+        sample.push({ symbol: sec.symbol, iressCents: choice.cents, yahooCents: refCents || null, basis: choice.basis });
+      }
+
+      if (!writesOn) continue; // shadow: comparison captured, nothing written
+
+      const { error: tickErr } = await retail.from("stock_intraday_c").insert({
+        security_id: sec.id,
+        current_price: choice.cents,
+        timestamp: ts,
+      });
+      if (tickErr) {
+        console.error(`[retail-ingest] stock_intraday_c insert(${sec.symbol}): ${tickErr.message}`);
+        continue;
+      }
+      const update: Record<string, unknown> = { last_price: choice.cents };
+      if (setSourceCol) update["price_source"] = "iress";
+      const { error: secErr } = await retail.from("securities_c").update(update).eq("id", sec.id);
+      if (secErr) {
+        console.warn(`[retail-ingest] securities_c update(${sec.symbol}): ${secErr.message}`);
+        continue;
+      }
+      written += 1;
+    }
+  });
+
+  recordWorkerEvent({
+    level: "info",
+    event: "retail_ingest_complete",
+    msg: `retail price ingest ${writesOn ? "WRITE" : "shadow"}: ${covered}/${list.length} covered, ${written} written, ${skipped} skipped`,
+    data: { requested: list.length, covered, written, skipped, writesOn, sample: sample.slice(0, 5) },
+  });
+
+  return { requested: list.length, covered, written, skipped, dryRun: !writesOn, sample };
+}
