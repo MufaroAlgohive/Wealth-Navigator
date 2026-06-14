@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MINT Wealth Navigator / OEMS — Developer Handover</title>
+<style>
+  :root{
+    --bg:#0d1117; --surface:#161b22; --surface2:#1c2230; --border:#2b3444;
+    --text:#e6edf3; --muted:#9aa7b5; --faint:#6b7785;
+    --accent:#7c5cff; --accent2:#22d3ee;
+    --green:#3fb950; --amber:#d29922; --red:#f85149; --blue:#58a6ff; --grey:#8b949e;
+    --mono:"SFMono-Regular",ui-monospace,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .layout{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;
+    background:var(--surface);border-right:1px solid var(--border);padding:20px 16px}
+  nav h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:18px 0 6px}
+  nav a{display:block;color:var(--muted);text-decoration:none;font-size:13px;padding:4px 8px;border-radius:6px}
+  nav a:hover{background:var(--surface2);color:var(--text)}
+  nav .brand{font-weight:700;font-size:15px;color:var(--text);margin-bottom:2px}
+  nav .brandsub{font-size:11px;color:var(--faint);margin-bottom:6px}
+  main{padding:40px 56px;max-width:1080px}
+  h1{font-size:30px;margin:0 0 4px;letter-spacing:-.02em}
+  h2{font-size:22px;margin:46px 0 12px;padding-top:12px;border-top:1px solid var(--border);letter-spacing:-.01em}
+  h3{font-size:17px;margin:26px 0 8px;color:#fff}
+  p{color:var(--text)}
+  .lead{color:var(--muted);font-size:16px;margin:0 0 8px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--surface2);border:1px solid var(--border);
+    border-radius:5px;padding:1px 5px;color:#d2c5ff}
+  pre{background:#0a0e14;border:1px solid var(--border);border-radius:10px;padding:16px;overflow:auto;
+    font-family:var(--mono);font-size:13px;line-height:1.55;color:#c9d4e0}
+  pre .c{color:var(--faint)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--border);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--surface2);color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  tr:nth-child(even) td{background:rgba(255,255,255,.015)}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;
+    border:1px solid;white-space:nowrap;font-family:var(--mono)}
+  .b-live{color:var(--green);border-color:var(--green);background:rgba(63,185,80,.1)}
+  .b-wire{color:var(--blue);border-color:var(--blue);background:rgba(88,166,255,.1)}
+  .b-charles{color:var(--red);border-color:var(--red);background:rgba(248,81,73,.1)}
+  .b-vendor{color:var(--amber);border-color:var(--amber);background:rgba(210,153,34,.1)}
+  .b-grey{color:var(--grey);border-color:var(--grey);background:rgba(139,148,158,.1)}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .callout{border-left:3px solid var(--accent);background:var(--surface);border-radius:0 10px 10px 0;padding:12px 16px;margin:14px 0}
+  .callout.warn{border-color:var(--amber)}
+  .callout.danger{border-color:var(--red)}
+  .callout.ok{border-color:var(--green)}
+  .muted{color:var(--muted)}
+  .small{font-size:12.5px}
+  .pill{font-family:var(--mono);font-size:12px;color:var(--accent2)}
+  .legend span{margin-right:14px}
+  .diagram{background:#0a0e14;border:1px solid var(--border);border-radius:12px;padding:18px;
+    font-family:var(--mono);font-size:12.5px;line-height:1.5;color:#c9d4e0;overflow:auto;white-space:pre}
+  hr{border:0;border-top:1px solid var(--border);margin:34px 0}
+  a.ext{color:var(--blue)}
+  .kbd{font-family:var(--mono);font-size:12px;background:var(--surface2);border:1px solid var(--border);border-bottom-width:2px;border-radius:5px;padding:1px 6px}
+  footer{color:var(--faint);font-size:12px;margin:50px 0 20px;border-top:1px solid var(--border);padding-top:14px}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <div class="brand">MINT OEMS</div>
+  <div class="brandsub">Wealth Navigator · Dev Handover</div>
+  <h2>Start here</h2>
+  <a href="#overview">1 · Overview</a>
+  <a href="#arch">2 · Architecture</a>
+  <a href="#db">3 · The 3 databases</a>
+  <h2>Integration</h2>
+  <a href="#iress">4 · IRESS V4</a>
+  <a href="#worker">5 · The Railway worker</a>
+  <a href="#bff">6 · BFF / API routes</a>
+  <a href="#frontend">7 · Frontend pages</a>
+  <a href="#priceflow">8 · Price data flow</a>
+  <h2>Operate</h2>
+  <a href="#status">9 · Current status</a>
+  <a href="#env">10 · Environment vars</a>
+  <a href="#workflows">11 · Workflows</a>
+  <a href="#decisions">12 · Key decisions</a>
+  <a href="#gotchas">13 · Gotchas</a>
+  <a href="#start">14 · Getting started</a>
+  <a href="#appendix">Appendix</a>
+</nav>
+
+<main>
+  <h1>MINT Wealth Navigator — OEMS</h1>
+  <p class="lead">Developer handover. The institutional Order &amp; Execution Management System (OEMS) trading desk for the JSE / ZAR market, integrating IRESS Web Services V4.</p>
+  <p class="small muted">Generated 2026-06-14 · Repo <code>github.com/edgeza/Wealth-Navigator</code> · Prod <code>wealth-navigator-one.vercel.app</code></p>
+  <p class="legend small" style="margin-top:14px">
+    <span class="badge b-live">LIVE</span> real data in prod
+    <span class="badge b-wire">WIRING</span> data ready, UI to connect
+    <span class="badge b-charles">IRESS</span> blocked on IRESS entitlement
+    <span class="badge b-vendor">VENDOR</span> needs a data contract
+  </p>
+
+  <h2 id="overview">1 · Overview</h2>
+  <p>MINT Wealth Navigator is a multi-persona web app; the shipped surface is the <strong>OEMS trading desk</strong> (<code>/oems</code>). It was rebuilt from a Lovable prototype into a production stack and is being wired live against <strong>IRESS V4 (SOAP)</strong> for the JSE.</p>
+  <table>
+    <tr><th>Layer</th><th>Tech</th><th>Where</th></tr>
+    <tr><td>Frontend + BFF</td><td>Next.js 16 (App Router, RSC) · React 19 · Bun · TypeScript strict · Tailwind · shadcn/ui</td><td>Vercel — <code>wealth-navigator-one.vercel.app</code></td></tr>
+    <tr><td>IRESS worker</td><td>Bun + node:http; hand-rolled SOAP client</td><td>Railway — <code>iress-worker-production.up.railway.app</code> (:8765)</td></tr>
+    <tr><td>Data</td><td>Supabase (Postgres + RLS + Realtime)</td><td>3 projects — see §3</td></tr>
+  </table>
+  <div class="callout"><strong>Mental model:</strong> <em>IRESS is the source of truth for market + trading data.</em> The Railway worker owns the single IRESS license seat and writes into Supabase. The Next.js BFF reads Supabase (never IRESS directly) and serves the desk. The frontend never talks SOAP.</div>
+
+  <h2 id="arch">2 · Architecture</h2>
+  <div class="diagram">
+                         IRESS V4 SOAP  (webservices-ct.iress.co.za/v4)
+                         single CT license seat
+                                  │
+                                  ▼
+                   ┌──────────────────────────────┐
+                   │  Railway worker  iress-ingest │  owns the seat; loops poll IRESS
+                   │  HTTP API :8765  (/debug/*)   │  dry-run + allow-writes gated
+                   └───────┬──────────────┬────────┘
+            prices         │              │   trading book + analytics
+                           ▼              ▼
+        ┌────────────────────────┐   ┌────────────────────────────┐
+        │ RETAIL prod  (mfxng…)  │   │ INSTITUTIONAL prod (nnwz…)  │
+        │ customers, securities_c│   │ oems_*, worker health,      │
+        │ stock_intraday_c, news │   │ curves/index/sector intraday│
+        └───────────┬────────────┘   └──────────────┬─────────────┘
+                    │   service-role reads (read-only on retail)  │
+                    └───────────────┬─────────────────────────────┘
+                                    ▼
+                        ┌────────────────────────┐
+                        │  Vercel  Next.js BFF    │  /api/* reads both DBs
+                        │  /api/quotes /equities  │  IRESS_MODE=mock (never holds seat)
+                        │  /news /portfolio ...    │
+                        └───────────┬─────────────┘
+                                    ▼
+                        ┌────────────────────────┐
+                        │  OEMS desk UI  (/oems)  │  React, TanStack Query, SSE ticks
+                        └────────────────────────┘
+  </div>
+  <p class="small muted">Two independent deploy pipelines, both auto-deploy on push to <code>main</code>: Vercel (BFF/UI) and Railway (worker).</p>
+
+  <h2 id="db">3 · The three databases</h2>
+  <p>Driven by a hard compliance constraint: <strong>institutional and retail data live in separate databases.</strong> Market/reference data is shared. See <code>docs/DB_TOPOLOGY_DECISION.md</code>.</p>
+  <table>
+    <tr><th>Role</th><th>Project ref</th><th>Holds</th><th>Written by</th></tr>
+    <tr><td><strong>RETAIL prod</strong></td><td><code>mfxnghmuccevsxwcetej</code></td><td>Customer books (profiles, wallets, holdings, KYC, gifts, loans), retail <code>strategies_c</code>, <strong>shared market data</strong>: <code>securities_c</code> (246 names), <code>stock_intraday_c</code>, <code>News_articles</code> (~4,800 wire articles)</td><td>Consumer app + IRESS worker (prices, future)</td></tr>
+    <tr><td><strong>INSTITUTIONAL prod</strong></td><td><code>nnwzhxfjpjbzujevwzlh</code></td><td>Desk trading book (<code>oems_order_audit</code>, <code>oems_position_c</code>, <code>oems_account_c</code>, <code>oems_strategy_c</code>), desk analytics (<code>yield_curve_history_c</code>, <code>index_intraday_c</code>, <code>sector_intraday_c</code>, <code>oems_curve_metric_c</code>), worker ops (<code>worker_session_metadata</code>, <code>integration_worker_health</code>)</td><td>IRESS worker</td></tr>
+    <tr><td><strong>STAGING</strong></td><td>(fresh project, planned)</td><td>Schema mirror — validate IRESS + migrations before prod</td><td>IRESS worker (staging mode)</td></tr>
+  </table>
+  <div class="callout warn"><strong>Naming hazard:</strong> both prod DBs get called "production." <code>nnwz…</code> is labelled "MyMint" in <code>AGENTS.md</code> (it was the IRESS-test DB, now promoted). <code>mfxng…</code> is the live consumer app. Always disambiguate retail-prod vs institutional-prod.</div>
+  <h3>Data conventions (important)</h3>
+  <ul>
+    <li><strong>Prices are in integer cents</strong> in <code>securities_c.last_price</code> and <code>stock_intraday_c.current_price</code>. Divide by 100 for Rands.</li>
+    <li><strong>Retail tickers carry a <code>.JO</code> suffix</strong> (<code>NPN.JO</code>); IRESS uses <strong>bare codes</strong> (<code>NPN</code> on exchange <code>JSE</code>). The BFF/worker map between them (strip/append <code>.JO</code>, or join on <code>isin</code>).</li>
+    <li>Retail <code>securities_c</code> has <code>change_price</code>/<code>change_percent</code> (Yahoo) — <em>not</em> <code>prev_close</code>/<code>currency</code> (those exist only in the institutional copy).</li>
+    <li>Client ↔ IRESS account join key: <code>profiles.mint_number</code> ↔ IRESS <code>AccountCode</code> (100% populated; bridge deferred past v1).</li>
+    <li>All migrations are <strong>review-only, user-pasted</strong> in the Supabase SQL editor. The worker never applies DDL. SQL must be idempotent.</li>
+  </ul>
+
+  <h2 id="iress">4 · IRESS V4 integration</h2>
+  <h3>Session model</h3>
+  <p>Two session types. <code>IRESSSessionStart</code> (1 license, ~2h idle / 24h max) → <code>ServiceSessionStart</code> per service (<code>IOSPlus</code> / <code>IPS</code> / <code>FIXPlus</code>). Credentials are <code>user@company</code> split into <code>UserName</code> + <code>CompanyName</code>. <strong>Single CT seat</strong> — fault <code>25008</code> = no licenses; recovery is auto-kick (<code>SessionNumberToKick=-1</code>) and a logout sequence (<code>ServiceSessionEnd × N → IRESSSessionEnd → 3s</code>).</p>
+  <h3>Live method matrix (verified <span class="pill">GET /debug/iress-methods</span>)</h3>
+  <table>
+    <tr><th>Method</th><th>Status</th><th>Detail</th></tr>
+    <tr><td>IRESSSessionStart</td><td><span class="badge b-live">OK</span></td><td>session establishes</td></tr>
+    <tr><td>PricingQuoteGet</td><td><span class="badge b-live">OK</span></td><td>equity L1 quotes work</td></tr>
+    <tr><td>ServiceSessionStart (IOS+/IPS/FIX+)</td><td><span class="badge b-charles">FAULT</span></td><td>HTTP 500 — correct <code>Server</code> names per docs; entitlement-side</td></tr>
+    <tr><td>TimeSeriesGet2</td><td><span class="badge b-charles">FAULT</span></td><td><code>Invalid Parameter Value: n as Frequency</code> — tried documented Interval AND Frequency ints; live WSDL ≠ docs</td></tr>
+    <tr><td>PricingQuoteExGet (L2)</td><td><span class="badge b-grey">N/A</span></td><td>not wired in client; confirm V4 exposes L2</td></tr>
+    <tr><td>OrderPad / OrderCreate3 / Booking</td><td><span class="badge b-charles">BLOCKED</span></td><td>need IOS+ session</td></tr>
+    <tr><td>IPSAccountGetAll1 / PositionGetAll1 / TransactionGetByAccount5</td><td><span class="badge b-charles">BLOCKED</span></td><td>need IPS session</td></tr>
+    <tr><td>TargetIDGet / TargetIDStatusGet</td><td><span class="badge b-charles">BLOCKED</span></td><td>need FIX+ session</td></tr>
+  </table>
+  <div class="callout danger"><strong>Two root causes gate most of the desk.</strong> (1) <code>ServiceSessionStart</code> HTTP 500 cascades to orders + portfolio + bookings + FIX+. (2) <code>TimeSeriesGet2</code> rejects every request → curves, indices, sectors, money-market, macro. Both are IRESS-side — see <code>docs/EMAIL_TO_CHARLES_2026-06-14.txt</code> and <code>docs/STATUS_AND_CHARLES_ASK_2026-06-14.md</code>.</div>
+
+  <h2 id="worker">5 · The Railway worker (<code>workers/iress-ingest</code>)</h2>
+  <p>Owns the IRESS seat. Concurrent loops in <code>src/main.ts</code>; sticky <code>ApplicationID</code> + session key persisted in <code>worker_session_metadata</code> so it reclaims its seat across redeploys. Session recovery on dead-session codes.</p>
+  <table>
+    <tr><th>Loop</th><th>Does</th><th>Target DB</th><th>Status</th></tr>
+    <tr><td>quote loop</td><td>10-symbol watchlist <code>PricingQuoteGet</code> → <code>securities_c</code>/<code>stock_intraday_c</code></td><td>Institutional</td><td><span class="badge b-live">live</span></td></tr>
+    <tr><td>retail-ingest (Yahoo→IRESS)</td><td>246 symbols from retail <code>securities_c</code>, reference-anchored scaling, writes prices back</td><td>Retail</td><td><span class="badge b-grey">dormant</span> opt-in</td></tr>
+    <tr><td>order poll</td><td><code>OrderPadGetByAccount</code> → <code>oems_order_audit</code></td><td>Institutional</td><td><span class="badge b-charles">blocked</span></td></tr>
+    <tr><td>IPS loop</td><td>accounts/positions/transactions → <code>oems_*</code></td><td>Institutional</td><td><span class="badge b-charles">blocked</span></td></tr>
+    <tr><td>timeseries loop</td><td>index/sector/curve → <code>*_intraday_c</code> / <code>yield_curve_history_c</code></td><td>Institutional</td><td><span class="badge b-charles">blocked</span></td></tr>
+    <tr><td>heartbeat</td><td><code>integration_worker_health</code> + 50-event ring buffer</td><td>Institutional</td><td><span class="badge b-live">live</span></td></tr>
+  </table>
+  <h3>HTTP debug API (:8765, public, auth optional)</h3>
+  <table>
+    <tr><th>Endpoint</th><th>Purpose</th></tr>
+    <tr><td><code>GET /health</code></td><td>worker snapshot — iressMode, dryRun, allowWrites, session, lastQuoteSyncAt</td></tr>
+    <tr><td><code>GET /debug/iress-methods</code></td><td><strong>definitive method matrix</strong> — calls each method once, exact outcome</td></tr>
+    <tr><td><code>POST /debug/coverage</code></td><td>dry-run PricingQuoteGet across a symbol list — which IRESS can price</td></tr>
+    <tr><td><code>POST /debug/timeseries-probe</code></td><td>one-shot TimeSeriesGet2 with caller <code>frequency</code>/<code>interval</code></td></tr>
+    <tr><td><code>GET /debug/ips-session</code></td><td>cached service-session state (redacted keys) + lastError</td></tr>
+    <tr><td><code>GET /orders</code> · <code>/orders/stream</code> · <code>POST /orders/cancel</code></td><td>order pad passthrough (needs IOS+)</td></tr>
+  </table>
+  <h3>Price scaling — the keystone</h3>
+  <p>IRESS returns JSE prices inconsistently (some bare <code>Last</code> in Rands, some <code>LastPrice</code> in cents); a naïve heuristic mis-scales sub-R45 stocks by 100×. <code>src/scale.ts:chooseDisplayCents()</code> anchors to the existing <code>securities_c.last_price</code> reference and picks the interpretation whose magnitude matches — bulletproof against the cents/Rand ambiguity, falls back to Rands→cents with no reference.</p>
+
+  <h2 id="bff">6 · BFF / API routes (<code>src/app/api</code>)</h2>
+  <p>The UI calls these; they read Supabase (and live IRESS via the mock/seed adapter for non-prod). <code>createRetailServiceRoleClient()</code> / <code>createInstitutionalServiceRoleClient()</code> select the DB (both fall back to legacy <code>SUPABASE_*</code>).</p>
+  <table>
+    <tr><th>Route</th><th>Reads</th><th>DB</th><th>Status</th></tr>
+    <tr><td><code>/api/quotes</code>, <code>/api/intraday/[sym]</code></td><td><code>securities_c</code> + <code>stock_intraday_c</code> (<code>.JO</code>-matched)</td><td>Retail</td><td><span class="badge b-live">live</span></td></tr>
+    <tr><td><code>/api/equities</code></td><td>246 universe + computed sector heatmap</td><td>Retail</td><td><span class="badge b-wire">ready</span></td></tr>
+    <tr><td><code>/api/news</code></td><td><code>News_articles</code> (Alliance News wire)</td><td>Retail</td><td><span class="badge b-live">live</span></td></tr>
+    <tr><td><code>/api/portfolio</code></td><td><code>oems_account_c</code>/<code>oems_position_c</code>/<code>oems_transaction_c</code></td><td>Institutional</td><td><span class="badge b-charles">blocked (IPS)</span></td></tr>
+    <tr><td><code>/api/orders</code></td><td><code>oems_order_audit</code></td><td>Institutional</td><td><span class="badge b-charles">blocked (IOS+)</span></td></tr>
+    <tr><td><code>/api/strategies</code></td><td><code>oems_strategy_c</code></td><td>Institutional</td><td><span class="badge b-live">live (seeded)</span></td></tr>
+    <tr><td><code>/api/curves/[code]</code>, <code>/api/sectors</code>, <code>/api/indices/[code]</code>, <code>/api/money-market</code>, <code>/api/bonds</code>, <code>/api/macro</code></td><td>analytics tables</td><td>Institutional</td><td><span class="badge b-charles">blocked (TimeSeriesGet2/vendor)</span></td></tr>
+    <tr><td><code>/api/worker-health</code>, <code>/api/integration/*</code>, <code>/api/iress/*</code></td><td>worker heartbeat + session diagnostics</td><td>Institutional + worker</td><td><span class="badge b-live">live</span></td></tr>
+  </table>
+
+  <h2 id="frontend">7 · Frontend pages (<code>src/app/oems</code>)</h2>
+  <p>Nav groups: <strong>Live</strong> (Cockpit · Blotter · Security) · <strong>Book</strong> (Strategies) · <strong>Markets</strong> (Equities · Fixed Income · Money Market · Curves) · <strong>Info</strong> (Macro · News &amp; SENS) · <strong>System</strong> (Integration). Every panel shows an <code>endpoint</code> pill + a data-source badge (LIVE / SUPABASE / SEED / MOCK / UNCONFIGURED).</p>
+  <table>
+    <tr><th>Page / panel</th><th>Status</th></tr>
+    <tr><td>Cockpit — Top Movers, Security watchlist + intraday</td><td><span class="badge b-live">LIVE</span> retail quotes</td></tr>
+    <tr><td>News &amp; SENS (Wires tab)</td><td><span class="badge b-live">LIVE</span> Alliance News</td></tr>
+    <tr><td>Integration / worker health</td><td><span class="badge b-live">LIVE</span></td></tr>
+    <tr><td>Equities 246 · Cockpit Sector Heatmap · Security fundamentals · Platform AUM</td><td><span class="badge b-wire">WIRING</span> data ready (<code>/api/equities</code>, <code>securities_c</code>, client book)</td></tr>
+    <tr><td>Blotter / Open Orders · Portfolio (AUM/P&amp;L/positions)</td><td><span class="badge b-charles">IRESS</span> IOS+/IPS</td></tr>
+    <tr><td>Curves · ALSI · Sectors (official) · Money Market · Macro</td><td><span class="badge b-charles">IRESS</span> TimeSeriesGet2</td></tr>
+    <tr><td>SENS regulatory tab · Macro vendor feed</td><td><span class="badge b-vendor">VENDOR</span></td></tr>
+  </table>
+
+  <h2 id="priceflow">8 · Price data flow — the Yahoo → IRESS cut-over</h2>
+  <p>Retail <code>securities_c</code>/<code>stock_intraday_c</code> are populated by an existing <strong>Yahoo feed</strong> today (~15s cadence). The goal: replace Yahoo with IRESS as the source of truth.</p>
+  <ol>
+    <li><strong>Now:</strong> BFF reads retail (Yahoo) prices. Worker's <code>retail-ingest</code> loop is <strong>dormant</strong> (off by default).</li>
+    <li><strong>Shadow (weekday):</strong> set <code>IRESS_RETAIL_INGEST=1</code> + <code>RETAIL_SUPABASE_*</code> on Railway; worker polls all 246 and <em>logs</em> the IRESS-vs-Yahoo diff, writing nothing (gated by <code>IRESS_RETAIL_DRY_RUN</code>, default shadow).</li>
+    <li><strong>Validate:</strong> re-run <code>/debug/coverage</code> + check scaling on live trades.</li>
+    <li><strong>Flip:</strong> apply <code>supabase/retail/20260614_add_price_source.sql</code> (adds <code>price_source</code>), set <code>RETAIL_PRICE_SOURCE_COL=1</code> + <code>IRESS_RETAIL_DRY_RUN=0</code>. Worker writes IRESS prices for symbols it covers, tagged <code>iress</code>; Yahoo keeps the rest.</li>
+    <li><strong>Retire Yahoo</strong> per-symbol once IRESS coverage is confirmed complete.</li>
+  </ol>
+  <div class="callout danger"><strong>Safety:</strong> the retail write path touches <em>only</em> <code>securities_c.last_price</code> + <code>stock_intraday_c</code> — never customer tables — and is double-gated (<code>IRESS_RETAIL_INGEST</code> + <code>IRESS_RETAIL_DRY_RUN</code>). Do <strong>not</strong> set <code>RETAIL_SUPABASE_*</code> on the Railway worker until the scaling is validated.</div>
+
+  <h2 id="status">9 · Current status</h2>
+  <div class="grid2">
+    <div class="card"><h3 style="margin-top:0">✅ Live</h3><p class="small">Retail quotes (movers/watchlist/intraday), News wire, Integration/worker health, IRESS session + PricingQuoteGet.</p></div>
+    <div class="card"><h3 style="margin-top:0">🟦 Wiring (us)</h3><p class="small">Equities 246, Sector Heatmap, Top Movers→246 + sign fix, Security fundamentals, Platform AUM. Data + routes ready.</p></div>
+    <div class="card"><h3 style="margin-top:0">🟥 IRESS (Charles)</h3><p class="small">Orders, portfolio, curves, ALSI, sectors, money-market, macro, L2 — see §4 + the Charles ask doc.</p></div>
+    <div class="card"><h3 style="margin-top:0">🟨 Vendor</h3><p class="small">SENS regulatory feed; macro provider.</p></div>
+  </div>
+
+  <h2 id="env">10 · Environment variables</h2>
+  <table>
+    <tr><th>Var</th><th>Where</th><th>Meaning</th></tr>
+    <tr><td><code>IRESS_MODE</code></td><td>worker / BFF</td><td><code>mock</code> | <code>live</code> | <code>wsdl-stub</code>. Only the worker runs <code>live</code>.</td></tr>
+    <tr><td><code>IRESS_USERNAME / IRESS_PASSWORD / IRESS_COMPANY_NAME</code></td><td>worker</td><td>SOAP creds (server-side only)</td></tr>
+    <tr><td><code>RETAIL_SUPABASE_URL / _SERVICE_ROLE_KEY</code></td><td>worker + Vercel</td><td>retail prod (<code>mfxng…</code>). Falls back to legacy <code>SUPABASE_*</code>.</td></tr>
+    <tr><td><code>INSTITUTIONAL_SUPABASE_URL / _SERVICE_ROLE_KEY</code></td><td>worker + Vercel</td><td>institutional prod (<code>nnwz…</code>)</td></tr>
+    <tr><td><code>SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY</code></td><td>both</td><td>legacy single pair — back-compat fallback (→ institutional)</td></tr>
+    <tr><td><code>NEXT_PUBLIC_SUPABASE_URL / _ANON_KEY</code></td><td>Vercel</td><td>browser auth (retail prod)</td></tr>
+    <tr><td><code>USE_SUPABASE_QUOTES / NEXT_PUBLIC_USE_SUPABASE_QUOTES</code></td><td>Vercel</td><td>route quote reads to Supabase + enable real-data UI</td></tr>
+    <tr><td><code>IRESS_WORKER_DRY_RUN / SUPABASE_ALLOW_WRITES</code></td><td>worker</td><td>institutional write gates</td></tr>
+    <tr><td><code>IRESS_RETAIL_INGEST / IRESS_RETAIL_DRY_RUN / RETAIL_PRICE_SOURCE_COL</code></td><td>worker</td><td>retail Yahoo→IRESS cut-over gates (all off by default)</td></tr>
+    <tr><td><code>IRESS_ACCOUNT_CODE</code>, <code>IRESS_*_SERVER</code>, <code>IRESS_TIMESERIES_*_CODES</code></td><td>worker</td><td>accounts, service-session servers, time-series universes</td></tr>
+  </table>
+  <div class="callout warn"><strong>Vercel gotcha:</strong> env-var changes don't apply to the running deployment — you must <strong>redeploy</strong> for serverless functions to pick them up.</div>
+
+  <h2 id="workflows">11 · Workflows</h2>
+  <h3>Deploy</h3>
+  <pre><span class="c"># both Vercel (BFF/UI) and Railway (worker) auto-deploy on push to main</span>
+git push origin main</pre>
+  <h3>Local dev</h3>
+  <pre>cd wealth-navigator
+bun install
+bun run dev          <span class="c"># http://localhost:3000 (IRESS_MODE=mock by default)</span>
+bun run typecheck    <span class="c"># tsc --noEmit</span>
+bunx vitest run      <span class="c"># unit tests</span></pre>
+  <h3>Migrations</h3>
+  <p>Review-only. Paste the SQL into the relevant Supabase project's SQL editor by hand (institutional migrations in <code>supabase/migrations/</code>, retail in <code>supabase/retail/</code>). The worker never applies DDL. SQL is idempotent.</p>
+  <h3>Diagnostics</h3>
+  <pre><span class="c"># live IRESS method matrix (re-run after Charles changes anything)</span>
+curl https://iress-worker-production.up.railway.app/debug/iress-methods
+
+<span class="c"># read-only retail DB scans (need RETAIL_SUPABASE_* in .env.local)</span>
+bun run scripts/scan-retail.ts
+bun run scripts/run-coverage.ts</pre>
+
+  <h2 id="decisions">12 · Key decisions</h2>
+  <ul>
+    <li><strong>3-DB topology</strong> (retail / institutional / staging), compliance-driven. <code>docs/DB_TOPOLOGY_DECISION.md</code> (supersedes the two <code>TWO_DB*</code> memos).</li>
+    <li><strong>IRESS = source of truth</strong>; the worker is the sole price publisher; Yahoo is retired per-symbol after validation.</li>
+    <li><strong>Reference-anchored scaling</strong> instead of a fragile per-symbol heuristic.</li>
+    <li><strong>Client↔account bridge deferred</strong> past OEMS v1 (operator-trading-only first).</li>
+  </ul>
+
+  <h2 id="gotchas">13 · Gotchas</h2>
+  <ul>
+    <li><span class="badge b-charles">IRESS</span> <code>ServiceSessionStart</code> HTTP 500 cascades — orders/IPS/FIX+ all fail downstream of it. Fix the session, not the 7 methods.</li>
+    <li><span class="badge b-charles">IRESS</span> <code>TimeSeriesGet2</code> live WSDL ≠ published docs — needs the real WSDL / a working example from IRESS.</li>
+    <li><code>.JO</code> vs bare codes — every retail read/write must map between them. <code>chooseDisplayCents</code> + the candidate-symbol query handle it.</li>
+    <li>Prices in <strong>cents</strong> in DB; UI divides by 100. Mixing units = the 100× bug.</li>
+    <li>Two "production" DBs — see the naming hazard in §3.</li>
+    <li>Closed-market (weekend) IRESS values are unreliable — validate on weekday trades.</li>
+    <li>Stale nested <code>wealth-navigator/.git</code> dir exists but git uses the outer repo root.</li>
+  </ul>
+
+  <h2 id="start">14 · Getting started (new dev)</h2>
+  <ol>
+    <li><code>git clone github.com/edgeza/Wealth-Navigator</code> → app lives in <code>wealth-navigator/</code>.</li>
+    <li>Copy <code>.env.example</code> → <code>.env.local</code>; default <code>IRESS_MODE=mock</code> runs fully offline with seeded data.</li>
+    <li><code>bun install &amp;&amp; bun run dev</code> → <code>/oems</code>. App login is separate from IRESS SOAP creds.</li>
+    <li>Read, in order: <code>docs/DB_TOPOLOGY_DECISION.md</code> · <code>docs/STATUS_AND_CHARLES_ASK_2026-06-14.md</code> · <code>AGENTS.md</code> (learned conventions) · <code>Documentation &amp; Vision/iress-v4-docs/</code> (the V4 protocol).</li>
+    <li>For live data: set <code>RETAIL_*</code> / <code>INSTITUTIONAL_*</code> + <code>USE_SUPABASE_QUOTES=true</code>; never put service keys in client bundles or <code>NEXT_PUBLIC_*</code>.</li>
+  </ol>
+
+  <h2 id="appendix">Appendix · key files &amp; docs</h2>
+  <table>
+    <tr><th>Path</th><th>What</th></tr>
+    <tr><td><code>workers/iress-ingest/src/{main,session,quotes,scale,retail-ingest,http-api,timeseries,orders,ips}.ts</code></td><td>the worker</td></tr>
+    <tr><td><code>src/lib/iress/{live,live-queries,client,mock,session-manager}.ts</code></td><td>IRESS adapter + BFF query bridge</td></tr>
+    <tr><td><code>src/lib/supabase/server.ts</code></td><td>retail/institutional service-role clients</td></tr>
+    <tr><td><code>src/app/api/**</code></td><td>BFF routes</td></tr>
+    <tr><td><code>src/app/oems/**</code></td><td>OEMS desk pages</td></tr>
+    <tr><td><code>docs/DB_TOPOLOGY_DECISION.md</code></td><td>the 3-DB decision + data map + cut-over runbook</td></tr>
+    <tr><td><code>docs/STATUS_AND_CHARLES_ASK_2026-06-14.md</code> · <code>docs/EMAIL_TO_CHARLES_2026-06-14.txt</code></td><td>status + IRESS blocker ask</td></tr>
+    <tr><td><code>Documentation &amp; Vision/iress-v4-docs/</code></td><td>IRESS V4 protocol reference</td></tr>
+  </table>
+
+  <footer>MINT Wealth Navigator / OEMS — developer handover · 2026-06-14 · generated from the live system + repo. Re-run <code>/debug/iress-methods</code> for the current IRESS status.</footer>
+</main>
+</div>
+</body>
+</html>
