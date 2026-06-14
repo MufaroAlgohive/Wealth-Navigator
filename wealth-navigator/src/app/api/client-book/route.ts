@@ -22,7 +22,6 @@ export const dynamic = "force-dynamic";
 
 interface ClientStrategyReturnRow {
   user_id: string;
-  family_member_id: string | null;
   strategy_id: string;
   as_of_date: string;
   basket_value: number | null;
@@ -42,8 +41,11 @@ interface ClientBookResponse {
   error?: string;
 }
 
+// NOTE: the retail column is `family_member` (not `..._id`) and we don't use it,
+// so it's omitted — selecting a non-existent column fails the whole query and
+// blanks the AUM tile. basket_value / 1d_pnl / ytd_pnl are integer CENTS.
 const RETURNS_SELECT =
-  'user_id,family_member_id,strategy_id,as_of_date,basket_value,"1d_pnl","ytd_pnl"';
+  'user_id,strategy_id,as_of_date,basket_value,"1d_pnl","ytd_pnl"';
 
 function num(value: number | null | undefined): number {
   const n = Number(value);
@@ -173,11 +175,13 @@ export async function GET() {
     .eq("is_active", true);
   if (!holdingsError) holdings = count ?? 0;
 
+  // basket_value / 1d_pnl / ytd_pnl are integer CENTS in retail (they match the
+  // holdings_snapshot prices), despite the legacy docs saying Rands — convert.
   return Response.json({
     source: "retail-supabase",
-    aum,
-    dayPnl,
-    ytdPnl,
+    aum: aum / 100,
+    dayPnl: dayPnl / 100,
+    ytdPnl: ytdPnl / 100,
     investors: investorSet.size,
     holdings,
     asOf,
