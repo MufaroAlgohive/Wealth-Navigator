@@ -39,6 +39,12 @@ We have tried every Frequency Long (0..32, 40, 50, 60, 64, 100, 128, 200, 255,
 `<Interval>` strings ("Daily", "Weekly", …). All return the same fault, across
 J203, R2030, R2035, R2040, NPN, FSR, SOL, USDZAR — so it is not symbol-specific.
 
+NB: your published V4 documentation (and the WSDL sample) show
+`<Interval>Daily</Interval>` as the canonical shape. We send exactly that and it
+is rejected identically (`Invalid Parameter Value:  as Frequency`, empty value),
+so the live CT WSDL for TimeSeriesGet2 appears to differ from the published docs —
+it seems to require an integer `Frequency` we don't have the valid value for.
+
 Please confirm:
   (a) Is TimeSeriesGet2 entitled on DFM@Mint?
   (b) What is the EXACT request shape the CT build expects — is the period
