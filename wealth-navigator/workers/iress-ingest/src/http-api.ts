@@ -347,6 +347,139 @@ async function probeCoverage(
   };
 }
 
+interface IressMethodStatus {
+  method: string;
+  service: "Iress" | "IOS+" | "IPS" | "FIX+";
+  status: "ok" | "fault" | "blocked" | "not-implemented";
+  detail: string;
+}
+
+/**
+ * Read-only IRESS method matrix — calls each entitled method once (never a
+ * mutating order method) and records the exact outcome, so we can tell the
+ * provider with certainty which methods work vs are blocked. Service-gated
+ * methods (orders/IPS/FIX+) are reported `blocked` whenever their service
+ * session is absent (the root cause), since that is what actually stops them.
+ */
+async function probeIressMethods(deps: HttpApiDeps): Promise<{
+  ok: boolean;
+  iressMode: string;
+  probedAt: string;
+  session: { iressSessionKey: boolean; services: string[]; lastError: unknown };
+  methods: IressMethodStatus[];
+}> {
+  const methods: IressMethodStatus[] = [];
+  let session: WorkerMintSession | null = null;
+  try {
+    session = await deps.sessions.getSession();
+  } catch (err) {
+    methods.push({
+      method: "IRESSSessionStart",
+      service: "Iress",
+      status: "fault",
+      detail: err instanceof Error ? err.message : String(err),
+    });
+  }
+  const svc = (session?.serviceKeys ?? {}) as Record<string, string | undefined>;
+  const hasIOS = Boolean(svc.IOSPlus);
+  const hasIPS = Boolean(svc.IPS);
+  const hasFIX = Boolean(svc.FIXPlus);
+  const client = getIressClient("live");
+
+  if (session?.iressSessionKey) {
+    methods.push({ method: "IRESSSessionStart", service: "Iress", status: "ok", detail: "Iress session established" });
+  }
+  methods.push({
+    method: "ServiceSessionStart(IOSPlus)",
+    service: "IOS+",
+    status: hasIOS ? "ok" : "fault",
+    detail: hasIOS ? "session key present" : "no IOS+ session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
+  });
+  methods.push({
+    method: "ServiceSessionStart(IPS)",
+    service: "IPS",
+    status: hasIPS ? "ok" : "fault",
+    detail: hasIPS ? "session key present" : "no IPS session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
+  });
+  methods.push({
+    method: "ServiceSessionStart(FIXPlus)",
+    service: "FIX+",
+    status: hasFIX ? "ok" : "fault",
+    detail: hasFIX ? "session key present" : "no FIX+ session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
+  });
+
+  if (session) {
+    // Iress-Pro methods need only the Iress session key.
+    try {
+      const q = await fetchLiveQuote(session, "NPN", "JSE");
+      const ok = q.outcome === "ok" || q.outcome === "closed-with-data";
+      methods.push({
+        method: "PricingQuoteGet",
+        service: "Iress",
+        status: ok ? "ok" : "fault",
+        detail: `NPN outcome=${q.outcome} last=${q.row?.last ?? "—"} state=${q.row?.marketState ?? "—"}`,
+      });
+    } catch (err) {
+      methods.push({ method: "PricingQuoteGet", service: "Iress", status: "fault", detail: err instanceof Error ? err.message : String(err) });
+    }
+
+    const exGet = (client as unknown as { pricingQuoteExGet?: unknown }).pricingQuoteExGet;
+    if (typeof exGet === "function") {
+      try {
+        const r = (await (exGet as (req: unknown) => Promise<unknown>).call(client, {
+          Header: { SessionKey: session.iressSessionKey, RequestID: newRequestID("ex-NPN"), Timeout: 20 },
+          SecurityCode: "NPN",
+          Exchange: "JSE",
+        })) as { DataRows?: unknown[] };
+        const n = r.DataRows?.length ?? 0;
+        methods.push({ method: "PricingQuoteExGet (L2)", service: "Iress", status: n > 0 ? "ok" : "fault", detail: `returned ${n} rows` });
+      } catch (err) {
+        const code = err instanceof IressError ? err.code : null;
+        methods.push({ method: "PricingQuoteExGet (L2)", service: "Iress", status: "fault", detail: code ? `${code}: ${err instanceof Error ? err.message : ""}` : err instanceof Error ? err.message : String(err) });
+      }
+    } else {
+      methods.push({ method: "PricingQuoteExGet (L2)", service: "Iress", status: "not-implemented", detail: "L2 depth not wired in the client — confirm with IRESS whether L2 is exposed in V4" });
+    }
+
+    const ts = await probeTimeSeriesInterval(deps, "J203", "JSE", null, 5);
+    methods.push({
+      method: "TimeSeriesGet2",
+      service: "Iress",
+      status: ts.ok ? "ok" : "fault",
+      detail: ts.rawFault ?? ts.errorDescription ?? `errorNumber=${ts.errorNumber}`,
+    });
+  }
+
+  // Service-gated methods: blocked while their service session is unavailable.
+  const gated = (method: string, service: "IOS+" | "IPS" | "FIX+", has: boolean): void => {
+    methods.push({
+      method,
+      service,
+      status: has ? "ok" : "blocked",
+      detail: has ? `${service} session present — callable` : `blocked: requires ${service} service session (currently unavailable)`,
+    });
+  };
+  gated("OrderPadGetByAccount", "IOS+", hasIOS);
+  gated("OrderCreate3 / OrderAmend2 / OrderDelete", "IOS+", hasIOS);
+  gated("BookingGetByOrganisation2", "IOS+", hasIOS);
+  gated("IPSAccountGetAll1", "IPS", hasIPS);
+  gated("IPSPositionGetAll1", "IPS", hasIPS);
+  gated("IPSTransactionGetByAccount5", "IPS", hasIPS);
+  gated("TargetIDGet / TargetIDStatusGet", "FIX+", hasFIX);
+
+  return {
+    ok: true,
+    iressMode: deps.env.iressMode,
+    probedAt: new Date().toISOString(),
+    session: {
+      iressSessionKey: Boolean(session?.iressSessionKey),
+      services: Object.keys(svc).filter((k) => svc[k]),
+      lastError: deps.sessions.peekLastSessionError(),
+    },
+    methods,
+  };
+}
+
 async function fetchLiveOrders(
   deps: HttpApiDeps,
   account: string,
@@ -803,6 +936,19 @@ export async function handleRequest(
       return;
     }
     const result = await probeCoverage(deps, symbols, exchange);
+    send(res, 200, result);
+    return;
+  }
+
+  if (req.method === "GET" && path === "/debug/iress-methods") {
+    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+    if (!isLive) {
+      sendError(res, 503, "iress_mode_not_live", `Cannot probe in iressMode=${deps.env.iressMode}`, {
+        iressMode: deps.env.iressMode,
+      });
+      return;
+    }
+    const result = await probeIressMethods(deps);
     send(res, 200, result);
     return;
   }
