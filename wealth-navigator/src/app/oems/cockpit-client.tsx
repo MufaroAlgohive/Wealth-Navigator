@@ -75,6 +75,51 @@ interface CockpitClientProps {
   mastheadDate: string;
 }
 
+/** A row from `GET /api/equities` `securities[]`. `last_price` is INTEGER CENTS. */
+interface EquitiesBffSecurity {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  last_price: number | null;
+  change_percent: number | null;
+  market_cap: number | null;
+}
+
+/** A sector aggregate from `GET /api/equities` `sectors[]`. */
+interface EquitiesBffSector {
+  sector: string;
+  count: number;
+  avgChangePct: number;
+  totalMarketCap: number;
+}
+
+interface EquitiesBffResponse {
+  source: "retail-supabase" | "unavailable";
+  count: number;
+  securities: EquitiesBffSecurity[];
+  sectors: EquitiesBffSector[];
+  reason?: string;
+  error?: string;
+}
+
+/** `GET /api/client-book` — retail book aggregate. All money values are RANDS. */
+interface ClientBookBffResponse {
+  source: "retail-supabase" | "unavailable";
+  aum: number;
+  dayPnl: number;
+  ytdPnl: number;
+  investors: number;
+  holdings: number;
+  asOf: string | null;
+  reason?: string;
+  error?: string;
+}
+
+/** Strip the JSE `.JO` suffix for display (`NPN.JO` → `NPN`). */
+function bareSymbol(symbol: string): string {
+  return symbol.replace(/\.JO$/i, "");
+}
+
 /**
  * Symbols the Cockpit polls once per quote interval. The mover set sits on
  * the existing JSE Top-40; the FX / money-market entries (USDZAR, JIBAR_3M)
@@ -226,26 +271,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // mock/dev (realDataOnly=false). The BFF returns `source` so the panel
   // can show a precise "TimeSeriesGet2 entitlement required" message when
   // the table is empty.
-  const sectorsBffQ = useQuery({
-    queryKey: ["bff-sectors"],
-    queryFn: () =>
-      fetchJson<{
-        sectors: Array<{
-          code: string;
-          name: string;
-          changePct: number;
-          last: number;
-          asOf?: string;
-          sector: string;
-          weight: number;
-          change: number;
-        }>;
-        source: string;
-        message?: string;
-      }>("/api/sectors"),
-    enabled: realDataOnly,
-    refetchInterval: 30_000,
-  });
+  //
+  // NOTE: the Sector Heatmap no longer reads `/api/sectors` (official J2xx
+  // index families, gated on TimeSeriesGet2). It is now computed from the
+  // retail equities board (`/api/equities` → `equitiesQ`), so the old
+  // `sectorsBffQ` poll was removed.
   const curveBffQ = useQuery({
     queryKey: ["bff-curve-zar-nss"],
     queryFn: () => fetchJson<{ code: string; points: Array<{ tenor: string; years: number; yield: number; asOf: string }>; source: string; message?: string }>("/api/curves/ZAR_NSS"),
@@ -258,6 +288,53 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     enabled: realDataOnly,
     refetchInterval: 30_000,
   });
+
+  // Retail-backed equities universe (Sector Heatmap + Top Movers). `last_price`
+  // is INTEGER CENTS (securities_c convention) → /100 for Rands. Symbols carry
+  // a `.JO` suffix — stripped for display via `bareSymbol`. Fetched once in
+  // real-data mode only (queryOpts("reference"): cached 60s, no polling).
+  const equitiesQ = useQuery({
+    queryKey: ["bff-equities"],
+    queryFn: () => fetchJson<EquitiesBffResponse>("/api/equities"),
+    enabled: realDataOnly,
+    ...queryOpts("reference"),
+  });
+  // Retail "client book" aggregate (Platform AUM + Day P&L tiles). All money
+  // values are RANDS. Fetched once in real-data mode only.
+  const clientBookQ = useQuery({
+    queryKey: ["bff-client-book"],
+    queryFn: () => fetchJson<ClientBookBffResponse>("/api/client-book"),
+    enabled: realDataOnly,
+    ...queryOpts("live"),
+  });
+  const equitiesData = equitiesQ.data;
+  const equitiesAvailable = equitiesData?.source === "retail-supabase";
+  const clientBook = clientBookQ.data;
+  const clientBookAvailable = clientBook?.source === "retail-supabase";
+
+  // Top gainers + losers by change_percent, top ~8 combined (4 up / 4 down).
+  // Positive change_percent = up (single sign convention, matches the ticker
+  // strip which reads the quote's own signed value directly).
+  const topMovers = useMemo<EquitiesBffSecurity[]>(() => {
+    if (!equitiesAvailable) return [];
+    const withChange = (equitiesData?.securities ?? []).filter(
+      (s) => Number.isFinite(s.change_percent),
+    );
+    const gainers = [...withChange]
+      .sort((a, b) => (b.change_percent ?? 0) - (a.change_percent ?? 0))
+      .slice(0, 4);
+    const losers = [...withChange]
+      .sort((a, b) => (a.change_percent ?? 0) - (b.change_percent ?? 0))
+      .slice(0, 4)
+      .reverse();
+    // De-dupe in case the board is tiny (gainers and losers overlap).
+    const seen = new Set<string>();
+    return [...gainers, ...losers].filter((s) => {
+      if (seen.has(s.symbol)) return false;
+      seen.add(s.symbol);
+      return true;
+    });
+  }, [equitiesAvailable, equitiesData]);
 
   const strategies = strategiesQ.data ?? [];
   const indices = indicesQ.data ?? [];
@@ -353,20 +430,35 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`cockpit-kpi-${n}`} />)
         ) : realDataOnly ? (
           <>
+            {/*
+              Platform AUM + Day P&L wire to the retail client book
+              (`GET /api/client-book`) while the IRESS institutional IPS
+              feed is blocked. All money values are RANDS. When the
+              client-book source is "unavailable" the tiles render "—"
+              with an honest cause-based sub-line.
+            */}
             <KpiTile
               icon={<Layers className="h-3.5 w-3.5" />}
               label="Platform AUM"
-              value={portfolioQ.data?.source === "supabase" ? formatZAR(portfolioQ.data.aum) : "—"}
-              sub={portfolioAumSub(portfolioQ.data)}
+              value={clientBookAvailable ? formatZAR(clientBook!.aum) : "—"}
+              sub={
+                clientBookAvailable
+                  ? `${clientBook!.investors} investors · ${clientBook!.holdings} holdings`
+                  : "Retail client book unavailable"
+              }
             />
             <KpiTile
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Day P&L"
-              value={portfolioQ.data?.source === "supabase" ? formatZAR(portfolioQ.data.dayPnl) : "—"}
-              sub={portfolioDayPnlSub(portfolioQ.data)}
+              value={clientBookAvailable ? formatZAR(clientBook!.dayPnl) : "—"}
+              sub={
+                clientBookAvailable
+                  ? `as of ${clientBook!.asOf ?? "—"}`
+                  : "Retail client book unavailable"
+              }
               tone={
-                portfolioQ.data?.source === "supabase"
-                  ? portfolioQ.data.dayPnl >= 0
+                clientBookAvailable
+                  ? clientBook!.dayPnl >= 0
                     ? "positive"
                     : "negative"
                   : "default"
@@ -471,13 +563,68 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       {/* Row 1: heatmap | govi | movers */}
       <div className="grid grid-cols-12 gap-2.5">
         {realDataOnly ? (
-          sectorsBffQ.isLoading ? (
+          equitiesQ.isLoading ? (
             <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
-          ) : sectorsBffQ.isError || (sectorsBffQ.data?.source === "entitlement-required") ? (
+          ) : equitiesAvailable && (equitiesData?.sectors.length ?? 0) > 0 ? (
+            // Heatmap computed from JSE constituents (securities_c), not the
+            // official J2xx index families — these need TimeSeriesGet2.
             <Panel
               title="Sector Heatmap"
-              endpoint="GET /api/sectors"
-              dataSource={sectorsBffQ.data?.source === "entitlement-required" ? "unconfigured" : "unavailable"}
+              endpoint="GET /api/equities"
+              dataSource="supabase"
+              className="col-span-12 lg:col-span-5 h-[300px]"
+              density="scroll"
+              right={
+                <span className="font-mono text-[10px]">computed from JSE constituents (not official J2xx indices)</span>
+              }
+            >
+              <ul role="list" className="divide-y divide-border/40">
+                {[...(equitiesData?.sectors ?? [])]
+                  .sort((a, b) => b.avgChangePct - a.avgChangePct)
+                  .map((s) => {
+                    const up = s.avgChangePct > 0;
+                    const down = s.avgChangePct < 0;
+                    const tone = up ? "text-up" : down ? "text-down" : "text-muted-foreground";
+                    return (
+                      <li
+                        key={s.sector}
+                        className="group flex items-center gap-3 px-3 py-1.5 transition-colors hover:bg-muted/30"
+                        title={`${s.sector} · ${formatPct(s.avgChangePct)} · ${s.count} constituents`}
+                      >
+                        <span
+                          aria-hidden
+                          className={cn(
+                            "h-1.5 w-1.5 shrink-0 rounded-full",
+                            up ? "bg-up" : down ? "bg-down" : "bg-muted-foreground/50",
+                          )}
+                        />
+                        <span className="flex-1 truncate text-sm font-medium text-foreground/90">
+                          {s.sector}
+                        </span>
+                        <span
+                          className={cn(
+                            "w-16 shrink-0 text-right font-mono text-xs font-semibold tabular-nums",
+                            tone,
+                          )}
+                        >
+                          {formatPct(s.avgChangePct)}
+                        </span>
+                        <span className="w-14 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                          {s.count}
+                          <span className="ml-1 text-muted-foreground/60">cnt</span>
+                        </span>
+                      </li>
+                    );
+                  })}
+              </ul>
+            </Panel>
+          ) : (
+            // `/api/equities` unavailable — keep the institutional
+            // TimeSeriesGet2 entitlement empty state.
+            <Panel
+              title="Sector Heatmap"
+              endpoint="GET /api/equities"
+              dataSource="unavailable"
               className="col-span-12 lg:col-span-5 h-[300px]"
             >
               {/* Yellow #16 — same EntitlementRequired primitive the
@@ -487,25 +634,6 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 codes={["J200", "J203"]}
                 note="Sector index quotes require TimeSeriesGet2 entitlement. Ask Charles to enable on the production account."
               />
-            </Panel>
-          ) : sectorsBffQ.data && sectorsBffQ.data.sectors.length > 0 ? (
-            <SectorHeatmap
-              data={sectorsBffQ.data.sectors.map((s) => ({
-                sector: s.sector,
-                weight: s.weight,
-                change: s.change,
-              }))}
-              dataSource="supabase"
-              className="col-span-12 lg:col-span-5 h-[300px]"
-            />
-          ) : (
-            <Panel
-              title="Sector Heatmap"
-              endpoint="GET /api/sectors"
-              dataSource="unconfigured"
-              className="col-span-12 lg:col-span-5 h-[300px]"
-            >
-              <EmptyDataState message="Sector index data not yet populated — worker has not synced a J200 series." />
             </Panel>
           )
         ) : sectorsQ.isLoading ? (
@@ -616,7 +744,66 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           </Panel>
         )}
 
-        {moversQ.isLoading ? (
+        {realDataOnly ? (
+          equitiesQ.isLoading ? (
+            <PanelSkeleton rows={7} height="h-[300px]" className="col-span-12 lg:col-span-3" />
+          ) : equitiesAvailable && topMovers.length > 0 ? (
+            // Top gainers + losers from the retail equities board
+            // (`securities_c`). `change_percent` is the symbol's own
+            // signed day change (positive = up) — the same convention the
+            // ticker strip uses, so the two never disagree on sign.
+            // `last_price` is INTEGER CENTS → /100 for Rands.
+            <Panel
+              title="Top Movers · JSE"
+              endpoint="GET /api/equities"
+              dataSource="supabase"
+              className="col-span-12 lg:col-span-3 h-[300px]"
+              density="scroll"
+              right={
+                <Link href="/oems/equities" className="text-[10px] text-primary hover:underline">
+                  All →
+                </Link>
+              }
+            >
+              <ul className="divide-y divide-border/70">
+                {topMovers.map((m) => {
+                  const chg = m.change_percent ?? 0;
+                  const up = chg > 0;
+                  const down = chg < 0;
+                  const price = m.last_price != null ? m.last_price / 100 : null;
+                  return (
+                    <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-mono text-xs font-semibold">{bareSymbol(m.symbol)}</p>
+                        <p className="truncate text-[9.5px] text-muted-foreground">{m.name ?? bareSymbol(m.symbol)}</p>
+                      </div>
+                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
+                        {price != null ? formatZAR(price) : "—"}
+                      </span>
+                      <span
+                        className={cn(
+                          "ml-1 shrink-0 font-mono text-[11px] tabular-nums",
+                          up ? "text-up" : down ? "text-down" : "text-muted-foreground",
+                        )}
+                      >
+                        {formatPct(chg)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </Panel>
+          ) : (
+            <Panel
+              title="Top Movers · JSE"
+              endpoint="GET /api/equities"
+              dataSource="unavailable"
+              className="col-span-12 lg:col-span-3 h-[300px]"
+            >
+              <EmptyDataState message="Equities board unavailable — retail securities feed returned no rows." />
+            </Panel>
+          )
+        ) : moversQ.isLoading ? (
           <PanelSkeleton rows={7} height="h-[300px]" className="col-span-12 lg:col-span-3" />
         ) : (
           <Panel

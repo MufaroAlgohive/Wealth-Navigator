@@ -45,6 +45,8 @@ function makeMockLiveClient(overrides: Partial<IressClient> = {}): IressClient {
     orderPadGetByAccountUpdates: vi.fn(),
     bookingGetByOrganisation2: vi.fn(),
     ipsTransactionGetByAccount5: vi.fn(),
+    ipsAccountGetAll1: vi.fn(),
+    ipsPositionGetAll1: vi.fn(),
     targetIdGet: vi.fn(),
     targetIdStatusGet: vi.fn(),
     ...overrides,

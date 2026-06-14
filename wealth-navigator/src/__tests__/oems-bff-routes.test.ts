@@ -104,7 +104,11 @@ function installSupabaseStub(tables: Record<string, unknown[]>) {
   const client = makeSupabaseStub(tables);
   vi.doMock("@/lib/supabase/server", () => ({
     createServiceRoleClient: () => client,
+    createRetailServiceRoleClient: () => client,
+    createInstitutionalServiceRoleClient: () => client,
     isSupabaseConfigured: () => true,
+    isRetailSupabaseConfigured: () => true,
+    isInstitutionalSupabaseConfigured: () => true,
     createSupabaseServerClient: () => client,
     createAnonServerClient: () => client,
   }));
@@ -272,15 +276,16 @@ describe("GET /api/macro", () => {
 });
 
 describe("GET /api/news", () => {
-  it("returns empty list with source=unavailable when news_item_c is empty", async () => {
-    installSupabaseStub({ news_item_c: [] });
+  it("returns empty list with source=unavailable when News_articles is empty", async () => {
+    process.env.USE_SUPABASE_QUOTES = "true";
+    process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES = "true";
+    installSupabaseStub({ News_articles: [] });
     const { GET } = await import("@/app/api/news/route");
     const res = await GET(new Request("http://localhost/api/news"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.source).toBe("unavailable");
     expect(body.items).toEqual([]);
-    expect(body.message).toMatch(/vendor contract/i);
   });
 });
 
@@ -360,9 +365,10 @@ describe("POST /api/orders/cancel", () => {
   it("forwards a valid body to the worker via POST /orders/cancel", async () => {
     configureEnv();
     vi.resetModules();
-    let received: { method?: string; path?: string; body?: unknown } | null = null;
+    type WorkerCallOpts = { method?: string; path?: string; body?: unknown };
+    const received: { value: WorkerCallOpts | null } = { value: null };
     mockCallWorker(async (opts) => {
-      received = opts;
+      received.value = opts;
       return ok({ ok: true, orderId: "ORD-123", account: "ACC1", cancelledAt: "2026-06-13T10:00:00Z" });
     });
     const { POST } = await import("@/app/api/orders/cancel/route");
@@ -376,10 +382,10 @@ describe("POST /api/orders/cancel", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
-    expect(received).not.toBeNull();
-    expect(received?.method).toBe("POST");
-    expect(received?.path).toBe("/orders/cancel");
-    expect(received?.body).toEqual({ orderId: "ORD-123", account: "ACC1" });
+    expect(received.value).not.toBeNull();
+    expect(received.value?.method).toBe("POST");
+    expect(received.value?.path).toBe("/orders/cancel");
+    expect(received.value?.body).toEqual({ orderId: "ORD-123", account: "ACC1" });
   });
 
   it("returns 400 missing_order_id when the body omits orderId", async () => {

@@ -17,6 +17,7 @@ import { initialQuotes, seedLastFor } from "@/lib/iress/seed";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { useTick, useTickSeries } from "@/lib/store/tick-stream-provider";
 import { cn } from "@/lib/cn";
+import { formatPct, formatZAR } from "@/lib/format";
 import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { JSE_TRACKED_UNIVERSE } from "@/lib/iress/universe";
@@ -171,7 +172,7 @@ function SecurityPageContent() {
             ))}
           </div>
         ) : realDataOnly ? (
-          <EmptyDataState message="Fundamentals require ref-data vendor integration." />
+          <RealFundamentalsGrid sym={activeSym} />
         ) : (
           <FundamentalsGrid
             inst={{
@@ -233,6 +234,97 @@ function FundamentalsGrid({
     { k: "Spread bp", v: (((seedLast * 1.0003) - (seedLast * 0.9997)) / seedLast * 10_000).toFixed(1) },
     { k: "VWAP", v: seedLast.toFixed(2) },
   ];
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+      {fields.map(({ k, v }) => (
+        <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+          <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
+          <p className="mt-0.5 font-mono text-xs font-semibold">{v}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Real-data fundamentals — sourced from the retail-backed `/api/equities` BFF
+ * (`securities_c`, Yahoo-fed today). This is reference data that does NOT need
+ * IRESS or a market-data vendor, so it is wired even on the real-data-only
+ * production profile. Depth L2 / Time & Sales stay UNCONFIGURED because those
+ * genuinely require an IRESS / streaming feed we don't have.
+ *
+ * `last_price` is INTEGER CENTS (securities_c convention); we don't render it
+ * here (the panel header / NumberCell own the live last) but other fields are
+ * plain numbers. `symbol` carries a `.JO` suffix — we strip it to match the
+ * page's bare selected symbol (e.g. "NPN").
+ */
+interface EquityFundamentals {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  industry: string | null;
+  pe: number | null;
+  pe_ratio?: number | null;
+  eps: number | null;
+  dividend_yield: number | null;
+  beta: number | null;
+  market_cap: number | null;
+  isin: string | null;
+  ytd_performance: number | null;
+}
+
+function RealFundamentalsGrid({ sym }: { sym: string }) {
+  const universeQ = useQuery<{ securities: EquityFundamentals[] }>({
+    queryKey: ["equities-universe"],
+    queryFn: async () => {
+      const r = await fetch("/api/equities", { cache: "no-store" });
+      if (!r.ok) throw new Error(`equities ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+  });
+
+  if (universeQ.isLoading) {
+    return (
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-busy="true" aria-live="polite">
+        {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+          <div key={`real-fund-${n}`} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+            <span className="shimmer block h-2 w-3/4 rounded" />
+            <span className="shimmer mt-1.5 block h-3 w-1/2 rounded" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const row = (universeQ.data?.securities ?? []).find(
+    (s) => s.symbol.replace(/\.JO$/i, "").toUpperCase() === sym.toUpperCase(),
+  );
+
+  if (!row) {
+    return (
+      <EmptyDataState
+        title="Security not in universe"
+        message={`No reference row for ${sym} in the retail equities universe (securities_c).`}
+      />
+    );
+  }
+
+  const fmt = (v: number | null | undefined, dp = 2) =>
+    v == null || !Number.isFinite(v) ? "—" : v.toFixed(dp);
+  const pe = row.pe ?? row.pe_ratio;
+  const fields: Array<{ k: string; v: string }> = [
+    { k: "ISIN", v: row.isin ?? "—" },
+    { k: "Sector", v: row.sector ?? "—" },
+    { k: "Industry", v: row.industry ?? "—" },
+    { k: "P/E", v: fmt(pe) },
+    { k: "EPS", v: fmt(row.eps) },
+    { k: "Div Yield", v: row.dividend_yield == null ? "—" : formatPct(row.dividend_yield) },
+    { k: "Beta", v: fmt(row.beta) },
+    { k: "Mkt Cap", v: row.market_cap == null ? "—" : formatZAR(row.market_cap) },
+    { k: "YTD", v: row.ytd_performance == null ? "—" : formatPct(row.ytd_performance) },
+  ];
+
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
       {fields.map(({ k, v }) => (

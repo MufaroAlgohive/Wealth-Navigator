@@ -22,6 +22,52 @@ import { usePortfolio } from "@/lib/hooks/use-portfolio";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 import { JSE_TRACKED_UNIVERSE } from "@/lib/iress/universe";
+import type { BffUnavailableReason } from "@/lib/bff-reasons";
+
+// --- Real-data JSE universe (GET /api/equities → retail securities_c) ---------
+
+interface UniverseSecurity {
+  symbol: string;
+  name: string | null;
+  sector: string | null;
+  industry: string | null;
+  /** INTEGER CENTS — divide by 100 for Rands. */
+  last_price: number | null;
+  change_price: number | null;
+  change_percent: number | null;
+  pe: number | null;
+  eps: number | null;
+  dividend_yield: number | null;
+  beta: number | null;
+  market_cap: number | null;
+  isin: string | null;
+  ytd_performance: number | null;
+  is_active: boolean | null;
+}
+
+interface EquitiesUniverseResponse {
+  source: "retail-supabase" | "unavailable";
+  count: number;
+  securities: UniverseSecurity[];
+  sectors: { sector: string; count: number; avgChangePct: number; totalMarketCap: number }[];
+  reason?: BffUnavailableReason;
+  migration?: string;
+  error?: string;
+}
+
+/** Strip the `.JO` exchange suffix for display (e.g. "NPN.JO" → "NPN"). */
+function bareSymbol(symbol: string): string {
+  return symbol.replace(/\.JO$/i, "");
+}
+
+async function fetchEquitiesUniverse(): Promise<EquitiesUniverseResponse> {
+  const res = await fetch("/api/equities");
+  const data = (await res.json()) as EquitiesUniverseResponse;
+  // The BFF returns 200 even when unavailable (so the UI can render an honest
+  // empty state with the reason); only throw on an unexpected transport error.
+  if (!res.ok && data.source == null) throw new Error(data.error ?? `equities ${res.status}`);
+  return data;
+}
 
 export default function EquitiesPage() {
   const { data } = useIress();
@@ -33,6 +79,22 @@ export default function EquitiesPage() {
     ...queryOpts("live"),
   });
   const equitiesQ = useQuery({ queryKey: ["equities"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
+  // Real-data mode — the full retail-backed JSE universe (246 names) via the
+  // `/api/equities` BFF (reads `securities_c`). Static reference data with its
+  // own last_price (INTEGER CENTS) + change_percent; not the live tick stream.
+  // Mock mode never fetches this (gated by `enabled`).
+  const equitiesUniverseQ = useQuery<EquitiesUniverseResponse>({
+    queryKey: ["equities-universe"],
+    queryFn: fetchEquitiesUniverse,
+    enabled: realDataOnly,
+    ...queryOpts("reference"),
+  });
+  // Sorted by bare symbol for a stable A→Z table (BFF already orders by the
+  // `.JO`-suffixed symbol; sort defensively on the stripped display symbol).
+  const universeRows = useMemo(() => {
+    const rows = equitiesUniverseQ.data?.securities ?? [];
+    return [...rows].sort((a, b) => bareSymbol(a.symbol).localeCompare(bareSymbol(b.symbol)));
+  }, [equitiesUniverseQ.data]);
   const strategies = (strategiesQ.data ?? []).filter((s) => s.kind === "equity");
   // Audit #9 — limit the equities list to the shared JSE universe
   // (10 names) so the worker / UI agree on coverage. The IRESS
@@ -179,25 +241,24 @@ export default function EquitiesPage() {
       )}
 
       <Panel
-        title="JSE · Top 10 JSE-listed names"
-        endpoint={realDataOnly ? "GET /api/quotes" : "GET /v1/securities/quotes?exchange=JSE"}
-        dataSource={realDataOnly ? liveQuotes.dataSource : undefined}
+        title={realDataOnly ? `JSE · ${universeRows.length} names` : "JSE · Top 10 JSE-listed names"}
+        endpoint={realDataOnly ? "GET /api/equities" : "GET /v1/securities/quotes?exchange=JSE"}
+        dataSource={realDataOnly ? "supabase" : undefined}
         right={<Pill tone={realDataOnly ? "primary" : "success"} size="xs" dot>{realDataOnly ? "SUPABASE · L1" : "LIVE · L1"}</Pill>}
       >
         {realDataOnly ? (
-          // Audit #11 — PricingQuoteGet is L1 last-trade only. Bid /
-          // Ask / VWAP / Volume all require IPS L2 or a streaming
-          // feed that we don't have on the production profile. Showing
-          // them as "—" was confusing the trader; the table now shows
-          // 5 columns (Symbol, Name, Sector, Last, Chg) and a
-          // single-line disclosure under the title that explains
-          // why.
+          // Real-data table is the retail `securities_c` board (last_price +
+          // day change). L1 reference only — bid/ask/vwap/volume require IPS
+          // L2 or a streaming feed we don't have on the production profile,
+          // so the table shows 5 columns (Symbol, Name, Sector, Last, Chg).
           <p className="mb-2 text-[10.5px] text-muted-foreground">
-            <span className="font-mono">PricingQuoteGet</span> is L1 last-trade only —
-            bid/ask/vwap/volume require IPS L2 or a streaming feed.
+            Retail <span className="font-mono">securities_c</span> board — L1 last-trade +
+            day change. Bid/ask/vwap/volume require IPS L2 or a streaming feed.
           </p>
         ) : null}
-        {equitiesQ.isLoading || (realDataOnly && liveQuotes.isLoading) ? (
+        {realDataOnly ? (
+          <RealEquitiesTable rows={universeRows} isLoading={equitiesUniverseQ.isLoading} response={equitiesUniverseQ.data} />
+        ) : equitiesQ.isLoading || (realDataOnly && liveQuotes.isLoading) ? (
           <div className="space-y-1.5" aria-busy="true" aria-live="polite">
             {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
               <div key={`equity-row-${n}`} className={`flex items-center gap-3 px-2.5 py-1.5 ${realDataOnly ? "grid-cols-5" : ""}`}>
@@ -307,5 +368,90 @@ function Stat({ label, value, positive, negative }: { label: string; value: stri
       <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{label}</p>
       <p className={cn("mt-0.5 font-mono text-xs font-semibold", positive && "text-up", negative && "text-down")}>{value}</p>
     </div>
+  );
+}
+
+/**
+ * Real-data JSE table — renders the full retail `securities_c` universe from
+ * the `/api/equities` BFF. Static reference data (last_price in INTEGER CENTS,
+ * day change %), not the live tick stream. Handles loading + empty states.
+ */
+function RealEquitiesTable({
+  rows,
+  isLoading,
+  response,
+}: {
+  rows: UniverseSecurity[];
+  isLoading: boolean;
+  response: EquitiesUniverseResponse | undefined;
+}) {
+  if (isLoading) {
+    return (
+      <div className="space-y-1.5" aria-busy="true" aria-live="polite">
+        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+          <div key={`equity-row-${n}`} className="flex items-center gap-3 px-2.5 py-1.5">
+            <span className="shimmer h-2.5 w-12 rounded" />
+            <span className="shimmer h-2.5 w-28 rounded" />
+            <span className="shimmer h-2.5 w-20 rounded" />
+            <span className="ml-auto shimmer h-2.5 w-16 rounded" />
+            <span className="shimmer h-2.5 w-14 rounded" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return (
+      <EmptyDataState
+        reason={response?.reason ?? "supabase_query_failed"}
+        migration={response?.migration}
+        errorDetail={response?.error}
+        title="JSE universe unavailable"
+        message="No JSE securities returned from the retail securities_c board. Check the Supabase migration / env listed below, then refresh."
+      />
+    );
+  }
+
+  return (
+    <table className="w-full font-mono text-xs">
+      <thead>
+        <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
+          <th className="px-2.5 py-2 text-left">Sym</th>
+          <th className="px-2.5 py-2 text-left">Name</th>
+          <th className="px-2.5 py-2 text-left">Sector</th>
+          <th className="px-2.5 py-2 text-right">Last</th>
+          <th className="px-2.5 py-2 text-right">Chg %</th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-border/60">
+        {rows.map((e) => {
+          const sym = bareSymbol(e.symbol);
+          // last_price is INTEGER CENTS → Rands.
+          const lastRands = e.last_price != null ? e.last_price / 100 : null;
+          const chg = Number(e.change_percent);
+          const hasChg = Number.isFinite(chg);
+          return (
+            <tr key={e.symbol} className="hover:bg-muted/30">
+              <td className="px-2.5 py-1.5 font-semibold">{sym}</td>
+              <td className="px-2.5 py-1.5 text-muted-foreground">{e.name ?? "—"}</td>
+              <td className="px-2.5 py-1.5 text-muted-foreground">{e.sector ?? "—"}</td>
+              <td className="px-2.5 py-1.5 text-right tabular-nums">
+                {lastRands != null ? formatZAR(lastRands) : <span className="text-muted-foreground">—</span>}
+              </td>
+              <td className="px-2.5 py-1.5 text-right tabular-nums">
+                {hasChg ? (
+                  <span className={cn("font-mono text-xs", chg > 0 ? "text-up" : chg < 0 ? "text-down" : "text-muted-foreground")}>
+                    {formatPct(chg)}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">—</span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }

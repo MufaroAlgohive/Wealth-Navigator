@@ -309,7 +309,7 @@ describe("ipsPositionGetAll1 (mock)", () => {
       expect(typeof p.Quantity).toBe("number");
       expect(p.Quantity).toBeGreaterThanOrEqual(0);
     }
-    const equities = res.DataRows.filter((p) => p.Quantity > 0);
+    const equities = res.DataRows.filter((p) => (p.Quantity ?? 0) > 0);
     expect(equities.length).toBeGreaterThan(0);
   });
 

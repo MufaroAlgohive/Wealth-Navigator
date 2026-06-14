@@ -488,7 +488,7 @@ describe("worker http-api /debug/timeseries-probe", () => {
     });
   }
   function postReq(body: object): IncomingMessage {
-    const listeners: Record<string, Array<() => void>> = {};
+    const listeners: Record<string, Array<(chunk?: Buffer) => void>> = {};
     const text = JSON.stringify(body);
     const req = {
       url: "/debug/timeseries-probe",
@@ -508,7 +508,7 @@ describe("worker http-api /debug/timeseries-probe", () => {
     return req;
   }
   function postReqRaw(bodyText: string): IncomingMessage {
-    const listeners: Record<string, Array<() => void>> = {};
+    const listeners: Record<string, Array<(chunk?: Buffer) => void>> = {};
     const req = {
       url: "/debug/timeseries-probe",
       method: "POST",
