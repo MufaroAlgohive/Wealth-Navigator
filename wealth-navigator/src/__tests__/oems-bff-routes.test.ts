@@ -182,8 +182,19 @@ describe("GET /api/strategies", () => {
       return {
         isSupabaseConfigured: () =>
           Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+        // Retail is also unconfigured when env is missing → the route skips the
+        // retail-first path and falls through to the 503.
+        isRetailSupabaseConfigured: () =>
+          Boolean(process.env.RETAIL_SUPABASE_URL && process.env.RETAIL_SUPABASE_SERVICE_ROLE_KEY),
+        isInstitutionalSupabaseConfigured: () => false,
         createServiceRoleClient: () => {
           throw new Error("createServiceRoleClient should NOT be called when isSupabaseConfigured is false");
+        },
+        createRetailServiceRoleClient: () => {
+          throw new Error("createRetailServiceRoleClient should NOT be called when retail is unconfigured");
+        },
+        createInstitutionalServiceRoleClient: () => {
+          throw new Error("not used in this test");
         },
         createSupabaseServerClient: () => {
           throw new Error("not used in this test");

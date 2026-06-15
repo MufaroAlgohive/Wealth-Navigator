@@ -21,11 +21,119 @@
  *     reason?: string,
  *   }
  */
-import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import {
+  createServiceRoleClient,
+  isSupabaseConfigured,
+  createRetailServiceRoleClient,
+  isRetailSupabaseConfigured,
+} from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+/**
+ * Retail model-portfolio catalogue (`strategies_c`) + per-strategy AUM/PnL
+ * aggregated from `client_strategy_returns_c` (latest snapshot). This is the
+ * real, populated source today; the institutional `oems_strategy_c` rollup is
+ * a fallback (empty until the IPS/portfolio rollup loop exists).
+ */
+interface RetailStrategyRow {
+  id: string;
+  name: string | null;
+  slug: string | null;
+  sector: string | null;
+  provider_name: string | null;
+  benchmark_name: string | null;
+  benchmark_symbol: string | null;
+  status: string | null;
+  holdings: unknown;
+  updated_at: string | null;
+}
+
+async function loadRetailStrategies(
+  retail: ReturnType<typeof createRetailServiceRoleClient>,
+): Promise<{ strategies: ReturnType<typeof mapRow>[]; source: string; count: number; lastUpdatedAt: string | null }> {
+  const { data: stratData, error: stratErr } = await retail
+    .from("strategies_c")
+    .select(
+      "id,name,slug,sector,provider_name,benchmark_name,benchmark_symbol,status,holdings,updated_at",
+    );
+  if (stratErr) throw stratErr;
+  const strategies = (stratData ?? []) as RetailStrategyRow[];
+
+  // Aggregate AUM / day-PnL / YTD-PnL / investors per strategy at the latest date.
+  const agg = new Map<string, { aum: number; day: number; ytd: number; users: Set<string> }>();
+  const { data: latestRows } = await retail
+    .from("client_strategy_returns_c")
+    .select("as_of_date")
+    .order("as_of_date", { ascending: false })
+    .limit(1);
+  const asOf = (latestRows?.[0]?.as_of_date as string | undefined) ?? null;
+  if (asOf) {
+    const { data: rows } = await retail
+      .from("client_strategy_returns_c")
+      .select('strategy_id,user_id,basket_value,"1d_pnl","ytd_pnl"')
+      .eq("as_of_date", asOf);
+    for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
+      const k = String(r["strategy_id"] ?? "");
+      if (!k) continue;
+      const a = agg.get(k) ?? { aum: 0, day: 0, ytd: 0, users: new Set<string>() };
+      a.aum += toNumber(r["basket_value"] as number);
+      a.day += toNumber(r["1d_pnl"] as number);
+      a.ytd += toNumber(r["ytd_pnl"] as number);
+      if (r["user_id"]) a.users.add(String(r["user_id"]));
+      agg.set(k, a);
+    }
+  }
+
+  const view = strategies.map((s) => {
+    const a = agg.get(s.id) ?? { aum: 0, day: 0, ytd: 0, users: new Set<string>() };
+    // basket_value / pnl are integer CENTS in retail (see /api/client-book).
+    const aumR = a.aum / 100;
+    const ytdR = a.ytd / 100;
+    const cost = aumR - ytdR;
+    const sector = String(s.sector ?? "").toLowerCase();
+    const kind = sector.includes("money")
+      ? "money_market"
+      : sector.includes("fixed")
+        ? "fixed_income"
+        : sector.includes("balanc")
+          ? "balanced"
+          : "equity";
+    const st = String(s.status ?? "").toLowerCase();
+    return {
+      id: s.id,
+      name: s.name ?? s.slug ?? "Strategy",
+      status: (st === "active" || st === "live" ? "live" : "paper") as "live" | "paper" | "halted",
+      kind: kind as "equity" | "money_market" | "balanced" | "fixed_income",
+      manager: s.provider_name ?? "—",
+      benchmark: s.benchmark_name ?? s.benchmark_symbol ?? "—",
+      aum: aumR,
+      dayPnl: a.day / 100,
+      pnlMtd: 0,
+      ytd: cost > 0 ? (ytdR / cost) * 100 : 0,
+      cashWeight: 0,
+      nav: aumR,
+      investorCount: a.users.size,
+      holdingsCount: Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0,
+      lastRebalanced: s.updated_at ? new Date(s.updated_at).toISOString().slice(0, 10) : "—",
+      deployedAt: null as string | null,
+      sharpe: 0,
+      maxDD: 0,
+      trackingError: 0,
+      weightedAvgYield: 0,
+      weightedAvgDuration: 0,
+    };
+  });
+  view.sort((x, y) => y.aum - x.aum);
+  return {
+    strategies: view,
+    source: "supabase",
+    count: view.length,
+    lastUpdatedAt: asOf ? new Date(asOf).toISOString() : null,
+  };
+}
 
 interface StrategyRow {
   strategy_id: string;
@@ -104,6 +212,20 @@ function mapRow(r: StrategyRow) {
 }
 
 export async function GET() {
+  // Prefer the retail catalogue — it's the populated source (9 model
+  // portfolios + live per-strategy AUM/PnL). Fall back to the institutional
+  // oems_strategy_c rollup only if retail isn't configured or returns nothing.
+  if (isRetailSupabaseConfigured()) {
+    try {
+      const retailResult = await loadRetailStrategies(createRetailServiceRoleClient());
+      if (retailResult.strategies.length > 0) {
+        return Response.json(retailResult);
+      }
+    } catch {
+      // fall through to the institutional rollup
+    }
+  }
+
   if (!isSupabaseConfigured()) {
     return Response.json(
       {
