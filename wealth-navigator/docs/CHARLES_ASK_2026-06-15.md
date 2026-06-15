@@ -1,62 +1,48 @@
-# MINT OEMS — IRESS ask (2026-06-15)
+# MINT OEMS — IRESS status & the 2 things left (2026-06-15)
 
-Supersedes the 2026-06-14 issue list. Scope is now **IRESS market data + IOS+ only**
-(IPS and FIX+ are parked on our side). Account `DFM@MINT`, company `Mint`, endpoint
-`https://webservices-ct.iress.co.za/v4`.
+After the Andre call + a day of live debugging. Account `DFM@MINT`, company `Mint`,
+endpoint `https://webservices-ct.iress.co.za/v4`. Scope: **IRIS (market data) + IOS+**.
 
-## Working
-- `IRESSSessionStart` — OK (session lands on node `…@IDSA01`).
-- `PricingQuoteGet` — OK, live JSE equity quotes.
+## Resolved (no longer blockers)
+- **No entitlement limits.** Andre confirmed every 500 is request-shape, not permissions.
+- **Service model:** IRIS = all market data (quotes, time-series, **news**), no server name.
+  IOSPlus = orders/accounts, `Server=mint_ct`. IPS / FIX+ are never called.
+- **`mint_ct` casing / company `Mint`** — confirmed irrelevant / correct.
+- **TimeSeriesGet2 wire shape — SOLVED by us.** The live CT build wants the period in a
+  `<Frequency>` field carrying the V4 **string** enum (`Daily`), with `<DateFrom>`/`<DateTo>`,
+  on the base IRIS session. Proven empirically: the fault advanced
+  `5 as Frequency` → `<empty> as Frequency` → past all params to **`Invalid SecId`**.
 
-## Already resolved (thanks)
-- Company is `Mint` (confirmed, no change needed).
-- `mint_ct` vs `MINT_CT` — not case-sensitive, no impact.
+## The 2 things still needed from IRESS (Andre)
 
----
+### 1. TimeSeriesGet2 — a working SecId
+With `<Frequency>Daily</Frequency>` the call now passes parameter validation and returns:
+```
+{"title":"Invalid SecId","detail":"Bad request syntax or unsupported method","status":400}
+```
+for **every** code we tried on `Exchange=JSE`: `NPN`, `SHP` (your doc's own example), `J203`,
+`NPN.JO`. (Blank exchange → `Invalid access`.) `PricingQuoteGet` accepts `NPN` fine, so
+TimeSeriesGet2 clearly wants a different **SecId** scheme.
 
-## Blocker 1 — IOS+ service session (unlocks orders + blotter)
+**Ask:** one working TimeSeriesGet2 request/response — a JSE equity EOD series **and** one
+index/curve (e.g. J203 / an R-code) — showing the exact `Code`/SecId + `Exchange`. That single
+example unblocks JSE price history, yield curves, ALSI/indices and macro (our Yahoo replacement).
 
-`ServiceSessionStart(Service=IOSPlus, Server=mint_ct)` fails with the verbatim fault:
+### 2. IOS+ orders — the session + a working order SOAP
+`ServiceSessionStart(Service=IOSPlus, Server=mint_ct)` returns
+**"Could not locate the session key for this request."** even though the same `IRESSSessionKey`
+works for `PricingQuoteGet`. We confirmed IRESS issues **no affinity cookie**, so it's not
+client-side stickiness. Our session lands on node `…@IDSA01`.
 
-> **`Could not locate the session key for this request.`**
+**Ask:** (a) how does the session reach the `mint_ct` node for service-session creation — a
+specific endpoint/host, or a routing step the WebServicesTester does? and (b) the working
+order-send SOAP example you offered (request + response).
 
-…even though the *same* `IRESSSessionKey` works fine for `PricingQuoteGet`. Per the V4
-docs a session is sticky to the web server that minted it (our `…@IDSA01` suffix), and
-`IRESSSessionStart` takes no server/node parameter — so the OMS layer can't see a session
-created on a different node.
+## On us (no IRESS dependency)
+- **Yahoo → IRESS price flip:** ready; flip `IRESS_RETAIL_DRY_RUN=0` in Monday market hours
+  after a coverage/scaling check (IRESS currently prices ~132–149 / 246 names; the rest stay on
+  Yahoo, never blanked).
+- **News via IRIS:** can be wired from the worker once the above two are in (news is an IRIS feed).
 
-**Question:** In the WebServicesTester, choosing `IOSPlus` + `mint_ct` and connecting works.
-How does it pin the session to the node that fronts `mint_ct`? Specifically:
-- Is there a **load-balancer affinity cookie** we must capture and resend? (Our worker now
-  does this — we'll see in logs whether one is issued.)
-- Or must the IRESS session be created against a **specific web-server hostname** for the OMS
-  (not the shared `webservices-ct…` entry), and if so which?
-
-A single working `ServiceSessionStart` example for `mint_ct` (request + response headers)
-would settle it.
-
-## Blocker 2 — TimeSeriesGet2 (unlocks curves / ALSI / indices / macro; needed to drop Yahoo)
-
-Every request is rejected:
-
-> `soap:Receiver — Invalid Parameter Value: 5 as Frequency`
-
-We've tried all integer `Frequency` values **and** the documented `<Interval>Daily</Interval>`
-string — same fault. The live CT build appears to differ from the published docs.
-
-**Question:** What is the exact request shape the CT build expects — is the period selector
-`Frequency` (long) or `Interval` (string), and what are the valid values? One working
-daily-J203 example request/response would unblock us immediately.
-
----
-
-## Confirmations (quick)
-1. **Trading account code(s)** for `OrderPadGetByAccount` / orders once the IOS+ session is up —
-   we're on a placeholder (`Z12345`).
-2. **PricingQuoteGet coverage** — full JSE board + ETFs (Satrix / Sygnia / 1nvest)? (We want
-   IRESS to fully replace our Yahoo price feed.)
-3. **L2 depth / time & sales** — available in V4 (`PricingQuoteExGet` or other)? Low priority.
-
-Everything is verifiable on our side via a live diagnostic
-(`GET https://iress-worker-production.up.railway.app/debug/iress-methods`), re-runnable after
-any change. Happy to hop on a call.
+Everything is verifiable live: `GET /debug/iress-methods` and
+`POST /debug/timeseries-probe {code,exchange,interval}` on the worker.
