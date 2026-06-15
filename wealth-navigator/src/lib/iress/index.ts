@@ -220,15 +220,19 @@ export async function bringUpMintSession(
   console.info(
     `[mint-iress] IRESSSessionStart ok applicationId=${applicationId} sessionKey=${redactSessionKeyForLog(iressSession.IRESSSessionKey)} timeoutMin=${iressSession.SessionTimeout ?? 120}`,
   );
-  // IPS `Server` is environment-specific per the V4 docs. The worker reads
-  // it from `IRESS_IPS_SERVER` (default `IPSAPI`) so operators can flip
-  // the value without redeploying. Read it here too so Vercel-side callers
-  // of `bringUpMintSession` honour the same env knob.
+  // Every service `Server` is environment-specific per the V4 docs. The worker
+  // reads each from an env knob (with the historical default) so operators can
+  // flip the value without redeploying — e.g. once IRESS provisions the OMS
+  // under a named instance, point IOS+ at it via `IRESS_IOS_SERVER=MINT_CT`.
+  // Read them here too so Vercel-side callers of `bringUpMintSession` honour
+  // the same knobs.
+  const iosServer = (process.env.IRESS_IOS_SERVER ?? "IOSPLUSAPI").trim() || "IOSPLUSAPI";
   const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
+  const fixServer = (process.env.IRESS_FIX_SERVER ?? "FIXPLUSAPI").trim() || "FIXPLUSAPI";
   const servicesToStart: Array<{ Service: IressService; Server: string }> = [
-    { Service: "IOSPlus", Server: "IOSPLUSAPI" },
+    { Service: "IOSPlus", Server: iosServer },
     { Service: "IPS", Server: ipsServer },
-    { Service: "FIXPlus", Server: "FIXPLUSAPI" },
+    { Service: "FIXPlus", Server: fixServer },
   ];
   // Single structured log line so the operator can see the exact `Server`
   // value the worker tried for every service without grepping. Useful when
