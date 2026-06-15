@@ -15,18 +15,27 @@ endpoint `https://webservices-ct.iress.co.za/v4`. Scope: **IRIS (market data) + 
 
 ## The 2 things still needed from IRESS (Andre)
 
-### 1. TimeSeriesGet2 — a working SecId
-With `<Frequency>Daily</Frequency>` the call now passes parameter validation and returns:
-```
-{"title":"Invalid SecId","detail":"Bad request syntax or unsupported method","status":400}
-```
-for **every** code we tried on `Exchange=JSE`: `NPN`, `SHP` (your doc's own example), `J203`,
-`NPN.JO`. (Blank exchange → `Invalid access`.) `PricingQuoteGet` accepts `NPN` fine, so
-TimeSeriesGet2 clearly wants a different **SecId** scheme.
+### 1. TimeSeriesGet2 — the exact DateFrom form (we solved everything up to it)
+We've worked the request shape out by trial against the live CT server and got past two layers:
+- Period selector: `<Frequency>` carrying the **string** enum `Daily` (not a Long, not `<Interval>`).
+- Security: `<SecurityCode>` (like every other method) — **not** `<Code>`. This resolved the
+  earlier `Invalid SecId`.
 
-**Ask:** one working TimeSeriesGet2 request/response — a JSE equity EOD series **and** one
-index/curve (e.g. J203 / an R-code) — showing the exact `Code`/SecId + `Exchange`. That single
-example unblocks JSE price history, yield curves, ALSI/indices and macro (our Yahoo replacement).
+It now fails only on the date, with `{"title":"Invalid DateFrom","detail":"Bad request syntax or
+unsupported method","status":400}`. We've exhaustively tried, all rejected identically:
+- **Value formats:** `2026-06-01`, `2026-06-01T00:00:00`, `…Z`, `…000Z`, epoch-ms, epoch-s,
+  `2026/06/01`, `06/01/2026`, `01-Jun-2026`, space-separated.
+- **Years:** 2024, 2025 (your doc's example range) and 2026.
+- **Field-name aliases:** `DateFrom`, `FromDate`, `StartDate`, `From`.
+- **Omitting the range** (with `NumberOfPoints`) — still `Invalid DateFrom`.
+
+Since a recognised field rejects every value, alias **and** omission — and the detail is the
+TimeSeries REST layer's generic HTTP 400 — this looks like a SOAP→REST bridge detail on the build.
+
+**Ask:** one working TimeSeriesGet2 request/response for a JSE equity daily series (and ideally one
+index/curve). Seeing the exact `<DateFrom>`/`<DateTo>` form (and confirming `<SecurityCode>` +
+`<Frequency>Daily`) closes this out — it unblocks JSE price history, yield curves, ALSI/indices and
+macro (our Yahoo replacement).
 
 ### 2. IOS+ orders — the session + a working order SOAP
 `ServiceSessionStart(Service=IOSPlus, Server=mint_ct)` returns
