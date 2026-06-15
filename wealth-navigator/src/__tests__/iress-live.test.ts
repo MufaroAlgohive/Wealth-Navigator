@@ -312,12 +312,11 @@ describe("validation — every method throws IressError on bad input", () => {
     expect(params["Interval"]).toBeUndefined();
   });
 
-  it("timeSeriesGet2 — prefers Frequency over Interval when both are set", async () => {
-    // Both fields are present: `Frequency` wins (the live-shape path).
-    // The probe endpoint and the worker prefer `Frequency`; the
-    // `Interval` string is only a fallback. Sending both would
-    // confuse a strict V4 WSDL-compliant server, so we explicitly drop
-    // `Interval` from the wire when `Frequency` is present.
+  it("timeSeriesGet2 — prefers Interval over Frequency, sends DateFrom/DateTo", async () => {
+    // Per the V4 spec + IRESS confirmation (Andre, 2026-06-15), market data
+    // runs on the base IRIS session and TimeSeriesGet2 takes `<Interval>`
+    // (string) with `<DateFrom>`/`<DateTo>`. `Interval` wins over the legacy
+    // `<Frequency>` (Long) and the Frequency is dropped from the wire.
     const call = vi.fn().mockResolvedValueOnce({
       result: {},
       header: { ErrorNumber: 0 },
@@ -328,13 +327,18 @@ describe("validation — every method throws IressError on bad input", () => {
     await client.timeSeriesGet2({
       Header: { SessionKey: "k", RequestID: "r1" },
       Code: "SOL",
+      From: "2026-06-01",
+      To: "2026-06-15",
       Frequency: 5,
       Interval: "Daily",
     });
     const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
       .parameters;
-    expect(params["Frequency"]).toBe(5);
-    expect(params["Interval"]).toBeUndefined();
+    expect(params["Interval"]).toBe("Daily");
+    expect(params["Frequency"]).toBeUndefined();
+    expect(params["DateFrom"]).toBe("2026-06-01");
+    expect(params["DateTo"]).toBe("2026-06-15");
+    expect(params["From"]).toBeUndefined();
   });
 
   it("timeSeriesGet2Updates — missing RequestID", async () => {

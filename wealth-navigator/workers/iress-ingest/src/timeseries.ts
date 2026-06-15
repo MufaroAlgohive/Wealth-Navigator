@@ -202,6 +202,34 @@ export const DAILY_FREQUENCY_LONG: number = 5;
 export type TimeSeriesFrequency = "1d" | "1w" | "1mo" | "1q" | "1y" | "1m" | "5m" | "1h" | "tick";
 
 /**
+ * Map a worker-friendly frequency token to the IRESS V4 `<Interval>` STRING
+ * the live CT server actually expects. Per the V4 spec + IRESS confirmation
+ * (Andre, 2026-06-15), TimeSeriesGet2 runs on the base IRIS session and takes
+ * `<Interval>` (not `<Frequency>` Long). This is the canonical mapping.
+ *
+ * Spec: `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`.
+ */
+export function timeSeriesIntervalString(token: TimeSeriesFrequency): string {
+  switch (token) {
+    case "tick":
+    case "1m":
+    case "5m":
+    case "1h":
+      return "IntraDay";
+    case "1d":
+      return "Daily";
+    case "1w":
+      return "Weekly";
+    case "1mo":
+      return "Monthly";
+    case "1q":
+      return "Quarterly";
+    case "1y":
+      return "Yearly";
+  }
+}
+
+/**
  * Fetch a single series via `TimeSeriesGet2`. Returns an empty point set
  * (with `entitlementRequired=true`) when the entitlement is missing —
  * the caller logs the event and moves on without crashing the loop.
@@ -231,13 +259,12 @@ async function fetchSeries(
         Exchange: exchange,
         From: range.from,
         To: range.to,
-        // The live CT server honours `<Frequency>` (Long), not the
-        // V4 WSDL-sample `<Interval>` (string). Tier 2 panels (J203,
-        // R-codes) all use the 7-day daily rolling window, so this
-        // resolves to `DAILY_FREQUENCY_LONG`. The Long mapper keeps
-        // the worker-friendly tokens stable in case we add weekly /
-        // monthly series later.
-        Frequency: timeSeriesFrequencyLong(range.interval),
+        // Market data uses the base IRIS session with `<Interval>` (string),
+        // per the V4 spec + Andre's 2026-06-15 confirmation. The earlier
+        // `<Frequency>` (Long) route was rejected by the live CT server
+        // ("Invalid Parameter Value: <n> as Frequency"). The client maps
+        // From/To to the documented `<DateFrom>`/`<DateTo>` on the wire.
+        Interval: timeSeriesIntervalString(range.interval),
       });
       points = res.DataRows ?? [];
     });

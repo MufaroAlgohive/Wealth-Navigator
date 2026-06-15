@@ -152,22 +152,19 @@ interface TimeSeriesProbeResult {
  * One-shot `TimeSeriesGet2` probe with the caller-supplied period
  * selector.
  *
- * The empirical truth (June 2026, see
- * `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md`) is that
- * the live CT server honours `<Frequency>` (Long), NOT the
- * `<Interval>` string the V4 WSDL sample documents. Earlier Long
- * guesses (0, 8) returned
- *   `soap:Receiver — Invalid Parameter Value: <n> as Frequency`
- * because those specific values were wrong, not because the wire shape
- * was. The probe accepts either form so future debugging can run both
- * shapes against the live server without redeploying the worker.
+ * Per the V4 spec + IRESS confirmation (Andre, 2026-06-15), TimeSeriesGet2
+ * runs on the base IRIS session and takes `<Interval>` (string: "Daily",
+ * "Weekly", …) with `<DateFrom>`/`<DateTo>` — NOT `<Frequency>` (Long), which
+ * the live CT server rejects ("Invalid Parameter Value: <n> as Frequency").
+ * The probe still accepts either form so a candidate can be checked against
+ * the live server without redeploying.
  *
  * Caller body shape (POST /debug/timeseries-probe):
  *   { code: "J203", exchange?: "JSE", interval?: "Daily", frequency?: 5 }
  *
- * Precedence: when both `interval` and `frequency` are supplied, the
- * probe sends `Frequency` (the empirically-correct live shape). When
- * neither is supplied we return 400.
+ * Precedence: when both `interval` and `frequency` are supplied, the client
+ * sends `Interval` (the documented live shape). When neither is supplied we
+ * return 400.
  *
  * The endpoint requires `WORKER_HTTP_TOKEN` when set (same auth as the
  * rest of the worker HTTP surface). The response is intentionally
@@ -441,7 +438,7 @@ async function probeIressMethods(deps: HttpApiDeps): Promise<{
       methods.push({ method: "PricingQuoteExGet (L2)", service: "Iress", status: "not-implemented", detail: "L2 depth not wired in the client — confirm with IRESS whether L2 is exposed in V4" });
     }
 
-    const ts = await probeTimeSeriesInterval(deps, "J203", "JSE", null, 5);
+    const ts = await probeTimeSeriesInterval(deps, "J203", "JSE", "Daily", null);
     methods.push({
       method: "TimeSeriesGet2",
       service: "Iress",

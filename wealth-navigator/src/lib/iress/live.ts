@@ -851,19 +851,14 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
-      // Wire shape (empirical, June 2026): the live CT server honours
-      // `<Frequency>` (Long) on the wire — the V4 WSDL sample documents
-      // `<Interval>` (string) but the live build rejects every Long we
-      // tried *except* the daily-bucket value discovered by
-      // `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md`. The
-      // worker pre-converts friendly tokens ("1d" | "1h" | "5m" | "1m" |
-      // "tick" | "1w" | "1mo" | "1q" | "1y") to the wire Long via
-      // `timeSeriesFrequencyLong()`. `Interval` (string) is kept as a
-      // fallback for older IRESS server builds that still require it.
-      //
-      // Precedence: `Frequency` wins over `Interval` when both are set.
-      // If neither is set we throw 25018 — the server treats both as
-      // required and returns 25018 missing-required.
+      // Wire shape per the V4 spec + IRESS engineer confirmation (Andre,
+      // 2026-06-15 call): market data runs on the base Iress (IRIS) session
+      // and TimeSeriesGet2 takes `<Interval>` (string: "Daily" | "Weekly" |
+      // …) with `<DateFrom>` / `<DateTo>`. The earlier `<Frequency>` (Long)
+      // route was a wrong turn — the live CT server rejects it
+      // ("Invalid Parameter Value: <n> as Frequency"). We send `Interval`
+      // (it wins) and only fall back to `Frequency` if a caller explicitly
+      // sets one and no Interval is given.
       //
       // Spec: `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`.
       const hasFrequency = typeof req.Frequency === "number" && Number.isFinite(req.Frequency);
@@ -872,21 +867,19 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         throw new IressError(
           25018,
           "TimeSeriesGet2",
-          "TimeSeriesGet2: missing required field — supply `Frequency` (Long, e.g. 5) or `Interval` (V4 string, e.g. 'Daily')",
+          "TimeSeriesGet2: missing required field — supply `Interval` (V4 string, e.g. 'Daily') or `Frequency` (Long)",
         );
       }
       const parameters: Record<string, unknown> = {
         Code: req.Code,
         Exchange: req.Exchange,
-        From: req.From,
-        To: req.To,
+        DateFrom: req.From,
+        DateTo: req.To,
       };
-      if (hasFrequency) {
-        parameters["Frequency"] = req.Frequency;
-        // `Frequency` wins — explicitly drop `Interval` from the wire so a
-        // strict V4 WSDL-compliant server doesn't get confused by both.
-      } else if (hasInterval) {
+      if (hasInterval) {
         parameters["Interval"] = req.Interval;
+      } else if (hasFrequency) {
+        parameters["Frequency"] = req.Frequency;
       }
       const result = await transport.call({
         method: "TimeSeriesGet2",
