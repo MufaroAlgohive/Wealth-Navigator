@@ -337,7 +337,10 @@ describe("validation — every method throws IressError on bad input", () => {
     expect(params["Interval"]).toBeUndefined();
     expect(params["DateFrom"]).toBe("2026-06-01");
     expect(params["DateTo"]).toBe("2026-06-15");
-    expect(params["From"]).toBeUndefined();
+    // The from/to dates are also sent under name-aliases (FromDate/StartDate/
+    // From, …) so the live build picks up whichever field it reads.
+    expect(params["From"]).toBe("2026-06-01");
+    expect(params["FromDate"]).toBe("2026-06-01");
   });
 
   it("timeSeriesGet2Updates — missing RequestID", async () => {

@@ -876,12 +876,23 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       // fault is consistent with it never reading `<Code>`. Send `SecurityCode`
       // (the universal convention) and keep `Code` as a doc-named alias so
       // whichever the build reads resolves the SecId.
+      // Date range: the live build rejects EVERY value format we send for
+      // `<DateFrom>` ("Invalid DateFrom"), which — like the SecId→SecurityCode
+      // case — points to a field-NAME mismatch, not a value-format one. Send
+      // the from/to dates under every plausible alias so the build picks up
+      // whichever it reads. (Narrow to the winner once identified.)
       const parameters: Record<string, unknown> = {
         SecurityCode: req.Code,
         Code: req.Code,
         Exchange: req.Exchange,
         DateFrom: req.From,
+        FromDate: req.From,
+        StartDate: req.From,
+        From: req.From,
         DateTo: req.To,
+        ToDate: req.To,
+        EndDate: req.To,
+        To: req.To,
       };
       // The interval string is the live build's accepted value; it goes into
       // the `<Frequency>` wire field (not `<Interval>`, which the server ignores).
