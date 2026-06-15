@@ -257,8 +257,8 @@ describe("validation — every method throws IressError on bad input", () => {
     });
   });
 
-  it("timeSeriesGet2 — passes Interval through to the SOAP body", async () => {
-    // Verifies that the required `Interval` parameter actually lands in
+  it("timeSeriesGet2 — interval string lands in the <Frequency> body field", async () => {
+    // Verifies that the required period parameter actually lands in
     // the outgoing XML envelope (not just in the TypeScript types). Uses
     // the V4 `"Daily"` string — kept as a fallback for older server
     // builds. The live CT server honours the `Frequency` (Long) form;
@@ -279,11 +279,11 @@ describe("validation — every method throws IressError on bad input", () => {
     });
     const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
       .parameters;
-    expect(params["Interval"]).toBe("Daily");
+    // CT build: the interval string is emitted in the `<Frequency>` field,
+    // and there is no separate `<Interval>` field (the server ignores it).
+    expect(params["Frequency"]).toBe("Daily");
     expect(params["Code"]).toBe("SOL");
-    // `Frequency` is not set on the wire when the caller sends
-    // `Interval` (the `Interval` (string) path is the legacy fallback).
-    expect(params["Frequency"]).toBeUndefined();
+    expect(params["Interval"]).toBeUndefined();
   });
 
   it("timeSeriesGet2 — sends Frequency (Long) on the wire when set", async () => {
@@ -312,11 +312,11 @@ describe("validation — every method throws IressError on bad input", () => {
     expect(params["Interval"]).toBeUndefined();
   });
 
-  it("timeSeriesGet2 — prefers Interval over Frequency, sends DateFrom/DateTo", async () => {
-    // Per the V4 spec + IRESS confirmation (Andre, 2026-06-15), market data
-    // runs on the base IRIS session and TimeSeriesGet2 takes `<Interval>`
-    // (string) with `<DateFrom>`/`<DateTo>`. `Interval` wins over the legacy
-    // `<Frequency>` (Long) and the Frequency is dropped from the wire.
+  it("timeSeriesGet2 — puts the interval string in <Frequency>, sends DateFrom/DateTo", async () => {
+    // CT-build quirk (empirical 2026-06-15): the live server's period field is
+    // `<Frequency>` and takes the V4 *string* enum ("Daily"). It ignores
+    // `<Interval>` and rejects a Long. So the interval string is emitted as
+    // `<Frequency>`, with the date range in `<DateFrom>`/`<DateTo>`.
     const call = vi.fn().mockResolvedValueOnce({
       result: {},
       header: { ErrorNumber: 0 },
@@ -329,13 +329,12 @@ describe("validation — every method throws IressError on bad input", () => {
       Code: "SOL",
       From: "2026-06-01",
       To: "2026-06-15",
-      Frequency: 5,
       Interval: "Daily",
     });
     const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
       .parameters;
-    expect(params["Interval"]).toBe("Daily");
-    expect(params["Frequency"]).toBeUndefined();
+    expect(params["Frequency"]).toBe("Daily");
+    expect(params["Interval"]).toBeUndefined();
     expect(params["DateFrom"]).toBe("2026-06-01");
     expect(params["DateTo"]).toBe("2026-06-15");
     expect(params["From"]).toBeUndefined();

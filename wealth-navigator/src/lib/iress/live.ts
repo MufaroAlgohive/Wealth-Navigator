@@ -851,23 +851,23 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
-      // Wire shape per the V4 spec + IRESS engineer confirmation (Andre,
-      // 2026-06-15 call): market data runs on the base Iress (IRIS) session
-      // and TimeSeriesGet2 takes `<Interval>` (string: "Daily" | "Weekly" |
-      // …) with `<DateFrom>` / `<DateTo>`. The earlier `<Frequency>` (Long)
-      // route was a wrong turn — the live CT server rejects it
-      // ("Invalid Parameter Value: <n> as Frequency"). We send `Interval`
-      // (it wins) and only fall back to `Frequency` if a caller explicitly
-      // sets one and no Interval is given.
-      //
-      // Spec: `iress-v4-docs/05-services/market-data/02-time-series-get-2.md`.
+      // CT-build wire quirk (empirical, 2026-06-15, two live deploys):
+      //  - `<Frequency>5` (Long)      → "Invalid Parameter Value: 5 as Frequency"
+      //  - `<Interval>Daily` (no Freq) → "Invalid Parameter Value:  as Frequency"
+      // i.e. the live CT server (a) NEVER reads an `<Interval>` field, and
+      // (b) REQUIRES a non-empty `<Frequency>` whose valid values are the V4
+      // *string* enum ("Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly"
+      // | "IntraDay") — the published doc names the field `Interval`, but this
+      // build named it `Frequency` while keeping the string enum. So we put the
+      // interval string into `<Frequency>`. Date range goes in `<DateFrom>` /
+      // `<DateTo>`. Spec: iress-v4-docs/05-services/market-data/02-time-series-get-2.md
       const hasFrequency = typeof req.Frequency === "number" && Number.isFinite(req.Frequency);
       const hasInterval = typeof req.Interval === "string" && req.Interval.trim() !== "";
       if (!hasFrequency && !hasInterval) {
         throw new IressError(
           25018,
           "TimeSeriesGet2",
-          "TimeSeriesGet2: missing required field — supply `Interval` (V4 string, e.g. 'Daily') or `Frequency` (Long)",
+          "TimeSeriesGet2: missing required field — supply `Interval` (V4 string enum, e.g. 'Daily')",
         );
       }
       const parameters: Record<string, unknown> = {
@@ -876,11 +876,9 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         DateFrom: req.From,
         DateTo: req.To,
       };
-      if (hasInterval) {
-        parameters["Interval"] = req.Interval;
-      } else if (hasFrequency) {
-        parameters["Frequency"] = req.Frequency;
-      }
+      // The interval string is the live build's accepted value; it goes into
+      // the `<Frequency>` wire field (not `<Interval>`, which the server ignores).
+      parameters["Frequency"] = hasInterval ? req.Interval : req.Frequency;
       const result = await transport.call({
         method: "TimeSeriesGet2",
         header: makeHeader({
