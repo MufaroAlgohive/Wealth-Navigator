@@ -146,7 +146,12 @@ interface TimeSeriesProbeResult {
   iressMode: string;
   elapsedMs: number;
   probedAt: string;
+  build: string;
 }
+
+// Bump on every deploy that touches the TimeSeriesGet2 wire shape so a probe
+// response confirms WHICH code is live (Railway deploy timing was opaque).
+const PROBE_BUILD = "ts-2026-06-15-date+secid+freq";
 
 /**
  * One-shot `TimeSeriesGet2` probe with the caller-supplied period
@@ -181,6 +186,7 @@ async function probeTimeSeriesInterval(
   dateTo?: string,
   noDates?: boolean,
   numberOfPoints?: number,
+  date?: string,
 ): Promise<TimeSeriesProbeResult> {
   const started = Date.now();
   const hasFrequency = typeof frequency === "number" && Number.isFinite(frequency);
@@ -200,6 +206,7 @@ async function probeTimeSeriesInterval(
       // the range entirely (to test the NumberOfPoints path).
       From: noDates ? undefined : (dateFrom ?? new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10)),
       To: noDates ? undefined : (dateTo ?? new Date().toISOString().slice(0, 10)),
+      ...(typeof date === "string" && date.trim() !== "" ? { Date: date.trim() } : {}),
       ...(typeof numberOfPoints === "number" ? { NumberOfPoints: numberOfPoints } : {}),
       ...(hasFrequency ? { Frequency: frequency } : {}),
       ...(hasInterval ? { Interval: interval } : {}),
@@ -218,6 +225,7 @@ async function probeTimeSeriesInterval(
       iressMode: deps.env.iressMode,
       elapsedMs: Date.now() - started,
       probedAt: new Date().toISOString(),
+      build: PROBE_BUILD,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -236,6 +244,7 @@ async function probeTimeSeriesInterval(
       iressMode: deps.env.iressMode,
       elapsedMs: Date.now() - started,
       probedAt: new Date().toISOString(),
+      build: PROBE_BUILD,
     };
   }
 }
@@ -901,6 +910,7 @@ export async function handleRequest(
       typeof b["numberOfPoints"] === "number" && Number.isFinite(b["numberOfPoints"])
         ? Math.trunc(b["numberOfPoints"] as number)
         : undefined;
+    const date = typeof b["date"] === "string" && b["date"].trim() !== "" ? b["date"].trim() : undefined;
     const result = await probeTimeSeriesInterval(
       deps,
       code,
@@ -911,6 +921,7 @@ export async function handleRequest(
       dateTo,
       noDates,
       numberOfPoints,
+      date,
     );
     // Always 200 — the IRESS response (success or fault) IS the answer.
     // `ok` and `errorNumber` describe the result, not the HTTP envelope.

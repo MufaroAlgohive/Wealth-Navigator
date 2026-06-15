@@ -146,6 +146,8 @@ export interface TimeSeriesGet2Request {
   Interval?: string;
   /** Optional point cap — fetch the last N points when no date range is given. */
   NumberOfPoints?: number;
+  /** Optional single point-in-time (doc lists `Date` as an alternative to From/To). */
+  Date?: string;
 }
 
 // ─── Trading (IOS+) ─────────────────────────────────────────────────────

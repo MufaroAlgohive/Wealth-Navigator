@@ -904,6 +904,9 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       if (typeof req.NumberOfPoints === "number" && Number.isFinite(req.NumberOfPoints)) {
         parameters["NumberOfPoints"] = req.NumberOfPoints;
       }
+      if (typeof req.Date === "string" && req.Date.trim() !== "") {
+        parameters["Date"] = req.Date.trim();
+      }
       // The interval string is the live build's accepted value; it goes into
       // the `<Frequency>` wire field (not `<Interval>`, which the server ignores).
       parameters["Frequency"] = hasInterval ? req.Interval : req.Frequency;
