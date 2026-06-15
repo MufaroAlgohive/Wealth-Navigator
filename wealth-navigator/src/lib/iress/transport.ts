@@ -234,6 +234,36 @@ export function createSoapTransport(opts: CreateSoapTransportOptions): SoapTrans
   }
   const endpoint = baseUrl.replace(/\/+$/, "") + "/SOAP.aspx";
 
+  // ── Web-server affinity ────────────────────────────────────────────────
+  // An IRESSSessionKey is sticky to the web server that minted it (the
+  // `…@NODE` suffix). Per the V4 docs, calling from a different web server may
+  // fail to locate the session — which is exactly why `ServiceSessionStart`
+  // for IOS+ returns "Could not locate the session key" while market-data
+  // calls (validated globally) succeed: creating a child service session must
+  // run on the parent session's home node. Stateless `fetch` POSTs drop the
+  // load-balancer affinity cookie, so we capture it from each response and
+  // resend it, pinning every call (incl. ServiceSessionStart) to that node.
+  const cookieJar = new Map<string, string>();
+  function captureCookies(res: Response): void {
+    const h = res.headers as (Headers & { getSetCookie?: () => string[] }) | undefined;
+    if (!h) return;
+    let setCookies: string[] = [];
+    if (typeof h.getSetCookie === "function") setCookies = h.getSetCookie();
+    else if (typeof h.get === "function") {
+      const sc = h.get("set-cookie");
+      if (sc) setCookies = [sc];
+    }
+    for (const c of setCookies) {
+      const pair = c.split(";")[0] ?? "";
+      const eq = pair.indexOf("=");
+      if (eq > 0) cookieJar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+    }
+  }
+  function cookieHeader(): string | undefined {
+    if (cookieJar.size === 0) return undefined;
+    return Array.from(cookieJar, ([k, v]) => `${k}=${v}`).join("; ");
+  }
+
   async function call(spec: SoapCallSpec): Promise<SoapCallResult> {
     const envelope = buildSoapEnvelope(spec);
     const headers: Record<string, string> = {
@@ -242,6 +272,8 @@ export function createSoapTransport(opts: CreateSoapTransportOptions): SoapTrans
       Accept: "text/xml",
       ...extraHeaders,
     };
+    const ck = cookieHeader();
+    if (ck) headers["Cookie"] = ck;
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), timeoutMs);
     let res: Response;
@@ -258,6 +290,7 @@ export function createSoapTransport(opts: CreateSoapTransportOptions): SoapTrans
     } finally {
       clearTimeout(t);
     }
+    captureCookies(res);
     if (!res.ok) {
       // Try to extract an IRESSFaultDetail from the body anyway.
       const text = await res.text().catch(() => "");
