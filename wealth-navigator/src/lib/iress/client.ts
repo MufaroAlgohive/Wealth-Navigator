@@ -144,6 +144,8 @@ export interface TimeSeriesGet2Request {
    * field is only sent when `Frequency` is unset.
    */
   Interval?: string;
+  /** Optional point cap — fetch the last N points when no date range is given. */
+  NumberOfPoints?: number;
 }
 
 // ─── Trading (IOS+) ─────────────────────────────────────────────────────

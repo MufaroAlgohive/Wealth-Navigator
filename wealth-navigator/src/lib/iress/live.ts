@@ -885,15 +885,25 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         SecurityCode: req.Code,
         Code: req.Code,
         Exchange: req.Exchange,
-        DateFrom: req.From,
-        FromDate: req.From,
-        StartDate: req.From,
-        From: req.From,
-        DateTo: req.To,
-        ToDate: req.To,
-        EndDate: req.To,
-        To: req.To,
       };
+      // Date range is omittable: the build rejects every DateFrom value+alias,
+      // and the doc says the range is optional — so when no From is supplied we
+      // send no date fields at all (lets us test the NumberOfPoints path).
+      if (req.From) {
+        parameters["DateFrom"] = req.From;
+        parameters["FromDate"] = req.From;
+        parameters["StartDate"] = req.From;
+        parameters["From"] = req.From;
+      }
+      if (req.To) {
+        parameters["DateTo"] = req.To;
+        parameters["ToDate"] = req.To;
+        parameters["EndDate"] = req.To;
+        parameters["To"] = req.To;
+      }
+      if (typeof req.NumberOfPoints === "number" && Number.isFinite(req.NumberOfPoints)) {
+        parameters["NumberOfPoints"] = req.NumberOfPoints;
+      }
       // The interval string is the live build's accepted value; it goes into
       // the `<Frequency>` wire field (not `<Interval>`, which the server ignores).
       parameters["Frequency"] = hasInterval ? req.Interval : req.Frequency;
