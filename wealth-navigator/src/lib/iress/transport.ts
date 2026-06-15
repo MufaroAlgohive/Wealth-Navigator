@@ -274,6 +274,11 @@ export function createSoapTransport(opts: CreateSoapTransportOptions): SoapTrans
     };
     const ck = cookieHeader();
     if (ck) headers["Cookie"] = ck;
+    if (spec.method === "ServiceSessionStart") {
+      console.info(
+        `[iress-transport] ServiceSessionStart affinity cookie ${ck ? `sent (${Array.from(cookieJar.keys()).join(",")})` : "NONE — no cookie was captured from IRESSSessionStart"}`,
+      );
+    }
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), timeoutMs);
     let res: Response;
@@ -291,6 +296,11 @@ export function createSoapTransport(opts: CreateSoapTransportOptions): SoapTrans
       clearTimeout(t);
     }
     captureCookies(res);
+    if (spec.method === "IRESSSessionStart") {
+      console.info(
+        `[iress-transport] IRESSSessionStart set-cookie ${cookieJar.size > 0 ? `captured (${Array.from(cookieJar.keys()).join(",")})` : "NONE — server sent no affinity cookie"}`,
+      );
+    }
     if (!res.ok) {
       // Try to extract an IRESSFaultDetail from the body anyway.
       const text = await res.text().catch(() => "");
