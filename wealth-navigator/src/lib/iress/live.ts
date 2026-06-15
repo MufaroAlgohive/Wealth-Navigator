@@ -870,7 +870,14 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           "TimeSeriesGet2: missing required field — supply `Interval` (V4 string enum, e.g. 'Daily')",
         );
       }
+      // Security identifier: every other V4 method (PricingQuoteGet,
+      // OrderCreate3, IPS, bookings) names this `<SecurityCode>` — only the
+      // TimeSeriesGet2 doc says `<Code>`, and the live server's "Invalid SecId"
+      // fault is consistent with it never reading `<Code>`. Send `SecurityCode`
+      // (the universal convention) and keep `Code` as a doc-named alias so
+      // whichever the build reads resolves the SecId.
       const parameters: Record<string, unknown> = {
+        SecurityCode: req.Code,
         Code: req.Code,
         Exchange: req.Exchange,
         DateFrom: req.From,
