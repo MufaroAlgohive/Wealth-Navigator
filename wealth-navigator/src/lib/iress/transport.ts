@@ -189,10 +189,19 @@ function readFault(detailNode: Record<string, unknown>): { number: number; messa
   return { number, message };
 }
 
+/** Collapse a (possibly HTML/XML) error body to a single, bounded log line. */
+function summariseRawBody(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const flat = raw.replace(/\s+/g, " ").trim();
+  if (!flat) return undefined;
+  return flat.length > 600 ? `${flat.slice(0, 600)}…` : flat;
+}
+
 function throwFault(
   method: string,
   fault: { faultcode?: string; faultstring?: string; detail?: Record<string, unknown> } | undefined,
   status: number,
+  rawBody?: string,
 ): never {
   const code = fault?.faultcode ? readString(fault.faultcode) : "soap:Receiver";
   const fallback = fault?.faultstring ? readString(fault.faultstring) : `HTTP ${status}`;
@@ -200,9 +209,14 @@ function throwFault(
     ? readFault(fault.detail)
     : { number: 666, message: fallback };
   // The V4 error table covers 25001-25035 + 666; anything else is a system fault.
-  const e = new IressError(number, method, `${code} — ${message}`);
+  // When the server returns a contentless 500 (no faultstring/detail), the raw
+  // response body is the only place the real reason lives (e.g. "not entitled"
+  // / "unknown server") — surface it so callers can log it verbatim.
+  const rawSummary = summariseRawBody(rawBody);
+  const detailSuffix = !fault?.detail && rawSummary && rawSummary !== fallback ? ` [body: ${rawSummary}]` : "";
+  const e = new IressError(number, method, `${code} — ${message}${detailSuffix}`);
   // Tag extra context for loggers without losing the typed shape.
-  (e as Error & { soapFault?: unknown }).soapFault = { code, fallback, status };
+  (e as Error & { soapFault?: unknown }).soapFault = { code, fallback, status, rawBody: rawSummary };
   throw e;
 }
 
@@ -255,7 +269,7 @@ export function createSoapTransport(opts: CreateSoapTransportOptions): SoapTrans
       } catch {
         // ignore — we'll throw a generic fault
       }
-      throwFault(spec.method, fault, res.status);
+      throwFault(spec.method, fault, res.status, text);
     }
     const text = await res.text();
     let parsed: Record<string, unknown>;
@@ -270,7 +284,7 @@ export function createSoapTransport(opts: CreateSoapTransportOptions): SoapTrans
     if (faultNode) {
       const fault = asRecord(faultNode);
       const detail = first(fault["detail"]);
-      throwFault(spec.method, { ...fault, detail }, 500);
+      throwFault(spec.method, { ...fault, detail }, 500, text);
     }
     const responseName = spec.responseElement ?? `${spec.method}Response`;
     const responseNode = asRecord(env[responseName] ?? env[`${IRESS_NS}${responseName}`] ?? {});
