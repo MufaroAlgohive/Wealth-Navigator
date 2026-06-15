@@ -275,7 +275,9 @@ void runHealthLoop({
 void quoteLoop();
 void orderLoop();
 void timeSeriesLoop();
-void ipsLoop();
+// IPS is parked (IRESS scope = market data + IOS+). The loop only errors every
+// cycle without an IPS service session — re-enable with IRESS_ENABLE_IPS=1.
+if (process.env.IRESS_ENABLE_IPS === "1") void ipsLoop();
 void retailIngestLoop();
 if (retailIngestEnabled) {
   console.warn(

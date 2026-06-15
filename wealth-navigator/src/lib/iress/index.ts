@@ -229,11 +229,20 @@ export async function bringUpMintSession(
   const iosServer = (process.env.IRESS_IOS_SERVER ?? "IOSPLUSAPI").trim() || "IOSPLUSAPI";
   const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
   const fixServer = (process.env.IRESS_FIX_SERVER ?? "FIXPLUSAPI").trim() || "FIXPLUSAPI";
+  // Current IRESS scope is market data + IOS+ only (IPS / FIX+ are parked).
+  // Their service sessions return HTTP 500 today and only add per-cycle log
+  // noise, so we attempt IOS+ by default and gate IPS / FIX+ behind explicit
+  // env flags — code stays intact, re-enable with IRESS_ENABLE_IPS=1 /
+  // IRESS_ENABLE_FIX=1 when they come back into scope.
   const servicesToStart: Array<{ Service: IressService; Server: string }> = [
     { Service: "IOSPlus", Server: iosServer },
-    { Service: "IPS", Server: ipsServer },
-    { Service: "FIXPlus", Server: fixServer },
   ];
+  if (process.env.IRESS_ENABLE_IPS === "1") {
+    servicesToStart.push({ Service: "IPS", Server: ipsServer });
+  }
+  if (process.env.IRESS_ENABLE_FIX === "1") {
+    servicesToStart.push({ Service: "FIXPlus", Server: fixServer });
+  }
   // Single structured log line so the operator can see the exact `Server`
   // value the worker tried for every service without grepping. Useful when
   // Charles confirms a non-default value (e.g. SA prod-test uses something

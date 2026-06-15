@@ -324,9 +324,15 @@ describe("WorkerSessionManager sticky ApplicationID", () => {
 describe("bringUpMintSession service sessions", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.IRESS_ENABLE_IPS;
+    delete process.env.IRESS_ENABLE_FIX;
   });
 
   it("continues when optional ServiceSessionStart calls fail", async () => {
+    // With all three services enabled, a failing IOS+ session must not abort
+    // the IPS / FIX+ attempts.
+    process.env.IRESS_ENABLE_IPS = "1";
+    process.env.IRESS_ENABLE_FIX = "1";
     const sessionStart = vi.spyOn(iress, "iressSessionStart").mockResolvedValue({
       IRESSSessionKey: "PARENT@WebServicesCT",
       SessionNumber: 1,
@@ -349,6 +355,33 @@ describe("bringUpMintSession service sessions", () => {
     expect(result.serviceKeys.IPS).toBe("IPS-KEY");
     expect(result.serviceKeys.FIXPlus).toBe("FIX-KEY");
     expect(serviceSessionStart).toHaveBeenCalledTimes(3);
+    sessionStart.mockRestore();
+    serviceSessionStart.mockRestore();
+  });
+
+  it("attempts only IOS+ by default (IPS / FIX+ parked)", async () => {
+    const sessionStart = vi.spyOn(iress, "iressSessionStart").mockResolvedValue({
+      IRESSSessionKey: "PARENT@WebServicesCT",
+      SessionNumber: 1,
+      SessionTimeout: 120,
+      ApplicationID: "app",
+    });
+    const serviceSessionStart = vi
+      .spyOn(iress, "serviceSessionStart")
+      .mockResolvedValue({ ServiceSessionKey: "IOS-KEY", Service: "IOSPlus", Server: "IOSPLUSAPI" });
+
+    const result = await bringUpMintSession(
+      { userName: "u", company: "c", password: "p" },
+      { applicationId: "app", node: "n1" },
+    );
+
+    expect(result.serviceKeys.IOSPlus).toBe("IOS-KEY");
+    expect(result.serviceKeys.IPS).toBeUndefined();
+    expect(result.serviceKeys.FIXPlus).toBeUndefined();
+    expect(serviceSessionStart).toHaveBeenCalledTimes(1);
+    expect(serviceSessionStart).toHaveBeenCalledWith(
+      expect.objectContaining({ Service: "IOSPlus" }),
+    );
     sessionStart.mockRestore();
     serviceSessionStart.mockRestore();
   });
