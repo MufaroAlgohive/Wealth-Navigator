@@ -220,12 +220,14 @@ export async function bringUpMintSession(
   console.info(
     `[mint-iress] IRESSSessionStart ok applicationId=${applicationId} sessionKey=${redactSessionKeyForLog(iressSession.IRESSSessionKey)} timeoutMin=${iressSession.SessionTimeout ?? 120}`,
   );
-  // Every service `Server` is environment-specific per the V4 docs. The worker
-  // reads each from an env knob (with the historical default) so operators can
-  // flip the value without redeploying — e.g. once IRESS provisions the OMS
-  // under a named instance, point IOS+ at it via `IRESS_IOS_SERVER=MINT_CT`.
-  // Read them here too so Vercel-side callers of `bringUpMintSession` honour
-  // the same knobs.
+  // Every service `Server` is the IRESS **Phoenix API server name**, NOT the
+  // company/instance. Per the V4 docs (04-sessions/02-service-sessions.md, the
+  // byte-exact 13-soap-examples/service-session-start.iosplus.request.xml, and
+  // 01-foundations/04-getting-started.md) the IOS+ value is `IOSPLUSAPI` — a
+  // company instance like `mint_ct` is NOT a valid `Server` and yields a
+  // "could not locate IDS / session key" fault. Keep these env-driven (the doc
+  // notes the exact name "may differ — confirm with IRESS"), but the default —
+  // and what Railway should be set to — is `IOSPLUSAPI`, never `MINT_CT`.
   const iosServer = (process.env.IRESS_IOS_SERVER ?? "IOSPLUSAPI").trim() || "IOSPLUSAPI";
   const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
   const fixServer = (process.env.IRESS_FIX_SERVER ?? "FIXPLUSAPI").trim() || "FIXPLUSAPI";

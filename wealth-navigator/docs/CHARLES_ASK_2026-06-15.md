@@ -1,57 +1,67 @@
-# MINT OEMS — IRESS status & the 2 things left (2026-06-15)
+# MINT OEMS — IRESS status (2026-06-15, after re-reading the V4 docs)
 
-After the Andre call + a day of live debugging. Account `DFM@MINT`, company `Mint`,
-endpoint `https://webservices-ct.iress.co.za/v4`. Scope: **IRIS (market data) + IOS+**.
+Account `DFM@MINT`, company `Mint`, endpoint `https://webservices-ct.iress.co.za/v4`.
+Scope: **IRIS (market data) + IOS+**.
 
-## Resolved (no longer blockers)
-- **No entitlement limits.** Andre confirmed every 500 is request-shape, not permissions.
-- **Service model:** IRIS = all market data (quotes, time-series, **news**), no server name.
-  IOSPlus = orders/accounts, `Server=mint_ct`. IPS / FIX+ are never called.
-- **`mint_ct` casing / company `Mint`** — confirmed irrelevant / correct.
-- **TimeSeriesGet2 wire shape — SOLVED by us.** The live CT build wants the period in a
-  `<Frequency>` field carrying the V4 **string** enum (`Daily`), with `<DateFrom>`/`<DateTo>`,
-  on the base IRIS session. Proven empirically: the fault advanced
-  `5 as Frequency` → `<empty> as Frequency` → past all params to **`Invalid SecId`**.
+## Correction: 2 of the 3 "blockers" were OUR divergence from the documented SOAP shapes — not IRESS limits
 
-## The 2 things still needed from IRESS (Andre)
+Re-reading the V4 docs showed the live requests had drifted off the documented shapes.
+These are fixed on our side (code + one env var); no IRESS action needed unless the
+documented shapes still fail after redeploy.
 
-### 1. TimeSeriesGet2 — the exact DateFrom form (we solved everything up to it)
-We've worked the request shape out by trial against the live CT server and got past two layers:
-- Period selector: `<Frequency>` carrying the **string** enum `Daily` (not a Long, not `<Interval>`).
-- Security: `<SecurityCode>` (like every other method) — **not** `<Code>`. This resolved the
-  earlier `Invalid SecId`.
+### A. IOS+ session — wrong `Server` value (fixed: env)
+We were sending `ServiceSessionStart(Service=IOSPlus, Server=mint_ct)`. The docs are
+unanimous that `Server` is the IRESS **Phoenix API server name = `IOSPLUSAPI`**, not the
+company instance:
+- `04-sessions/02-service-sessions.md` param table + worked example → `<Server>IOSPLUSAPI</Server>`
+- `13-soap-examples/service-session-start.iosplus.request.xml` → `<Server>IOSPLUSAPI</Server>`
+- `01-foundations/04-getting-started.md` pre-flight → "server name (e.g. `IOSPLUSAPI`)"
+- `11-mint-oems/02-sa-endpoints-and-envs.md` → "`IOSPLUSAPI`, `IPSAPI`, `FIXPLUSAPI` … may differ, confirm with IRESS, make configurable"
 
-It now fails only on the date, with `{"title":"Invalid DateFrom","detail":"Bad request syntax or
-unsupported method","status":400}`. We've exhaustively tried, all rejected identically:
-- **Value formats:** `2026-06-01`, `2026-06-01T00:00:00`, `…Z`, `…000Z`, epoch-ms, epoch-s,
-  `2026/06/01`, `06/01/2026`, `01-Jun-2026`, space-separated.
-- **Years:** 2024, 2025 (your doc's example range) and 2026.
-- **Field-name aliases:** `DateFrom`, `FromDate`, `StartDate`, `From`.
-- **Omitting the range** (with `NumberOfPoints`) — still `Invalid DateFrom`.
+`mint_ct` is **not** a valid server name; the `666 / "could not locate IDS … session key"`
+fault (`06-errors/01-session-error-codes.md`, last row — "session key with `…@IDSAxx` but no
+such IDS on the cluster") is consistent with the request never resolving to a real IOS+ server.
+Our session key is `…@IDSA01`; market-data works because IRIS needs no service session.
 
-Since a recognised field rejects every value, alias **and** omission — and the detail is the
-TimeSeries REST layer's generic HTTP 400 — this looks like a SOAP→REST bridge detail on the build.
+**Fix (no code change — code already defaults to `IOSPLUSAPI`):** set Railway env
+`IRESS_IOS_SERVER=IOSPLUSAPI` (currently `MINT_CT`) and restart the worker.
 
-**Ask:** one working TimeSeriesGet2 request/response for a JSE equity daily series (and ideally one
-index/curve). Seeing the exact `<DateFrom>`/`<DateTo>` form (and confirming `<SecurityCode>` +
-`<Frequency>Daily`) closes this out — it unblocks JSE price history, yield curves, ALSI/indices and
-macro (our Yahoo replacement).
+### B. TimeSeriesGet2 — request had drifted off the documented shape (fixed: code)
+The V4 sample (`05-services/market-data/02-time-series-get-2.md`, lines 49-55) is:
+```xml
+<Parameters>
+  <Code>SHP</Code>
+  <Exchange>JSE</Exchange>
+  <DateFrom>2025-01-01</DateFrom>
+  <DateTo>2025-12-31</DateTo>
+  <Interval>Daily</Interval>
+</Parameters>
+```
+We had drifted to `SecurityCode`+`Code`, `<Frequency>` instead of `<Interval>`, and **four
+date aliases each** (`DateFrom/FromDate/StartDate/From`, `DateTo/ToDate/EndDate/To`) — and were
+stuck on `Invalid DateFrom`. We now send the documented shape verbatim and nothing else, with
+two default-OFF env hatches (`IRESS_TS_PERIOD_FIELD`, `IRESS_TS_SECID_FIELD`) to A/B a suspected
+CT-build quirk via `/debug/timeseries-probe` without a redeploy.
 
-### 2. IOS+ orders — the session + a working order SOAP
-`ServiceSessionStart(Service=IOSPlus, Server=mint_ct)` returns
-**"Could not locate the session key for this request."** even though the same `IRESSSessionKey`
-works for `PricingQuoteGet`. We confirmed IRESS issues **no affinity cookie**, so it's not
-client-side stickiness. Our session lands on node `…@IDSA01`.
+**Fix:** code realigned (`src/lib/iress/live.ts`); redeploy worker and re-check the J203 / R-code
+polls. Only if the documented shape *still* returns `Invalid DateFrom` is this a genuine CT-build
+question for IRESS — and then we'll have the exact request + fault to send.
 
-**Ask:** (a) how does the session reach the `mint_ct` node for service-session creation — a
-specific endpoint/host, or a routing step the WebServicesTester does? and (b) the working
-order-send SOAP example you offered (request + response).
+## The 1 thing that genuinely needs IRESS
 
-## On us (no IRESS dependency)
-- **Yahoo → IRESS price flip:** ready; flip `IRESS_RETAIL_DRY_RUN=0` in Monday market hours
-  after a coverage/scaling check (IRESS currently prices ~132–149 / 246 names; the rest stay on
-  Yahoo, never blanked).
-- **News via IRIS:** can be wired from the worker once the above two are in (news is an IRIS feed).
+### C. Production endpoint + confirm CT data is real
+`webservices-ct` is the **documented dev/UAT endpoint** (`11-mint-oems/02-sa-endpoints-and-envs.md`)
+and is supposed to carry SA-market data. But our live coverage check (Mon 15 Jun, market hours)
+shows CT `PricingQuoteGet` `LastPrice` doesn't match real JSE values, with no constant scale
+(ratios ~0.28–3.29; e.g. **Shoprite real ≈ R286.81, CT returns R127.42**).
 
-Everything is verifiable live: `GET /debug/iress-methods` and
-`POST /debug/timeseries-probe {code,exchange,interval}` on the worker.
+**Ask Andre:** (a) does `webservices-ct` carry **real** JSE prices or a scrambled/delayed test
+feed? and (b) confirm the **production** endpoint + credentials (`https://webservices.iress.co.za/v4`).
+
+## On us
+- **Yahoo → IRESS price flip: BLOCKED until C.** Stays in shadow (`IRESS_RETAIL_DRY_RUN=1`, 0 writes).
+  CT prices don't match reality, so flipping now would overwrite real client-facing prices. Once on
+  the prod endpoint we re-run the coverage/scaling check; ratios ~1.0 ⇒ one-line env flip.
+- **Orders + news** unblock once A (IOS+ `IOSPLUSAPI`) lands.
+
+Verifiable live: `GET /debug/iress-methods`, `POST /debug/timeseries-probe` on the worker.

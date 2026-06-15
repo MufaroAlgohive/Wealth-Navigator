@@ -257,14 +257,11 @@ describe("validation — every method throws IressError on bad input", () => {
     });
   });
 
-  it("timeSeriesGet2 — interval string lands in the <Frequency> body field", async () => {
-    // Verifies that the required period parameter actually lands in
-    // the outgoing XML envelope (not just in the TypeScript types). Uses
-    // the V4 `"Daily"` string — kept as a fallback for older server
-    // builds. The live CT server honours the `Frequency` (Long) form;
-    // see the dedicated test below. Earlier versions sent
-    // `Frequency: 8` (Long) as a guess; the brute-force probe pinned
-    // the daily-bucket value in `docs/TIMESERIES_PROBE_REPORT_FINAL.md`.
+  it("timeSeriesGet2 — sends the documented shape (Code + Interval + DateFrom/DateTo, no aliases)", async () => {
+    // The V4 doc / WSDL sample is authoritative: <Code>, <Exchange>,
+    // <DateFrom>, <DateTo>, <Interval>Daily</Interval>. We send exactly
+    // that — no `SecurityCode`, no `Frequency`, no From/FromDate/StartDate
+    // alias soup. Spec: 05-services/market-data/02-time-series-get-2.md.
     const call = vi.fn().mockResolvedValueOnce({
       result: {},
       header: { ErrorNumber: 0 },
@@ -275,72 +272,57 @@ describe("validation — every method throws IressError on bad input", () => {
     await client.timeSeriesGet2({
       Header: { SessionKey: "k", RequestID: "r1" },
       Code: "SOL",
-      Interval: "Daily",
-    });
-    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
-      .parameters;
-    // CT build: the interval string is emitted in the `<Frequency>` field,
-    // and there is no separate `<Interval>` field (the server ignores it).
-    expect(params["Frequency"]).toBe("Daily");
-    expect(params["Code"]).toBe("SOL");
-    expect(params["Interval"]).toBeUndefined();
-  });
-
-  it("timeSeriesGet2 — sends Frequency (Long) on the wire when set", async () => {
-    // The live CT server honours `<Frequency>` (Long), not the
-    // `<Interval>` string the V4 WSDL sample documents. The worker
-    // always sends `Frequency`; this pins the wire shape so a future
-    // regression that drops the Long lands in the test suite.
-    const call = vi.fn().mockResolvedValueOnce({
-      result: {},
-      header: { ErrorNumber: 0 },
-      dataRows: [],
-    });
-    const transport: SoapTransport = { call } as unknown as SoapTransport;
-    const client = createLiveIressClient({ transport });
-    await client.timeSeriesGet2({
-      Header: { SessionKey: "k", RequestID: "r1" },
-      Code: "SOL",
-      Frequency: 5,
-    });
-    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
-      .parameters;
-    expect(params["Frequency"]).toBe(5);
-    expect(params["Code"]).toBe("SOL");
-    // `Interval` is not sent on the Long path — keeping the wire shape
-    // clean for the live server.
-    expect(params["Interval"]).toBeUndefined();
-  });
-
-  it("timeSeriesGet2 — puts the interval string in <Frequency>, sends DateFrom/DateTo", async () => {
-    // CT-build quirk (empirical 2026-06-15): the live server's period field is
-    // `<Frequency>` and takes the V4 *string* enum ("Daily"). It ignores
-    // `<Interval>` and rejects a Long. So the interval string is emitted as
-    // `<Frequency>`, with the date range in `<DateFrom>`/`<DateTo>`.
-    const call = vi.fn().mockResolvedValueOnce({
-      result: {},
-      header: { ErrorNumber: 0 },
-      dataRows: [],
-    });
-    const transport: SoapTransport = { call } as unknown as SoapTransport;
-    const client = createLiveIressClient({ transport });
-    await client.timeSeriesGet2({
-      Header: { SessionKey: "k", RequestID: "r1" },
-      Code: "SOL",
+      Exchange: "JSE",
       From: "2026-06-01",
       To: "2026-06-15",
       Interval: "Daily",
     });
     const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
       .parameters;
-    expect(params["Frequency"]).toBe("Daily");
-    expect(params["Interval"]).toBeUndefined();
+    // Documented field names.
+    expect(params["Code"]).toBe("SOL");
+    expect(params["Exchange"]).toBe("JSE");
+    expect(params["Interval"]).toBe("Daily");
     expect(params["DateFrom"]).toBe("2026-06-01");
     expect(params["DateTo"]).toBe("2026-06-15");
-    // The from/to dates are also sent under name-aliases (FromDate/StartDate/
-    // From, …) so the live build picks up whichever field it reads.
-    expect(params["From"]).toBe("2026-06-01");
-    expect(params["FromDate"]).toBe("2026-06-01");
+    // No speculative pollution.
+    expect(params["SecurityCode"]).toBeUndefined();
+    expect(params["Frequency"]).toBeUndefined();
+    expect(params["From"]).toBeUndefined();
+    expect(params["FromDate"]).toBeUndefined();
+    expect(params["StartDate"]).toBeUndefined();
+    expect(params["To"]).toBeUndefined();
+  });
+
+  it("timeSeriesGet2 — env escape hatches flip the period + secid field names (CT-build A/B)", async () => {
+    // Default is the documented shape; ops can flip these to reproduce the
+    // earlier empirical wire shape against the live CT server via
+    // /debug/timeseries-probe without a redeploy. Defaults must stay OFF.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    process.env.IRESS_TS_PERIOD_FIELD = "Frequency";
+    process.env.IRESS_TS_SECID_FIELD = "SecurityCode";
+    try {
+      await client.timeSeriesGet2({
+        Header: { SessionKey: "k", RequestID: "r1" },
+        Code: "SOL",
+        Interval: "Daily",
+      });
+    } finally {
+      delete process.env.IRESS_TS_PERIOD_FIELD;
+      delete process.env.IRESS_TS_SECID_FIELD;
+    }
+    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
+      .parameters;
+    expect(params["SecurityCode"]).toBe("SOL");
+    expect(params["Code"]).toBeUndefined();
+    expect(params["Frequency"]).toBe("Daily");
+    expect(params["Interval"]).toBeUndefined();
   });
 
   it("timeSeriesGet2Updates — missing RequestID", async () => {

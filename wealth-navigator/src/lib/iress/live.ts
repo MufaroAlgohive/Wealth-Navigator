@@ -851,65 +851,52 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
-      // CT-build wire quirk (empirical, 2026-06-15, two live deploys):
-      //  - `<Frequency>5` (Long)      → "Invalid Parameter Value: 5 as Frequency"
-      //  - `<Interval>Daily` (no Freq) → "Invalid Parameter Value:  as Frequency"
-      // i.e. the live CT server (a) NEVER reads an `<Interval>` field, and
-      // (b) REQUIRES a non-empty `<Frequency>` whose valid values are the V4
-      // *string* enum ("Daily" | "Weekly" | "Monthly" | "Quarterly" | "Yearly"
-      // | "IntraDay") — the published doc names the field `Interval`, but this
-      // build named it `Frequency` while keeping the string enum. So we put the
-      // interval string into `<Frequency>`. Date range goes in `<DateFrom>` /
-      // `<DateTo>`. Spec: iress-v4-docs/05-services/market-data/02-time-series-get-2.md
-      const hasFrequency = typeof req.Frequency === "number" && Number.isFinite(req.Frequency);
-      const hasInterval = typeof req.Interval === "string" && req.Interval.trim() !== "";
-      if (!hasFrequency && !hasInterval) {
+      // Wire shape follows the V4 doc / WSDL sample EXACTLY:
+      //   <Code>SHP</Code><Exchange>JSE</Exchange>
+      //   <DateFrom>2025-01-01</DateFrom><DateTo>2025-12-31</DateTo>
+      //   <Interval>Daily</Interval>
+      // Spec: Documentation & Vision/iress-v4-docs/05-services/market-data/
+      //   02-time-series-get-2.md (+ the WSDL sample payload at lines 49-55).
+      //
+      // An earlier build sent a speculative parameter soup (`SecurityCode`
+      // alongside `Code`, `<Frequency>` instead of `<Interval>`, and four date
+      // aliases each for From/To) that diverged from the doc and never got past
+      // "Invalid DateFrom". We now send the documented shape and nothing else.
+      // Two env escape hatches (default OFF) let ops A/B a *suspected* CT-build
+      // quirk via /debug/timeseries-probe WITHOUT another rewrite — leave both
+      // unset to send the documented shape:
+      //   IRESS_TS_SECID_FIELD=SecurityCode   (default `Code`)
+      //   IRESS_TS_PERIOD_FIELD=Frequency     (default `Interval`)
+      const periodStr =
+        typeof req.Interval === "string" && req.Interval.trim() !== "" ? req.Interval.trim() : undefined;
+      const periodLong =
+        typeof req.Frequency === "number" && Number.isFinite(req.Frequency) ? req.Frequency : undefined;
+      if (periodStr === undefined && periodLong === undefined) {
         throw new IressError(
           25018,
           "TimeSeriesGet2",
           "TimeSeriesGet2: missing required field — supply `Interval` (V4 string enum, e.g. 'Daily')",
         );
       }
-      // Security identifier: every other V4 method (PricingQuoteGet,
-      // OrderCreate3, IPS, bookings) names this `<SecurityCode>` — only the
-      // TimeSeriesGet2 doc says `<Code>`, and the live server's "Invalid SecId"
-      // fault is consistent with it never reading `<Code>`. Send `SecurityCode`
-      // (the universal convention) and keep `Code` as a doc-named alias so
-      // whichever the build reads resolves the SecId.
-      // Date range: the live build rejects EVERY value format we send for
-      // `<DateFrom>` ("Invalid DateFrom"), which — like the SecId→SecurityCode
-      // case — points to a field-NAME mismatch, not a value-format one. Send
-      // the from/to dates under every plausible alias so the build picks up
-      // whichever it reads. (Narrow to the winner once identified.)
-      const parameters: Record<string, unknown> = {
-        SecurityCode: req.Code,
-        Code: req.Code,
-        Exchange: req.Exchange,
-      };
-      // Date range is omittable: the build rejects every DateFrom value+alias,
-      // and the doc says the range is optional — so when no From is supplied we
-      // send no date fields at all (lets us test the NumberOfPoints path).
-      if (req.From) {
-        parameters["DateFrom"] = req.From;
-        parameters["FromDate"] = req.From;
-        parameters["StartDate"] = req.From;
-        parameters["From"] = req.From;
-      }
-      if (req.To) {
-        parameters["DateTo"] = req.To;
-        parameters["ToDate"] = req.To;
-        parameters["EndDate"] = req.To;
-        parameters["To"] = req.To;
-      }
+      const secidField = (process.env.IRESS_TS_SECID_FIELD ?? "Code").trim() || "Code";
+      const periodField = (process.env.IRESS_TS_PERIOD_FIELD ?? "Interval").trim() || "Interval";
+      const parameters: Record<string, unknown> = {};
+      parameters[secidField] = req.Code;
+      if (req.Exchange) parameters["Exchange"] = req.Exchange;
+      // Documented date range: single `<DateFrom>` / `<DateTo>`, ISO `YYYY-MM-DD`.
+      // No aliases. The range is optional (omit to use NumberOfPoints / Date).
+      if (req.From) parameters["DateFrom"] = req.From;
+      if (req.To) parameters["DateTo"] = req.To;
       if (typeof req.NumberOfPoints === "number" && Number.isFinite(req.NumberOfPoints)) {
         parameters["NumberOfPoints"] = req.NumberOfPoints;
       }
       if (typeof req.Date === "string" && req.Date.trim() !== "") {
         parameters["Date"] = req.Date.trim();
       }
-      // The interval string is the live build's accepted value; it goes into
-      // the `<Frequency>` wire field (not `<Interval>`, which the server ignores).
-      parameters["Frequency"] = hasInterval ? req.Interval : req.Frequency;
+      // Documented period selector is <Interval> carrying the string enum
+      // ("Daily", …). Prefer the string; fall back to the Long only if that's
+      // all the caller supplied.
+      parameters[periodField] = periodStr ?? periodLong;
       const result = await transport.call({
         method: "TimeSeriesGet2",
         header: makeHeader({
