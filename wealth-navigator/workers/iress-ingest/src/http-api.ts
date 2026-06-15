@@ -177,6 +177,8 @@ async function probeTimeSeriesInterval(
   exchange: string,
   interval: string | null,
   frequency: number | null,
+  dateFrom?: string,
+  dateTo?: string,
 ): Promise<TimeSeriesProbeResult> {
   const started = Date.now();
   const hasFrequency = typeof frequency === "number" && Number.isFinite(frequency);
@@ -192,8 +194,10 @@ async function probeTimeSeriesInterval(
       },
       Code: code,
       Exchange: exchange,
-      From: new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10),
-      To: new Date().toISOString().slice(0, 10),
+      // Caller-overridable so date FORMAT can be probed live (the live CT build
+      // rejects the doc's `YYYY-MM-DD` with "Invalid DateFrom").
+      From: dateFrom ?? new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10),
+      To: dateTo ?? new Date().toISOString().slice(0, 10),
       ...(hasFrequency ? { Frequency: frequency } : {}),
       ...(hasInterval ? { Interval: interval } : {}),
     });
@@ -885,12 +889,18 @@ export async function handleRequest(
       );
       return;
     }
+    const dateFrom =
+      typeof b["dateFrom"] === "string" && b["dateFrom"].trim() !== "" ? b["dateFrom"].trim() : undefined;
+    const dateTo =
+      typeof b["dateTo"] === "string" && b["dateTo"].trim() !== "" ? b["dateTo"].trim() : undefined;
     const result = await probeTimeSeriesInterval(
       deps,
       code,
       exchange,
       frequency !== null ? null : interval,
       frequency,
+      dateFrom,
+      dateTo,
     );
     // Always 200 — the IRESS response (success or fault) IS the answer.
     // `ok` and `errorNumber` describe the result, not the HTTP envelope.
