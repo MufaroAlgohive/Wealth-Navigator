@@ -39,6 +39,7 @@ import { writeHeartbeat, type WorkerSupabase } from "./supabase";
 import { WorkerSessionManager, type WorkerMintSession } from "./session";
 import { getIressClient } from "../../../src/lib/iress/index";
 import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
+import { createSoapTransport, makeHeader } from "../../../src/lib/iress/transport";
 import type { Order, IressService } from "../../../src/types/iress";
 import { fetchLiveQuote } from "./quotes";
 
@@ -151,7 +152,7 @@ interface TimeSeriesProbeResult {
 
 // Bump on every deploy that touches the TimeSeriesGet2 wire shape so a probe
 // response confirms WHICH code is live (Railway deploy timing was opaque).
-const PROBE_BUILD = "ts-2026-06-15-date+secid+freq";
+const PROBE_BUILD = "ts-2026-06-15-rawsoap";
 
 /**
  * One-shot `TimeSeriesGet2` probe with the caller-supplied period
@@ -926,6 +927,83 @@ export async function handleRequest(
     // Always 200 — the IRESS response (success or fault) IS the answer.
     // `ok` and `errorNumber` describe the result, not the HTTP envelope.
     send(res, 200, result);
+    return;
+  }
+
+  // Raw SOAP prober — send EXACT wire parameters for any method, using the
+  // worker's current live session key. Bypasses the typed client's field-name
+  // logic entirely so we can A/B field names, date formats, etc. against the
+  // live CT server without a redeploy per experiment.
+  //   Body: { method: "TimeSeriesGet2", parameters: {...}, headerKind?: "iress"|"service", service?: "IOSPlus", timeout?: 20 }
+  // The response is 1:1 with the IRESS reply (header row + sample data rows) or
+  // the raw fault string — no mapping, no fabrication.
+  if (req.method === "POST" && path === "/debug/soap-raw") {
+    let body: unknown;
+    try {
+      body = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    const b = (body && typeof body === "object" ? body : {}) as Record<string, unknown>;
+    const method = typeof b["method"] === "string" ? b["method"].trim() : "";
+    if (!method) {
+      sendError(res, 400, "bad_request", '`method` is required (e.g. "TimeSeriesGet2")');
+      return;
+    }
+    const parameters =
+      b["parameters"] && typeof b["parameters"] === "object" && !Array.isArray(b["parameters"])
+        ? (b["parameters"] as Record<string, unknown>)
+        : {};
+    const headerKind = b["headerKind"] === "service" ? "service" : "iress";
+    const timeout =
+      typeof b["timeout"] === "number" && Number.isFinite(b["timeout"]) ? Math.trunc(b["timeout"] as number) : 20;
+    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+    if (!isLive) {
+      sendError(res, 503, "iress_mode_not_live", `Cannot probe in iressMode=${deps.env.iressMode}`);
+      return;
+    }
+    const started = Date.now();
+    try {
+      const session = await deps.sessions.getSession();
+      const transport = createSoapTransport({
+        baseUrl: process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4",
+      });
+      const serviceKey =
+        headerKind === "service" && typeof b["service"] === "string"
+          ? session.serviceKeys[b["service"] as IressService]
+          : undefined;
+      const header = makeHeader(
+        headerKind === "service"
+          ? { serviceSessionKey: serviceKey, requestID: newRequestID("raw"), timeout, waitForResponse: true }
+          : { sessionKey: session.iressSessionKey, requestID: newRequestID("raw"), timeout, waitForResponse: true },
+      );
+      const result = await transport.call({ method, header, parameters });
+      const headerRow = (result.header ?? {}) as Record<string, unknown>;
+      const errNo = Number(headerRow["ErrorNumber"] ?? headerRow["errorNumber"] ?? 0);
+      send(res, 200, {
+        ok: errNo === 0,
+        method,
+        parameters,
+        errorNumber: Number.isFinite(errNo) ? errNo : null,
+        headerRow,
+        dataRowCount: Array.isArray(result.dataRows) ? result.dataRows.length : 0,
+        firstRow: result.firstRow ?? (Array.isArray(result.dataRows) ? (result.dataRows[0] ?? null) : null),
+        sampleRows: Array.isArray(result.dataRows) ? result.dataRows.slice(0, 3) : [],
+        elapsedMs: Date.now() - started,
+        build: PROBE_BUILD,
+      });
+    } catch (err) {
+      send(res, 200, {
+        ok: false,
+        method,
+        parameters,
+        error: err instanceof Error ? err.message : String(err),
+        code: err instanceof IressError ? err.code : null,
+        elapsedMs: Date.now() - started,
+        build: PROBE_BUILD,
+      });
+    }
     return;
   }
 
