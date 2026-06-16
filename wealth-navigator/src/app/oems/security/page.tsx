@@ -157,6 +157,17 @@ function SecurityPageContent() {
         )}
       </div>
 
+      {realDataOnly && (
+        <Panel
+          title="Quote · IRESS L1"
+          endpoint={`GET /api/quote-snapshot/${activeSym}`}
+          dataSource="supabase"
+          right={<span className="font-mono text-[10px]">IRESS PricingQuoteGet</span>}
+        >
+          <RealQuoteL1Grid sym={activeSym} />
+        </Panel>
+      )}
+
       <Panel
         title="Reference · ISIN / RIC / Sector / Fundamentals"
         endpoint={`GET /v1/securities/${inst?.isin ?? ""}`}
@@ -325,6 +336,84 @@ function RealFundamentalsGrid({ sym }: { sym: string }) {
     { k: "YTD", v: row.ytd_performance == null ? "—" : formatPct(row.ytd_performance) },
   ];
 
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+      {fields.map(({ k, v }) => (
+        <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+          <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
+          <p className="mt-0.5 font-mono text-xs font-semibold">{v}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * IRESS L1 quote snapshot — Prev Close / Open / Bid / Ask / Day's Range /
+ * Volume / Last (+ 52-week range / avg volume when computed). Sourced from
+ * `/api/quote-snapshot/[sym]` (institutional `quote_snapshot_c`, worker-fed
+ * from PricingQuoteGet). This is the IRESS half of the Security page; the
+ * analyst fundamentals below stay on Yahoo (not on the IRESS V4 surface).
+ */
+interface L1Snapshot {
+  last: number | null; open: number | null; high: number | null; low: number | null;
+  bid: number | null; ask: number | null; prevClose: number | null; volume: number | null;
+  vwap: number | null; week52High: number | null; week52Low: number | null; avgVolume: number | null;
+  currency: string | null; marketState: string | null; asOf: string;
+}
+
+function RealQuoteL1Grid({ sym }: { sym: string }) {
+  const snapQ = useQuery<{ symbol: string; snapshot: L1Snapshot | null; source: string; message?: string }>({
+    queryKey: ["quote-snapshot", sym],
+    queryFn: async () => {
+      const r = await fetch(`/api/quote-snapshot/${encodeURIComponent(sym)}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`quote-snapshot ${r.status}`);
+      return r.json();
+    },
+    refetchInterval: 15_000,
+    ...queryOpts("live"),
+  });
+
+  if (snapQ.isLoading) {
+    return (
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-busy="true">
+        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => (
+          <div key={`l1-${n}`} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+            <span className="shimmer block h-2 w-3/4 rounded" />
+            <span className="shimmer mt-1.5 block h-3 w-1/2 rounded" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  const s = snapQ.data?.snapshot;
+  if (!s) {
+    return (
+      <EmptyDataState
+        title="No IRESS L1 snapshot yet"
+        message={snapQ.data?.message ?? `No quote_snapshot_c row for ${sym} — the worker writes it once the symbol is in the quote watchlist.`}
+      />
+    );
+  }
+
+  const z = (v: number | null) => (v == null ? "—" : formatZAR(v));
+  const vol = (v: number | null) => (v == null ? "—" : v.toLocaleString("en-ZA"));
+  const range = (lo: number | null, hi: number | null) => (lo == null || hi == null ? "—" : `${formatZAR(lo)} – ${formatZAR(hi)}`);
+  const fields: Array<{ k: string; v: string }> = [
+    { k: "Last", v: z(s.last) },
+    { k: "Prev Close", v: z(s.prevClose) },
+    { k: "Open", v: z(s.open) },
+    { k: "Bid", v: z(s.bid) },
+    { k: "Ask", v: z(s.ask) },
+    { k: "Day's Range", v: range(s.low, s.high) },
+    { k: "Volume", v: vol(s.volume) },
+    { k: "VWAP", v: z(s.vwap) },
+    { k: "52wk Range", v: range(s.week52Low, s.week52High) },
+    { k: "Avg Volume", v: vol(s.avgVolume) },
+    { k: "Market", v: s.marketState ?? "—" },
+    { k: "Currency", v: s.currency ?? "—" },
+  ];
   return (
     <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
       {fields.map(({ k, v }) => (

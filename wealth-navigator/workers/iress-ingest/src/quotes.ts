@@ -450,6 +450,10 @@ export async function syncWatchlistQuotes(
   const timestamp = new Date().toISOString();
   const plans: QuoteUpsertPlan[] = [];
   const missingInstruments: MissingInstrument[] = [];
+  // Full IRESS L1 snapshot per security → quote_snapshot_c (Security page's
+  // "Quote · IRESS L1" panel). Prices stored in the same cents scale as
+  // last_price (chooseDisplayCents) so the BFF can /100 to Rands uniformly.
+  const snapshotRows: Array<Record<string, unknown>> = [];
 
   for (const { symbol, quote, exchange: qExchange } of quotes) {
     const ref = securityMap.get(symbol);
@@ -466,6 +470,29 @@ export async function syncWatchlistQuotes(
       timestamp,
     };
     plans.push(plan);
+
+    // Snapshot the full L1 block (scaled to cents like last_price). Keyed on
+    // security_code, so it's captured even when there's no securities_c UUID.
+    const m = choice.centsMultiplier;
+    const px = (v: number) => (v > 0 ? Math.round(v * m) : null);
+    snapshotRows.push({
+      security_code: symbol,
+      exchange: qExchange,
+      last: priceCents,
+      open: px(quote.open),
+      high: px(quote.high),
+      low: px(quote.low),
+      bid: px(quote.bid),
+      ask: px(quote.ask),
+      prev_close: px(quote.prevClose),
+      volume: quote.volume > 0 ? quote.volume : null,
+      vwap: px(quote.vwap),
+      currency: quote.currency || null,
+      market_state: quote.marketState || null,
+      as_of: quote.ts > 0 ? new Date(quote.ts).toISOString() : timestamp,
+      source: "iress-worker",
+      updated_at: timestamp,
+    });
 
     if (env.dryRun || !env.allowWrites) {
       console.info(
@@ -520,6 +547,20 @@ export async function syncWatchlistQuotes(
       console.warn(
         `[iress-ingest] securities_c.last_price update(${symbol}): ${secErr.message}`,
       );
+    }
+  }
+
+  // Persist the L1 snapshot (Prev Close / Open / Bid / Ask / Range / Volume) for
+  // the Security page. Best-effort + isolated: a failure (e.g. table not yet
+  // migrated) must NOT affect the quote / intraday writes above.
+  if (supabase && env.allowWrites && !env.dryRun && snapshotRows.length > 0) {
+    const { error: snapErr } = await supabase
+      .from("quote_snapshot_c")
+      .upsert(snapshotRows, { onConflict: "security_code,exchange" });
+    if (snapErr) {
+      console.warn(`[iress-ingest] quote_snapshot_c upsert failed: ${snapErr.message}`);
+    } else {
+      console.info(JSON.stringify({ level: "info", event: "quote_snapshot_c_upserted", count: snapshotRows.length }));
     }
   }
 
