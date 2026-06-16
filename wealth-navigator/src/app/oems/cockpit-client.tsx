@@ -1216,8 +1216,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               </ResponsiveContainer>
             ) : (
               <EmptyDataState
-                message="PCA decomposition requires fitted yield curve."
-                hint={curveMetricsQ.data?.message ?? "Curve feed not configured. Set up IRESS ZAR_NSS ingest in the worker to populate this panel."}
+                message="Curve is live — PCA accumulating from daily snapshots."
+                hint={curveMetricsQ.data?.message ?? "The ZAR_NSS curve flows from IRESS; PCA needs a few days of yield_curve_history_c snapshots to decompose."}
               />
             )
           ) : (

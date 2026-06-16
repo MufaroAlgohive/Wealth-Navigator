@@ -226,10 +226,10 @@ describe("GET /api/curves/[code]/metrics", () => {
     expect(body.metrics).toEqual([]);
     expect(body.pca).toBeNull();
     expect(body.source).toBe("unavailable");
-    // Honest empty-state message — what /oems/curves + the Cockpit
-    // PCA panel read to explain why the chart is empty.
-    expect(body.message).toMatch(/Curve metrics require/i);
-    expect(body.hint).toMatch(/20260613000003_oems_curve_metric_c\.sql/);
+    // Honest empty-state message — the curve is live; PCA needs day-over-day
+    // history to accumulate (not a config toggle).
+    expect(body.message).toMatch(/PCA needs several days|accumulates|curve is live/i);
+    expect(body.hint).toMatch(/no action needed|history|curve-metrics/i);
   });
 
   it("returns source=unavailable reason=supabase_quotes_disabled when USE_SUPABASE_QUOTES is off", async () => {

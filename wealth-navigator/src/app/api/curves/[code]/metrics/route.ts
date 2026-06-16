@@ -104,8 +104,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
       pca: null,
       source: "unavailable",
       message:
-        "Curve metrics require the Railway iress-ingest worker to compute PCA / carry / rolldown from a fitted curve. Set IRESS_TIMESERIES_CURVE_CODES=ZAR_NSS and enable the curve metrics loop on the worker.",
-      hint: "Paste supabase/migrations/20260613000003_oems_curve_metric_c.sql in the SQL editor and let the worker populate it.",
+        "The fitted ZAR_NSS curve is live (the bond yields flow from IRESS on YFX/YFXD). PCA / carry / rolldown aren't computed yet: PCA needs several days of daily curve snapshots to decompose, and the worker only began writing them today — this populates as history accumulates. (Carry/rolldown are single-curve and can be added sooner via a curve-metrics step.)",
+      hint: "No action needed for the curve itself; the metrics fill in once a few days of yield_curve_history_c snapshots exist (or wire a curve-metrics computation step on the worker).",
     });
   }
 
