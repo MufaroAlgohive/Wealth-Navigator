@@ -14,11 +14,11 @@
  * `{ tenor, yield }` points so the existing recharts `<LineChart>` can
  * render the curve as-is.
  *
- * Tier 2 wiring: until Charles enables `TimeSeriesGet2` on the production
- * account, the worker loop logs `time_series_entitlement_missing` and the
- * table stays empty. The route returns `{ points: [], source: "entitlement-required" }`
- * so the UI can show the precise "ask Charles" message instead of a
- * generic "Data feed not configured".
+ * Live (2026-06-16): the worker builds ZAR_NSS (nominal GOVI basket) and
+ * ZAR_REAL (ILB basket) from IRESS `TimeSeriesGet2` on Exchange=YFX,
+ * DataSource=YFXD — confirmed working. ZAR_SWAP is not on this account
+ * (SecuritySearchGet → 0 rows) and falls back to seed. An empty table here
+ * just means the worker's first time-series snapshot hasn't landed yet.
  */
 
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
@@ -181,12 +181,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
       return Response.json({
         code,
         points: [],
-        source: "entitlement-required",
-        reason: "entitlement_blocked" as BffUnavailableReason,
+        source: "pending-first-write",
+        reason: "empty" as BffUnavailableReason,
         message:
-          "TimeSeriesGet2 entitlement required for bond series. " +
-          "Ask Charles to enable TimeSeriesGet2 for the R-bond codes on the production account.",
-        hint: "Set IRESS_TIMESERIES_CURVE_CODES=R2030,R2035,R2040 on the worker once enabled.",
+          `No history yet for bond ${code}. Bond yields are live via TimeSeriesGet2 on ` +
+          "YFX/YFXD; the worker writes the fitted curves (ZAR_NSS / ZAR_REAL) rather than " +
+          "every single bond. Request /api/curves/ZAR_NSS for the nominal curve.",
+        hint: "Add this code to IRESS_TIMESERIES_CURVE_CODES on the worker to ingest it as a curve constituent.",
       });
     }
     return Response.json({ code, points, source: "supabase" });

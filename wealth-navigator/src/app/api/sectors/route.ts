@@ -65,11 +65,13 @@ export async function GET() {
     if (latest.length === 0) {
       return Response.json({
         sectors: [],
-        source: "entitlement-required",
+        source: "unavailable",
+        reason: "empty",
         message:
-          "Sector index intraday requires TimeSeriesGet2 entitlement for the J200 / sector codes. " +
-          "Ask Charles to enable on the production account.",
-        hint: "Set IRESS_WORKER_INSTRUMENT_SYNC=1 and IRESS_TIMESERIES_SECTOR_CODES=J200,J201 on the worker once enabled.",
+          "JSE sector indices (J2xx) are not in this account's IRESS security master " +
+          "(SecuritySearchGet returns 0 rows; it isn't a TimeSeriesGet2 entitlement to flip). " +
+          "The cockpit derives sector performance from the equity universe instead.",
+        hint: "If IRESS later provisions the sector-index feed, set IRESS_TIMESERIES_SECTOR_CODES=J200,J201 on the worker.",
       });
     }
     return Response.json({

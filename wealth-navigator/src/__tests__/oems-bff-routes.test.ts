@@ -254,7 +254,9 @@ describe("GET /api/bonds", () => {
     const body = await res.json();
     expect(body.source).toBe("unavailable");
     expect(body.bonds).toEqual([]);
-    expect(body.message).toMatch(/IRESS bond entitlement/i);
+    // Bond yields are live (YFX/YFXD curves); the empty state explains the
+    // analytics table is separate, not an IRESS entitlement gap.
+    expect(body.message).toMatch(/bond-analytics|yields ARE live/i);
   });
 });
 

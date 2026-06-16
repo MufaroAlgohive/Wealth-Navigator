@@ -102,7 +102,7 @@ export async function GET() {
     reason: rows.length === 0 ? "empty" : undefined,
     message:
       rows.length === 0
-        ? "Bond universe requires the IRESS bond entitlement (or an upstream bond vendor). Paste supabase/migrations/20260613000004_oems_instrument_universe.sql and ask Charles to enable bond prices on the production profile."
+        ? "Bond yields ARE live — the ZAR govt + ILB curves come from IRESS TimeSeriesGet2 on YFX/YFXD (see /api/curves/ZAR_NSS and ZAR_REAL). This bond-analytics table (clean/dirty price, duration, DV01, convexity) is separate: those analytics need a bond-analytics vendor or a Mint-side pricer over the live yields. Apply supabase/migrations/20260613000004_oems_instrument_universe.sql to enable it."
         : undefined,
   });
 }
