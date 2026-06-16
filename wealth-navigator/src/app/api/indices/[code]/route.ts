@@ -70,9 +70,11 @@ export async function GET(req: Request, { params }: { params: Promise<{ code: st
         points: [],
         source: "entitlement-required",
         message:
-          "ALSI / index intraday requires TimeSeriesGet2 entitlement. " +
-          "Ask Charles to enable on the production account.",
-        hint: "Set IRESS_TIMESERIES_INDEX_CODES=J203 on the worker once enabled.",
+          "No index time-series on the prod-test (CT) feed. TimeSeriesGet2 itself works " +
+          "(confirmed live for equities) — J203 is accepted but returns no data on our " +
+          "DataSource (JSED); the JSE index feed isn't enabled for DFM@MINT on CT. " +
+          "Needs the index DataSource enabled by IRESS, or production.",
+        hint: "Worker calls TimeSeriesGet2(J203) OK but gets 0 rows on CT (J203 quote shows ErrorNumber=1, no data). Awaiting the index DataSource from IRESS/Andre.",
       });
     }
     return Response.json({ code, points, source: "supabase" });

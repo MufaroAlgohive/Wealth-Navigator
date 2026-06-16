@@ -107,9 +107,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
           source: useSupabase ? "entitlement-required" : "seed-fallback",
           reason: "entitlement_blocked" as BffUnavailableReason,
           message:
-            "TimeSeriesGet2 entitlement required for ZAR sovereign curve. " +
-            "Ask Charles to enable TimeSeriesGet2 for the NSS / GOVI codes on the production account.",
-          hint: "Set IRESS_TIMESERIES_CURVE_CODES=ZAR_NSS on the worker once enabled.",
+            "No ZAR curve time-series on the prod-test (CT) feed. TimeSeriesGet2 itself " +
+            "works (confirmed live for equities); the bond/curve feed returns no data on CT " +
+            "(R-codes quote with an empty DataSource). Needs the NSS/GOVI curve code + its " +
+            "DataSource confirmed and enabled for DFM@MINT by IRESS, or production.",
+          hint: "Worker calls TimeSeriesGet2 OK but gets 0 rows for curve codes on CT. Awaiting the curve code + DataSource from IRESS/Andre.",
         });
       }
       const { data: rows, error: rowsErr } = await supabase
