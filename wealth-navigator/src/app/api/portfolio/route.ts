@@ -218,7 +218,16 @@ export async function GET() {
       const priceRands = cents / 100;
       const mv = Number((p.quantity * priceRands).toFixed(2));
       p.market_value = mv;
-      p.open_pl = Number((mv - (Number(p.open_average_price) || 0) * p.quantity).toFixed(2));
+      // P&L from the mark is only meaningful once the cost basis is real. On the
+      // CT (test) account the test fills don't match the live quote feed (e.g.
+      // SOL filled at R1.77 but marks ~R177), so a computed P&L is misleading —
+      // leave it null ("—") unless explicitly enabled. Flip OEMS_MARK_PNL=1 in
+      // production once real fills land.
+      if (process.env.OEMS_MARK_PNL === "1") {
+        p.open_pl = Number((mv - (Number(p.open_average_price) || 0) * p.quantity).toFixed(2));
+      } else {
+        p.open_pl = null;
+      }
     }
   }
 

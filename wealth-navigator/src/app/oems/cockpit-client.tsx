@@ -1309,6 +1309,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     </thead>
                     <tbody className="font-mono">
                       {portfolioQ.data.positions.map((p) => {
+                        // P&L is null while marks are CT test data (cost basis
+                        // unreliable) — render "—" rather than a misleading R0/gain.
+                        const hasPl = p.open_pl != null;
                         const pl = Number(p.open_pl ?? 0);
                         return (
                           <tr key={p.id} className="border-t border-border/60">
@@ -1317,8 +1320,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                             <td className="px-3 py-1.5 text-right">{p.quantity.toLocaleString("en-ZA")}</td>
                             <td className="px-3 py-1.5 text-right">{p.open_average_price != null ? p.open_average_price.toFixed(2) : "—"}</td>
                             <td className="px-3 py-1.5 text-right">{p.market_value != null ? formatZAR(Number(p.market_value)) : "—"}</td>
-                            <td className={cn("px-3 py-1.5 text-right", pl >= 0 ? "text-success" : "text-destructive")}>
-                              {pl >= 0 ? "+" : ""}{formatZAR(pl)}
+                            <td className={cn("px-3 py-1.5 text-right", !hasPl ? "text-muted-foreground" : pl >= 0 ? "text-success" : "text-destructive")}>
+                              {!hasPl ? "—" : `${pl >= 0 ? "+" : ""}${formatZAR(pl)}`}
                             </td>
                           </tr>
                         );
