@@ -753,7 +753,15 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           timeout: 30,
           waitForResponse: true,
         }),
+        // CONFIRMED against the live CT server (2026-06-16): the build reads the
+        // IRESSSessionKey from <Parameters>, NOT just the header <SessionKey>.
+        // Sending it only in the header → "Could not locate the session key" (666).
+        // (Same pattern as TimeSeriesGet2's TimeSeriesFromDate.) The Server is the
+        // company IOS instance, e.g. `MINT_CT` (the generic `IOSPLUSAPI` returns
+        // 25012 "Invalid server name" for this account). We send the key in both
+        // places — the parameter is the load-bearing one.
         parameters: {
+          IRESSSessionKey: req.IRESSSessionKey,
           Service: req.Service,
           Server: req.Server,
         },

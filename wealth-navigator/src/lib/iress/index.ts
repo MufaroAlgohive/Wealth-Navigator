@@ -220,15 +220,14 @@ export async function bringUpMintSession(
   console.info(
     `[mint-iress] IRESSSessionStart ok applicationId=${applicationId} sessionKey=${redactSessionKeyForLog(iressSession.IRESSSessionKey)} timeoutMin=${iressSession.SessionTimeout ?? 120}`,
   );
-  // Every service `Server` is the IRESS **Phoenix API server name**, NOT the
-  // company/instance. Per the V4 docs (04-sessions/02-service-sessions.md, the
-  // byte-exact 13-soap-examples/service-session-start.iosplus.request.xml, and
-  // 01-foundations/04-getting-started.md) the IOS+ value is `IOSPLUSAPI` — a
-  // company instance like `mint_ct` is NOT a valid `Server` and yields a
-  // "could not locate IDS / session key" fault. Keep these env-driven (the doc
-  // notes the exact name "may differ — confirm with IRESS"), but the default —
-  // and what Railway should be set to — is `IOSPLUSAPI`, never `MINT_CT`.
-  const iosServer = (process.env.IRESS_IOS_SERVER ?? "IOSPLUSAPI").trim() || "IOSPLUSAPI";
+  // The `Server` is the IOS instance for this account. CONFIRMED live (2026-06-16):
+  // `MINT_CT` works and the generic doc value `IOSPLUSAPI` returns 25012 "Invalid
+  // server name" for DFM@Mint. (The doc warns the name "may differ — confirm with
+  // IRESS"; Andre's `mint_ct` is correct here.) Env-driven so prod can use its own
+  // instance; default + Railway value is `MINT_CT`. NB: ServiceSessionStart only
+  // succeeds with the IRESSSessionKey in <Parameters> (see live.ts) — the Server
+  // value alone is not enough.
+  const iosServer = (process.env.IRESS_IOS_SERVER ?? "MINT_CT").trim() || "MINT_CT";
   const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
   const fixServer = (process.env.IRESS_FIX_SERVER ?? "FIXPLUSAPI").trim() || "FIXPLUSAPI";
   // Current IRESS scope is market data + IOS+ only (IPS / FIX+ are parked).

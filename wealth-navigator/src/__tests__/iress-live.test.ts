@@ -173,6 +173,31 @@ describe("validation — every method throws IressError on bad input", () => {
     ).rejects.toBeInstanceOf(IressError);
   });
 
+  it("serviceSessionStart — sends IRESSSessionKey in <Parameters> (CT build requirement)", async () => {
+    // Confirmed live (2026-06-16): the CT build reads the IRESSSessionKey from
+    // <Parameters>, not just the header — sending it only in the header returns
+    // 666 "could not locate the session key". The Server is the IOS instance
+    // (e.g. MINT_CT), not the generic IOSPLUSAPI.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [{ ServiceSessionKey: "SVC-1@IDSA01" }],
+      firstRow: { ServiceSessionKey: "SVC-1@IDSA01" },
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    const res = await client.serviceSessionStart({
+      IRESSSessionKey: "PARENT@IDSA01",
+      Service: "IOSPlus",
+      Server: "MINT_CT",
+    });
+    expect(res.ServiceSessionKey).toBe("SVC-1@IDSA01");
+    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> }).parameters;
+    expect(params["IRESSSessionKey"]).toBe("PARENT@IDSA01");
+    expect(params["Service"]).toBe("IOSPlus");
+    expect(params["Server"]).toBe("MINT_CT");
+  });
+
   it("serviceSessionEnd — missing ServiceSessionKey", async () => {
     await expect(fakeClient.serviceSessionEnd({ ServiceSessionKey: "" })).rejects.toBeInstanceOf(IressError);
   });

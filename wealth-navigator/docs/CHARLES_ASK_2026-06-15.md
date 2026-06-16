@@ -39,15 +39,13 @@ JSE indices (ALSI/J203 + sector J2xx), the NSS/GOVI yield curve, and SARB/JIBAR/
 — and confirm the exact `<DataSource>` value + code for each. (`zax` is your admin source — `Invalid
 access` for us; ours is `JSED` and it's equities-only.)
 
-### 2. IOS+ — `DFM@MINT` can't open a service session
-`ServiceSessionStart(IOSPlus, …)` returns **`666 "Could not locate the session key for this request"`**
-for *every* Service/Server value (including deliberately bogus ones) — so it fails at session-key
-resolution, before server-name validation; not a request-shape issue. Your `OrderCreate3` example
-shows IOS+ works on node `IDSA01` for an admin session, and our `IRESSSessionKey` (`…@IDSA01`) works
-fine for market data. **Ask Andre:** please confirm `DFM@MINT` is permissioned to **open an IOS+
-service session** (the user you mentioned setting up with Charles), and share a working
-`ServiceSessionStart` for `DFM@MINT`. (We have your `OrderCreate3` array shape ready for once the
-service session opens.)
+### 2. IOS+ — SOLVED on our side (it was our calling shape, like time-series)
+`ServiceSessionStart` now succeeds and returns a `ServiceSessionKey`. The `666 "Could not locate the
+session key"` was because we sent the `IRESSSessionKey` only in the header — **the CT build reads it
+from `<Parameters>`** (the doc lists it as a parameter). Also confirmed: **`Server=MINT_CT`** is correct
+(`IOSPLUSAPI` → `25012 Invalid server name` for this account). No IRESS action needed to open the
+session. Orders/positions now just need the worker to run with `IRESS_IOS_SERVER=MINT_CT` and the
+`OrderCreate3` array shape Andre already gave us.
 
 ### 3. Production endpoint + confirm CT is delayed/test
 CT returns only today's bar and equity prices look delayed (e.g. NPN close R6.10). **Ask Andre:**
@@ -58,7 +56,7 @@ shadow only, 0 writes.)
 ## Status by feature
 - **Equities / quotes / time-series (OHLCV history):** ✅ working (JSED).
 - **Indices / curves / macro history:** ⏳ needs the DataSource for those (#1).
-- **Orders / blotter / positions:** ⏳ needs IOS+ access for DFM@MINT (#2).
+- **Orders / blotter / positions:** ✅ IOS+ session opens (key-in-Parameters + `Server=MINT_CT`); flows once the worker runs with `IRESS_IOS_SERVER=MINT_CT`.
 - **Retail price cutover:** ⏳ needs prod endpoint + real data (#3).
 
 Reproduce live: `POST /debug/soap-raw` (exact wire params), `POST /debug/timeseries-probe`.
