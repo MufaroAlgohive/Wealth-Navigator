@@ -910,7 +910,11 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           "TimeSeriesGet2: missing required field — supply `Interval` (string enum, e.g. 'Daily')",
         );
       }
-      const dataSource = (process.env.IRESS_TS_DATASOURCE ?? "JSED").trim() || "JSED";
+      // DataSource is exchange-specific (CONFIRMED live 2026-06-16): JSE
+      // equities → JSED, YFX bonds/curve/GOVI → YFXD. Per-call `req.DataSource`
+      // wins; env `IRESS_TS_DATASOURCE` is the fallback for the equity default.
+      const dataSource =
+        (req.DataSource ?? process.env.IRESS_TS_DATASOURCE ?? "JSED").trim() || "JSED";
       const parameters: Record<string, unknown> = {
         SecurityCode: req.Code,
         Exchange: req.Exchange,

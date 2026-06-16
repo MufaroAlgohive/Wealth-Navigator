@@ -95,6 +95,10 @@ export interface TimeSeriesConfig {
   indexCodes: string[];
   sectorCodes: string[];
   curveCodes: string[];
+  /** Exchange for the curve/bond codes — CONFIRMED `YFX` for ZAR govt bonds. */
+  curveExchange: string;
+  /** DataSource for the curve/bond codes — CONFIRMED `YFXD` (NOT JSED). */
+  curveDataSource: string;
   intervalSec: number;
 }
 
@@ -102,11 +106,24 @@ export function loadTimeSeriesConfig(env: WorkerEnv): TimeSeriesConfig {
   return {
     indexCodes: parseList(process.env.IRESS_TIMESERIES_INDEX_CODES, ["J203"]),
     sectorCodes: parseList(process.env.IRESS_TIMESERIES_SECTOR_CODES, []),
-    // Default EMPTY: R2030/R2035/R2040 are individual bonds, not the NSS curve,
-    // and return "Invalid code/exchange" every cycle on CT (wrong code for the
-    // feed). The real ZAR NSS curve code + its DataSource are IRESS reference-data
-    // we don't have yet (Andre). Set IRESS_TIMESERIES_CURVE_CODES once confirmed.
-    curveCodes: parseList(process.env.IRESS_TIMESERIES_CURVE_CODES, []),
+    // CONFIRMED live (2026-06-16): the ZAR govt yield curve is the GOVI-basket
+    // bonds on Exchange=YFX, DataSource=YFXD. The earlier "Invalid code/exchange"
+    // / "Invalid access" failures were the WRONG exchange+feed (JSE/JSED), not a
+    // missing entitlement — TimeSeriesGet2(R2030, YFX, YFXD) returns the full
+    // yield history. SecuritySearchGet was used to discover the codes/exchange.
+    curveCodes: parseList(process.env.IRESS_TIMESERIES_CURVE_CODES, [
+      "R186",
+      "R2030",
+      "R2032",
+      "R2035",
+      "R2037",
+      "R2040",
+      "R2044",
+      "R2048",
+      "R213",
+    ]),
+    curveExchange: (process.env.IRESS_TIMESERIES_CURVE_EXCHANGE ?? "YFX").trim() || "YFX",
+    curveDataSource: (process.env.IRESS_TIMESERIES_CURVE_DATASOURCE ?? "YFXD").trim() || "YFXD",
     intervalSec: Math.max(60, Number(process.env.IRESS_WORKER_TIMESERIES_INTERVAL_SEC ?? "300")),
   };
 }
@@ -247,6 +264,7 @@ async function fetchSeries(
     to: new Date().toISOString().slice(0, 10),
     interval: "1d",
   },
+  dataSource?: string,
 ): Promise<FetchSeriesResult> {
   let entitlementRequired = false;
   let points: Array<{ t: number; v: number }> = [];
@@ -261,6 +279,10 @@ async function fetchSeries(
         },
         Code: code,
         Exchange: exchange,
+        // Exchange-specific feed (CONFIRMED live): JSE→JSED, YFX→YFXD. Sending
+        // the wrong one returns error 5 ("Invalid access"). When omitted the
+        // live client falls back to IRESS_TS_DATASOURCE (JSED).
+        DataSource: dataSource,
         From: range.from,
         To: range.to,
         // Market data uses the base IRIS session with `<Interval>` (string),
@@ -422,11 +444,15 @@ async function insertCurvePoints(
   // tenor is implicit in the curve_id we asked for).
   const lastPoint = points[points.length - 1];
   if (!lastPoint) return 0;
+  // YFX bond yields arrive as a decimal fraction (e.g. 0.0809 = 8.09%); the
+  // `yield_pct` column is a percentage, so scale fractional values up. A value
+  // already ≥ 1 is assumed to be in percent already and left as-is.
+  const yieldPct = lastPoint.v > 0 && lastPoint.v < 1 ? Number((lastPoint.v * 100).toFixed(4)) : lastPoint.v;
   const row: YieldCurveRow = {
     curve_id: curveId,
     tenor_label: curveId,
     tenor_years: parseTenorYears(curveId),
-    yield_pct: lastPoint.v,
+    yield_pct: yieldPct,
     as_of: new Date(lastPoint.t).toISOString(),
     source: "iress-worker",
   };
@@ -583,17 +609,18 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
     try {
       const t0 = Date.now();
       const res = isLive
-        ? await fetchSeries(sessions, code, "JSE")
-        : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
+        ? await fetchSeries(sessions, code, config.curveExchange, undefined, config.curveDataSource)
+        : { points: await fetchMockSeries(code, config.curveExchange), entitlementRequired: false };
       recordWorkerEvent({
         level: "info",
         event: "iress_call_complete",
-        msg: `TimeSeriesGet2(${code}/JSE) returned ${res.points.length} points`,
+        msg: `TimeSeriesGet2(${code}/${config.curveExchange}) returned ${res.points.length} points`,
         data: {
           method: "TimeSeriesGet2",
           series: "curve",
           code,
-          exchange: "JSE",
+          exchange: config.curveExchange,
+          dataSource: config.curveDataSource,
           elapsedMs: Date.now() - t0,
           points: res.points.length,
         },

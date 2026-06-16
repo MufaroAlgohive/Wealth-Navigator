@@ -102,6 +102,16 @@ export interface TimeSeriesGet2Request {
   Header: IressHeader;
   Code: string;
   Exchange?: string;
+  /**
+   * The IRESS data feed for this instrument's exchange. CONFIRMED live
+   * (2026-06-16): the DataSource is exchange-specific, NOT account-global —
+   * JSE equities/ETFs use `JSED`, but YFX bonds / bond indices (R2030, GOVI,
+   * the ZAR govt yield curve) use `YFXD`. Sending `JSED` for a YFX instrument
+   * returns "Invalid access" (error 5) — which we'd previously misread as an
+   * entitlement wall. When omitted, the live client falls back to
+   * `IRESS_TS_DATASOURCE` (default `JSED`).
+   */
+  DataSource?: string;
   From?: string; // ISO date
   To?: string;
   /**

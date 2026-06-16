@@ -345,6 +345,36 @@ describe("validation — every method throws IressError on bad input", () => {
     expect(params["DataSource"]).toBe("ZAR1");
   });
 
+  it("timeSeriesGet2 — per-call DataSource (YFXD for YFX bonds) wins over the env default", async () => {
+    // CONFIRMED live (2026-06-16): YFX bonds/curve/GOVI need DataSource=YFXD;
+    // sending JSED returns error 5. The per-call value must override the env.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    process.env.IRESS_TS_DATASOURCE = "JSED"; // equity default in env
+    try {
+      await client.timeSeriesGet2({
+        Header: { SessionKey: "k", RequestID: "r1" },
+        Code: "R2030",
+        Exchange: "YFX",
+        DataSource: "YFXD",
+        From: "2026-06-01",
+        To: "2026-06-15",
+        Interval: "Daily",
+      });
+    } finally {
+      delete process.env.IRESS_TS_DATASOURCE;
+    }
+    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> }).parameters;
+    expect(params["DataSource"]).toBe("YFXD");
+    expect(params["Exchange"]).toBe("YFX");
+    expect(params["SecurityCode"]).toBe("R2030");
+  });
+
   it("timeSeriesGet2Updates — missing RequestID", async () => {
     await expect(fakeClient.timeSeriesGet2Updates({ RequestID: "" })).rejects.toBeInstanceOf(IressError);
   });
