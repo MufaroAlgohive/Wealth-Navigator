@@ -137,13 +137,13 @@ const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL", "USDZAR"
  */
 function portfolioAumSub(portfolio: { source: string; reason?: string; migration?: string; error?: string; accounts?: unknown[] } | undefined): React.ReactNode {
   if (!portfolio) return "Loading portfolio…";
-  if (portfolio.source === "supabase") return `${(portfolio.accounts ?? []).length} accounts · IPS`;
+  if (portfolio.source === "supabase") return `${(portfolio.accounts ?? []).length} accounts`;
   if (portfolio.reason === "supabase_not_configured") return <span>Set <span className="font-mono">SUPABASE_URL</span> + <span className="font-mono">SUPABASE_SERVICE_ROLE_KEY</span> on Vercel</span>;
   if (portfolio.reason === "supabase_query_failed") return (
     <span>Run <span className="font-mono">{portfolio.migration ?? "supabase migration"}</span></span>
   );
-  if (portfolio.reason === "empty") return <span>No portfolio rows yet — <span className="font-mono">IPSAccountGetAll1</span> returns no data</span>;
-  if (portfolio.reason === "entitlement_blocked") return <span>Ask Charles to enable <span className="font-mono">IPSAccountGetAll1</span> + <span className="font-mono">IPSPositionGetAll1</span></span>;
+  if (portfolio.reason === "empty") return <span>No positions yet — populated from IOS+ order fills once the IOS+ session is live</span>;
+  if (portfolio.reason === "entitlement_blocked") return <span>Positions come from IOS+ (OrderPad / fills) — pending IOS+ access for <span className="font-mono">DFM@MINT</span> (we don&apos;t use IPS)</span>;
   if (portfolio.reason === "worker_not_running") return <span>Railway iress-ingest offline — start the worker</span>;
   return FEED_NOT_CONFIGURED;
 }
@@ -632,7 +632,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               <EntitlementRequired
                 method="TimeSeriesGet2"
                 codes={["J200", "J203"]}
-                note="Sector index quotes require TimeSeriesGet2 entitlement. Ask Charles to enable on the production account."
+                note="Official J2xx sector indices have no data on the prod-test (CT) feed (TimeSeriesGet2 works; the index feed isn't on CT for DFM@MINT). The heatmap above is computed live from JSE constituents instead."
               />
             </Panel>
           )
@@ -659,10 +659,10 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               className="col-span-12 lg:col-span-4 h-[300px]"
             >
               <EmptyDataState
-                title={curveBffQ.data?.source === "entitlement-required" ? "TimeSeriesGet2 entitlement required" : "Curve data unavailable"}
+                title={curveBffQ.data?.source === "entitlement-required" ? "ZAR curve feed not on prod-test" : "Curve data unavailable"}
                 message={
                   curveBffQ.data?.message ??
-                  "Yield curve feed requires TimeSeriesGet2 entitlement. Ask Charles to enable on the production account."
+                  "TimeSeriesGet2 works; the NSS/GOVI curve has no data on the prod-test (CT) feed. Needs the curve code + DataSource enabled for DFM@MINT, or production."
                 }
               />
             </Panel>
@@ -848,10 +848,10 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               className="col-span-12 lg:col-span-8 h-[320px]"
             >
               <EmptyDataState
-                title={alsiBffQ.data?.source === "entitlement-required" ? "TimeSeriesGet2 entitlement required" : "ALSI data unavailable"}
+                title={alsiBffQ.data?.source === "entitlement-required" ? "Index feed not on prod-test" : "ALSI data unavailable"}
                 message={
                   alsiBffQ.data?.message ??
-                  "ALSI intraday requires TimeSeriesGet2 entitlement. Ask Charles to enable on the production account."
+                  "TimeSeriesGet2 works; J203 returns no data on the prod-test (CT) feed. Needs the index DataSource enabled for DFM@MINT, or production."
                 }
               />
             </Panel>
@@ -1263,8 +1263,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 </ul>
               ) : (
                 <EmptyDataState
-                  title="IPS portfolio not yet populated"
-                  message="Ask Charles to enable IPSAccountGetAll1 + IPSPositionGetAll1 + IPSTransactionGetByAccount5 on the production IRESS profile, then run `bun run worker`."
+                  title="Accounts pending IOS+ access"
+                  message="We don't use IPS (confirmed with Andre). Accounts/positions come from the IOS+ service. Pending IOS+ access for DFM@MINT — ServiceSessionStart currently returns 666 'could not locate the session key'."
                 />
               )}
             </Panel>
@@ -1318,11 +1318,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 </div>
               ) : (
                 <EmptyDataState
-                  title="IPS positions not yet populated"
+                  title="Positions pending IOS+ access"
                   message={
                     portfolioQ.data?.source === "supabase"
-                      ? "Worker has synced 0 positions. Either the IPS entitlement is off or the account has no holdings yet."
-                      : "Ask Charles to enable IPSPositionGetAll1 on the production IRESS profile, then run `bun run worker`."
+                      ? "0 positions synced. Positions come from IOS+ (OrderPad / fills), not IPS — none yet because the IOS+ session can't open."
+                      : "We don't use IPS (confirmed with Andre). Positions come from the IOS+ service — pending IOS+ access for DFM@MINT (ServiceSessionStart returns 666)."
                   }
                 />
               )}
