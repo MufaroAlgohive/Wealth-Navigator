@@ -142,8 +142,8 @@ function portfolioAumSub(portfolio: { source: string; reason?: string; migration
   if (portfolio.reason === "supabase_query_failed") return (
     <span>Run <span className="font-mono">{portfolio.migration ?? "supabase migration"}</span></span>
   );
-  if (portfolio.reason === "empty") return <span>No positions yet — populated from IOS+ order fills once the IOS+ session is live</span>;
-  if (portfolio.reason === "entitlement_blocked") return <span>Positions come from IOS+ (OrderPad / fills) — pending IOS+ access for <span className="font-mono">DFM@MINT</span> (we don&apos;t use IPS)</span>;
+  if (portfolio.reason === "empty") return <span>No open positions — derived from IOS+ order fills (book currently flat)</span>;
+  if (portfolio.reason === "entitlement_blocked") return <span>Positions are derived from IOS+ fills (we don&apos;t use IPS) for <span className="font-mono">DFM@MINT</span></span>;
   if (portfolio.reason === "worker_not_running") return <span>Railway iress-ingest offline — start the worker</span>;
   return FEED_NOT_CONFIGURED;
 }
@@ -214,10 +214,10 @@ function ordersEmptyMessage(
   if (primaryWorker.status === "healthy" && primaryWorker.account_configured === false)
     return "Set IRESS_ACCOUNT_CODE on the Railway worker";
   if (primaryWorker.status === "healthy" && primaryWorker.account_configured === true) {
-    // Yellow #31 — third branch: worker is healthy + account is set
-    // but the table is still empty. The most common cause is the
-    // IOS+ service session failing (HTTP 500 on ServiceSessionStart).
-    return "IOS+ service session entitlement off — ask Charles";
+    // Worker healthy + account set + no WORKING orders. IOS+ is live (orders
+    // are read from the pad); the current book is simply filled/cancelled, so
+    // there are no open orders to show. The full history is on the Blotter.
+    return "No working orders — current book is filled/cancelled (see Blotter)";
   }
   return `Worker ${primaryWorker.status ?? "unknown"} · no open orders for this account`;
 }
@@ -672,12 +672,19 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               endpoint="GET /api/curves/ZAR_NSS"
               dataSource="supabase"
               className="col-span-12 lg:col-span-4 h-[300px]"
-              right={
-                <span className="font-mono">
-                  10Y ·{" "}
-                  {curveBffQ.data.points.find((p) => Math.round(p.years) === 10)?.yield.toFixed(2) ?? "—"}%
-                </span>
-              }
+              right={(() => {
+                // Show the benchmark nearest 10y. The basket tenors (R2035 ~8.7y,
+                // R2037 ~10.6y) rarely round to exactly 10, so pick the closest
+                // rather than requiring an exact match (which showed "—").
+                const pts = curveBffQ.data.points;
+                if (!pts.length) return <span className="font-mono">—</span>;
+                const near = pts.reduce((b, p) => (Math.abs(p.years - 10) < Math.abs(b.years - 10) ? p : b));
+                return (
+                  <span className="font-mono">
+                    {near.tenor} · {near.yield.toFixed(2)}%
+                  </span>
+                );
+              })()}
             >
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={curveBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
@@ -1263,8 +1270,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 </ul>
               ) : (
                 <EmptyDataState
-                  title="Accounts pending IOS+ access"
-                  message="We don't use IPS (confirmed with Andre). Accounts/positions come from the IOS+ service. Pending IOS+ access for DFM@MINT — ServiceSessionStart currently returns 666 'could not locate the session key'."
+                  title="No account master"
+                  message="IOS+ is live (orders + positions flow from the order pad for DFM@MINT, account 56378). There's no separate account-master feed wired — we don't use IPS — so this list stays empty until an account directory is sourced."
                 />
               )}
             </Panel>
@@ -1318,11 +1325,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 </div>
               ) : (
                 <EmptyDataState
-                  title="Positions pending IOS+ access"
+                  title="No open positions"
                   message={
                     portfolioQ.data?.source === "supabase"
-                      ? "0 positions synced. Positions come from IOS+ (OrderPad / fills), not IPS — none yet because the IOS+ session can't open."
-                      : "We don't use IPS (confirmed with Andre). Positions come from the IOS+ service — pending IOS+ access for DFM@MINT (ServiceSessionStart returns 666)."
+                      ? "0 net positions. IOS+ is live — positions are derived from order fills (net done volume per security); the book is currently flat."
+                      : "Positions are derived from IOS+ order fills (we don't use IPS) for DFM@MINT, account 56378."
                   }
                 />
               )}

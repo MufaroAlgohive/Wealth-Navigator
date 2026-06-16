@@ -44,13 +44,19 @@ function makeSupabaseRecorder(upsertImpl?: (table: string, rows: unknown) => Pro
         if (upsertImpl) return upsertImpl(table, rows);
         return { error: null };
       },
-      // Positions snapshot: delete(...).in(...) then insert(...).
-      delete: () => ({
-        in: async () => {
-          mutationCalls.push({ table, op: "delete" });
-          return { error: null };
-        },
-      }),
+      // Positions snapshot: delete(...).in(...).lt(...) — a chainable, awaitable
+      // PostgREST-style builder (in/lt return self; awaiting records + resolves).
+      delete: () => {
+        const builder: Record<string, unknown> = {
+          in: () => builder,
+          lt: () => builder,
+          then: (resolve: (v: { error: null }) => void) => {
+            mutationCalls.push({ table, op: "delete" });
+            resolve({ error: null });
+          },
+        };
+        return builder;
+      },
       insert: async (rows: unknown) => {
         mutationCalls.push({ table, op: "insert", rows });
         return { error: null };

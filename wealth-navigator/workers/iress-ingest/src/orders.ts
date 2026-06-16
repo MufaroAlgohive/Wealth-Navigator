@@ -63,7 +63,11 @@ interface OrderAuditRow {
 function toAuditRow(order: Order): OrderAuditRow {
   const limit = order.limit ?? null;
   return {
-    order_id: order.orderTag || order.id,
+    // Key on the broker OrderNumber (always unique). OrderTag is NOT a reliable
+    // key for pad-read orders — on the live CT book every order carries the
+    // same OrderTag ("56378", the account), so keying on it collapses the whole
+    // book into one audit row.
+    order_id: order.id || order.orderTag,
     client_account: order.account,
     symbol: order.symbol,
     side: mapSide(order.side),
@@ -248,29 +252,45 @@ export async function pollAccountsForOrders(
   }
 
   // Positions-from-fills snapshot. We don't use IPS, so positions are the net
-  // of order fills (see derivePositions). Snapshot-replace per polled account
-  // (delete then insert) so closed/expired positions clear out — no dependence
-  // on a unique-constraint name for upsert, and scoped strictly to the polled
-  // OEMS accounts (never touches customer tables). Reads 0 on a book with no
-  // current fills, which is the correct empty state.
+  // of order fills (see derivePositions). UPSERT on the table's UNIQUE
+  // (account_code, security_code) — robust (no dependence on a prior delete
+  // succeeding, which previously skipped the write on any delete error). Then
+  // clear rows this batch didn't touch (closed positions) via the batch
+  // timestamp. Scoped strictly to the polled OEMS accounts; never customer
+  // tables. The table CHECKs quantity >= 0, so we keep long (net-positive)
+  // positions only — a net short can't be represented in this schema, and one
+  // bad row would otherwise fail the whole batch.
   try {
-    const positions = derivePositions(orders);
-    const { error: delErr } = await opts.supabase
-      .from("oems_position_c")
-      .delete()
-      .in("account_code", accounts);
-    if (delErr) {
-      console.warn(`[iress-ingest] oems_position_c clear failed: ${delErr.message}`);
-    } else if (positions.length > 0) {
-      const { error: posErr } = await opts.supabase.from("oems_position_c").insert(positions);
+    const allPositions = derivePositions(orders);
+    const shorts = allPositions.filter((p) => p.quantity < 0);
+    if (shorts.length > 0) {
+      console.warn(
+        `[iress-ingest] skipping ${shorts.length} net-short position(s) — oems_position_c is long-only (quantity >= 0): ${shorts.map((s) => s.security_code).join(", ")}`,
+      );
+    }
+    const positions = allPositions.filter((p) => p.quantity > 0);
+    const batchTs = positions[0]?.updated_at ?? new Date().toISOString();
+
+    if (positions.length > 0) {
+      const { error: posErr } = await opts.supabase
+        .from("oems_position_c")
+        .upsert(positions, { onConflict: "account_code,security_code" });
       if (posErr) {
-        console.error(`[iress-ingest] oems_position_c insert failed: ${posErr.message}`);
+        console.error(`[iress-ingest] oems_position_c upsert failed: ${posErr.message}`);
       } else {
         console.info(
           JSON.stringify({ level: "info", event: "oems_position_c_snapshot", accounts, count: positions.length }),
         );
       }
     }
+
+    // Remove closed positions: account rows not refreshed in this batch
+    // (updated_at strictly older than this batch). When the book is flat
+    // (no current positions) this clears everything for the accounts.
+    let clearQ = opts.supabase.from("oems_position_c").delete().in("account_code", accounts);
+    if (positions.length > 0) clearQ = clearQ.lt("updated_at", batchTs);
+    const { error: clrErr } = await clearQ;
+    if (clrErr) console.warn(`[iress-ingest] oems_position_c stale-clear failed: ${clrErr.message}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.warn(`[iress-ingest] positions derivation failed: ${msg}`);
