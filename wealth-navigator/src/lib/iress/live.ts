@@ -567,10 +567,13 @@ function mapOrder(row: Record<string, unknown>): Order {
   const done = num("DoneVolumeTotal");
   const rawState = str("OrderState").trim().toUpperCase();
   const state: Order["state"] = ((): Order["state"] => {
-    if (ordVol > 0 && done >= ordVol) return "FILLED";
+    if (ordVol > 0 && done >= ordVol) return "FILLED"; // fully done
     if (rawState === "ACTIVE") return done > 0 ? "PARTIAL" : "WORKING";
-    // INACTIVE / expired / purged / rejected
-    if (done > 0) return "FILLED";
+    // INACTIVE: expired / purged / cancelled. A partial done here means the
+    // order filled some, then the remainder was cancelled — that's CANCELLED
+    // with a partial fill (the `filled` field carries the done qty), NOT
+    // FILLED (full fills are already caught above). Labelling it FILLED would
+    // overstate completion in the blotter.
     return "CANCELLED";
   })();
   const pricing = str("PricingInstructions").toUpperCase();

@@ -969,6 +969,19 @@ describe("live client end-to-end with a fake transport", () => {
                     <PricingInstructions>AT MARKET</PricingInstructions>
                     <Lifetime>DAY</Lifetime>
                   </DataRow>
+                  <DataRow>
+                    <OrderNumber>ORD-5003</OrderNumber>
+                    <AccountCode>56378</AccountCode>
+                    <SecurityCode>SOL</SecurityCode>
+                    <BuyOrSell>B</BuyOrSell>
+                    <OrderVolume>100</OrderVolume>
+                    <DoneVolumeTotal>50</DoneVolumeTotal>
+                    <OrderPrice>177</OrderPrice>
+                    <AveragePrice>177</AveragePrice>
+                    <OrderState>INACTIVE</OrderState>
+                    <PricingInstructions>LIMIT</PricingInstructions>
+                    <Lifetime>DAY</Lifetime>
+                  </DataRow>
                 </DataRows>
               </Result>
             </Output>
@@ -986,7 +999,7 @@ describe("live client end-to-end with a fake transport", () => {
       OrderFilter: 3,
       RequestID: "pad-1",
     });
-    expect(res.DataRows).toHaveLength(2);
+    expect(res.DataRows).toHaveLength(3);
 
     const buy = res.DataRows[0]!;
     expect(buy.id).toBe("ORD-5001");
@@ -1008,6 +1021,13 @@ describe("live client end-to-end with a fake transport", () => {
     expect(sell.filled).toBe(0);
     expect(sell.type).toBe("MKT"); // "AT MARKET"
     expect(sell.state).toBe("CANCELLED"); // INACTIVE + no fill
+
+    // Partial-then-expired (the real 400017/400018 shape): 50 of 100 done,
+    // then INACTIVE → CANCELLED with a partial fill, NOT FILLED.
+    const partialExpired = res.DataRows[2]!;
+    expect(partialExpired.qty).toBe(100);
+    expect(partialExpired.filled).toBe(50);
+    expect(partialExpired.state).toBe("CANCELLED");
   });
 });
 
