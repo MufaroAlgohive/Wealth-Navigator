@@ -102,7 +102,11 @@ export function loadTimeSeriesConfig(env: WorkerEnv): TimeSeriesConfig {
   return {
     indexCodes: parseList(process.env.IRESS_TIMESERIES_INDEX_CODES, ["J203"]),
     sectorCodes: parseList(process.env.IRESS_TIMESERIES_SECTOR_CODES, []),
-    curveCodes: parseList(process.env.IRESS_TIMESERIES_CURVE_CODES, ["R2030", "R2035", "R2040"]),
+    // Default EMPTY: R2030/R2035/R2040 are individual bonds, not the NSS curve,
+    // and return "Invalid code/exchange" every cycle on CT (wrong code for the
+    // feed). The real ZAR NSS curve code + its DataSource are IRESS reference-data
+    // we don't have yet (Andre). Set IRESS_TIMESERIES_CURVE_CODES once confirmed.
+    curveCodes: parseList(process.env.IRESS_TIMESERIES_CURVE_CODES, []),
     intervalSec: Math.max(60, Number(process.env.IRESS_WORKER_TIMESERIES_INTERVAL_SEC ?? "300")),
   };
 }
