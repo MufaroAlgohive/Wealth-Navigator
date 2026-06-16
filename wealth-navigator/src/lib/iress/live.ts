@@ -851,52 +851,47 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>> {
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
-      // Wire shape follows the V4 doc / WSDL sample EXACTLY:
-      //   <Code>SHP</Code><Exchange>JSE</Exchange>
-      //   <DateFrom>2025-01-01</DateFrom><DateTo>2025-12-31</DateTo>
-      //   <Interval>Daily</Interval>
-      // Spec: Documentation & Vision/iress-v4-docs/05-services/market-data/
-      //   02-time-series-get-2.md (+ the WSDL sample payload at lines 49-55).
-      //
-      // An earlier build sent a speculative parameter soup (`SecurityCode`
-      // alongside `Code`, `<Frequency>` instead of `<Interval>`, and four date
-      // aliases each for From/To) that diverged from the doc and never got past
-      // "Invalid DateFrom". We now send the documented shape and nothing else.
-      // Two env escape hatches (default OFF) let ops A/B a *suspected* CT-build
-      // quirk via /debug/timeseries-probe WITHOUT another rewrite — leave both
-      // unset to send the documented shape:
-      //   IRESS_TS_SECID_FIELD=SecurityCode   (default `Code`)
-      //   IRESS_TS_PERIOD_FIELD=Frequency     (default `Interval`)
-      const periodStr =
-        typeof req.Interval === "string" && req.Interval.trim() !== "" ? req.Interval.trim() : undefined;
-      const periodLong =
-        typeof req.Frequency === "number" && Number.isFinite(req.Frequency) ? req.Frequency : undefined;
-      if (periodStr === undefined && periodLong === undefined) {
+      // Wire shape CONFIRMED against the live CT server from Andre's working
+      // SOAP (IRESS, 2026-06-16). The published V4 WSDL sample is wrong for this
+      // build — the date fields in particular. The accepted shape is:
+      //   <SecurityCode>…</SecurityCode><Exchange>…</Exchange>
+      //   <DataSource>JSED</DataSource>            ← required; our account's feed
+      //   <Frequency>Daily</Frequency>             ← string enum, NOT <Interval>
+      //   <TimeSeriesFromDate>YYYY-MM-DD</…>       ← NOT <DateFrom> (that element
+      //   <TimeSeriesToDate>YYYY-MM-DD</…>            is never read → "Invalid DateFrom")
+      // Response rows carry OpenPrice/HighPrice/LowPrice/ClosePrice/TotalVolume/
+      //   TotalValue/TradeCount/AdjustmentFactor/TimeSeriesDate/MarketVWAP (Rands).
+      // `DataSource` is env-overridable for prod (delayed vs real-time feed);
+      // IRESS's admin source `zax` returns "Invalid access" for DFM@Mint, `JSED` works.
+      const frequency =
+        typeof req.Interval === "string" && req.Interval.trim() !== ""
+          ? req.Interval.trim()
+          : typeof req.Frequency === "number" && Number.isFinite(req.Frequency)
+            ? String(req.Frequency)
+            : undefined;
+      if (frequency === undefined) {
         throw new IressError(
           25018,
           "TimeSeriesGet2",
-          "TimeSeriesGet2: missing required field — supply `Interval` (V4 string enum, e.g. 'Daily')",
+          "TimeSeriesGet2: missing required field — supply `Interval` (string enum, e.g. 'Daily')",
         );
       }
-      const secidField = (process.env.IRESS_TS_SECID_FIELD ?? "Code").trim() || "Code";
-      const periodField = (process.env.IRESS_TS_PERIOD_FIELD ?? "Interval").trim() || "Interval";
-      const parameters: Record<string, unknown> = {};
-      parameters[secidField] = req.Code;
-      if (req.Exchange) parameters["Exchange"] = req.Exchange;
-      // Documented date range: single `<DateFrom>` / `<DateTo>`, ISO `YYYY-MM-DD`.
-      // No aliases. The range is optional (omit to use NumberOfPoints / Date).
-      if (req.From) parameters["DateFrom"] = req.From;
-      if (req.To) parameters["DateTo"] = req.To;
-      if (typeof req.NumberOfPoints === "number" && Number.isFinite(req.NumberOfPoints)) {
-        parameters["NumberOfPoints"] = req.NumberOfPoints;
+      const dataSource = (process.env.IRESS_TS_DATASOURCE ?? "JSED").trim() || "JSED";
+      const parameters: Record<string, unknown> = {
+        SecurityCode: req.Code,
+        Exchange: req.Exchange,
+        DataSource: dataSource,
+        Frequency: frequency,
+      };
+      // The live build reads <TimeSeriesFromDate>/<TimeSeriesToDate> (ISO
+      // YYYY-MM-DD), NOT <DateFrom>/<DateTo>. A single `Date` maps to both ends.
+      if (req.Date && req.Date.trim() !== "") {
+        parameters["TimeSeriesFromDate"] = req.Date.trim();
+        parameters["TimeSeriesToDate"] = req.Date.trim();
+      } else {
+        if (req.From) parameters["TimeSeriesFromDate"] = req.From;
+        if (req.To) parameters["TimeSeriesToDate"] = req.To;
       }
-      if (typeof req.Date === "string" && req.Date.trim() !== "") {
-        parameters["Date"] = req.Date.trim();
-      }
-      // Documented period selector is <Interval> carrying the string enum
-      // ("Daily", …). Prefer the string; fall back to the Long only if that's
-      // all the caller supplied.
-      parameters[periodField] = periodStr ?? periodLong;
       const result = await transport.call({
         method: "TimeSeriesGet2",
         header: makeHeader({
@@ -904,7 +899,7 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           requestID: req.Header.RequestID,
           updates: req.Header.Updates,
           timeout: req.Header.Timeout ?? 25,
-          pageSize: req.Header.PageSize,
+          pageSize: req.Header.PageSize ?? 1000,
           pagingBookmark: req.Header.PagingBookmark,
           pagingDirection: req.Header.PagingDirection,
           waitForResponse: req.Header.WaitForResponse ?? true,
@@ -914,8 +909,15 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       return mapResponse<{ t: number; v: number }>({
         header: result.header,
         dataRows: result.dataRows.map((r) => ({
-          t: r["t"] !== undefined ? Number(r["t"]) : r["TimeStamp"] !== undefined ? Date.parse(String(r["TimeStamp"])) : Date.now(),
-          v: Number(r["v"] ?? r["Value"] ?? 0),
+          t:
+            r["TimeSeriesDate"] !== undefined
+              ? Date.parse(String(r["TimeSeriesDate"]))
+              : r["t"] !== undefined
+                ? Number(r["t"])
+                : r["TimeStamp"] !== undefined
+                  ? Date.parse(String(r["TimeStamp"]))
+                  : Date.now(),
+          v: Number(r["ClosePrice"] ?? r["Close"] ?? r["v"] ?? r["Value"] ?? 0),
         })),
       });
     },
