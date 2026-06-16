@@ -229,7 +229,9 @@ export async function pollAccountsForOrders(
     return { polled: accounts.length, upserted: 0, accounts };
   }
 
-  const rows = orders.map(toAuditRow);
+  // The audit table CHECKs quantity > 0; skip any zero-qty rows so one bad row
+  // can't fail the whole batch insert.
+  const rows = orders.map(toAuditRow).filter((r) => r.quantity > 0);
   if (opts.env.dryRun || !opts.env.allowWrites || !opts.supabase) {
     console.info(
       JSON.stringify({
@@ -243,13 +245,25 @@ export async function pollAccountsForOrders(
     return { polled: accounts.length, upserted: 0, accounts };
   }
 
-  const { error } = await opts.supabase
-    .from("oems_order_audit")
-    .upsert(rows, { onConflict: "order_id" });
-  if (error) {
-    console.error(`[iress-ingest] oems_order_audit upsert failed: ${error.message}`);
-    return { polled: accounts.length, upserted: 0, accounts };
+  // oems_order_audit has only a NON-unique index on order_id (PK is `id`), so we
+  // CANNOT upsert(onConflict:order_id) — it errors "no unique constraint". The
+  // worker mirrors current broker state, so delete-then-insert by order_id keeps
+  // the table current without a unique constraint and without duplicates.
+  let auditWritten = 0;
+  if (rows.length > 0) {
+    const orderIds = rows.map((r) => r.order_id);
+    const { error: delErr } = await opts.supabase.from("oems_order_audit").delete().in("order_id", orderIds);
+    if (delErr) console.warn(`[iress-ingest] oems_order_audit clear failed: ${delErr.message}`);
+    const { error } = await opts.supabase.from("oems_order_audit").insert(rows);
+    if (error) {
+      console.error(`[iress-ingest] oems_order_audit insert failed: ${error.message}`);
+    } else {
+      auditWritten = rows.length;
+      console.info(JSON.stringify({ level: "info", event: "oems_order_audit_written", accounts, count: rows.length }));
+    }
   }
+  // NOTE: positions are derived below regardless of the audit write outcome —
+  // an audit failure must NOT skip the positions snapshot.
 
   // Positions-from-fills snapshot. We don't use IPS, so positions are the net
   // of order fills (see derivePositions). UPSERT on the table's UNIQUE
@@ -296,5 +310,5 @@ export async function pollAccountsForOrders(
     console.warn(`[iress-ingest] positions derivation failed: ${msg}`);
   }
 
-  return { polled: accounts.length, upserted: rows.length, accounts };
+  return { polled: accounts.length, upserted: auditWritten, accounts };
 }

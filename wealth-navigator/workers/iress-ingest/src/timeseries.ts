@@ -130,8 +130,9 @@ export function loadTimeSeriesConfig(env: WorkerEnv): TimeSeriesConfig {
     // Inflation-linked bonds → the real yield curve (`ZAR_REAL`). I-series codes
     // self-describe the maturity year (I2033 → 2033). Codes that don't resolve
     // are skipped gracefully, so the curve uses whatever the feed returns.
+    // I2025 omitted — it returns "Invalid code/exchange" on YFX (doesn't exist
+    // on this feed). The remaining I-series resolve (confirmed: curve ok=14).
     realCodes: parseList(process.env.IRESS_TIMESERIES_REAL_CODES, [
-      "I2025",
       "I2029",
       "I2033",
       "I2038",

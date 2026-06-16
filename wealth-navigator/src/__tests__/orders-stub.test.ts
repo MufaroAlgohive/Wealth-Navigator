@@ -59,6 +59,8 @@ function makeSupabaseRecorder(upsertImpl?: (table: string, rows: unknown) => Pro
       },
       insert: async (rows: unknown) => {
         mutationCalls.push({ table, op: "insert", rows });
+        // Honour the same error impl as upsert so error-path tests cover insert.
+        if (upsertImpl) return upsertImpl(table, rows);
         return { error: null };
       },
       select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
@@ -136,12 +138,12 @@ describe("worker orders stub", () => {
     warnSpy.mockRestore();
   });
 
-  it("live-writes: calls supabase.upsert on oems_order_audit with mapped rows", async () => {
+  it("live-writes: mirrors orders into oems_order_audit (delete-then-insert, no unique constraint)", async () => {
     process.env.IRESS_WORKER_DRY_RUN = "0";
     process.env.SUPABASE_ALLOW_WRITES = "1";
     vi.resetModules();
 
-    const { client, upsertCalls } = makeSupabaseRecorder();
+    const { client, mutationCalls } = makeSupabaseRecorder();
     const env = makeWorkerEnv({ dryRun: false, allowWrites: true, iressMode: "mock" });
     const sessions = {} as never;
 
@@ -155,19 +157,20 @@ describe("worker orders stub", () => {
       accounts: ["MINT-LIVE-001"],
     });
 
-    // Mock orders adapter returns a non-empty list; the stub should upsert.
-    expect(upsertCalls.length).toBeGreaterThan(0);
-    expect(upsertCalls[0]?.table).toBe("oems_order_audit");
+    // oems_order_audit has no unique constraint on order_id → the worker must
+    // delete-then-insert (NOT upsert), or it errors "no unique constraint".
+    const auditMutations = mutationCalls.filter((m) => m.table === "oems_order_audit");
+    expect(auditMutations.some((m) => m.op === "insert")).toBe(true);
     expect(result.polled).toBe(1);
     expect(result.upserted).toBeGreaterThan(0);
   });
 
-  it("live-writes: snapshots positions into oems_position_c (delete-then-insert per account)", async () => {
+  it("live-writes: snapshots positions into oems_position_c (upsert + stale-clear)", async () => {
     process.env.IRESS_WORKER_DRY_RUN = "0";
     process.env.SUPABASE_ALLOW_WRITES = "1";
     vi.resetModules();
 
-    const { client, mutationCalls } = makeSupabaseRecorder();
+    const { client, mutationCalls, upsertCalls } = makeSupabaseRecorder();
     const env = makeWorkerEnv({ dryRun: false, allowWrites: true, iressMode: "mock" });
     const sessions = {} as never;
 
@@ -179,8 +182,9 @@ describe("worker orders stub", () => {
       accounts: ["MINT-LIVE-001"],
     });
 
-    // The positions snapshot always clears the account first; inserts only
-    // happen when there are net fills.
+    // Positions upsert on UNIQUE(account_code, security_code), then a
+    // batch-timestamp delete clears closed positions.
+    expect(upsertCalls.some((c) => c.table === "oems_position_c")).toBe(true);
     const positionMutations = mutationCalls.filter((m) => m.table === "oems_position_c");
     expect(positionMutations.some((m) => m.op === "delete")).toBe(true);
   });
