@@ -152,7 +152,7 @@ interface TimeSeriesProbeResult {
 
 // Bump on every deploy that touches the TimeSeriesGet2 wire shape so a probe
 // response confirms WHICH code is live (Railway deploy timing was opaque).
-const PROBE_BUILD = "ts-2026-06-15-rawsoap";
+const PROBE_BUILD = "ts-2026-06-16-svckey";
 
 /**
  * One-shot `TimeSeriesGet2` probe with the caller-supplied period
@@ -976,6 +976,17 @@ export async function handleRequest(
     const started = Date.now();
     try {
       const session = await deps.sessions.getSession();
+      // Placeholder substitution so we can probe putting the live session key in
+      // <Parameters> (some V4 methods read it there, not just the header):
+      //   "$IRESS_SESSION_KEY" → the live IRESSSessionKey
+      //   "$SERVICE_KEY:IOSPlus" → the cached IOS+ ServiceSessionKey (if any)
+      for (const k of Object.keys(parameters)) {
+        const v = parameters[k];
+        if (v === "$IRESS_SESSION_KEY") parameters[k] = session.iressSessionKey;
+        else if (typeof v === "string" && v.startsWith("$SERVICE_KEY:")) {
+          parameters[k] = session.serviceKeys[v.slice("$SERVICE_KEY:".length) as IressService] ?? "";
+        }
+      }
       const transport = createSoapTransport({
         baseUrl: process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4",
       });
