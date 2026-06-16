@@ -41,6 +41,8 @@ import type {
   ServiceSessionStartRequest,
   ServiceSessionStartResponse,
   TimeSeriesGet2Request,
+  SecuritySearchGetRequest,
+  SecuritySearchRow,
   IPSTransactionGetByAccount5Request,
   IPSAccountGetAll1Request,
   IPSAccountRow,
@@ -973,6 +975,28 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           t: r["t"] !== undefined ? Number(r["t"]) : r["TimeStamp"] !== undefined ? Date.parse(String(r["TimeStamp"])) : Date.now(),
           v: Number(r["v"] ?? r["Value"] ?? 0),
         })),
+      });
+    },
+
+    async securitySearchGet(req: SecuritySearchGetRequest): Promise<IressResponse<SecuritySearchRow>> {
+      requireSessionKey(req.Header, "SecuritySearchGet");
+      require(req.SearchText, "SearchText", "SecuritySearchGet");
+      const result = await transport.call({
+        method: "SecuritySearchGet",
+        header: makeHeader({
+          sessionKey: req.Header.SessionKey,
+          requestID: req.Header.RequestID,
+          timeout: req.Header.Timeout ?? 25,
+          pageSize: req.Header.PageSize ?? 1000,
+          waitForResponse: req.Header.WaitForResponse ?? true,
+        }),
+        parameters: { SearchText: req.SearchText },
+      });
+      return mapResponse<SecuritySearchRow>({
+        header: result.header,
+        // Rows are reference-data records; pass the raw fields through (callers
+        // read SecurityCode / Exchange / SecurityType / SecurityDescription / ISIN).
+        dataRows: result.dataRows.map((r) => r as unknown as SecuritySearchRow),
       });
     },
 

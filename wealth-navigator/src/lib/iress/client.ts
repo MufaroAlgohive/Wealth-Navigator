@@ -160,6 +160,24 @@ export interface TimeSeriesGet2Request {
   Date?: string;
 }
 
+export interface SecuritySearchGetRequest {
+  Header: IressHeader;
+  /** Free-text search; do NOT combine with a SecurityCode (faults 10065). */
+  SearchText: string;
+}
+
+export interface SecuritySearchRow {
+  SecurityCode: string;
+  Exchange: string;
+  /** e.g. "REPUBLIC OF SA 8% 31.01.2030" — carries coupon + maturity for bonds. */
+  SecurityDescription?: string;
+  /** 100=equity, 112=ETF, 401=bond, 606=spot-bond, 700=index, … */
+  SecurityType?: number;
+  ISIN?: string;
+  IssuerName?: string;
+  [k: string]: unknown;
+}
+
 // ─── Trading (IOS+) ─────────────────────────────────────────────────────
 
 export interface NewOrder {
@@ -282,6 +300,14 @@ export interface IressClient {
   pricingQuoteGetUpdates(req: { RequestID: string }): Promise<IressResponse<Quote>>;
   timeSeriesGet2(req: TimeSeriesGet2Request): Promise<IressResponse<{ t: number; v: number }>>;
   timeSeriesGet2Updates(req: { RequestID: string }): Promise<IressResponse<{ t: number; v: number }>>;
+  /**
+   * Security reference-data search. CONFIRMED callable on the CT build
+   * (2026-06-16) — it's how we discover the IRESS code / Exchange / SecurityType
+   * for an instrument (e.g. govt bonds on YFX, ETFs on JSE) and read the
+   * `SecurityDescription` (coupon + maturity for bonds). `SearchText` only —
+   * combining it with `SecurityCode` faults (10065). Base IRIS session.
+   */
+  securitySearchGet(req: SecuritySearchGetRequest): Promise<IressResponse<SecuritySearchRow>>;
 
   // ── trading (IOS+) ──────────────────────────────────────────────
   orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response>;

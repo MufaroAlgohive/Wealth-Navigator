@@ -13,6 +13,7 @@ import { runHealthLoop, gracefulStop } from "./health";
 import { pollAccountsForOrders } from "./orders";
 import { startHttpApi } from "./http-api";
 import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
+import { syncBondUniverse } from "./bonds";
 import { loadIpsConfig, syncIps } from "./ips";
 import { syncRetailPrices } from "./retail-ingest";
 
@@ -175,6 +176,27 @@ async function timeSeriesLoop(): Promise<void> {
           },
           errors: result.errors,
           entitlementRequired: result.entitlementRequired,
+        }),
+      );
+
+      // Bond universe → bonds_c (priced from the live YTM). Shares the curve's
+      // nominal basket + YFX/YFXD feed; runs on the same (slow) cadence.
+      const bondRes = await syncBondUniverse({
+        env,
+        sessions,
+        supabase,
+        codes: timeSeriesConfig.curveCodes,
+        exchange: timeSeriesConfig.curveExchange,
+        dataSource: timeSeriesConfig.curveDataSource,
+      });
+      console.info(
+        JSON.stringify({
+          level: "info",
+          event: "bond_universe_sync_complete",
+          source: "iress-worker",
+          requested: bondRes.requested,
+          priced: bondRes.priced,
+          errors: bondRes.errors,
         }),
       );
     } catch (err) {

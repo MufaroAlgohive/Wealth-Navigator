@@ -226,6 +226,10 @@ export const mockIressClient: IressClient = {
 
   async timeSeriesGet2Updates() { return ok([], 3); },
 
+  // Reference-data search — mock returns no rows (the live worker is the only
+  // caller; the UI never searches in mock mode).
+  async securitySearchGet() { return ok([]); },
+
   // ── trading ────────────────────────────────────────────────────
   async orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response> {
     // Idempotency: if a live order with the same OrderTag already exists, return it

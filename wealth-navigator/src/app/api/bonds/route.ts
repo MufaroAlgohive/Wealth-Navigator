@@ -1,11 +1,11 @@
 /**
  * GET /api/bonds
  *
- * DB-first read of the ZAR fixed-income universe from `bonds_c`.
- * Today the table is empty (no IRESS bond entitlement on production),
- * so the response is `{ bonds: [], source: "unavailable" }` and the
- * /oems/fixed-income page renders the "IRESS bond entitlement
- * required" empty state.
+ * DB-first read of the ZAR fixed-income universe from `bonds_c`. The worker
+ * (workers/iress-ingest/src/bonds.ts) populates this from the live IRESS YTM
+ * (TimeSeriesGet2 on YFX/YFXD) + reference terms (SecuritySearchGet) priced
+ * through the bond-pricer (clean/dirty, duration, DV01, convexity). Empty just
+ * means the worker's first bond snapshot hasn't landed yet.
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";

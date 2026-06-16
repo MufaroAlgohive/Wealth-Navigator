@@ -37,6 +37,7 @@ function makeMockLiveClient(overrides: Partial<IressClient> = {}): IressClient {
     pricingQuoteGetUpdates: vi.fn().mockResolvedValue({ Header: { StatusCode: 3 as const, ErrorNumber: 0 }, DataRows: [] }),
     timeSeriesGet2: vi.fn(),
     timeSeriesGet2Updates: vi.fn(),
+    securitySearchGet: vi.fn().mockResolvedValue({ Header: { StatusCode: 2 as const, ErrorNumber: 0 }, DataRows: [] }),
     orderCreate3: vi.fn(),
     orderAmend2: vi.fn(),
     orderDelete: vi.fn(),
