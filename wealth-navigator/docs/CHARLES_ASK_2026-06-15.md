@@ -3,6 +3,14 @@
 Account `DFM@MINT`, company `Mint`, endpoint `https://webservices-ct.iress.co.za/v4`.
 Scope: **IRIS (market data) + IOS+**.
 
+> **Framing (Andre is right — nothing is "blocked"):** the two remaining items are NOT
+> entitlement walls. They're missing **information** only IRESS has: (1) the exact reference-data
+> **codes/exchanges/DataSource** for non-equity instruments — we proved equities work but our
+> guesses for FX/index/curve/bonds don't resolve (empty `DataSource`); and (2) the working
+> **`ServiceSessionStart` SOAP** for IOS+ — Andre's example showed `OrderCreate3` (which already
+> had a `ServiceSessionKey`) but never the call that *creates* it, which is exactly where we fail.
+> Both are quick answers, like the `TimeSeriesFromDate` field that unblocked time-series.
+
 ## SOLVED on our side — TimeSeriesGet2 now works (it was our calling shape, as Andre said)
 Using Andre's working SOAP, the live CT shape is (the published WSDL sample is wrong here):
 - `<SecurityCode>` (not `<Code>`), `<Exchange>`
