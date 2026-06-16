@@ -951,6 +951,16 @@ export async function handleRequest(
       sendError(res, 400, "bad_request", '`method` is required (e.g. "TimeSeriesGet2")');
       return;
     }
+    // Safety: this endpoint is auth-off. Block order-mutating / session-ending
+    // methods unless explicitly allowed, so it can never place/cancel orders or
+    // tear down the worker's session once IOS+ is live. Read/probe methods
+    // (TimeSeriesGet2, PricingQuoteGet, ServiceSessionStart, …) stay open.
+    if (/order(create|amend|delete|cancel)|sessionend|sessionrequestend|ipsupload/i.test(method) &&
+        process.env.IRESS_ALLOW_MUTATIONS !== "1") {
+      sendError(res, 403, "mutation_blocked",
+        `Mutating method "${method}" is blocked on /debug/soap-raw (set IRESS_ALLOW_MUTATIONS=1 to override)`);
+      return;
+    }
     const parameters =
       b["parameters"] && typeof b["parameters"] === "object" && !Array.isArray(b["parameters"])
         ? (b["parameters"] as Record<string, unknown>)
