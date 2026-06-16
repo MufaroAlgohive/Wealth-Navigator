@@ -195,7 +195,10 @@ function JibarOrUsdzarSub({
   if (!primaryWorker) {
     return <span>Worker not configured — start Railway <span className="font-mono">Iress-Worker</span></span>;
   }
-  return <span>Worker has not polled <span className="font-mono">{sym}</span> yet</span>;
+  // JIBAR / USD-ZAR are not in this account's IRESS security master (FX spot +
+  // SARB/JIBAR rates aren't provisioned for DFM@MINT — confirmed via
+  // SecuritySearchGet). Not a "pending poll"; it needs IRESS to enable the feed.
+  return <span><span className="font-mono">{sym}</span> not in this account&apos;s IRESS feed (FX/rates not provisioned)</span>;
 }
 
 /**

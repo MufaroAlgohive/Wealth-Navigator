@@ -194,6 +194,34 @@ export async function GET() {
   const positions = (positionsRes.data ?? []) as PositionRow[];
   const recentTx = (txRes.data ?? []) as TransactionRow[];
 
+  // Mark positions to market from securities_c.last_price (cents) when a live
+  // quote exists for the symbol. market_value = qty × price(Rands); open_pl =
+  // MV − qty × open_average_price. Positions without a quote keep null MV/PL
+  // (the UI shows "—"), so we never fabricate a mark. NOTE: on the CT (test)
+  // account the fill prices are test data, so the resulting P&L is illustrative
+  // until production fills land.
+  if (positions.length > 0) {
+    const symbols = [...new Set(positions.map((p) => p.security_code).filter(Boolean))];
+    const { data: secRows } = await supabase
+      .from("securities_c")
+      .select("symbol, last_price")
+      .in("symbol", symbols);
+    const priceCentsBySymbol = new Map<string, number>();
+    for (const s of (secRows ?? []) as { symbol: string; last_price: number | null }[]) {
+      const c = Number(s.last_price);
+      if (Number.isFinite(c) && c > 0) priceCentsBySymbol.set(s.symbol, c);
+    }
+    for (const p of positions) {
+      if (p.market_value != null) continue; // worker already supplied a mark
+      const cents = priceCentsBySymbol.get(p.security_code);
+      if (cents == null) continue;
+      const priceRands = cents / 100;
+      const mv = Number((p.quantity * priceRands).toFixed(2));
+      p.market_value = mv;
+      p.open_pl = Number((mv - (Number(p.open_average_price) || 0) * p.quantity).toFixed(2));
+    }
+  }
+
   const aum = accounts.reduce((acc, a) => acc + (Number(a.nav_value) || 0), 0);
   const cashBalance = accounts.reduce((acc, a) => acc + (Number(a.cash_balance) || 0), 0);
 
