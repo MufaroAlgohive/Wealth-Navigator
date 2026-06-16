@@ -94,7 +94,10 @@ export interface TimeSeriesSyncResult {
 export interface TimeSeriesConfig {
   indexCodes: string[];
   sectorCodes: string[];
+  /** Nominal ZAR govt curve constituents (GOVI basket) → curve_id `ZAR_NSS`. */
   curveCodes: string[];
+  /** Inflation-linked (ILB) curve constituents → curve_id `ZAR_REAL`. */
+  realCodes: string[];
   /** Exchange for the curve/bond codes — CONFIRMED `YFX` for ZAR govt bonds. */
   curveExchange: string;
   /** DataSource for the curve/bond codes — CONFIRMED `YFXD` (NOT JSED). */
@@ -109,18 +112,31 @@ export function loadTimeSeriesConfig(env: WorkerEnv): TimeSeriesConfig {
     // CONFIRMED live (2026-06-16): the ZAR govt yield curve is the GOVI-basket
     // bonds on Exchange=YFX, DataSource=YFXD. The earlier "Invalid code/exchange"
     // / "Invalid access" failures were the WRONG exchange+feed (JSE/JSED), not a
-    // missing entitlement — TimeSeriesGet2(R2030, YFX, YFXD) returns the full
-    // yield history. SecuritySearchGet was used to discover the codes/exchange.
+    // missing entitlement — TimeSeriesGet2(R2030, YFX, YFXD) returns full yield
+    // history. SecuritySearchGet was used to discover the codes/exchange. These
+    // constituents are written as tenor points of one curve (`ZAR_NSS`), which
+    // is what /api/curves/ZAR_NSS reads.
     curveCodes: parseList(process.env.IRESS_TIMESERIES_CURVE_CODES, [
       "R186",
       "R2030",
+      "R213",
       "R2032",
       "R2035",
       "R2037",
       "R2040",
       "R2044",
       "R2048",
-      "R213",
+    ]),
+    // Inflation-linked bonds → the real yield curve (`ZAR_REAL`). I-series codes
+    // self-describe the maturity year (I2033 → 2033). Codes that don't resolve
+    // are skipped gracefully, so the curve uses whatever the feed returns.
+    realCodes: parseList(process.env.IRESS_TIMESERIES_REAL_CODES, [
+      "I2025",
+      "I2029",
+      "I2033",
+      "I2038",
+      "I2046",
+      "I2050",
     ]),
     curveExchange: (process.env.IRESS_TIMESERIES_CURVE_EXCHANGE ?? "YFX").trim() || "YFX",
     curveDataSource: (process.env.IRESS_TIMESERIES_CURVE_DATASOURCE ?? "YFXD").trim() || "YFXD",
@@ -416,68 +432,115 @@ async function insertSectorPoints(
   return rows.length;
 }
 
-async function insertCurvePoints(
-  supabase: WorkerSupabase | null,
-  env: WorkerEnv,
-  curveId: string,
-  points: Array<{ t: number; v: number }>,
-): Promise<number> {
-  if (!supabase || env.dryRun || !env.allowWrites) {
-    if (points.length > 0) {
-      console.info(
-        JSON.stringify({
-          level: "info",
-          event: "would_upsert_yield_curve_history_c",
-          source: "iress-worker",
-          curve_id: curveId,
-          count: points.length,
-        }),
-      );
-    }
-    return points.length;
+/**
+ * Maturity year overrides for legacy-numbered ZAR bonds whose code does NOT
+ * encode the maturity year (modern benchmarks like R2030 / I2033 do). Used
+ * only to position the tenor on the curve x-axis — the yields come straight
+ * off IRESS.
+ */
+const BOND_MATURITY_YEAR: Record<string, number> = {
+  R186: 2026,
+  R213: 2031,
+  R209: 2036,
+  R197: 2023,
+  R202: 2033,
+  R210: 2028,
+};
+
+/** Tenor in years from a bond code (embedded year, with a legacy override). */
+function bondTenorYears(code: string): number {
+  const c = code.toUpperCase();
+  const explicit = BOND_MATURITY_YEAR[c];
+  let year = explicit ?? 0;
+  if (!year) {
+    const m = c.match(/(\d{4})/); // R2030 → 2030, I2033 → 2033
+    year = m ? Number(m[1]) : 0;
   }
-  // Bond curve: we treat each point as a tenor in the row itself. The
-  // series returns one point per date; we upsert on (curve_id, as_of) so
-  // reruns replace, not duplicate. Tenor label + years fall back to the
-  // curve_id when IRESS doesn't return a richer schema (the schema in
-  // `TimeSeriesGet2` for bond codes is a single yield column per date —
-  // tenor is implicit in the curve_id we asked for).
-  const lastPoint = points[points.length - 1];
-  if (!lastPoint) return 0;
-  // YFX bond yields arrive as a decimal fraction (e.g. 0.0809 = 8.09%); the
-  // `yield_pct` column is a percentage, so scale fractional values up. A value
-  // already ≥ 1 is assumed to be in percent already and left as-is.
-  const yieldPct = lastPoint.v > 0 && lastPoint.v < 1 ? Number((lastPoint.v * 100).toFixed(4)) : lastPoint.v;
-  const row: YieldCurveRow = {
-    curve_id: curveId,
-    tenor_label: curveId,
-    tenor_years: parseTenorYears(curveId),
-    yield_pct: yieldPct,
-    as_of: new Date(lastPoint.t).toISOString(),
-    source: "iress-worker",
-  };
-  const { error } = await supabase
-    .from("yield_curve_history_c")
-    .upsert(row, { onConflict: "curve_id,as_of" });
-  if (error) {
-    console.warn(`[iress-ingest] yield_curve_history_c upsert(${curveId}) failed: ${error.message}`);
-    return 0;
-  }
-  return 1;
+  if (!year) return 0;
+  const now = new Date();
+  const nowFractional = now.getUTCFullYear() + now.getUTCMonth() / 12;
+  return Math.max(0.05, Number((year - nowFractional).toFixed(2)));
 }
 
 /**
- * Best-effort parse of "R2030" → 2030 → ~9.5y to maturity. Real bond
- * metadata lives in `securities_c`; this is a fallback for the Cockpit
- * chart's x-axis so the curve renders something usable until the bond
- * is registered.
+ * Build + persist a multi-tenor curve snapshot (e.g. `ZAR_NSS` / `ZAR_REAL`)
+ * from its constituent bond codes. Each constituent contributes one tenor
+ * point (latest yield); all tenors share one `as_of` (the latest data date)
+ * so `/api/curves/<id>` returns a single clean fitted curve ordered by tenor.
+ *
+ * The table has no unique constraint, so we INSERT one snapshot per data date
+ * and SKIP if a snapshot for that date already exists — avoids duplicate tenor
+ * rows while retaining daily history (bond data is EOD, so one curve/day).
  */
-function parseTenorYears(code: string): number {
-  const m = code.match(/R(\d{4})/i);
-  if (!m) return 0;
-  const year = Number(m[1]);
-  const thisYear = new Date().getUTCFullYear();
-  return Math.max(0, year - thisYear);
+async function syncCurveSnapshot(
+  opts: { sessions: WorkerSessionManager; supabase: WorkerSupabase | null; env: WorkerEnv; isLive: boolean },
+  curveId: string,
+  codes: string[],
+  exchange: string,
+  dataSource: string,
+): Promise<{ tenors: number; entitlementRequired: boolean }> {
+  const { sessions, supabase, env, isLive } = opts;
+  let entitlementRequired = false;
+  const tenors: Array<{ code: string; tenorYears: number; yieldPct: number; dateMs: number }> = [];
+
+  for (const code of codes) {
+    try {
+      const res = isLive
+        ? await fetchSeries(sessions, code, exchange, undefined, dataSource)
+        : { points: await fetchMockSeries(code, exchange), entitlementRequired: false };
+      if (res.entitlementRequired) entitlementRequired = true;
+      const last = res.points[res.points.length - 1];
+      if (!last || !(last.v > 0)) continue; // skip codes the feed doesn't carry
+      // YFX bond yields arrive as a decimal fraction (0.0809 = 8.09%); the
+      // yield_pct column is a percentage. A value already ≥ 1 is left as-is.
+      const yieldPct = last.v < 1 ? Number((last.v * 100).toFixed(4)) : last.v;
+      tenors.push({ code, tenorYears: bondTenorYears(code), yieldPct, dateMs: last.t });
+    } catch (err) {
+      if (isIressSessionDeadError(err)) throw err;
+      console.warn(`[iress-ingest] curve(${curveId}/${code}) failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  if (tenors.length === 0) return { tenors: 0, entitlementRequired };
+
+  // Single as_of for the whole curve = the latest constituent data date.
+  const asOf = new Date(Math.max(...tenors.map((t) => t.dateMs))).toISOString();
+  tenors.sort((a, b) => a.tenorYears - b.tenorYears);
+
+  if (!supabase || env.dryRun || !env.allowWrites) {
+    console.info(
+      JSON.stringify({ level: "info", event: "would_upsert_yield_curve_history_c", curve_id: curveId, tenors: tenors.length, asOf }),
+    );
+    return { tenors: tenors.length, entitlementRequired };
+  }
+
+  // Idempotent per data date: skip if a snapshot for this date already exists.
+  const { data: latestRows } = await supabase
+    .from("yield_curve_history_c")
+    .select("as_of")
+    .eq("curve_id", curveId)
+    .order("as_of", { ascending: false })
+    .limit(1);
+  const latestAsOf = (latestRows ?? [])[0]?.as_of as string | undefined;
+  if (latestAsOf && latestAsOf.slice(0, 10) === asOf.slice(0, 10)) {
+    return { tenors: tenors.length, entitlementRequired }; // already have today's curve
+  }
+
+  const rows: YieldCurveRow[] = tenors.map((t) => ({
+    curve_id: curveId,
+    tenor_label: t.code,
+    tenor_years: t.tenorYears,
+    yield_pct: t.yieldPct,
+    as_of: asOf,
+    source: "iress-worker",
+  }));
+  const { error } = await supabase.from("yield_curve_history_c").insert(rows);
+  if (error) {
+    console.warn(`[iress-ingest] yield_curve_history_c insert(${curveId}) failed: ${error.message}`);
+    return { tenors: 0, entitlementRequired };
+  }
+  console.info(JSON.stringify({ level: "info", event: "yield_curve_snapshot", curve_id: curveId, tenors: rows.length, asOf }));
+  return { tenors: rows.length, entitlementRequired };
 }
 
 export interface TimeSeriesSyncOptions {
@@ -605,57 +668,44 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
     }
   }
 
-  for (const code of config.curveCodes) {
+  // Curves: build each as a single multi-tenor snapshot from its constituent
+  // bonds (ZAR_NSS = GOVI nominal basket, ZAR_REAL = ILB basket), so
+  // /api/curves/<id> returns one fitted curve ordered by tenor.
+  const curveSpecs: Array<{ curveId: string; codes: string[] }> = [
+    { curveId: "ZAR_NSS", codes: config.curveCodes },
+    { curveId: "ZAR_REAL", codes: config.realCodes },
+  ];
+  for (const spec of curveSpecs) {
+    if (spec.codes.length === 0) continue;
     try {
       const t0 = Date.now();
-      const res = isLive
-        ? await fetchSeries(sessions, code, config.curveExchange, undefined, config.curveDataSource)
-        : { points: await fetchMockSeries(code, config.curveExchange), entitlementRequired: false };
+      const res = await syncCurveSnapshot(
+        { sessions, supabase, env, isLive },
+        spec.curveId,
+        spec.codes,
+        config.curveExchange,
+        config.curveDataSource,
+      );
+      if (res.entitlementRequired) entitlementRequired = true;
+      curvePoints += res.tenors;
       recordWorkerEvent({
-        level: "info",
-        event: "iress_call_complete",
-        msg: `TimeSeriesGet2(${code}/${config.curveExchange}) returned ${res.points.length} points`,
+        level: res.tenors > 0 ? "info" : "warn",
+        event: res.tenors > 0 ? "iress_call_complete" : "time_series_no_data",
+        msg: `Curve ${spec.curveId} (${config.curveExchange}/${config.curveDataSource}) → ${res.tenors} tenors`,
         data: {
           method: "TimeSeriesGet2",
           series: "curve",
-          code,
+          code: spec.curveId,
           exchange: config.curveExchange,
           dataSource: config.curveDataSource,
           elapsedMs: Date.now() - t0,
-          points: res.points.length,
+          points: res.tenors,
         },
       });
-      if (res.entitlementRequired) entitlementRequired = true;
-      if (res.points.length === 0) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            event: res.entitlementRequired ? "time_series_entitlement_missing" : "time_series_no_data",
-            source: "iress-worker",
-            series: "curve",
-            code,
-            iressMode: env.iressMode,
-            msg: res.entitlementRequired
-              ? `TimeSeriesGet2 entitlement required for ${code} (25014 or license seat). Ask Charles to enable on production account.`
-              : `No data returned for ${code} — likely no entitlement, holiday, or market closed.`,
-          }),
-        );
-        recordWorkerEvent({
-          level: "warn",
-          event: res.entitlementRequired ? "time_series_entitlement_missing" : "time_series_no_data",
-          msg: res.entitlementRequired
-            ? `TimeSeriesGet2 entitlement required for ${code} (curve) — ask Charles to enable`
-            : `No data returned for ${code} (curve) — likely no entitlement, holiday, or market closed`,
-          data: { series: "curve", code, iressMode: env.iressMode },
-        });
-        continue;
-      }
-      curvePoints += await insertCurvePoints(supabase, env, code, res.points);
     } catch (err) {
       if (isIressSessionDeadError(err)) throw err;
       errors += 1;
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[iress-ingest] curve sync(${code}) failed: ${msg}`);
+      console.warn(`[iress-ingest] curve sync(${spec.curveId}) failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -665,7 +715,7 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
     curvePoints,
     requestedIndex: config.indexCodes.length,
     requestedSector: config.sectorCodes.length,
-    requestedCurve: config.curveCodes.length,
+    requestedCurve: config.curveCodes.length + config.realCodes.length,
     entitlementRequired,
     errors,
   };

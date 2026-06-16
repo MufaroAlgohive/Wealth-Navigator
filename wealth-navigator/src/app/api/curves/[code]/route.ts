@@ -72,11 +72,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
     }
     const supabase = createServiceRoleClient();
 
-    // ZAR_NSS / ZAR_GOVI are fitted curves — read all tenors at the
-    // latest as_of in a single query. Bond codes (R2030, R2035, ...)
-    // return a single point per row (the worker's bond upsert is one
-    // yield column per date per bond code).
-    if (code === "ZAR_NSS" || code === "ZAR_GOVI") {
+    // Fitted curves (ZAR_NSS nominal, ZAR_GOVI, ZAR_REAL inflation-linked) are
+    // multi-tenor — read all tenors at the latest as_of in a single query. Bond
+    // codes (R2030, R2035, ...) return a single point per row.
+    const FITTED_CURVES = new Set(["ZAR_NSS", "ZAR_GOVI", "ZAR_REAL"]);
+    if (FITTED_CURVES.has(code)) {
       // Get the latest as_of for this curve_id.
       const { data: latestRows, error: latestErr } = await supabase
         .from("yield_curve_history_c")
@@ -104,14 +104,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ code: s
         return Response.json({
           code,
           points: [],
-          source: useSupabase ? "entitlement-required" : "seed-fallback",
-          reason: "entitlement_blocked" as BffUnavailableReason,
+          source: useSupabase ? "pending-first-write" : "seed-fallback",
+          reason: "empty" as BffUnavailableReason,
           message:
-            "No ZAR curve time-series on the prod-test (CT) feed. TimeSeriesGet2 itself " +
-            "works (confirmed live for equities); the bond/curve feed returns no data on CT " +
-            "(R-codes quote with an empty DataSource). Needs the NSS/GOVI curve code + its " +
-            "DataSource confirmed and enabled for DFM@MINT by IRESS, or production.",
-          hint: "Worker calls TimeSeriesGet2 OK but gets 0 rows for curve codes on CT. Awaiting the curve code + DataSource from IRESS/Andre.",
+            `No ${code} curve snapshot in the table yet. The worker builds this curve from ` +
+            "the YFX/YFXD bond basket (TimeSeriesGet2 confirmed working) on its time-series " +
+            "loop — wait one poll interval after the worker (re)starts for the first snapshot.",
+          hint: "If this persists, check the worker's IRESS_TIMESERIES_CURVE_CODES / IRESS_TIMESERIES_REAL_CODES and that the time-series loop is running.",
         });
       }
       const { data: rows, error: rowsErr } = await supabase
