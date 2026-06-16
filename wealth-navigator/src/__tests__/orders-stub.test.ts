@@ -24,11 +24,19 @@ interface UpsertCall {
   options?: unknown;
 }
 
+interface MutationCall {
+  table: string;
+  op: "delete" | "insert";
+  rows?: unknown;
+}
+
 function makeSupabaseRecorder(upsertImpl?: (table: string, rows: unknown) => Promise<{ error: { message: string } | null }>): {
   client: SupabaseClient;
   upsertCalls: UpsertCall[];
+  mutationCalls: MutationCall[];
 } {
   const upsertCalls: UpsertCall[] = [];
+  const mutationCalls: MutationCall[] = [];
   const client = {
     from: (table: string) => ({
       upsert: async (rows: unknown, options?: unknown) => {
@@ -36,10 +44,21 @@ function makeSupabaseRecorder(upsertImpl?: (table: string, rows: unknown) => Pro
         if (upsertImpl) return upsertImpl(table, rows);
         return { error: null };
       },
+      // Positions snapshot: delete(...).in(...) then insert(...).
+      delete: () => ({
+        in: async () => {
+          mutationCalls.push({ table, op: "delete" });
+          return { error: null };
+        },
+      }),
+      insert: async (rows: unknown) => {
+        mutationCalls.push({ table, op: "insert", rows });
+        return { error: null };
+      },
       select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
     }),
   } as unknown as SupabaseClient;
-  return { client, upsertCalls };
+  return { client, upsertCalls, mutationCalls };
 }
 
 function makeWorkerEnv(overrides: Partial<{
@@ -137,6 +156,29 @@ describe("worker orders stub", () => {
     expect(result.upserted).toBeGreaterThan(0);
   });
 
+  it("live-writes: snapshots positions into oems_position_c (delete-then-insert per account)", async () => {
+    process.env.IRESS_WORKER_DRY_RUN = "0";
+    process.env.SUPABASE_ALLOW_WRITES = "1";
+    vi.resetModules();
+
+    const { client, mutationCalls } = makeSupabaseRecorder();
+    const env = makeWorkerEnv({ dryRun: false, allowWrites: true, iressMode: "mock" });
+    const sessions = {} as never;
+
+    const { pollAccountsForOrders } = await import("../../workers/iress-ingest/src/orders");
+    await pollAccountsForOrders({
+      env,
+      sessions,
+      supabase: client,
+      accounts: ["MINT-LIVE-001"],
+    });
+
+    // The positions snapshot always clears the account first; inserts only
+    // happen when there are net fills.
+    const positionMutations = mutationCalls.filter((m) => m.table === "oems_position_c");
+    expect(positionMutations.some((m) => m.op === "delete")).toBe(true);
+  });
+
   it("empty account list is a no-op", async () => {
     vi.resetModules();
     const { client, upsertCalls } = makeSupabaseRecorder();
@@ -176,5 +218,91 @@ describe("worker orders stub", () => {
     expect(result.upserted).toBe(0);
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+});
+
+describe("derivePositions (positions-from-fills)", () => {
+  // Minimal Order factory — only the fields derivePositions reads matter.
+  function order(o: Partial<{
+    account: string;
+    symbol: string;
+    side: "BUY" | "SELL";
+    filled: number;
+    avgPx: number;
+  }>) {
+    return {
+      id: "ord",
+      account: o.account ?? "ACC-1",
+      strategy: "(unspecified)",
+      side: o.side ?? "BUY",
+      symbol: o.symbol ?? "NPN",
+      isin: "ZZZ",
+      type: "LMT",
+      tif: "DAY",
+      destination: "JSE",
+      qty: 100,
+      filled: o.filled ?? 0,
+      limit: null,
+      stop: null,
+      avgPx: o.avgPx ?? 0,
+      vwap: 0,
+      trader: "(current user)",
+      ts: 0,
+      state: "FILLED",
+      slippageBps: 0,
+      arrivalMid: 0,
+      orderTag: "",
+    } as unknown as import("@/types/iress").Order;
+  }
+
+  it("returns an empty array when no orders have fills (the demo book's correct empty state)", async () => {
+    const { derivePositions } = await import("../../workers/iress-ingest/src/orders");
+    const positions = derivePositions([
+      order({ filled: 0 }),
+      order({ filled: 0, side: "SELL" }),
+    ]);
+    expect(positions).toEqual([]);
+  });
+
+  it("nets buy/sell fills per account+security and volume-weights the open average price", async () => {
+    const { derivePositions } = await import("../../workers/iress-ingest/src/orders");
+    const positions = derivePositions([
+      order({ symbol: "NPN", side: "BUY", filled: 100, avgPx: 61000 }), // 100 @ R610.00
+      order({ symbol: "NPN", side: "BUY", filled: 100, avgPx: 63000 }), // 100 @ R630.00
+      order({ symbol: "NPN", side: "SELL", filled: 50, avgPx: 64000 }), // -50 (does not affect buy avg)
+    ]);
+    expect(positions).toHaveLength(1);
+    const p = positions[0]!;
+    expect(p.account_code).toBe("ACC-1");
+    expect(p.security_code).toBe("NPN");
+    expect(p.quantity).toBe(150); // 100 + 100 - 50
+    // Volume-weighted buy price = (100*61000 + 100*63000) / 200 = 62000 cents → R620.00
+    expect(p.open_average_price).toBeCloseTo(620, 4);
+    expect(p.currency).toBe("ZAR");
+    expect(p.market_value).toBeNull();
+  });
+
+  it("drops positions that net to zero (fully closed)", async () => {
+    const { derivePositions } = await import("../../workers/iress-ingest/src/orders");
+    const positions = derivePositions([
+      order({ symbol: "SOL", side: "BUY", filled: 80, avgPx: 17800 }),
+      order({ symbol: "SOL", side: "SELL", filled: 80, avgPx: 18000 }),
+    ]);
+    expect(positions).toEqual([]);
+  });
+
+  it("keeps separate accounts and securities apart", async () => {
+    const { derivePositions } = await import("../../workers/iress-ingest/src/orders");
+    const positions = derivePositions([
+      order({ account: "ACC-1", symbol: "NPN", side: "BUY", filled: 10, avgPx: 61000 }),
+      order({ account: "ACC-2", symbol: "NPN", side: "BUY", filled: 20, avgPx: 61000 }),
+      order({ account: "ACC-1", symbol: "AGL", side: "BUY", filled: 30, avgPx: 50000 }),
+    ]);
+    expect(positions).toHaveLength(3);
+    const key = (p: { account_code: string; security_code: string }) => `${p.account_code}|${p.security_code}`;
+    const byKey = new Map(positions.map((p) => [key(p), p]));
+    expect(byKey.get("ACC-1|NPN")?.quantity).toBe(10);
+    expect(byKey.get("ACC-2|NPN")?.quantity).toBe(20);
+    expect(byKey.get("ACC-1|AGL")?.quantity).toBe(30);
   });
 });

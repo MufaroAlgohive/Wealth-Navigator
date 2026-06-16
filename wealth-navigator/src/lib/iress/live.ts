@@ -555,38 +555,61 @@ function emptyQuote(): Quote {
 function mapOrder(row: Record<string, unknown>): Order {
   const str = (k: string) => String(row[k] ?? "");
   const num = (k: string) => Number(row[k] ?? 0);
-  const side: OrderSide = num("BuySell") === 1 ? "BUY" : "SELL";
-  const tif = str("TimeInForce") as Order["tif"];
-  const type = str("OrderType") as Order["type"];
-  const destination = str("Destination") as Order["destination"];
+  // Has a usable scalar value (the CT build returns {"@_xsi:nil":true} for nulls).
+  const has = (k: string) => row[k] !== undefined && row[k] !== null && typeof row[k] !== "object";
+  // CT IOS+ OrderPad field names — CONFIRMED live (2026-06-16). The published /
+  // assumed names (Volume / FilledVolume / BuySell(num) / Price / OrderState=
+  // WORKING) do NOT match this build; it uses OrderVolume / DoneVolumeTotal /
+  // BuyOrSell("B"|"S") / OrderPrice / OrderState("ACTIVE"|"INACTIVE") with the
+  // finer status in InternalOrderStatus / StateDescription.
+  const side: OrderSide = str("BuyOrSell").trim().toUpperCase().startsWith("S") ? "SELL" : "BUY";
+  const ordVol = num("OrderVolume");
+  const done = num("DoneVolumeTotal");
+  const rawState = str("OrderState").trim().toUpperCase();
+  const state: Order["state"] = ((): Order["state"] => {
+    if (ordVol > 0 && done >= ordVol) return "FILLED";
+    if (rawState === "ACTIVE") return done > 0 ? "PARTIAL" : "WORKING";
+    // INACTIVE / expired / purged / rejected
+    if (done > 0) return "FILLED";
+    return "CANCELLED";
+  })();
+  const pricing = str("PricingInstructions").toUpperCase();
+  const life = str("Lifetime").toUpperCase();
   return {
     id: str("OrderNumber"),
-    parentId: row["ParentOrderNumber"] ? str("ParentOrderNumber") : undefined,
+    parentId: num("ParentOrderNumber") > 0 ? str("ParentOrderNumber") : undefined,
     account: str("AccountCode"),
-    strategy: row["Strategy"] ? str("Strategy") : "(unspecified)",
+    strategy: row["OrderGroup"] && str("OrderGroup") ? str("OrderGroup") : "(unspecified)",
     side,
     symbol: str("SecurityCode"),
     isin: row["ISIN"] ? str("ISIN") : "ZZZ",
-    type: (["MKT", "LMT", "STP", "STP_LMT"] as const).includes(type as never) ? (type as Order["type"]) : "LMT",
-    tif: (["DAY", "IOC", "FOK", "GTC"] as const).includes(tif as never) ? (tif as Order["tif"]) : "DAY",
-    destination: (["JSE", "NASDAQ", "NYSE", "LSE", "OTC", "DARK"] as const).includes(destination as never) ? (destination as Order["destination"]) : "JSE",
-    qty: num("Volume"),
-    filled: num("FilledVolume"),
-    limit: row["Price"] === undefined ? null : num("Price"),
-    stop: row["TriggerPrice"] === undefined ? null : num("TriggerPrice"),
+    type: pricing.includes("MARKET") ? "MKT" : pricing.includes("STOP") ? "STP" : "LMT",
+    tif: life.includes("CANCEL") ? "GTC" : life.includes("IMMEDIATE") ? "IOC" : life.includes("FILL OR KILL") ? "FOK" : "DAY",
+    // Destination on this build is free-text (e.g. "LONGMARK CARE"); the typed
+    // field is a strict enum, so fold anything unrecognised to "JSE" (the raw
+    // value is preserved in the audit payload).
+    destination: (["JSE", "NASDAQ", "NYSE", "LSE", "OTC", "DARK"] as const).includes(
+      str("Destination").toUpperCase() as never,
+    )
+      ? (str("Destination").toUpperCase() as Order["destination"])
+      : "JSE",
+    qty: ordVol,
+    filled: done,
+    limit: has("OrderPrice") ? num("OrderPrice") : null,
+    stop: has("TriggerPrice") ? num("TriggerPrice") : null,
     avgPx: num("AveragePrice"),
-    vwap: num("VWAP"),
-    trader: row["Trader"] ? str("Trader") : "(current user)",
-    ts: row["LastUpdate"] ? Date.parse(String(row["LastUpdate"])) || Date.now() : Date.now(),
-    state: ((): Order["state"] => {
-      const s = str("OrderState").toUpperCase();
-      if (s === "WORKING" || s === "PARTIAL" || s === "FILLED" || s === "CANCELLED" || s === "REJECTED") return s;
-      return "WORKING";
-    })(),
-    rejectReason: row["RejectReason"] ? str("RejectReason") : undefined,
-    slippageBps: num("SlippageBps"),
-    arrivalMid: num("ArrivalMid"),
-    orderTag: str("OrderTag") || "",
+    vwap: num("AveragePrice"),
+    trader: has("WorkedByUserCode") ? str("WorkedByUserCode") : "(current user)",
+    ts: row["UpdateDateTime"]
+      ? Date.parse(String(row["UpdateDateTime"])) || Date.now()
+      : row["CreateDateTime"]
+        ? Date.parse(String(row["CreateDateTime"])) || Date.now()
+        : Date.now(),
+    state,
+    rejectReason: state === "CANCELLED" && row["StateDescription"] ? str("StateDescription") : undefined,
+    slippageBps: 0,
+    arrivalMid: 0,
+    orderTag: str("OrderTag") || str("SecondaryClientOrderID") || "",
   };
 }
 

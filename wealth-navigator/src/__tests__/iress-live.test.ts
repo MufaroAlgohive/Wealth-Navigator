@@ -922,6 +922,93 @@ describe("live client end-to-end with a fake transport", () => {
     expect((err as IressError).code).toBe(25010);
     expect((err as IressError).method).toBe("OrderNoGetByOrderTag");
   });
+
+  it("orderPadGetByAccount maps the real CT OrderPad fields (BuyOrSell/OrderVolume/DoneVolumeTotal/OrderPrice/OrderState)", async () => {
+    // Field names confirmed against the live CT build (2026-06-16) — they do
+    // NOT match the published WSDL sample (Volume/FilledVolume/BuySell/Price).
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          `<?xml version="1.0"?>
+      <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+        <soap:Body>
+          <OrderPadGetByAccountResponse xmlns="${IRESS_NS}">
+            <Output>
+              <Result>
+                <Header>
+                  <RequestID>pad-1</RequestID>
+                  <StatusCode>2</StatusCode>
+                  <ErrorNumber>0</ErrorNumber>
+                </Header>
+                <DataRows>
+                  <DataRow>
+                    <OrderNumber>ORD-5001</OrderNumber>
+                    <AccountCode>56378</AccountCode>
+                    <SecurityCode>NPN</SecurityCode>
+                    <BuyOrSell>B</BuyOrSell>
+                    <OrderVolume>100</OrderVolume>
+                    <DoneVolumeTotal>40</DoneVolumeTotal>
+                    <OrderPrice>61000</OrderPrice>
+                    <AveragePrice>60950</AveragePrice>
+                    <OrderState>ACTIVE</OrderState>
+                    <PricingInstructions>LIMIT</PricingInstructions>
+                    <Lifetime>GOOD TILL CANCEL</Lifetime>
+                    <Destination>LONGMARK CARE</Destination>
+                    <OrderTag>mint-ord-aaa</OrderTag>
+                  </DataRow>
+                  <DataRow>
+                    <OrderNumber>ORD-5002</OrderNumber>
+                    <AccountCode>56378</AccountCode>
+                    <SecurityCode>SOL</SecurityCode>
+                    <BuyOrSell>S</BuyOrSell>
+                    <OrderVolume>80</OrderVolume>
+                    <DoneVolumeTotal>0</DoneVolumeTotal>
+                    <OrderPrice>17800</OrderPrice>
+                    <AveragePrice>0</AveragePrice>
+                    <OrderState>INACTIVE</OrderState>
+                    <PricingInstructions>AT MARKET</PricingInstructions>
+                    <Lifetime>DAY</Lifetime>
+                  </DataRow>
+                </DataRows>
+              </Result>
+            </Output>
+          </OrderPadGetByAccountResponse>
+        </soap:Body>
+      </soap:Envelope>`,
+          { status: 200, headers: { "Content-Type": "text/xml" } },
+        ),
+    );
+    const transport = await createTransportWithFetch(fetchImpl);
+    const client = createLiveIressClient({ transport });
+    const res = await client.orderPadGetByAccount({
+      ServiceSessionKey: "ssk",
+      AccountCode: "56378",
+      OrderFilter: 3,
+      RequestID: "pad-1",
+    });
+    expect(res.DataRows).toHaveLength(2);
+
+    const buy = res.DataRows[0]!;
+    expect(buy.id).toBe("ORD-5001");
+    expect(buy.account).toBe("56378");
+    expect(buy.symbol).toBe("NPN");
+    expect(buy.side).toBe("BUY"); // BuyOrSell="B"
+    expect(buy.qty).toBe(100); // OrderVolume
+    expect(buy.filled).toBe(40); // DoneVolumeTotal
+    expect(buy.limit).toBe(61000); // OrderPrice
+    expect(buy.avgPx).toBe(60950); // AveragePrice
+    expect(buy.type).toBe("LMT"); // PricingInstructions="LIMIT"
+    expect(buy.tif).toBe("GTC"); // Lifetime="GOOD TILL CANCEL"
+    expect(buy.destination).toBe("JSE"); // free-text "LONGMARK CARE" folds to JSE
+    expect(buy.state).toBe("PARTIAL"); // ACTIVE + partial fill
+
+    const sell = res.DataRows[1]!;
+    expect(sell.side).toBe("SELL"); // BuyOrSell="S"
+    expect(sell.qty).toBe(80);
+    expect(sell.filled).toBe(0);
+    expect(sell.type).toBe("MKT"); // "AT MARKET"
+    expect(sell.state).toBe("CANCELLED"); // INACTIVE + no fill
+  });
 });
 
 // Helper: import the createSoapTransport factory and bind a custom fetch.

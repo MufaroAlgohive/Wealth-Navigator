@@ -93,6 +93,67 @@ function toAuditRow(order: Order): OrderAuditRow {
   };
 }
 
+interface PositionUpsertRow {
+  account_code: string;
+  security_code: string;
+  exchange: string | null;
+  quantity: number;
+  open_average_price: number | null;
+  market_value: number | null;
+  open_pl: number | null;
+  currency: string | null;
+  payload: Record<string, unknown>;
+  updated_at: string;
+}
+
+/**
+ * Derive net positions from filled orders — we don't use IPS (confirmed with
+ * Andre), so positions come from IOS+ order fills. Net qty per (account,
+ * security) = Σ DoneVolumeTotal signed by buy/sell; open average price is the
+ * volume-weighted buy fill price. `market_value` / `open_pl` are left null
+ * (no live mark wired yet). Reads 0 when there are no current fills (e.g. a
+ * book of expired/unfilled demo orders) — which is the correct empty state.
+ *
+ * Prices come off the order rows in cents (same unit as quotes); we divide to
+ * Rands for `open_average_price` to match the portfolio view's formatting.
+ */
+export function derivePositions(orders: Order[]): PositionUpsertRow[] {
+  const ts = new Date().toISOString();
+  const agg = new Map<
+    string,
+    { account: string; symbol: string; netQty: number; buyQty: number; buyCostCents: number }
+  >();
+  for (const o of orders) {
+    if (!o.filled || o.filled <= 0) continue; // only fills contribute to a position
+    const key = `${o.account}|${o.symbol}`;
+    const a = agg.get(key) ?? { account: o.account, symbol: o.symbol, netQty: 0, buyQty: 0, buyCostCents: 0 };
+    a.netQty += o.filled * (o.side === "BUY" ? 1 : -1);
+    if (o.side === "BUY") {
+      a.buyQty += o.filled;
+      a.buyCostCents += o.filled * (o.avgPx || 0);
+    }
+    agg.set(key, a);
+  }
+  const out: PositionUpsertRow[] = [];
+  for (const a of agg.values()) {
+    if (a.netQty === 0) continue;
+    const avgCostCents = a.buyQty > 0 ? a.buyCostCents / a.buyQty : 0;
+    out.push({
+      account_code: a.account,
+      security_code: a.symbol,
+      exchange: "JSE",
+      quantity: a.netQty,
+      open_average_price: avgCostCents > 0 ? Number((avgCostCents / 100).toFixed(4)) : null,
+      market_value: null,
+      open_pl: null,
+      currency: "ZAR",
+      payload: { derivedFrom: "iress-iosplus-orderpad-fills", buyQty: a.buyQty },
+      updated_at: ts,
+    });
+  }
+  return out;
+}
+
 async function fetchOrdersForAccount(
   session: WorkerMintSession,
   accountCode: string,
@@ -105,7 +166,8 @@ async function fetchOrdersForAccount(
   const res = await client.orderPadGetByAccount({
     ServiceSessionKey: iosKey,
     AccountCode: accountCode,
-    OrderFilter: 1, // WORKING only; widen to 3 (all) when audit needs history
+    OrderFilter: 3, // ALL orders — feeds the audit/blotter history AND the
+    // positions-from-fills derivation (net DoneVolumeTotal per security).
     RequestID: newRequestID(`pad-${accountCode}`),
   });
   return res.DataRows;
@@ -184,5 +246,35 @@ export async function pollAccountsForOrders(
     console.error(`[iress-ingest] oems_order_audit upsert failed: ${error.message}`);
     return { polled: accounts.length, upserted: 0, accounts };
   }
+
+  // Positions-from-fills snapshot. We don't use IPS, so positions are the net
+  // of order fills (see derivePositions). Snapshot-replace per polled account
+  // (delete then insert) so closed/expired positions clear out — no dependence
+  // on a unique-constraint name for upsert, and scoped strictly to the polled
+  // OEMS accounts (never touches customer tables). Reads 0 on a book with no
+  // current fills, which is the correct empty state.
+  try {
+    const positions = derivePositions(orders);
+    const { error: delErr } = await opts.supabase
+      .from("oems_position_c")
+      .delete()
+      .in("account_code", accounts);
+    if (delErr) {
+      console.warn(`[iress-ingest] oems_position_c clear failed: ${delErr.message}`);
+    } else if (positions.length > 0) {
+      const { error: posErr } = await opts.supabase.from("oems_position_c").insert(positions);
+      if (posErr) {
+        console.error(`[iress-ingest] oems_position_c insert failed: ${posErr.message}`);
+      } else {
+        console.info(
+          JSON.stringify({ level: "info", event: "oems_position_c_snapshot", accounts, count: positions.length }),
+        );
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[iress-ingest] positions derivation failed: ${msg}`);
+  }
+
   return { polled: accounts.length, upserted: rows.length, accounts };
 }
