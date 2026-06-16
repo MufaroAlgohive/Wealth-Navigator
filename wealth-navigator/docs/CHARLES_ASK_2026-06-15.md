@@ -16,12 +16,20 @@ Wired into the worker; equities work. **No IRESS action needed for equity time-s
 
 ## 3 small, precise items left
 
-### 1. DataSource for indices / curves / macro (equities already work on `JSED`)
-`JSED` is an **equities-only delayed** feed. `J203` is accepted as a code and the call succeeds,
-but returns no rows on `JSED`; every other source we try for indices (`JSEI`, `INDEX`, `zax`, …)
-returns `Invalid access` (code 5) for `DFM@MINT`. **Ask Andre:** which `<DataSource>` should we use
-for (a) JSE indices (ALSI/J203), (b) the NSS/GOVI yield curve, (c) SARB/JIBAR macro — and is it
-enabled for `DFM@MINT`? (`zax` is your admin source — `Invalid access` for us.)
+### 1. Enable the non-equity DataSources for `DFM@MINT` (CT account currently has ONLY JSE equities)
+Confirmed empirically: on CT, `DFM@MINT` only has the **`JSED`** (JSE equities, delayed) feed.
+Everything else is a recognised code but returns **no data** (empty `<DataSource>`, `ErrorNumber` 1/5):
+- Indices (`J203`/ALSI) — `ErrorNumber 1`, no data on `JSED`; other index sources → `Invalid access` (code 5).
+- Bonds / NSS-GOVI curve (`R186`, `R2030`, …) — empty `DataSource`, "Invalid code/exchange" on time-series.
+- FX (`USDZAR`) — `ErrorNumber 5`, empty `DataSource`.
+- Rates / macro (`JIBAR3M`, `ZARONIA`, `SARBREPO`) — `ErrorNumber 1`, empty `DataSource`.
+Equities (`NPN` etc.) return full data under `JSED`. TimeSeriesGet2 + quotes both work — it's purely
+that the other feeds aren't entitled.
+
+**Ask Andre:** enable the DataSources for `DFM@MINT` on CT (or give production) for: **FX (USD/ZAR),
+JSE indices (ALSI/J203 + sector J2xx), the NSS/GOVI yield curve, and SARB/JIBAR/ZARONIA rates+macro**
+— and confirm the exact `<DataSource>` value + code for each. (`zax` is your admin source — `Invalid
+access` for us; ours is `JSED` and it's equities-only.)
 
 ### 2. IOS+ — `DFM@MINT` can't open a service session
 `ServiceSessionStart(IOSPlus, …)` returns **`666 "Could not locate the session key for this request"`**
