@@ -57,8 +57,43 @@ export default function MacroPage() {
     refetchInterval: 60_000,
     ...queryOpts("reference"),
   });
-  const indicators = macroQ.data?.indicators ?? [];
+  // SARB public Web API — official SA rates + inflation (repo / prime / CPI /
+  // PPI / ZARONIA / Sabor). IRESS V4 has no macro feed and there's no vendor
+  // ingest into macro_indicator_c, so SARB is the real indicator source.
+  type SaRate = { label: string; value: number | null; asOf: string | null } | null;
+  const saRatesQ = useQuery<{ source: string; sourceLabel?: string; rates: Record<string, SaRate> }>({
+    queryKey: ["bff-sa-rates"],
+    queryFn: async () => {
+      const r = await fetch("/api/sa-rates", { cache: "no-store" });
+      if (!r.ok) throw new Error(`sa-rates ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 3_600_000,
+    ...queryOpts("reference"),
+  });
+  const sa = saRatesQ.data?.rates;
+  const mk = (id: string, name: string, r: SaRate | undefined, unit: string): IndicatorRow | null =>
+    r && r.value != null
+      ? { id, name, country: "ZA", value: r.value, unit, prior: r.value, trend: "flat", asOf: r.asOf ?? "", source: "SARB" }
+      : null;
+  const saIndicators: IndicatorRow[] = sa
+    ? ([
+        mk("repo", "SARB Repo", sa.repo, "%"),
+        mk("prime", "Prime", sa.prime, "%"),
+        mk("cpi", "CPI y/y", sa.cpi, "%"),
+        mk("ppi", "PPI y/y", sa.ppi, "%"),
+        mk("zaronia", "ZARONIA", sa.zaronia, "%"),
+        mk("sabor", "Sabor", sa.sabor, "%"),
+        mk("usdzar", "USD/ZAR", sa.usdzar, ""),
+        mk("neer", "NEER", sa.neer, ""),
+      ].filter(Boolean) as IndicatorRow[])
+    : [];
+
+  // Prefer a real vendor ingest if it ever lands; otherwise SARB.
+  const indicators = (macroQ.data?.indicators?.length ? macroQ.data.indicators : saIndicators) ?? [];
   const releases = macroQ.data?.releases ?? [];
+  const isLoading = macroQ.isLoading || saRatesQ.isLoading;
   const hasData = indicators.length > 0 || releases.length > 0;
 
   if (!realDataOnly) {
@@ -87,19 +122,18 @@ export default function MacroPage() {
       </header>
 
       <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4 lg:grid-cols-6">
-        {macroQ.isLoading ? (
+        {isLoading ? (
           [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`macro-kpi-${n}`} />)
         ) : indicators.length === 0 ? (
           <div className="col-span-full">
             <Panel
               title="Macro indicators"
-              endpoint="GET /api/macro"
+              endpoint="GET /api/sa-rates"
               dataSource="unconfigured"
             >
               <EmptyDataState
-                message="No macro indicators ingested."
-                hint={macroQ.data?.message ?? "macro_indicator_c is empty. Macro requires a vendor contract (SARB / StatsSA / Reuters)."}
-                badgeLabel="blocked-vendor"
+                message="SARB feed unavailable."
+                hint={macroQ.data?.message ?? "Official SA rates + inflation come from the SARB public Web API (resbank.co.za); it returned no data this cycle."}
               />
             </Panel>
           </div>
@@ -179,10 +213,13 @@ export default function MacroPage() {
       <div className="rounded-md border border-info/30 bg-info/5 p-3 text-[11.5px] text-info">
         <p className="flex items-center gap-2 font-semibold">
           <AlertCircle className="h-3.5 w-3.5" />
-          Macro is a derived read, not a feed
+          Indicators are live from SARB; the release calendar needs a vendor
         </p>
         <p className="mt-1 text-muted-foreground">
-          The Macro page reads <span className="font-mono">macro_indicator_c</span> (time series) and <span className="font-mono">macro_release_c</span> (calendar). Both are populated by a vendor ingest (SARB / StatsSA / Reuters) — v1 has no contracted vendor, so the panel renders the honest <span className="font-mono">BLOCKED-VENDOR</span> state.
+          Indicators (repo, prime, CPI, PPI, ZARONIA, Sabor, ZAR FX) come live from the{" "}
+          <span className="font-mono">SARB public Web API</span> via <span className="font-mono">/api/sa-rates</span>.
+          The <span className="font-mono">Upcoming releases</span> calendar still needs an economic-calendar vendor
+          (StatsSA / Reuters) — it stays empty until <span className="font-mono">macro_release_c</span> is populated.
         </p>
       </div>
     </div>
