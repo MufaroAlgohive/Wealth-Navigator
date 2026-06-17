@@ -4,10 +4,13 @@ import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, AlertTriangle, XCircle, Loader2, Cable, Server, Activity, Globe2 } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-import { Panel } from "@/components/oems/primitives/panel";
+import {
+  GlassBadge,
+  GlassSection,
+  PageCanvas,
+} from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
-import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { iressConfig } from "@/lib/iress";
 import { useIress } from "@/lib/iress/provider";
 import { useWorkerHealth, pickPrimaryWorker } from "@/lib/hooks/use-worker-health";
@@ -31,6 +34,78 @@ const STATUS_TONE = {
   warn:  "warning",
   error: "destructive",
 } as const;
+
+const GLASS_TABLE_HEAD =
+  "sticky top-0 z-10 border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] backdrop-blur-md";
+
+type IntegrationKpiAccent = "default" | "positive" | "negative" | "warning";
+
+function IntegrationKpi({
+  icon,
+  label,
+  value,
+  sub,
+  accent = "default",
+}: {
+  icon?: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: React.ReactNode;
+  accent?: IntegrationKpiAccent;
+}) {
+  return (
+    <div className="glass-kpi group relative">
+      <div className="flex items-center gap-2">
+        {icon && (
+          <div
+            className={cn(
+              "flex h-5 w-5 items-center justify-center rounded-lg",
+              accent === "positive" && "bg-up/10 text-up",
+              accent === "negative" && "bg-down/10 text-down",
+              accent === "warning" && "bg-warning/10 text-warning",
+              accent === "default" && "bg-primary/10 text-primary",
+            )}
+          >
+            {icon}
+          </div>
+        )}
+        <p className="text-caption">{label}</p>
+      </div>
+      <p
+        className={cn(
+          "text-metric mt-1.5",
+          accent === "positive" && "text-up",
+          accent === "negative" && "text-down",
+          accent === "warning" && "text-warning",
+        )}
+      >
+        {value}
+      </p>
+      {sub && (
+        <p
+          className={cn(
+            "mt-1 font-mono text-xs tabular-nums",
+            accent === "positive" && "text-up/80",
+            accent === "negative" && "text-down/80",
+            accent === "warning" && "text-warning/80",
+            accent === "default" && "text-muted-foreground",
+          )}
+        >
+          {sub}
+        </p>
+      )}
+      <div className="pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full bg-primary/10 opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100" />
+    </div>
+  );
+}
+
+function GlassScrollBody({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("min-h-0 flex-1 overflow-y-auto scrollbar-thin px-5 pb-5", className)}>
+      {children}
+    </div>
+  );
+}
 
 /**
  * Derive a time-ordered latency series from the worker's `recent_events`
@@ -64,33 +139,32 @@ export default function IntegrationPage() {
   const endpoints = healthQ.data ?? [];
   const workers = workerQ.data?.workers ?? [];
   const primaryWorker = pickPrimaryWorker(workers);
-  // Audit #1 — Adapter-mode tile reads from the worker's own
-  // `iress_mode` (Railway env) when a worker is heartbeating. The
-  // Vercel `iressConfig.mode` is the *UI-side* env (mock), so it
-  // always shows MOCK on production even though the worker is live.
-  // Fall back to the UI config only when no worker has heartbeated
-  // in the last 60s.
   const workerAlive = primaryWorker
     ? Date.now() - new Date(primaryWorker.last_heartbeat_at).getTime() < 60_000
     : false;
   const effectiveMode = workerAlive && primaryWorker?.iress_mode
     ? primaryWorker.iress_mode
     : iressConfig.mode;
-  // Audit #2 — ghost-row safety net banner. The BFF drops
-  // `status="stopped"` rows + rows from a different `service_name`,
-  // but the operator may still want a visible signal that the
-  // filter did work. `ghostRowsHidden` is included in the response.
   const ghostRowsHidden = workerQ.data?.ghostRowsHidden ?? 0;
 
   return (
-    <div className="space-y-3">
-      <header>
-        <h1 className="text-lg font-semibold tracking-tight">Integration · IRESS V4</h1>
-        <p className="text-xs text-muted-foreground">Adapter health · environment · method coverage · session model</p>
+    <PageCanvas>
+      <header className="glass-panel relative overflow-hidden p-6 md:p-8">
+        <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
+        <div className="relative space-y-3">
+          <GlassBadge tone="primary">
+            <Cable className="h-3.5 w-3.5" />
+            IRESS V4 adapter
+          </GlassBadge>
+          <h1 className="text-display">Integration</h1>
+          <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            Adapter health · environment · method coverage · session model
+          </p>
+        </div>
       </header>
 
       {ghostRowsHidden > 0 ? (
-        <div className="flex items-center justify-between rounded-md border border-warning/40 bg-warning/5 px-3 py-1.5 text-[11px] text-warning">
+        <div className="glass-inset flex items-center justify-between border-warning/30 bg-warning/5 px-3 py-2 text-[11px] text-warning">
           <span>
             <strong>{ghostRowsHidden}</strong> stale worker heartbeats hidden by the
             BFF ghost filter. Delete the ghost Railway service to clear.
@@ -98,21 +172,21 @@ export default function IntegrationPage() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
-        <KpiTile
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <IntegrationKpi
           icon={<Cable className="h-3.5 w-3.5" />}
           label="Adapter mode"
           value={(effectiveMode ?? "mock").toUpperCase()}
           sub={workerAlive ? `via Railway ${primaryWorker?.worker_id ?? ""}` : iressConfig.baseUrl}
-          tone={effectiveMode === "live" ? "positive" : "default"}
+          accent={effectiveMode === "live" ? "positive" : "default"}
         />
-        <KpiTile
+        <IntegrationKpi
           icon={<Server className="h-3.5 w-3.5" />}
           label="Endpoint groups"
           value={`${iressConfig.methods.length} groups`}
           sub="IRESSSession + ServiceSession scoped"
         />
-        <KpiTile
+        <IntegrationKpi
           icon={<Activity className="h-3.5 w-3.5" />}
           label={realDataOnly ? "Worker status" : "Healthy / Total"}
           value={
@@ -127,7 +201,7 @@ export default function IntegrationPage() {
                 : "No heartbeat row yet"
               : undefined
           }
-          tone={
+          accent={
             realDataOnly
               ? primaryWorker?.status === "healthy"
                 ? "positive"
@@ -139,7 +213,7 @@ export default function IntegrationPage() {
                 : "positive"
           }
         />
-        <KpiTile
+        <IntegrationKpi
           icon={<Globe2 className="h-3.5 w-3.5" />}
           label="Region"
           value={iressConfig.region}
@@ -147,127 +221,137 @@ export default function IntegrationPage() {
         />
       </div>
 
-      <div className="grid grid-cols-12 gap-2.5">
+      <div className="grid grid-cols-12 gap-3">
         {realDataOnly ? (
           workerQ.isLoading ? (
-            <PanelSkeleton rows={4} height="h-[420px]" className="col-span-12 lg:col-span-8" />
+            <PanelSkeleton rows={4} height="h-[420px]" className="col-span-12 glass-panel rounded-2xl lg:col-span-8" />
           ) : (
-            <Panel
-              title="Railway worker · integration_worker_health"
+            <GlassSection
+              title="Worker health"
+              subtitle="Railway worker · integration_worker_health"
               endpoint="GET /api/worker-health"
               dataSource="supabase"
-              className="col-span-12 lg:col-span-8 h-[420px]"
-              density="scroll"
+              className="col-span-12 flex h-[420px] flex-col lg:col-span-8"
+              noPadding
             >
-              {workers.length === 0 ? (
-                <EmptyDataState message="No worker heartbeat rows — start iress-ingest on Railway." />
-              ) : (
+              <GlassScrollBody>
+                {workers.length === 0 ? (
+                  <EmptyDataState message="No worker heartbeat rows — start iress-ingest on Railway." />
+                ) : (
+                  <div className="glass-inset overflow-x-auto">
+                    <table className="w-full font-mono text-[11px]">
+                      <thead className={GLASS_TABLE_HEAD}>
+                        <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
+                          <th className="px-2.5 py-1.5 text-left">Worker</th>
+                          <th className="px-2.5 py-1.5 text-left">Status</th>
+                          <th className="px-2.5 py-1.5 text-left">IRESS mode</th>
+                          <th className="px-2.5 py-1.5 text-left">Last quote sync</th>
+                          <th className="px-2.5 py-1.5 text-left">Heartbeat</th>
+                          <th className="px-2.5 py-1.5 text-right">Symbols</th>
+                          <th className="px-2.5 py-1.5 text-left">Accounts</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[hsl(var(--glass-border))]/60">
+                        {workers.map((w) => {
+                          const exchanges = w.symbol_exchanges ?? {};
+                          const rateSymbols = Object.entries(exchanges)
+                            .filter(([, ex]) => ex === "FX" || ex === "MM")
+                            .map(([sym]) => sym);
+                          const symCount = w.symbols_covered?.length ?? 0;
+                          return (
+                            <tr key={w.worker_id}>
+                              <td className="px-2.5 py-1.5 font-semibold">{w.worker_id}</td>
+                              <td className="px-2.5 py-1.5">
+                                <Pill tone={w.status === "healthy" ? "success" : "warning"} size="xs" dot>
+                                  {w.status}
+                                </Pill>
+                              </td>
+                              <td className="px-2.5 py-1.5 text-muted-foreground">{w.iress_mode ?? "—"}</td>
+                              <td className="px-2.5 py-1.5 text-muted-foreground">
+                                {w.last_quote_sync_at ? formatTime(new Date(w.last_quote_sync_at).getTime()) : "—"}
+                              </td>
+                              <td className="px-2.5 py-1.5 text-muted-foreground">
+                                {formatTime(new Date(w.last_heartbeat_at).getTime())}
+                              </td>
+                              <td className="px-2.5 py-1.5 text-right tabular-nums">
+                                {symCount || "—"}
+                                {rateSymbols.length > 0 && (
+                                  <span className="ml-1.5 text-[9.5px] text-muted-foreground">
+                                    +{rateSymbols.length} rate
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-2.5 py-1.5">
+                                {w.account_configured ? (
+                                  <span className="text-foreground/90">{w.accounts?.join(", ")}</span>
+                                ) : (
+                                  <span className="text-warning">unset</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </GlassScrollBody>
+            </GlassSection>
+          )
+        ) : healthQ.isLoading ? (
+          <PanelSkeleton rows={8} height="h-[420px]" className="col-span-12 glass-panel rounded-2xl lg:col-span-8" />
+        ) : (
+          <GlassSection
+            title="Worker health"
+            subtitle="Endpoint health · last 30 min"
+            endpoint="GET /api/iress/health"
+            dataSource={iressConfig.mode === "live" ? "hybrid" : "seed"}
+            className="col-span-12 flex h-[420px] flex-col lg:col-span-8"
+            noPadding
+          >
+            <GlassScrollBody>
+              <div className="glass-inset overflow-x-auto">
                 <table className="w-full font-mono text-[11px]">
-                  <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
+                  <thead className={GLASS_TABLE_HEAD}>
                     <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-                      <th className="px-2.5 py-1.5 text-left">Worker</th>
+                      <th className="px-2.5 py-1.5 text-left">Endpoint</th>
+                      <th className="px-2.5 py-1.5 text-left">Method</th>
+                      <th className="px-2.5 py-1.5 text-right">p50</th>
+                      <th className="px-2.5 py-1.5 text-right">p95</th>
+                      <th className="px-2.5 py-1.5 text-right">Rate</th>
+                      <th className="px-2.5 py-1.5 text-right">Err %</th>
                       <th className="px-2.5 py-1.5 text-left">Status</th>
-                      <th className="px-2.5 py-1.5 text-left">IRESS mode</th>
-                      <th className="px-2.5 py-1.5 text-left">Last quote sync</th>
-                      <th className="px-2.5 py-1.5 text-left">Heartbeat</th>
-                      <th className="px-2.5 py-1.5 text-right">Symbols</th>
-                      <th className="px-2.5 py-1.5 text-left">Accounts</th>
+                      <th className="px-2.5 py-1.5 text-left">Checked</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-border/60">
-                    {workers.map((w) => {
-                      const exchanges = w.symbol_exchanges ?? {};
-                      const rateSymbols = Object.entries(exchanges)
-                        .filter(([, ex]) => ex === "FX" || ex === "MM")
-                        .map(([sym]) => sym);
-                      const symCount = w.symbols_covered?.length ?? 0;
+                  <tbody className="divide-y divide-[hsl(var(--glass-border))]/60">
+                    {endpoints.map((e) => {
+                      const Icon = STATUS_ICON[e.status];
                       return (
-                        <tr key={w.worker_id}>
-                          <td className="px-2.5 py-1.5 font-semibold">{w.worker_id}</td>
+                        <tr key={e.name}>
+                          <td className="px-2.5 py-1.5 font-semibold">{e.name}</td>
+                          <td className="px-2.5 py-1.5 text-muted-foreground">{e.method}</td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">{e.p50}ms</td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">{e.p95}ms</td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">{e.rps}/s</td>
+                          <td className={cn("px-2.5 py-1.5 text-right tabular-nums", e.errPct > 1 && "text-destructive")}>{e.errPct.toFixed(2)}</td>
                           <td className="px-2.5 py-1.5">
-                            <Pill tone={w.status === "healthy" ? "success" : "warning"} size="xs" dot>
-                              {w.status}
+                            <Pill tone={STATUS_TONE[e.status]} size="xs" dot>
+                              <Icon className="h-2.5 w-2.5" /> {e.status}
                             </Pill>
                           </td>
-                          <td className="px-2.5 py-1.5 text-muted-foreground">{w.iress_mode ?? "—"}</td>
-                          <td className="px-2.5 py-1.5 text-muted-foreground">
-                            {w.last_quote_sync_at ? formatTime(new Date(w.last_quote_sync_at).getTime()) : "—"}
-                          </td>
-                          <td className="px-2.5 py-1.5 text-muted-foreground">
-                            {formatTime(new Date(w.last_heartbeat_at).getTime())}
-                          </td>
-                          <td className="px-2.5 py-1.5 text-right tabular-nums">
-                            {symCount || "—"}
-                            {rateSymbols.length > 0 && (
-                              <span className="ml-1.5 text-[9.5px] text-muted-foreground">
-                                +{rateSymbols.length} rate
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-2.5 py-1.5">
-                            {w.account_configured ? (
-                              <span className="text-foreground/90">{w.accounts?.join(", ")}</span>
-                            ) : (
-                              <span className="text-warning">unset</span>
-                            )}
-                          </td>
+                          <td className="px-2.5 py-1.5 text-muted-foreground">{formatTime(e.lastCheck)}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
-              )}
-            </Panel>
-          )
-        ) : healthQ.isLoading ? (
-          <PanelSkeleton rows={8} height="h-[420px]" className="col-span-12 lg:col-span-8" />
-        ) : (
-          <Panel
-            title="Endpoint health · last 30 min"
-            endpoint="GET /api/iress/health"
-            dataSource={iressConfig.mode === "live" ? "hybrid" : "seed"}
-            className="col-span-12 lg:col-span-8 h-[420px]"
-            density="scroll"
-          >
-          <table className="w-full font-mono text-[11px]">
-            <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
-              <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-                <th className="px-2.5 py-1.5 text-left">Endpoint</th>
-                <th className="px-2.5 py-1.5 text-left">Method</th>
-                <th className="px-2.5 py-1.5 text-right">p50</th>
-                <th className="px-2.5 py-1.5 text-right">p95</th>
-                <th className="px-2.5 py-1.5 text-right">Rate</th>
-                <th className="px-2.5 py-1.5 text-right">Err %</th>
-                <th className="px-2.5 py-1.5 text-left">Status</th>
-                <th className="px-2.5 py-1.5 text-left">Checked</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/60">
-              {endpoints.map((e) => {
-                const Icon = STATUS_ICON[e.status];
-                return (
-                  <tr key={e.name}>
-                    <td className="px-2.5 py-1.5 font-semibold">{e.name}</td>
-                    <td className="px-2.5 py-1.5 text-muted-foreground">{e.method}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{e.p50}ms</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{e.p95}ms</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{e.rps}/s</td>
-                    <td className={cn("px-2.5 py-1.5 text-right tabular-nums", e.errPct > 1 && "text-destructive")}>{e.errPct.toFixed(2)}</td>
-                    <td className="px-2.5 py-1.5">
-                      <Pill tone={STATUS_TONE[e.status]} size="xs" dot>
-                        <Icon className="h-2.5 w-2.5" /> {e.status}
-                      </Pill>
-                    </td>
-                    <td className="px-2.5 py-1.5 text-muted-foreground">{formatTime(e.lastCheck)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </Panel>
+              </div>
+            </GlassScrollBody>
+          </GlassSection>
         )}
 
-        <Panel
+        <GlassSection
           title="Latency · IRESS calls"
           endpoint={realDataOnly ? "DERIVED · worker recent_events[*].elapsedMs" : "INTERNAL · mock window"}
           dataSource={
@@ -277,71 +361,71 @@ export default function IntegrationPage() {
                 ? "worker"
                 : "unconfigured"
           }
-          className="col-span-12 lg:col-span-4 h-[420px]"
+          className="col-span-12 h-[420px] lg:col-span-4"
         >
-          {realDataOnly ? (
-            (() => {
-              const series = buildLatencySeries(primaryWorker?.recent_events ?? []);
-              if (series.length === 0) {
+          <div className="glass-inset h-[calc(100%-0.5rem)] p-2">
+            {realDataOnly ? (
+              (() => {
+                const series = buildLatencySeries(primaryWorker?.recent_events ?? []);
+                if (series.length === 0) {
+                  return (
+                    <EmptyDataState
+                      message="No IRESS call timings have been recorded yet."
+                      hint="The Railway worker emits elapsedMs on probe + order-pad calls. Start the worker, run a probe, and the series will populate."
+                    />
+                  );
+                }
                 return (
-                  <EmptyDataState
-                    message="No IRESS call timings have been recorded yet."
-                    hint="The Railway worker emits elapsedMs on probe + order-pad calls. Start the worker, run a probe, and the series will populate."
-                  />
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={series} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="lat" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="hsl(38 95% 56%)" stopOpacity={0.4} />
+                          <stop offset="100%" stopColor="hsl(38 95% 56%)" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                      <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => formatTime(String(v))} interval={Math.max(1, Math.floor(series.length / 6))} />
+                      <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="ms" />
+                      <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
+                      <Area type="monotone" dataKey="ms" stroke="hsl(38 95% 56%)" fill="url(#lat)" strokeWidth={1.8} />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 );
-              }
-              return (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart
-                    data={series}
-                    margin={{ top: 8, right: 8, left: -20, bottom: 0 }}
-                  >
-                    <defs>
-                      <linearGradient id="lat" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="hsl(38 95% 56%)" stopOpacity={0.4} />
-                        <stop offset="100%" stopColor="hsl(38 95% 56%)" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                    <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => formatTime(String(v))} interval={Math.max(1, Math.floor(series.length / 6))} />
-                    <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="ms" />
-                    <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
-                    <Area type="monotone" dataKey="ms" stroke="hsl(38 95% 56%)" fill="url(#lat)" strokeWidth={1.8} />
-                  </AreaChart>
-                </ResponsiveContainer>
-              );
-            })()
-          ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart
-              data={Array.from({ length: 60 }, (_, i) => ({ t: i, ms: 220 + Math.sin(i / 6) * 30 + Math.cos(i / 18) * 18 }))}
-              margin={{ top: 8, right: 8, left: -20, bottom: 0 }}
-            >
-              <defs>
-                <linearGradient id="lat" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="hsl(38 95% 56%)" stopOpacity={0.4} />
-                  <stop offset="100%" stopColor="hsl(38 95% 56%)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-              <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => `${v}m`} interval={9} />
-              <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="ms" />
-              <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
-              <Area type="monotone" dataKey="ms" stroke="hsl(38 95% 56%)" fill="url(#lat)" strokeWidth={1.8} />
-            </AreaChart>
-          </ResponsiveContainer>
-          )}
-        </Panel>
+              })()
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart
+                  data={Array.from({ length: 60 }, (_, i) => ({ t: i, ms: 220 + Math.sin(i / 6) * 30 + Math.cos(i / 18) * 18 }))}
+                  margin={{ top: 8, right: 8, left: -20, bottom: 0 }}
+                >
+                  <defs>
+                    <linearGradient id="lat-mock" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="hsl(38 95% 56%)" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="hsl(38 95% 56%)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                  <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => `${v}m`} interval={9} />
+                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="ms" />
+                  <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
+                  <Area type="monotone" dataKey="ms" stroke="hsl(38 95% 56%)" fill="url(#lat-mock)" strokeWidth={1.8} />
+                </AreaChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </GlassSection>
       </div>
 
-      <div className="grid grid-cols-12 gap-2.5">
+      <div className="grid grid-cols-12 gap-3">
         {realDataOnly ? (
           <>
-            <Panel
-              title="Order mirror · oems_order_audit"
+            <GlassSection
+              title="Environment checklist"
+              subtitle="Order mirror · oems_order_audit"
               endpoint="OrderPadGetByAccount → worker poll"
               dataSource={primaryWorker?.account_configured ? "supabase" : "unconfigured"}
-              className="col-span-12 lg:col-span-6 h-[240px]"
+              className="col-span-12 h-[240px] lg:col-span-6"
             >
               {!primaryWorker ? (
                 <p className="text-[12px] text-muted-foreground">
@@ -367,7 +451,7 @@ export default function IntegrationPage() {
                 </ul>
               ) : (
                 <div className="space-y-2 text-[12px]">
-                  <div className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-[12px]">
+                  <div className="glass-inset border-warning/30 bg-warning/10 px-3 py-2 text-[12px]">
                     <p className="font-medium text-warning">Set <span className="font-mono">IRESS_ACCOUNT_CODE</span> on Railway to enable order mirror</p>
                     <p className="mt-1 text-muted-foreground">
                       The worker is running but <span className="font-mono">IRESS_ACCOUNT_CODE</span>{" "}
@@ -383,12 +467,13 @@ export default function IntegrationPage() {
                   </p>
                 </div>
               )}
-            </Panel>
-            <Panel
-              title="Quote ingest · stock_intraday_c"
+            </GlassSection>
+            <GlassSection
+              title="Environment checklist"
+              subtitle="Quote ingest · stock_intraday_c"
               endpoint="PricingQuoteGet → worker poll"
               dataSource="supabase"
-              className="col-span-12 lg:col-span-6 h-[240px]"
+              className="col-span-12 h-[240px] lg:col-span-6"
             >
               <ul className="space-y-2 text-[12px] text-muted-foreground">
                 <li>
@@ -396,13 +481,6 @@ export default function IntegrationPage() {
                   <span className="font-mono text-foreground">stock_intraday_c</span>.
                 </li>
                 <li>
-                  {/* Yellow #25 — render the watchlist breakdown: equity
-                      count + rate-code count (FX/MM) + symbols the
-                      UI doesn't poll. The previous copy just said
-                      "22 symbols" which the UI could not back up
-                      (it only shows 10). After the shared
-                      JSE_TRACKED_UNIVERSE module, the breakdown
-                      is clean. */}
                   Watchlist:{" "}
                   <span className="font-mono text-foreground">
                     {primaryWorker?.symbols_covered?.length ?? "—"}
@@ -422,53 +500,48 @@ export default function IntegrationPage() {
                   <span className="font-mono text-foreground">/api/ticks</span> SSE is disabled in this mode.
                 </li>
               </ul>
-            </Panel>
+            </GlassSection>
           </>
         ) : null}
-        {/* Audit #17 + #29 — replaced the "Session model" 1-2-3-4 numbered
-             list and the "Build path · Mock → Live" doc-bleed panel with a
-             single "Production status" panel that shows live state for the
-             four IRESS services. The method-coverage sub-panel below
-             surfaces the 17-method V4 catalog (Yellow #26). */}
-        <Panel
-          title="Production status"
-          endpoint="DERIVED · worker recent_events"
-          className="col-span-12 lg:col-span-6 h-[260px]"
-          density="scroll"
-        >
-          <ProductionStatusGrid primaryWorker={primaryWorker} events={primaryWorker?.recent_events ?? []} />
-        </Panel>
 
-        <Panel
+        <GlassSection
+          title="IRESS status"
+          subtitle="Production service health"
+          endpoint="DERIVED · worker recent_events"
+          className="col-span-12 flex h-[260px] flex-col lg:col-span-6"
+          noPadding
+        >
+          <GlassScrollBody>
+            <ProductionStatusGrid primaryWorker={primaryWorker} events={primaryWorker?.recent_events ?? []} />
+          </GlassScrollBody>
+        </GlassSection>
+
+        <GlassSection
           title="Method coverage · V4 (this adapter)"
           endpoint="traced to iress-v4-docs/11-mint-oems"
-          className="col-span-12 lg:col-span-6 h-[260px]"
-          density="scroll"
+          className="col-span-12 flex h-[260px] flex-col lg:col-span-6"
+          noPadding
         >
-          <div className="grid grid-cols-1 gap-1.5 text-xs">
-            {(iressConfig.methods.length > 0 ? iressConfig.methods : DEFAULT_V4_METHODS).map((m) => (
-              <div key={m.group} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-                <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">{m.group}</p>
-                <p className="mt-0.5 text-[10.5px] font-mono">{m.methods.join(" · ")}</p>
-              </div>
-            ))}
-          </div>
-        </Panel>
+          <GlassScrollBody>
+            <div className="grid grid-cols-1 gap-1.5 text-xs">
+              {(iressConfig.methods.length > 0 ? iressConfig.methods : DEFAULT_V4_METHODS).map((m) => (
+                <div key={m.group} className="glass-inset p-2">
+                  <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">{m.group}</p>
+                  <p className="mt-0.5 text-[10.5px] font-mono">{m.methods.join(" · ")}</p>
+                </div>
+              ))}
+            </div>
+          </GlassScrollBody>
+        </GlassSection>
       </div>
 
       {realDataOnly ? (
         <WorkerDiagnosticEventsPanel events={primaryWorker?.recent_events ?? []} hasWorker={Boolean(primaryWorker)} />
       ) : null}
-    </div>
+    </PageCanvas>
   );
 }
 
-/**
- * Fallback V4 method catalog (Yellow #26). When the Vercel env doesn't
- * carry a methods array, the integration page falls back to this list
- * of 17 methods grouped by iress/ios/ips/fix — the same surface the
- * `IressClient` exposes. Update in lockstep with `src/lib/iress/index.ts`.
- */
 const DEFAULT_V4_METHODS: ReadonlyArray<{ group: string; methods: string[] }> = [
   { group: "iress",  methods: ["IRESSSessionStart", "IRESSSessionEnd", "PricingQuoteGet", "InstrumentSearch", "StaticReferenceDataGet"] },
   { group: "ios",    methods: ["ServiceSessionStart", "ServiceSessionEnd", "OrderAdd", "OrderAmend", "OrderDelete", "OrderPadGetByAccount", "OrderPadGetByAccountUpdates"] },
@@ -476,13 +549,6 @@ const DEFAULT_V4_METHODS: ReadonlyArray<{ group: string; methods: string[] }> = 
   { group: "fix",    methods: ["FixSessionStart", "FixSessionEnd", "FixOrderReplace"] },
 ];
 
-/**
- * Production status grid (Yellow #17 + #29). Four service tiles (IRESS /
- * IOS+ / IPS / FIX+) each with a green/amber/red dot derived from the
- * worker's `recent_events` list, plus a 4th tile for last-sync times and
- * a 5th for the IRESS CT license seat. Replaces the 1-2-3-4 numbered
- * session-model list.
- */
 function ProductionStatusGrid({
   primaryWorker,
   events,
@@ -490,8 +556,6 @@ function ProductionStatusGrid({
   primaryWorker: ReturnType<typeof pickPrimaryWorker>;
   events: ReadonlyArray<WorkerEvent>;
 }) {
-  // Helper: green if the service has any `info` event in the last 25
-  // events, amber if `warn`, red if `error`, grey if no events at all.
   const lastByService = (svc: "iress" | "ios" | "ips" | "fix") => {
     const e = events.find((ev) => String(ev.data?.service ?? "").toLowerCase() === svc);
     if (!e) return { tone: "default" as const, msg: "No calls recorded yet." };
@@ -505,15 +569,13 @@ function ProductionStatusGrid({
     { name: "ips",   label: "IPS"   },
     { name: "fix",   label: "FIX+"  },
   ];
-  // Audit #17 sub-tile #4 — license seat. Count distinct `service_name`
-  // values from the worker's metadata to detect ghost workers.
   const seatCount = primaryWorker ? 1 : 0;
   return (
     <div className="grid grid-cols-2 gap-2 lg:grid-cols-2">
       {svcs.map((s) => {
         const st = lastByService(s.name);
         return (
-          <div key={s.name} className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
+          <div key={s.name} className="glass-inset p-2.5">
             <div className="flex items-center justify-between">
               <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider">{s.label}</p>
               <Pill tone={st.tone === "default" ? "neutral" : st.tone === "positive" ? "success" : (st.tone as "warning" | "destructive")} size="xs" dot>
@@ -524,7 +586,7 @@ function ProductionStatusGrid({
           </div>
         );
       })}
-      <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5 col-span-2">
+      <div className="glass-inset col-span-2 p-2.5">
         <div className="flex items-center justify-between">
           <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider">Last sync</p>
           <Pill tone="neutral" size="xs">IRESS single-seat</Pill>
@@ -540,20 +602,6 @@ function ProductionStatusGrid({
   );
 }
 
-/**
- * "Worker diagnostic events" panel — surfaces the worker's in-process
- * structured event ring buffer. Today the operator has to tail Railway
- * logs to see `time_series_entitlement_missing`, 25008 license seat
- * back-off, and `quote_sync_complete` summaries. Storing those events
- * inside `integration_worker_health.metadata.recent_events` and showing
- * them here means the desk can answer "why isn't the worker getting
- * data" without leaving the app.
- *
- * Events are newest-first, capped at 50 in the worker. The panel collapses
- * the high-volume `info` events to a single summary row when nothing more
- * recent is a `warn`/`error` so the page doesn't drown in successful
- * sync pings.
- */
 function WorkerDiagnosticEventsPanel({
   events,
   hasWorker,
@@ -570,23 +618,14 @@ function WorkerDiagnosticEventsPanel({
     { info: 0, warn: 0, error: 0 },
   );
   const hasEvents = ordered.length > 0;
-  // Heuristic: if the latest event is `info` and the most recent warn/error
-  // is older than the most recent 4 events, surface only the top warn/error
-  // and a one-line "last sync ok" summary. Keeps the table useful when the
-  // worker is healthy.
   const lastWarnOrError = ordered.find((e) => e.level === "warn" || e.level === "error");
-  // Yellow #19 — when the worker has been healthy for a long stretch
-  // (no warn/error) and there are > 5 info events, collapse the table
-  // to the last 5 so the page isn't all-blue noise. When warn/errors
-  // exist, show the newest 25 (the existing cap) so the operator can
-  // find them quickly.
   const displayEvents =
     lastWarnOrError == null && ordered.length > 5
       ? ordered.slice(0, 5)
       : ordered.slice(0, 25);
 
   return (
-    <Panel
+    <GlassSection
       title="Worker diagnostic events"
       endpoint="metadata.recent_events on integration_worker_health"
       dataSource="supabase"
@@ -618,12 +657,12 @@ function WorkerDiagnosticEventsPanel({
       ) : !hasEvents ? (
         <p className="text-[12px] text-muted-foreground">
           Worker has not emitted any structured events since the last restart — that usually means the
-          IRESS session hasn't started yet, or the first quote sync is in flight.
+          IRESS session hasn&apos;t started yet, or the first quote sync is in flight.
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="glass-inset overflow-x-auto">
           <table className="w-full font-mono text-[11px]">
-            <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
+            <thead className={GLASS_TABLE_HEAD}>
               <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
                 <th className="px-2.5 py-1.5 text-left">Time</th>
                 <th className="px-2.5 py-1.5 text-left">Level</th>
@@ -632,7 +671,7 @@ function WorkerDiagnosticEventsPanel({
                 <th className="px-2.5 py-1.5 text-left">Data</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-border/60">
+            <tbody className="divide-y divide-[hsl(var(--glass-border))]/60">
               {displayEvents.map((e, i) => (
                 <tr key={`${e.ts}-${i}`}>
                   <td className="px-2.5 py-1.5 text-muted-foreground whitespace-nowrap">
@@ -656,20 +695,14 @@ function WorkerDiagnosticEventsPanel({
               ))}
             </tbody>
           </table>
-          {/* Yellow #19 — always show the summary line "all info · worker
-              is healthy" when no warn/error events, regardless of how
-              many info events are present. Compress the table to the
-              last 5 info events when there are > 5; show the
-              newest 25 (the existing cap) when there are warn/errors
-              that need surfacing. */}
           {lastWarnOrError == null && ordered.length > 0 && (
-            <p className="mt-2 text-[11px] text-muted-foreground">
+            <p className="mt-2 px-2.5 text-[11px] text-muted-foreground">
               Last 25 events · all <span className="font-mono text-foreground">info</span> ·
               worker is healthy.
             </p>
           )}
           {ordered.length > displayEvents.length && (
-            <p className="mt-2 text-[11px] text-muted-foreground">
+            <p className="mt-2 px-2.5 text-[11px] text-muted-foreground">
               Showing {displayEvents.length} newest events of {ordered.length} total. Older events
               are still in
               <span className="font-mono text-foreground"> integration_worker_health.metadata.recent_events</span>.
@@ -677,6 +710,6 @@ function WorkerDiagnosticEventsPanel({
           )}
         </div>
       )}
-    </Panel>
+    </GlassSection>
   );
 }

@@ -2,11 +2,10 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { ArrowRight, Briefcase, ClipboardCheck, History } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { PersonaRealDataGate } from "@/components/oems/persona-real-data-gate";
-import { Panel } from "@/components/oems/primitives/panel";
+import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Button } from "@/components/ui/button";
 import { clientsByWealthManager } from "@/lib/iress/seed";
 import { formatPct, formatZAR } from "@/lib/format";
@@ -40,43 +39,38 @@ export default function WMPage() {
       description="Your client book · suitability queue · activity today. Use the OEMS desk to act on any item."
       message="Wealth manager client book requires CRM integration."
     >
-        {/* KPI strip */}
-        <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-          <KpiTile
-            icon={<Briefcase className="h-3.5 w-3.5" />}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <GlassKpi
             label="Book AUM"
             value={formatZAR(totalAum)}
             sub={`${myClients.length} clients`}
+            accent="primary"
           />
-          <KpiTile
-            icon={<ClipboardCheck className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Suitability reviews"
             value={suitabilityQueue.length.toString()}
             sub="due this month"
-            tone={suitabilityQueue.length > 0 ? "warning" : "default"}
           />
-          <KpiTile
-            icon={<History className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Book YTD (avg)"
             value={formatPct(avgYtd, 2)}
             sub="simple average per mandate"
-            tone={avgYtd >= 0 ? "positive" : "negative"}
+            accent={avgYtd >= 0 ? "positive" : "negative"}
           />
-          <KpiTile
-            icon={<Briefcase className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Top client"
             value={topByAum[0] ? formatZAR(topByAum[0].aum) : "—"}
             sub={topByAum[0]?.name ?? ""}
           />
         </div>
 
-        {/* Row 1: My Client Book | Suitability reviews */}
-        <div className="grid grid-cols-12 gap-2.5">
-          <Panel
+        <div className="grid grid-cols-12 gap-3">
+          <GlassSection
             title="My Client Book · Top 5 by AUM"
             endpoint="GET /v1/clients?wealthManagerId=wm1"
             right={<span className="font-mono text-[10px]">{myClients.length} total</span>}
             className="col-span-12 lg:col-span-7"
+            noPadding
           >
             <table className="w-full font-mono text-[11px]">
               <thead className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
@@ -88,9 +82,9 @@ export default function WMPage() {
                   <th className="px-2.5 py-1.5 text-right">YTD</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border/60">
+              <tbody className="divide-y divide-[hsl(var(--glass-border))]">
                 {topByAum.map((c) => (
-                  <tr key={c.id} className="hover:bg-muted/30">
+                  <tr key={c.id} className="hover:bg-[hsl(var(--foreground)/0.03)]">
                     <td className="px-2.5 py-1.5 font-sans text-xs font-medium">{c.name}</td>
                     <td className="px-2.5 py-1.5">
                       <Pill tone="neutral" size="xs">{c.mandate}</Pill>
@@ -106,20 +100,18 @@ export default function WMPage() {
                 ))}
               </tbody>
             </table>
-          </Panel>
+          </GlassSection>
 
-          <Panel
+          <GlassSection
             title="Pending suitability reviews"
             endpoint="GET /v1/suitability/queue?assignee=wm1"
-            right={
-              <Pill tone="warning" size="xs">{suitabilityQueue.length} pending</Pill>
-            }
+            right={<Pill tone="warning" size="xs">{suitabilityQueue.length} pending</Pill>}
             className="col-span-12 lg:col-span-5"
-            density="scroll"
+            noPadding
           >
-            <ul className="divide-y divide-border/60">
+            <ul className="max-h-[360px] divide-y divide-[hsl(var(--glass-border))] overflow-y-auto scrollbar-thin">
               {suitabilityQueue.map((c) => (
-                <li key={c.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-muted/30">
+                <li key={c.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-[hsl(var(--foreground)/0.03)]">
                   <div className="flex-1 min-w-0">
                     <p className="truncate text-xs font-medium">{c.name}</p>
                     <p className="mt-0.5 text-[10.5px] text-muted-foreground">
@@ -133,30 +125,29 @@ export default function WMPage() {
                 </li>
               ))}
             </ul>
-          </Panel>
+          </GlassSection>
         </div>
 
-        {/* Row 2: Client activity today */}
-        <Panel
+        <GlassSection
           title="Client activity today"
           endpoint="GET /v1/clients/activity?assignee=wm1&date=2026-06-06"
           right={<Pill tone="info" size="xs">TODAY</Pill>}
+          noPadding
         >
-          <ul className="divide-y divide-border/60">
+          <ul className="divide-y divide-[hsl(var(--glass-border))]">
             {activity.map((a) => (
-              <li key={a.time} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30">
+              <li key={a.time} className="flex items-center gap-3 px-3 py-2.5 hover:bg-[hsl(var(--foreground)/0.03)]">
                 <span className="w-14 shrink-0 font-mono text-[10.5px] text-muted-foreground">{a.time} SAST</span>
                 <span className="flex-1 text-xs">{a.text}</span>
                 <Pill tone={a.tone} size="xs">{a.tone.toUpperCase()}</Pill>
               </li>
             ))}
           </ul>
-        </Panel>
+        </GlassSection>
 
-        {/* Secondary action */}
-        <div className="flex items-center justify-end pt-1">
+        <div className="flex items-center justify-end">
           <Link href="/oems">
-            <Button variant="outline" size="sm" className="h-7 text-[11px]">
+            <Button variant="outline" size="sm" className="glass-inset h-8 border-0 text-[11px]">
               Open OEMS desk
               <ArrowRight className="h-3 w-3" />
             </Button>

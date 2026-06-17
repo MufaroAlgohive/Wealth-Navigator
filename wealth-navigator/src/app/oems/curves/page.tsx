@@ -2,11 +2,15 @@
 
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend, Area, AreaChart } from "recharts";
+import { LineChart as LineChartIcon } from "lucide-react";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend } from "recharts";
 
-import { Panel } from "@/components/oems/primitives/panel";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
-import { Pill } from "@/components/oems/primitives/pill";
+import {
+  GlassBadge,
+  GlassKpi,
+  GlassSection,
+  PageCanvas,
+} from "@/components/oems/primitives/glass";
 import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
@@ -35,6 +39,14 @@ interface CurveMetricsResponse {
 }
 
 const CURVE_CODES = ["ZAR_GOVI", "ZAR_NSS", "ZAR_REAL", "ZAR_BREAKEVEN"] as const;
+
+const CHART_TOOLTIP_STYLE = {
+  fontSize: 11,
+  background: "hsl(var(--glass-bg-strong))",
+  border: "1px solid hsl(var(--glass-border))",
+  borderRadius: 12,
+  backdropFilter: "blur(12px)",
+} as const;
 
 export default function CurvesPage() {
   const realDataOnly = isRealDataOnlyClient();
@@ -78,21 +90,28 @@ export default function CurvesPage() {
 
   if (!realDataOnly) {
     return (
-      <div className="space-y-3">
-        <header>
-          <h1 className="text-lg font-semibold tracking-tight">Yield Curves · ZAR</h1>
-          <p className="text-xs text-muted-foreground">
-            Nelson-Siegel-Svensson fitted · ZAR govi · swap · real · breakeven · PCA decomposition
-          </p>
+      <PageCanvas>
+        <header className="glass-panel relative overflow-hidden p-6 md:p-8">
+          <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
+          <div className="relative space-y-3">
+            <GlassBadge tone="primary">
+              <LineChartIcon className="h-3.5 w-3.5" />
+              ZAR rates desk
+            </GlassBadge>
+            <h1 className="text-display">Yield Curves · ZAR</h1>
+            <p className="text-caption max-w-2xl">
+              Nelson-Siegel-Svensson fitted · ZAR govi · swap · real · breakeven · PCA decomposition
+            </p>
+          </div>
         </header>
-        <Panel title="ZAR yield curves" endpoint="oems_strategy_c → yield_curve_history_c">
+        <GlassSection title="ZAR yield curves" endpoint="oems_strategy_c → yield_curve_history_c">
           <EmptyDataState
             message="Mock mode disables the curves module."
             hint="Switch to real-data mode and ensure the worker has written yield_curve_history_c rows for ZAR_NSS."
             badgeLabel="mock"
           />
-        </Panel>
-      </div>
+        </GlassSection>
+      </PageCanvas>
     );
   }
 
@@ -140,36 +159,43 @@ export default function CurvesPage() {
   const isLoadingCurves = goviQ.isLoading || nssQ.isLoading || realQ.isLoading || beQ.isLoading;
 
   return (
-    <div className="space-y-3">
-      <header>
-        <h1 className="text-lg font-semibold tracking-tight">Yield Curves · ZAR</h1>
-        <p className="text-xs text-muted-foreground">
-          Nelson-Siegel-Svensson fitted · ZAR govi · swap · real · breakeven · PCA decomposition
-        </p>
+    <PageCanvas>
+      <header className="glass-panel relative overflow-hidden p-6 md:p-8">
+        <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
+        <div className="relative space-y-3">
+          <GlassBadge tone="primary">
+            <LineChartIcon className="h-3.5 w-3.5" />
+            ZAR rates desk
+          </GlassBadge>
+          <h1 className="text-display">Yield Curves · ZAR</h1>
+          <p className="text-caption max-w-2xl">
+            Nelson-Siegel-Svensson fitted · ZAR govi · swap · real · breakeven · PCA decomposition
+          </p>
+        </div>
       </header>
 
-      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {isLoadingCurves ? (
           [0, 1, 2, 3].map((n) => <KpiTileSkeleton key={`curves-kpi-${n}`} />)
         ) : (
           <>
-            <KpiTile
+            <GlassKpi
               label="ZAR govi 10Y"
               value={latestGovi > 0 ? `${latestGovi.toFixed(2)}%` : "—"}
               sub={move ? `${move.level >= 0 ? "+" : ""}${move.level}bp today` : "no PCA"}
-              tone={move ? (move.level > 0 ? "warning" : "positive") : "default"}
+              accent={move ? (move.level > 0 ? "negative" : "positive") : "default"}
             />
-            <KpiTile
+            <GlassKpi
               label="ZAR NSS 10Y"
               value={latestNss > 0 ? `${latestNss.toFixed(2)}%` : "—"}
               sub={move ? `${move.slope >= 0 ? "+" : ""}${move.slope}bp slope` : "no PCA"}
             />
-            <KpiTile
+            <GlassKpi
               label="ZAR real 10Y"
               value={latestReal > 0 ? `${latestReal.toFixed(2)}%` : "—"}
               sub="ILB yield"
             />
-            <KpiTile
+            <GlassKpi
               label="Breakeven 10Y"
               value={latestBE > 0 ? `${latestBE.toFixed(2)}%` : "—"}
               sub="expected CPI"
@@ -178,15 +204,15 @@ export default function CurvesPage() {
         )}
       </div>
 
-      <div className="grid grid-cols-12 gap-2.5">
+      <div className="grid grid-cols-12 gap-3">
         {isLoadingCurves ? (
           <PanelSkeleton rows={4} height="h-[380px]" className="col-span-12 lg:col-span-8" />
         ) : nss.length === 0 ? (
-          <Panel
+          <GlassSection
             title="Combined · govi · NSS · real · breakeven"
             endpoint="GET /api/curves/{code}"
             dataSource="unconfigured"
-            className="col-span-12 lg:col-span-8 h-[380px]"
+            className="col-span-12 flex h-[380px] flex-col lg:col-span-8"
           >
             {/* Yellow #16 — shared EntitlementRequired primitive. The
                 same TimeSeriesGet2 message is on the Cockpit
@@ -196,54 +222,59 @@ export default function CurvesPage() {
               codes={["J200", "J203", "R2030", "R2035", "R2040"]}
               note="Ask Charles to enable TimeSeriesGet2 on the production profile. Until flipped, the ALSI intraday panel on the Cockpit also stays empty."
             />
-          </Panel>
+          </GlassSection>
         ) : (
-          <Panel
+          <GlassSection
             title="Combined · govi · NSS · real · breakeven"
             endpoint="GET /api/curves/{code}"
             dataSource={goviQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
-            className="col-span-12 lg:col-span-8 h-[380px]"
+            className="col-span-12 flex h-[380px] flex-col lg:col-span-8"
+            noPadding
           >
             {/* Yellow #28 — the combined chart and the Cockpit's
                 J203 ALSI intraday panel share the same ZAR index
                 series (separate BFF: `/api/indices/J203`). Add a
                 small help tooltip so the operator doesn't think
                 these are two different things. */}
-            <p className="mb-1 text-[10px] text-muted-foreground">
-              <span className="font-mono">ⓘ</span> ALSI intraday (separate source) is the same series on the Cockpit's J203 panel.
-            </p>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={combined} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
-                <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                <XAxis dataKey="tenor" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
-                <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="%" domain={["dataMin - 0.5", "dataMax + 0.5"]} />
-                <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} formatter={(v: number) => `${v.toFixed(2)}%`} />
-                <Legend wrapperStyle={{ fontSize: 10, paddingTop: 4 }} />
-                <Line type="monotone" dataKey="govi" name="Govi" stroke="hsl(38 95% 56%)" strokeWidth={2.2} dot={{ r: 2 }} />
-                <Line type="monotone" dataKey="swap" name="NSS" stroke="hsl(263 80% 65%)" strokeWidth={1.6} dot={false} />
-                <Line type="monotone" dataKey="real" name="Real (ILB)" stroke="hsl(180 60% 50%)" strokeWidth={1.4} dot={false} strokeDasharray="4 4" />
-                <Line type="monotone" dataKey="breakeven" name="Breakeven" stroke="hsl(351 90% 60%)" strokeWidth={1.2} dot={false} strokeDasharray="2 4" />
-              </LineChart>
-            </ResponsiveContainer>
-          </Panel>
+            <div className="flex min-h-0 flex-1 flex-col p-5">
+              <p className="mb-2 text-[10px] text-muted-foreground">
+                <span className="font-mono">ⓘ</span> ALSI intraday (separate source) is the same series on the Cockpit&apos;s J203 panel.
+              </p>
+              <div className="glass-inset min-h-0 flex-1 p-3">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={combined} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                    <XAxis dataKey="tenor" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
+                    <YAxis tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="%" domain={["dataMin - 0.5", "dataMax + 0.5"]} />
+                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: number) => `${v.toFixed(2)}%`} />
+                    <Legend wrapperStyle={{ fontSize: 10, paddingTop: 4 }} />
+                    <Line type="monotone" dataKey="govi" name="Govi" stroke="hsl(38 95% 56%)" strokeWidth={2.2} dot={{ r: 2 }} />
+                    <Line type="monotone" dataKey="swap" name="NSS" stroke="hsl(263 80% 65%)" strokeWidth={1.6} dot={false} />
+                    <Line type="monotone" dataKey="real" name="Real (ILB)" stroke="hsl(180 60% 50%)" strokeWidth={1.4} dot={false} strokeDasharray="4 4" />
+                    <Line type="monotone" dataKey="breakeven" name="Breakeven" stroke="hsl(351 90% 60%)" strokeWidth={1.2} dot={false} strokeDasharray="2 4" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </GlassSection>
         )}
 
-        <Panel
+        <GlassSection
           title="PCA · today's curve move"
           endpoint="GET /api/curves/ZAR_NSS/metrics"
           dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
-          className="col-span-12 lg:col-span-4 h-[380px]"
-          right={<span className="font-mono text-[10px]">3-factors + residual</span>}
+          className="col-span-12 flex h-[380px] flex-col lg:col-span-4"
+          right={<span className="font-mono text-[10px] text-muted-foreground">3-factors + residual</span>}
         >
           {move ? (
-            <div className="grid grid-cols-1 gap-1.5 text-xs">
+            <div className="grid grid-cols-1 gap-2 text-xs">
               {[
                 { k: "Level (parallel)", v: move.level, help: "whole curve shift" },
                 { k: "Slope (2s10s)", v: move.slope, help: "short vs long" },
                 { k: "Curvature (fly)", v: move.curvature, help: "belly twist" },
                 { k: "Residual", v: move.residual, help: "unexplained" },
               ].map((row) => (
-                <div key={row.k} className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
+                <div key={row.k} className="glass-inset p-2.5">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="font-semibold">{row.k}</p>
@@ -253,7 +284,7 @@ export default function CurvesPage() {
                       {row.v >= 0 ? "+" : ""}{row.v}bp
                     </p>
                   </div>
-                  <div className="mt-1.5 h-1 overflow-hidden rounded bg-muted">
+                  <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-muted/60">
                     <div
                       className={row.v >= 0 ? "h-full bg-success" : "h-full bg-destructive"}
                       style={{ width: `${Math.min(100, Math.abs(row.v) * 6)}%` }}
@@ -268,15 +299,15 @@ export default function CurvesPage() {
               hint={metricsQ.data?.message ?? "Wire TimeSeriesGet2 + the curve-derived metrics loop in the worker."}
             />
           )}
-        </Panel>
+        </GlassSection>
       </div>
 
-      <div className="grid grid-cols-12 gap-2.5">
-        <Panel
+      <div className="grid grid-cols-12 gap-3">
+        <GlassSection
           title="ZAR-OIS spread · 3M · 12M"
           endpoint="GET /api/curves/ZAR_NSS/metrics?metric=ois_spread_*"
           dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
-          className="col-span-12 lg:col-span-6 h-[300px]"
+          className="col-span-12 h-[300px] lg:col-span-6"
         >
           {ois3m !== undefined || ois12m !== undefined ? (
             <div className="grid grid-cols-2 gap-2 text-xs">
@@ -288,7 +319,7 @@ export default function CurvesPage() {
                 ["OIS spread (delta 3M→12M)", ois3m !== undefined && ois12m !== undefined ? `${(ois12m - ois3m).toFixed(2)}%` : "—"],
                 ["Source", "oems_curve_metric_c"],
               ].map(([l, v]) => (
-                <div key={l} className="flex items-center justify-between rounded-md border border-border/60 bg-surface-2/30 p-2">
+                <div key={l} className="glass-inset flex items-center justify-between p-2">
                   <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{l}</p>
                   <p className="font-mono font-semibold">{v}</p>
                 </div>
@@ -300,20 +331,20 @@ export default function CurvesPage() {
               hint="The worker's curve-derived metrics loop writes ois_spread_3m and ois_spread_12m to oems_curve_metric_c. Run the loop to populate."
             />
           )}
-        </Panel>
+        </GlassSection>
 
-        <Panel
+        <GlassSection
           title="Carry & rolldown · key 5Y vertex"
           endpoint="GET /api/curves/ZAR_NSS/metrics?metric=carry_*"
           dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
-          className="col-span-12 lg:col-span-6 h-[300px]"
+          className="col-span-12 h-[300px] lg:col-span-6"
           right={
             carry3m !== undefined && rolldown3m !== undefined ? (
-              <Pill tone="success" size="xs">
+              <GlassBadge tone="success">
                 {((carry3m + rolldown3m) >= 0 ? "+" : "") + (carry3m + rolldown3m).toFixed(2)}% T+3M
-              </Pill>
+              </GlassBadge>
             ) : (
-              <Pill tone="neutral" size="xs">—</Pill>
+              <GlassBadge>—</GlassBadge>
             )
           }
         >
@@ -330,7 +361,7 @@ export default function CurvesPage() {
                 ["Annualised (3M)", carry3m !== undefined && rolldown3m !== undefined ? `${((carry3m + rolldown3m) * 4).toFixed(2)}%` : "—"],
                 ["Annualised (12M)", carry12m !== undefined && rolldown12m !== undefined ? `${(carry12m + rolldown12m).toFixed(2)}%` : "—"],
               ].map(([l, v]) => (
-                <div key={l} className="flex items-center justify-between rounded-md border border-border/60 bg-surface-2/30 p-2">
+                <div key={l} className="glass-inset flex items-center justify-between p-2">
                   <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{l}</p>
                   <p className="font-mono font-semibold">{v}</p>
                 </div>
@@ -348,8 +379,8 @@ export default function CurvesPage() {
               hint="Computed by the worker each curve cycle (carry/rolldown @ 5Y → oems_curve_metric_c). If this stays empty, apply migration 20260613000003_oems_curve_metric_c.sql on the institutional DB."
             />
           )}
-        </Panel>
+        </GlassSection>
       </div>
-    </div>
+    </PageCanvas>
   );
 }

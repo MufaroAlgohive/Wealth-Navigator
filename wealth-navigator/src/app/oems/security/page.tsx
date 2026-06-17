@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { Search } from "lucide-react";
 
 import { Panel } from "@/components/oems/primitives/panel";
+import { GlassSection } from "@/components/oems/primitives/glass";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
 import { DepthLadder } from "@/components/oems/primitives/depth-ladder";
 import { TimeAndSales } from "@/components/oems/primitives/time-and-sales";
@@ -51,21 +52,21 @@ function SecurityPageContent() {
   const hasLiveQuote = tick.ts > 0;
 
   return (
-    <div className="space-y-3">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">Security Lookup</h1>
-          <p className="text-xs text-muted-foreground">
+    <div className="space-y-4">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0 space-y-1">
+          <h1 className="text-display text-2xl">Security Lookup</h1>
+          <p className="text-caption">
             {inst?.name} · {inst?.exchange} · {inst?.isin} · {inst?.sector}
           </p>
         </div>
         <div className="relative w-80">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={sym}
             onChange={(e) => setSym(e.target.value.toUpperCase())}
             placeholder="Ticker / ISIN / RIC"
-            className="h-8 pl-8 font-mono text-xs"
+            className="glass-inset h-10 border-0 pl-10 font-mono text-sm shadow-none"
           />
         </div>
       </header>
@@ -108,21 +109,24 @@ function SecurityPageContent() {
         {equitiesQ.isLoading ? (
           <PanelSkeleton rows={4} height="h-[400px]" className="col-span-12 lg:col-span-6" />
         ) : (
-          <Panel
+          <GlassSection
             title={`${inst?.symbol ?? "—"} · ${chartRange}`}
             endpoint={realDataOnly ? (chartRange === "1D" ? "GET /api/intraday" : "GET /api/history") : "PricingQuoteGet"}
-            dataSource={quoteSource}
-            className="col-span-12 lg:col-span-6 h-[400px]"
+            dataSource={realDataOnly ? quoteSource : undefined}
+            className="col-span-12 flex h-[400px] min-h-0 flex-col lg:col-span-6"
+            noPadding
             right={
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-0.5">
+                <div className="glass-inset inline-flex gap-0.5 p-1">
                   {(["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "All"] as const).map((r) => (
                     <button
                       key={r}
                       onClick={() => setChartRange(r)}
                       className={cn(
-                        "rounded px-1.5 py-0.5 font-mono text-[10px] transition-colors",
-                        chartRange === r ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted/40",
+                        "rounded-lg px-2 py-1 font-mono text-[10px] font-medium transition-all duration-200",
+                        chartRange === r
+                          ? "bg-primary text-primary-foreground shadow-[0_2px_12px_hsl(var(--primary)/0.35)]"
+                          : "text-muted-foreground hover:text-foreground",
                       )}
                     >
                       {r}
@@ -133,12 +137,16 @@ function SecurityPageContent() {
               </div>
             }
           >
-            {realDataOnly && chartRange === "1D" && !hasLiveQuote ? (
-              <EmptyDataState message="No intraday series — quote feed has no ticks for this symbol yet. Try 1M / 1Y (daily history via IRESS)." />
-            ) : (
-              <SecurityChart sym={activeSym} realDataOnly={realDataOnly} range={chartRange} />
-            )}
-          </Panel>
+            <div className="p-4">
+              <div className="glass-inset h-[336px] overflow-hidden p-2">
+                {realDataOnly && chartRange === "1D" && !hasLiveQuote ? (
+                  <EmptyDataState message="No intraday series — quote feed has no ticks for this symbol yet. Try 1M / 1Y (daily history via IRESS)." />
+                ) : (
+                  <SecurityChart sym={activeSym} realDataOnly={realDataOnly} range={chartRange} />
+                )}
+              </div>
+            </div>
+          </GlassSection>
         )}
 
         {equitiesQ.isLoading ? (
@@ -180,23 +188,27 @@ function SecurityPageContent() {
       </div>
 
       {realDataOnly ? (
-        <Panel
+        <GlassSection
           title={`Key Statistics · ${inst?.name ?? activeSym}`}
           endpoint="GET /api/quote-snapshot + /api/equities"
-          right={<span className="font-mono text-[10px]">{inst?.sector ?? inst?.isin ?? ""}</span>}
+          right={<span className="text-caption font-mono">{inst?.sector ?? inst?.isin ?? ""}</span>}
         >
           <SecurityStatsGrid sym={activeSym} />
-        </Panel>
+        </GlassSection>
       ) : (
-        <Panel
+        <GlassSection
           title="Reference · ISIN / RIC / Sector / Fundamentals"
           endpoint={`GET /v1/securities/${inst?.isin ?? ""}`}
-          right={<span className="font-mono text-[10px]">{inst?.isin}</span>}
+          right={<span className="text-caption font-mono">{inst?.isin}</span>}
         >
           {equitiesQ.isLoading ? (
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-busy="true" aria-live="polite">
+            <div
+              className="glass-inset grid grid-cols-2 gap-px overflow-hidden sm:grid-cols-4 lg:grid-cols-6"
+              aria-busy="true"
+              aria-live="polite"
+            >
               {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].map((n) => (
-                <div key={`security-row-${n}`} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+                <div key={`security-row-${n}`} className="px-3 py-2.5">
                   <span className="shimmer block h-2 w-3/4 rounded" />
                   <span className="shimmer mt-1.5 block h-3 w-1/2 rounded" />
                 </div>
@@ -215,7 +227,7 @@ function SecurityPageContent() {
               sym={activeSym}
             />
           )}
-        </Panel>
+        </GlassSection>
       )}
     </div>
   );
@@ -265,11 +277,11 @@ function FundamentalsGrid({
     { k: "VWAP", v: seedLast.toFixed(2) },
   ];
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+    <div className="glass-inset grid grid-cols-2 gap-px overflow-hidden sm:grid-cols-4 lg:grid-cols-6">
       {fields.map(({ k, v }) => (
-        <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-          <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
-          <p className="mt-0.5 font-mono text-xs font-semibold">{v}</p>
+        <div key={k} className="px-3 py-2.5">
+          <p className="text-caption uppercase tracking-wider">{k}</p>
+          <p className="mt-1 font-mono text-xs font-semibold tabular-nums">{v}</p>
         </div>
       ))}
     </div>
@@ -326,9 +338,12 @@ function SecurityStatsGrid({ sym }: { sym: string }) {
 
   if (snapQ.isLoading || eqQ.isLoading) {
     return (
-      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border/60 bg-border/40 lg:grid-cols-2" aria-busy="true">
+      <div
+        className="glass-inset grid grid-cols-1 gap-px overflow-hidden sm:grid-cols-2"
+        aria-busy="true"
+      >
         {Array.from({ length: 16 }).map((_, n) => (
-          <div key={`stat-${n}`} className="bg-surface-1 px-3 py-2">
+          <div key={`stat-${n}`} className="px-4 py-2.5">
             <span className="shimmer block h-3 w-2/3 rounded" />
           </div>
         ))}
@@ -370,16 +385,16 @@ function SecurityStatsGrid({ sym }: { sym: string }) {
   ];
 
   return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-1 gap-px overflow-hidden rounded-md border border-border/60 bg-border/40 sm:grid-cols-2">
+    <div className="space-y-3">
+      <div className="glass-inset grid grid-cols-1 gap-px overflow-hidden sm:grid-cols-2">
         {fields.map(({ k, v }) => (
-          <div key={k} className="flex items-center justify-between gap-3 bg-surface-1 px-3 py-2">
-            <span className="text-[11px] text-muted-foreground">{k}</span>
+          <div key={k} className="flex items-center justify-between gap-3 px-4 py-2.5">
+            <span className="text-caption">{k}</span>
             <span className="font-mono text-xs font-semibold tabular-nums">{v}</span>
           </div>
         ))}
       </div>
-      <p className="text-[9.5px] leading-relaxed text-muted-foreground/70">
+      <p className="text-[10px] leading-relaxed text-muted-foreground/70">
         Prev Close / Open / Bid / Ask / Day&apos;s Range / Volume: <span className="text-muted-foreground">IRESS PricingQuoteGet</span>
         {s == null ? " (apply the quote_snapshot_c migration to populate)" : ""}. 52-Week Range / Avg. Volume:
         IRESS daily history (worker fill pending). Market Cap / Beta / PE / EPS / Dividend:{" "}
@@ -439,14 +454,14 @@ function SecurityChart({ sym, realDataOnly, range = "1D" }: { sym: string; realD
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center">
-        <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Loading {range}…</p>
+        <p className="text-caption font-mono uppercase tracking-wider">Loading {range}…</p>
       </div>
     );
   }
   if (points.length < 2 || (realDataOnly && points.every((p) => p === 0))) {
     return realDataOnly ? (
       <div className="flex h-full items-center justify-center">
-        <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">No {range} data for this symbol.</p>
+        <p className="text-caption font-mono uppercase tracking-wider">No {range} data for this symbol.</p>
       </div>
     ) : null;
   }

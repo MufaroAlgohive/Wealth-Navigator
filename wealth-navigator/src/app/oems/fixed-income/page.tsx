@@ -3,9 +3,9 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { Search } from "lucide-react";
+import { Landmark, Search } from "lucide-react";
 
-import { Panel } from "@/components/oems/primitives/panel";
+import { GlassBadge, GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
@@ -44,6 +44,18 @@ interface BondsResponse {
   bonds: BondRow[];
   source: string;
   message?: string;
+}
+
+const CHART_TOOLTIP_STYLE = {
+  fontSize: 11,
+  background: "hsl(var(--glass-bg-strong))",
+  border: "1px solid hsl(var(--glass-border))",
+  borderRadius: 12,
+  backdropFilter: "blur(12px)",
+} as const;
+
+function GlassTableShell({ children }: { children: React.ReactNode }) {
+  return <div className="glass-inset overflow-hidden">{children}</div>;
 }
 
 export default function FixedIncomePage() {
@@ -96,16 +108,25 @@ export default function FixedIncomePage() {
   }, [bond]);
 
   return (
-    <div className="space-y-3">
-      <header>
-        <h1 className="text-lg font-semibold tracking-tight">Fixed Income</h1>
-        <p className="text-xs text-muted-foreground">Clean/dirty pricing · DV01 · convexity · spread to curve</p>
+    <PageCanvas>
+      <header className="glass-panel relative overflow-hidden p-5 md:p-6">
+        <div className="pointer-events-none absolute -right-16 -top-16 h-40 w-40 rounded-full bg-primary/10 blur-3xl" />
+        <div className="relative space-y-3">
+          <GlassBadge tone="primary">
+            <Landmark className="h-3.5 w-3.5" />
+            ZAR bonds desk
+          </GlassBadge>
+          <h1 className="text-display text-2xl">Fixed Income</h1>
+          <p className="text-caption max-w-2xl">
+            Clean/dirty pricing · DV01 · convexity · spread to curve
+          </p>
+        </div>
       </header>
 
       {bondsQ.isLoading ? (
         <PanelSkeleton rows={8} height="h-[420px]" className="col-span-12" />
       ) : bonds.length === 0 ? (
-        <Panel
+        <GlassSection
           title="Bond screener"
           endpoint="GET /api/bonds"
           dataSource={source === "supabase" ? "supabase" : "unconfigured"}
@@ -115,82 +136,94 @@ export default function FixedIncomePage() {
             hint={bondsQ.data?.message ?? "bonds_c is empty. Bond pricing requires the IRESS bond entitlement (or an upstream vendor)."}
             badgeLabel="blocked-vendor"
           />
-        </Panel>
+        </GlassSection>
       ) : (
-        <div className="grid grid-cols-12 gap-2.5">
-          <Panel
+        <div className="grid grid-cols-12 gap-3">
+          <GlassSection
             title="Bond screener"
             endpoint="GET /api/bonds"
             dataSource="supabase"
-            className="col-span-12 lg:col-span-7 h-[420px]"
-            density="scroll"
+            className="col-span-12 flex h-[420px] flex-col lg:col-span-7"
+            noPadding
             right={
-              <div className="relative w-48">
-                <Search className="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+              <div className="relative w-52">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
                   placeholder="ISIN / issuer / name"
-                  className="h-6 pl-6 text-[10.5px]"
+                  className="glass-inset h-8 border-0 pl-8 text-xs shadow-none"
                 />
               </div>
             }
           >
-            <table className="w-full font-mono text-[11px]">
-              <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
-                <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-                  <th className="px-2.5 py-1.5 text-left">Name</th>
-                  <th className="px-2.5 py-1.5 text-left">Issuer</th>
-                  <th className="px-2.5 py-1.5 text-right">YTM</th>
-                  <th className="px-2.5 py-1.5 text-right">Clean</th>
-                  <th className="px-2.5 py-1.5 text-right">Mod Dur</th>
-                  <th className="px-2.5 py-1.5 text-right">DV01</th>
-                  <th className="px-2.5 py-1.5 text-right">Spd</th>
-                  <th className="px-2.5 py-1.5 text-left">Rtg</th>
-                  <th className="px-2.5 py-1.5 text-left">Liq</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60">
-                {filtered.map((b) => (
-                  <tr
-                    key={b.isin}
-                    onClick={() => setSelected(b.isin)}
-                    className={cn("cursor-pointer hover:bg-muted/30", b.isin === effectiveSelected && "bg-primary/10")}
-                  >
-                    <td className="px-2.5 py-1.5 font-semibold">{b.name}</td>
-                    <td className="px-2.5 py-1.5 text-muted-foreground">{b.issuer}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fx(b.ytm, 2, "%")}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fx(b.clean, 2)}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fx(b.modDur, 2)}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fx(b.dv01, 2)}</td>
-                    <td className={cn("px-2.5 py-1.5 text-right tabular-nums", (b.spread ?? 0) > 0 && "text-warning")}>
-                      {b.spread != null && b.spread > 0 ? `+${b.spread}` : "—"}
-                    </td>
-                    <td className="px-2.5 py-1.5">
-                      <Pill
-                        tone={b.rating.startsWith("AA") ? "success" : b.rating.startsWith("BB") ? "warning" : "neutral"}
-                        size="xs"
+            <GlassTableShell>
+              <div className="max-h-[360px] overflow-y-auto scrollbar-thin">
+                <table className="w-full font-mono text-xs">
+                  <thead className="sticky top-0 z-10 bg-[hsl(var(--glass-bg-strong))] backdrop-blur-md">
+                    <tr className="border-b border-[hsl(var(--glass-border))] text-[9.5px] uppercase tracking-wider text-muted-foreground">
+                      <th className="px-4 py-2.5 text-left font-medium">Name</th>
+                      <th className="px-4 py-2.5 text-left font-medium">Issuer</th>
+                      <th className="px-4 py-2.5 text-right font-medium">YTM</th>
+                      <th className="px-4 py-2.5 text-right font-medium">Clean</th>
+                      <th className="px-4 py-2.5 text-right font-medium">Mod Dur</th>
+                      <th className="px-4 py-2.5 text-right font-medium">DV01</th>
+                      <th className="px-4 py-2.5 text-right font-medium">Spd</th>
+                      <th className="px-4 py-2.5 text-left font-medium">Rtg</th>
+                      <th className="px-4 py-2.5 text-left font-medium">Liq</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filtered.map((b) => (
+                      <tr
+                        key={b.isin}
+                        onClick={() => setSelected(b.isin)}
+                        className={cn(
+                          "cursor-pointer border-b border-[hsl(var(--glass-border))]/60 transition-colors last:border-0 hover:bg-[hsl(var(--primary)/0.04)]",
+                          b.isin === effectiveSelected && "bg-[hsl(var(--primary)/0.08)]",
+                        )}
                       >
-                        {b.rating}
-                      </Pill>
-                    </td>
-                    <td className="px-2.5 py-1.5 text-[9.5px] uppercase tracking-wider text-muted-foreground">
-                      {b.liquidity}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Panel>
+                        <td className="px-4 py-2 font-semibold">{b.name}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{b.issuer}</td>
+                        <td className="px-4 py-2 text-right tabular-nums">{fx(b.ytm, 2, "%")}</td>
+                        <td className="px-4 py-2 text-right tabular-nums">{fx(b.clean, 2)}</td>
+                        <td className="px-4 py-2 text-right tabular-nums">{fx(b.modDur, 2)}</td>
+                        <td className="px-4 py-2 text-right tabular-nums">{fx(b.dv01, 2)}</td>
+                        <td
+                          className={cn(
+                            "px-4 py-2 text-right tabular-nums",
+                            (b.spread ?? 0) > 0 && "text-warning",
+                          )}
+                        >
+                          {b.spread != null && b.spread > 0 ? `+${b.spread}` : "—"}
+                        </td>
+                        <td className="px-4 py-2">
+                          <Pill
+                            tone={b.rating.startsWith("AA") ? "success" : b.rating.startsWith("BB") ? "warning" : "neutral"}
+                            size="xs"
+                          >
+                            {b.rating}
+                          </Pill>
+                        </td>
+                        <td className="px-4 py-2 text-[9.5px] uppercase tracking-wider text-muted-foreground">
+                          {b.liquidity}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </GlassTableShell>
+          </GlassSection>
 
           {bond && (
-            <div className="col-span-12 lg:col-span-5 space-y-2.5">
-              <Panel
+            <div className="col-span-12 space-y-3 lg:col-span-5">
+              <GlassSection
                 title={`${bond.name} · ${bond.isin}`}
                 endpoint={`bonds_c[${bond.isin}]`}
                 dataSource="supabase"
               >
-                <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className="grid grid-cols-3 gap-2">
                   {[
                     ["Issuer", bond.issuer],
                     ["Coupon", bond.coupon != null ? `${bond.coupon}%` : "—"],
@@ -205,75 +238,80 @@ export default function FixedIncomePage() {
                     ["Spread", bond.spread != null ? `${bond.spread}bp` : "—"],
                     ["Liquidity", bond.liquidity],
                   ].map(([l, v]) => (
-                    <div key={l} className="rounded-md border border-border/60 bg-surface-2/30 p-1.5">
+                    <div key={l} className="glass-inset p-2.5">
                       <p className="text-[9px] uppercase tracking-wider text-muted-foreground">{l}</p>
-                      <p className="mt-0.5 font-mono text-xs font-semibold">{v}</p>
+                      <p className="text-metric mt-1 text-sm">{v}</p>
                     </div>
                   ))}
                 </div>
-              </Panel>
-              {/* Yellow #14 — the KRD placeholder panel was deleted
-                  in this audit. The DV01 + convexity sensitivity
-                  chart (rendered below) is the one we keep. */}
+              </GlassSection>
             </div>
           )}
         </div>
       )}
 
-      <div className="grid grid-cols-12 gap-2.5">
-        <Panel
+      <div className="grid grid-cols-12 gap-3">
+        <GlassSection
           title="ZAR govi · today vs 1D / 1W / 1M"
           endpoint="GET /api/curves/ZAR_GOVI"
           dataSource="unconfigured"
-          className="col-span-12 lg:col-span-7 h-[300px]"
+          className="col-span-12 flex h-[300px] flex-col lg:col-span-7"
         >
-          {/* Yellow #16 — the same TimeSeriesGet2 entitlement story
-              the Curves page tells, but here we use the shared
-              EntitlementRequired primitive so the message is
-              consistent across the three call-sites (Cockpit, Fixed
-              Income, Curves). */}
           <EntitlementRequired
             method="TimeSeriesGet2"
             codes={["ZAR_NSS", "ZAR_GOVI"]}
             note="Curve history requires TimeSeriesGet2 on the production IRESS V4 profile. Ask Charles."
           />
-        </Panel>
+        </GlassSection>
 
         {bond && (
-          <Panel
+          <GlassSection
             title="P&L sensitivity · ±100bp"
             endpoint="INTERNAL · DV01 + convexity"
             dataSource="code-gap"
-            className="col-span-12 lg:col-span-5 h-[300px]"
+            className="col-span-12 flex h-[300px] flex-col lg:col-span-5"
+            noPadding
           >
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={sensitivity} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
-                <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                <XAxis dataKey="bp" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
-                <YAxis
-                  tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                  stroke="hsl(var(--border))"
-                  tickFormatter={(v: number) => `${(v / 1000).toFixed(1)}k`}
+            {sensitivity.length === 0 ? (
+              <div className="p-5">
+                <EmptyDataState
+                  message="Sensitivity unavailable — bond not priced yet."
+                  hint="DV01 and convexity must be written by the worker before the ±100bp P&L chart can render."
                 />
-                <Tooltip
-                  contentStyle={{
-                    fontSize: 11,
-                    background: "hsl(var(--popover))",
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: 6,
-                  }}
-                  formatter={(v: number) => `R${(v / 1000).toFixed(1)}k`}
-                />
-                <Bar dataKey="pnl" radius={[2, 2, 0, 0]}>
-                  {sensitivity.map((d, i) => (
-                    <Cell key={i} fill={d.pnl >= 0 ? "hsl(152 70% 50%)" : "hsl(351 90% 60%)"} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </Panel>
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col p-5">
+                <div className="glass-inset min-h-0 flex-1 p-3">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={sensitivity} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                      <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                      <XAxis
+                        dataKey="bp"
+                        tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                        stroke="hsl(var(--border))"
+                      />
+                      <YAxis
+                        tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                        stroke="hsl(var(--border))"
+                        tickFormatter={(v: number) => `${(v / 1000).toFixed(1)}k`}
+                      />
+                      <Tooltip
+                        contentStyle={CHART_TOOLTIP_STYLE}
+                        formatter={(v: number) => `R${(v / 1000).toFixed(1)}k`}
+                      />
+                      <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                        {sensitivity.map((d, i) => (
+                          <Cell key={i} fill={d.pnl >= 0 ? "hsl(152 70% 50%)" : "hsl(351 90% 60%)"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
+          </GlassSection>
         )}
       </div>
-    </div>
+    </PageCanvas>
   );
 }

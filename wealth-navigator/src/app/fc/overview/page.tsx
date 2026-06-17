@@ -2,12 +2,11 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Banknote, AlertTriangle, Check, Wallet } from "lucide-react";
+import { ArrowRight, AlertTriangle, Check } from "lucide-react";
 import { toast } from "sonner";
 import { PersonaRealDataGate } from "@/components/oems/persona-real-data-gate";
-import { Panel } from "@/components/oems/primitives/panel";
+import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Button } from "@/components/ui/button";
 import { reconLegs, cashPositions, reconExceptions } from "@/lib/iress/seed";
 import { formatTimeShort, formatZARExact } from "@/lib/format";
@@ -43,113 +42,106 @@ export default function FuneralCoverOverview() {
       description="Daily reconciliation · cash positions · recon exceptions."
       message="Funeral cover reconciliation requires ops / accounting system integration."
     >
-        {/* KPI strip */}
-        <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-          <KpiTile
-            icon={<Banknote className="h-3.5 w-3.5" />}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <GlassKpi
             label="Pending recon legs"
             value={pendingReconCount.toString()}
             sub="FILLED, awaiting IPS booking"
-            tone={pendingReconCount > 0 ? "warning" : "default"}
           />
-          <KpiTile
-            icon={<Wallet className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Cash positions out of band"
             value={pendingCash.toString()}
             sub="drift > R2m vs target"
-            tone={pendingCash > 0 ? "warning" : "default"}
           />
-          <KpiTile
-            icon={<AlertTriangle className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Recon exceptions"
             value={reconExceptions.length.toString()}
             sub="open items, ops to action"
-            tone={reconExceptions.length > 0 ? "warning" : "default"}
           />
-          <KpiTile
-            icon={<Check className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Booked today"
             value={Object.values(booked).filter(Boolean).length.toString()}
             sub="via Mark booked (mock)"
-            tone="positive"
+            accent="positive"
           />
         </div>
 
-        {/* Row 1: Daily reconciliation | Cash positions */}
-        <div className="grid grid-cols-12 gap-2.5">
-          <Panel
+        <div className="grid grid-cols-12 gap-3">
+          <GlassSection
             title="Daily reconciliation"
             endpoint="GET IPS /IPSTransactionGetByAccount5?status=PENDING_BOOKING"
             right={<Pill tone="warning" size="xs">{pendingReconCount} legs</Pill>}
             className="col-span-12 lg:col-span-7"
-            density="scroll"
+            noPadding
           >
-            <table className="w-full font-mono text-[11px]">
-              <thead className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-                <tr>
-                  <th className="px-2.5 py-1.5 text-left">Time</th>
-                  <th className="px-2.5 py-1.5 text-left">Account</th>
-                  <th className="px-2.5 py-1.5 text-left">Side</th>
-                  <th className="px-2.5 py-1.5 text-left">Sym</th>
-                  <th className="px-2.5 py-1.5 text-right">Qty</th>
-                  <th className="px-2.5 py-1.5 text-right">Notional</th>
-                  <th className="px-2.5 py-1.5 text-left">Status</th>
-                  <th className="px-2.5 py-1.5 text-right" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60">
-                {reconLegs.map((l) => {
-                  const isBooked = booked[l.id];
-                  return (
-                    <tr key={l.id} className="hover:bg-muted/30">
-                      <td className="px-2.5 py-1.5 text-muted-foreground">{formatTimeShort(l.ts)}</td>
-                      <td className="px-2.5 py-1.5">{l.account}</td>
-                      <td className={cn("px-2.5 py-1.5 font-semibold", l.side === "BUY" ? "text-up" : "text-down")}>
-                        {l.side}
-                      </td>
-                      <td className="px-2.5 py-1.5 font-semibold">{l.symbol}</td>
-                      <td className="px-2.5 py-1.5 text-right tabular-nums">{l.qty.toLocaleString()}</td>
-                      <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZARExact(l.notional)}</td>
-                      <td className="px-2.5 py-1.5">
-                        {isBooked ? (
-                          <Pill tone="success" size="xs">BOOKED</Pill>
-                        ) : (
-                          <Pill tone="warning" size="xs">PENDING</Pill>
-                        )}
-                      </td>
-                      <td className="px-2.5 py-1.5 text-right">
-                        {isBooked ? (
-                          <span className="font-mono text-[10px] text-muted-foreground">—</span>
-                        ) : (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => markBooked(l.id, `${l.account} ${l.side} ${l.symbol}`)}
-                            className="h-6 px-2 text-[10px]"
-                          >
-                            Mark booked
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </Panel>
+            <div className="max-h-[400px] overflow-y-auto scrollbar-thin">
+              <table className="w-full font-mono text-[11px]">
+                <thead className="sticky top-0 bg-[hsl(var(--glass-bg-strong))] text-[9.5px] uppercase tracking-wider text-muted-foreground backdrop-blur-sm">
+                  <tr>
+                    <th className="px-2.5 py-1.5 text-left">Time</th>
+                    <th className="px-2.5 py-1.5 text-left">Account</th>
+                    <th className="px-2.5 py-1.5 text-left">Side</th>
+                    <th className="px-2.5 py-1.5 text-left">Sym</th>
+                    <th className="px-2.5 py-1.5 text-right">Qty</th>
+                    <th className="px-2.5 py-1.5 text-right">Notional</th>
+                    <th className="px-2.5 py-1.5 text-left">Status</th>
+                    <th className="px-2.5 py-1.5 text-right" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[hsl(var(--glass-border))]">
+                  {reconLegs.map((l) => {
+                    const isBooked = booked[l.id];
+                    return (
+                      <tr key={l.id} className="hover:bg-[hsl(var(--foreground)/0.03)]">
+                        <td className="px-2.5 py-1.5 text-muted-foreground">{formatTimeShort(l.ts)}</td>
+                        <td className="px-2.5 py-1.5">{l.account}</td>
+                        <td className={cn("px-2.5 py-1.5 font-semibold", l.side === "BUY" ? "text-up" : "text-down")}>
+                          {l.side}
+                        </td>
+                        <td className="px-2.5 py-1.5 font-semibold">{l.symbol}</td>
+                        <td className="px-2.5 py-1.5 text-right tabular-nums">{l.qty.toLocaleString()}</td>
+                        <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZARExact(l.notional)}</td>
+                        <td className="px-2.5 py-1.5">
+                          {isBooked ? (
+                            <Pill tone="success" size="xs">BOOKED</Pill>
+                          ) : (
+                            <Pill tone="warning" size="xs">PENDING</Pill>
+                          )}
+                        </td>
+                        <td className="px-2.5 py-1.5 text-right">
+                          {isBooked ? (
+                            <span className="font-mono text-[10px] text-muted-foreground">—</span>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => markBooked(l.id, `${l.account} ${l.side} ${l.symbol}`)}
+                              className="h-6 px-2 text-[10px]"
+                            >
+                              Mark booked
+                            </Button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </GlassSection>
 
-          <Panel
+          <GlassSection
             title="Cash positions"
             endpoint="GET IPS /IPSAccountGetAll1"
             right={<Pill tone="info" size="xs">{cashPositions.length} accounts</Pill>}
             className="col-span-12 lg:col-span-5"
-            density="scroll"
+            noPadding
           >
-            <ul className="divide-y divide-border/60">
+            <ul className="max-h-[400px] divide-y divide-[hsl(var(--glass-border))] overflow-y-auto scrollbar-thin">
               {cashPositions.map((c) => {
                 const oob = Math.abs(c.drift) > 2_000_000;
                 return (
-                  <li key={c.id} className="px-3 py-2.5 hover:bg-muted/30">
+                  <li key={c.id} className="px-3 py-2.5 hover:bg-[hsl(var(--foreground)/0.03)]">
                     <div className="flex items-center justify-between gap-2">
                       <p className="truncate text-xs font-medium">{c.account}</p>
                       <Pill tone="neutral" size="xs">{c.currency}</Pill>
@@ -174,18 +166,18 @@ export default function FuneralCoverOverview() {
                 );
               })}
             </ul>
-          </Panel>
+          </GlassSection>
         </div>
 
-        {/* Row 2: Recon exceptions */}
-        <Panel
+        <GlassSection
           title="Recon exceptions"
           endpoint="GET /v1/finance/recon/exceptions?status=open"
           right={<Pill tone="destructive" size="xs">{reconExceptions.length} open</Pill>}
+          noPadding
         >
-          <ul className="divide-y divide-border/60">
+          <ul className="divide-y divide-[hsl(var(--glass-border))]">
             {reconExceptions.map((e) => (
-              <li key={e.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-muted/30">
+              <li key={e.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-[hsl(var(--foreground)/0.03)]">
                 <AlertTriangle
                   className={cn(
                     "mt-0.5 h-3.5 w-3.5 shrink-0",
@@ -211,12 +203,11 @@ export default function FuneralCoverOverview() {
               </li>
             ))}
           </ul>
-        </Panel>
+        </GlassSection>
 
-        {/* Secondary action */}
-        <div className="flex items-center justify-end pt-1">
+        <div className="flex items-center justify-end">
           <Link href="/oems">
-            <Button variant="outline" size="sm" className="h-7 text-[11px]">
+            <Button variant="outline" size="sm" className="glass-inset h-8 border-0 text-[11px]">
               Open OEMS desk
               <ArrowRight className="h-3 w-3" />
             </Button>

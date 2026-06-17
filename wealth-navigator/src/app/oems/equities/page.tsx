@@ -1,11 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { TrendingUp, ShieldCheck, Layers, Activity } from "lucide-react";
 
-import { Panel } from "@/components/oems/primitives/panel";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
+import { GlassSection, GlassKpi, GlassBadge } from "@/components/oems/primitives/glass";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
 import { Pill } from "@/components/oems/primitives/pill";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
@@ -83,6 +81,12 @@ export default function EquitiesPage() {
     ...queryOpts("live"),
   });
   const equitiesQ = useQuery({ queryKey: ["equities"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
+  const sectorsQ = useQuery({
+    queryKey: ["sectors"],
+    queryFn: () => data.sectors(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
   // Real-data mode — the full retail-backed JSE universe (246 names) via the
   // `/api/equities` BFF (reads `securities_c`). Static reference data with its
   // own last_price (INTEGER CENTS) + change_percent; not the live tick stream.
@@ -99,6 +103,26 @@ export default function EquitiesPage() {
     const rows = equitiesUniverseQ.data?.securities ?? [];
     return [...rows].sort((a, b) => bareSymbol(a.symbol).localeCompare(bareSymbol(b.symbol)));
   }, [equitiesUniverseQ.data]);
+  const equitiesAvailable = equitiesUniverseQ.data?.source === "retail-supabase";
+  const topMovers = useMemo(() => {
+    if (!realDataOnly || !equitiesAvailable) return [];
+    const withChange = (equitiesUniverseQ.data?.securities ?? []).filter((s) =>
+      Number.isFinite(s.change_percent),
+    );
+    const gainers = [...withChange]
+      .sort((a, b) => (b.change_percent ?? 0) - (a.change_percent ?? 0))
+      .slice(0, 4);
+    const losers = [...withChange]
+      .sort((a, b) => (a.change_percent ?? 0) - (b.change_percent ?? 0))
+      .slice(0, 4)
+      .reverse();
+    const seen = new Set<string>();
+    return [...gainers, ...losers].filter((s) => {
+      if (seen.has(s.symbol)) return false;
+      seen.add(s.symbol);
+      return true;
+    });
+  }, [realDataOnly, equitiesAvailable, equitiesUniverseQ.data]);
   const strategies = (strategiesQ.data ?? []).filter((s) => s.kind === "equity");
   // Audit #9 — limit the equities list to the shared JSE universe
   // (10 names) so the worker / UI agree on coverage. The IRESS
@@ -148,22 +172,24 @@ export default function EquitiesPage() {
   const realInvestors = (portfolioQ.data?.accounts ?? []).length;
 
   return (
-    <div className="space-y-3">
-      <header>
-        <h1 className="text-lg font-semibold tracking-tight">Equities</h1>
-        <p className="text-xs text-muted-foreground">JSE mandates · L1 quotes · pre-trade compliance via IRESS</p>
+    <div className="space-y-4 pb-6">
+      <header className="glass-panel relative overflow-hidden p-5 md:p-6">
+        <h1 className="text-display text-2xl md:text-3xl">Equities</h1>
+        <p className="text-caption mt-1.5">JSE mandates · L1 quotes · pre-trade compliance via IRESS</p>
       </header>
 
       {realDataOnly ? (
-        // Audit #34 — header KPIs from /api/portfolio in real-data mode.
-        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {portfolioQ.isLoading ? (
             [0, 1, 2, 3].map((n) => <KpiTileSkeleton key={`equity-kpi-${n}`} />)
           ) : portfolioQ.data?.source === "supabase" ? (
             <>
-              <KpiTile icon={<Layers className="h-3.5 w-3.5" />} label="Equity AUM" value={formatZAR(realEquityAum)} sub={`${(portfolioQ.data.positions ?? []).length} positions`} />
-              <KpiTile
-                icon={<Activity className="h-3.5 w-3.5" />}
+              <GlassKpi
+                label="Equity AUM"
+                value={formatZAR(realEquityAum)}
+                sub={`${(portfolioQ.data.positions ?? []).length} positions`}
+              />
+              <GlassKpi
                 label="Open P&L"
                 value={realEquityPnl.value != null ? formatZAR(realEquityPnl.value) : "—"}
                 sub={
@@ -171,13 +197,17 @@ export default function EquitiesPage() {
                     ? `MTM on ${realEquityPnl.marked} positions`
                     : "Marks unavailable (CT test data)"
                 }
-                tone={realEquityPnl.value == null ? "default" : realEquityPnl.value >= 0 ? "positive" : "negative"}
+                accent={realEquityPnl.value == null ? "default" : realEquityPnl.value >= 0 ? "positive" : "negative"}
               />
-              <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Investors" value={realInvestors.toString()} sub={`${(portfolioQ.data.accounts ?? []).length} accounts`} />
-              <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Pre-trade checks" value="On submit" sub="IRESS halt / borrow / non-tradeable at order time" />
+              <GlassKpi
+                label="Investors"
+                value={realInvestors.toString()}
+                sub={`${(portfolioQ.data.accounts ?? []).length} accounts`}
+              />
+              <GlassKpi label="Pre-trade checks" value="On submit" sub="IRESS halt / borrow / non-tradeable at order time" accent="primary" />
             </>
           ) : (
-            <Panel title="Equity KPIs" endpoint="GET /api/portfolio" className="col-span-2 lg:col-span-4">
+            <GlassSection title="Equity KPIs" endpoint="GET /api/portfolio" className="col-span-2 lg:col-span-4">
               <EmptyDataState
                 reason={portfolioQ.data?.reason ?? "supabase_query_failed"}
                 migration={portfolioQ.data?.migration}
@@ -185,25 +215,24 @@ export default function EquitiesPage() {
                 title="Equity AUM unavailable"
                 message="Run the Supabase migration listed below in the MyMint SQL editor to enable real-data equity KPIs."
               />
-            </Panel>
+            </GlassSection>
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {strategiesQ.isLoading ? (
             [0, 1, 2, 3].map((n) => <KpiTileSkeleton key={`equity-kpi-${n}`} />)
           ) : (
             <>
-              <KpiTile icon={<TrendingUp className="h-3.5 w-3.5" />} label="Equity AUM" value={formatZAR(totalAum)} sub={`${strategies.length} mandates`} />
-              <KpiTile
-                icon={<TrendingUp className="h-3.5 w-3.5" />}
+              <GlassKpi label="Equity AUM" value={formatZAR(totalAum)} sub={`${strategies.length} mandates`} />
+              <GlassKpi
                 label="Day P&L"
                 value={formatZAR(totalPnl)}
                 sub={formatPct((totalPnl / (totalAum || 1)) * 100, 3)}
-                tone={totalPnl >= 0 ? "positive" : "negative"}
+                accent={totalPnl >= 0 ? "positive" : "negative"}
               />
-              <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Investors" value={investors.toString()} sub="across all equity mandates" />
-              <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Pre-trade checks" value="LIVE" sub="IRESS halt / borrow / non-tradeable" />
+              <GlassKpi label="Investors" value={investors.toString()} sub="across all equity mandates" />
+              <GlassKpi label="Pre-trade checks" value="LIVE" sub="IRESS halt / borrow / non-tradeable" accent="primary" />
             </>
           )}
         </div>
@@ -213,13 +242,13 @@ export default function EquitiesPage() {
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
           {strategiesQ.isLoading ? (
             [0, 1, 2].map((n) => (
-              <PanelSkeleton key={`equity-card-${n}`} rows={6} />
+              <PanelSkeleton key={`equity-card-${n}`} rows={6} className="glass-panel" />
             ))
           ) : (
             strategies.map((s) => {
               const rebal = canRebalance(s);
               return (
-                <Panel
+                <GlassSection
                   key={s.id}
                   title={s.name}
                   endpoint="GET /v1/positions?strategy={id}"
@@ -240,83 +269,318 @@ export default function EquitiesPage() {
                     <Stat label="Holdings" value={s.holdingsCount.toString()} />
                     <Stat label="Last rebal" value={s.lastRebalanced} />
                   </div>
-                  <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2.5 text-[10.5px]">
+                  <div className="mt-3 flex items-center justify-between border-t border-[hsl(var(--glass-border))] pt-2.5 text-[10.5px]">
                     <span className="font-mono text-muted-foreground">bench {s.benchmark}</span>
                     <Button size="sm" variant={rebal ? "default" : "outline"} disabled={!rebal} className="h-6 px-2 text-[10px]">
                       {rebal ? "Rebalance" : "Locked"}
                     </Button>
                   </div>
-                </Panel>
+                </GlassSection>
               );
             })
           )}
         </div>
       )}
 
-      <Panel
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
+        {realDataOnly ? (
+          equitiesUniverseQ.isLoading ? (
+            <PanelSkeleton rows={6} height="h-[300px]" className="glass-panel col-span-12 lg:col-span-7" />
+          ) : equitiesAvailable && (equitiesUniverseQ.data?.sectors.length ?? 0) > 0 ? (
+            <GlassSection
+              title="Sector Heatmap"
+              endpoint="GET /api/equities"
+              dataSource="supabase"
+              subtitle="computed from JSE constituents (not official J2xx indices)"
+              className="col-span-12 flex h-[300px] flex-col lg:col-span-7"
+              noPadding
+            >
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 scrollbar-thin">
+                <ConstituentSectorList sectors={equitiesUniverseQ.data!.sectors} />
+              </div>
+            </GlassSection>
+          ) : (
+            <GlassSection
+              title="Sector Heatmap"
+              endpoint="GET /api/equities"
+              dataSource="unavailable"
+              className="col-span-12 h-[300px] lg:col-span-7"
+            >
+              <EmptyDataState
+                reason={equitiesUniverseQ.data?.reason ?? "supabase_query_failed"}
+                migration={equitiesUniverseQ.data?.migration}
+                errorDetail={equitiesUniverseQ.data?.error}
+                title="Sector heatmap unavailable"
+                message="No sector aggregates returned from the retail securities_c board."
+              />
+            </GlassSection>
+          )
+        ) : sectorsQ.isLoading ? (
+          <PanelSkeleton rows={6} height="h-[300px]" className="glass-panel col-span-12 lg:col-span-7" />
+        ) : (
+          <GlassSection
+            title="Sector Heatmap"
+            endpoint="PricingQuoteGet (sector indices)"
+            dataSource="seed"
+            subtitle={`${sectorsQ.data?.length ?? 0} sectors`}
+            className="col-span-12 flex h-[300px] flex-col lg:col-span-7"
+            noPadding
+          >
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 scrollbar-thin">
+              <SeedSectorList sectors={sectorsQ.data ?? []} />
+            </div>
+          </GlassSection>
+        )}
+
+        {realDataOnly ? (
+          equitiesUniverseQ.isLoading ? (
+            <PanelSkeleton rows={7} height="h-[300px]" className="glass-panel col-span-12 lg:col-span-5" />
+          ) : equitiesAvailable && topMovers.length > 0 ? (
+            <GlassSection
+              title="Top Movers · JSE"
+              endpoint="GET /api/equities"
+              dataSource="supabase"
+              className="col-span-12 flex h-[300px] flex-col lg:col-span-5"
+              noPadding
+            >
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 scrollbar-thin">
+                <RealMoversList movers={topMovers} />
+              </div>
+            </GlassSection>
+          ) : (
+            <GlassSection
+              title="Top Movers · JSE"
+              endpoint="GET /api/equities"
+              dataSource="unavailable"
+              className="col-span-12 h-[300px] lg:col-span-5"
+            >
+              <EmptyDataState message="Equities board unavailable — retail securities feed returned no rows." />
+            </GlassSection>
+          )
+        ) : equitiesQ.isLoading ? (
+          <PanelSkeleton rows={7} height="h-[300px]" className="glass-panel col-span-12 lg:col-span-5" />
+        ) : (
+          <GlassSection
+            title="Top Movers · JSE"
+            endpoint="GET /v1/securities/quotes?exchange=JSE"
+            dataSource="mock"
+            className="col-span-12 flex h-[300px] flex-col lg:col-span-5"
+            noPadding
+          >
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 scrollbar-thin">
+              <MockMoversList equities={equities} />
+            </div>
+          </GlassSection>
+        )}
+      </div>
+
+      <GlassSection
         title={realDataOnly ? `JSE · ${universeRows.length} names` : "JSE · Top 10 JSE-listed names"}
         endpoint={realDataOnly ? "GET /api/equities" : "GET /v1/securities/quotes?exchange=JSE"}
-        dataSource={realDataOnly ? "supabase" : undefined}
-        right={<Pill tone={realDataOnly ? "primary" : "success"} size="xs" dot>{realDataOnly ? "SUPABASE · L1" : "LIVE · L1"}</Pill>}
+        dataSource={realDataOnly ? "supabase" : "mock"}
+        right={
+          <GlassBadge tone={realDataOnly ? "primary" : "success"}>
+            {realDataOnly ? "SUPABASE · L1" : "LIVE · L1"}
+          </GlassBadge>
+        }
+        noPadding
       >
-        {realDataOnly ? (
-          // Real-data table is the retail `securities_c` board (last_price +
-          // day change). L1 reference only — bid/ask/vwap/volume require IPS
-          // L2 or a streaming feed we don't have on the production profile,
-          // so the table shows 5 columns (Symbol, Name, Sector, Last, Chg).
-          <p className="mb-2 text-[10.5px] text-muted-foreground">
-            Retail <span className="font-mono">securities_c</span> board — L1 last-trade +
-            day change. Bid/ask/vwap/volume require IPS L2 or a streaming feed.
-          </p>
-        ) : null}
-        {realDataOnly ? (
-          <RealEquitiesTable rows={universeRows} isLoading={equitiesUniverseQ.isLoading} response={equitiesUniverseQ.data} />
-        ) : equitiesQ.isLoading || (realDataOnly && liveQuotes.isLoading) ? (
-          <div className="space-y-1.5" aria-busy="true" aria-live="polite">
-            {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
-              <div key={`equity-row-${n}`} className={`flex items-center gap-3 px-2.5 py-1.5 ${realDataOnly ? "grid-cols-5" : ""}`}>
-                <span className="shimmer h-2.5 w-12 rounded" />
-                <span className="shimmer h-2.5 w-28 rounded" />
-                <span className="shimmer h-2.5 w-20 rounded" />
-                <span className="ml-auto shimmer h-2.5 w-16 rounded" />
-                {!realDataOnly ? (
-                  <>
-                    <span className="shimmer h-2.5 w-16 rounded" />
-                    <span className="shimmer h-2.5 w-20 rounded" />
-                    <span className="shimmer h-2.5 w-20 rounded" />
-                  </>
-                ) : null}
-                <span className="shimmer h-2.5 w-14 rounded" />
-              </div>
-            ))}
-          </div>
-        ) : (
-          <table className="w-full font-mono text-xs">
-            <thead>
-              <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-                <th className="px-2.5 py-2 text-left">Sym</th>
-                <th className="px-2.5 py-2 text-left">Name</th>
-                <th className="px-2.5 py-2 text-left">Sector</th>
-                <th className="px-2.5 py-2 text-right">Last</th>
-                {realDataOnly ? null : (
-                  <>
-                    <th className="px-2.5 py-2 text-right">Bid / Ask</th>
-                    <th className="px-2.5 py-2 text-right">VWAP</th>
-                    <th className="px-2.5 py-2 text-right">Volume</th>
-                  </>
-                )}
-                <th className="px-2.5 py-2 text-right">Chg</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/60">
-              {equities.map((e) => (
-                <EquityRow key={e.symbol} symbol={e.symbol} name={e.name} sector={e.sector} realDataOnly={realDataOnly} />
-              ))}
-            </tbody>
-          </table>
-        )}
-      </Panel>
+        <div className="space-y-3 px-5 pb-5">
+          {realDataOnly ? (
+            <p className="pt-5 text-[10.5px] text-muted-foreground">
+              Retail <span className="font-mono">securities_c</span> board — L1 last-trade +
+              day change. Bid/ask/vwap/volume require IPS L2 or a streaming feed.
+            </p>
+          ) : null}
+          {realDataOnly ? (
+            <RealEquitiesTable rows={universeRows} isLoading={equitiesUniverseQ.isLoading} response={equitiesUniverseQ.data} />
+          ) : equitiesQ.isLoading || (realDataOnly && liveQuotes.isLoading) ? (
+            <TableSkeleton realDataOnly={realDataOnly} />
+          ) : (
+            <GlassInsetTable>
+              <table className="w-full font-mono text-xs">
+                <thead>
+                  <tr className={GLASS_TABLE_HEAD}>
+                    <th className="px-3 py-2.5 text-left text-caption font-medium">Sym</th>
+                    <th className="px-3 py-2.5 text-left text-caption font-medium">Name</th>
+                    <th className="px-3 py-2.5 text-left text-caption font-medium">Sector</th>
+                    <th className="px-3 py-2.5 text-right text-caption font-medium">Last</th>
+                    <th className="px-3 py-2.5 text-right text-caption font-medium">Bid / Ask</th>
+                    <th className="px-3 py-2.5 text-right text-caption font-medium">VWAP</th>
+                    <th className="px-3 py-2.5 text-right text-caption font-medium">Volume</th>
+                    <th className="px-3 py-2.5 text-right text-caption font-medium">Chg</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {equities.map((e) => (
+                    <EquityRow key={e.symbol} symbol={e.symbol} name={e.name} sector={e.sector} realDataOnly={realDataOnly} />
+                  ))}
+                </tbody>
+              </table>
+            </GlassInsetTable>
+          )}
+        </div>
+      </GlassSection>
     </div>
+  );
+}
+
+const GLASS_TABLE_HEAD = "border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)]";
+const GLASS_TABLE_ROW = "border-b border-[hsl(var(--glass-border))]/60 transition-colors hover:bg-[hsl(var(--primary)/0.04)]";
+
+function GlassInsetTable({ children }: { children: ReactNode }) {
+  return <div className="glass-inset overflow-x-auto scrollbar-thin">{children}</div>;
+}
+
+function TableSkeleton({ realDataOnly }: { realDataOnly: boolean }) {
+  return (
+    <div className="glass-inset space-y-1.5 p-3" aria-busy="true" aria-live="polite">
+      {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+        <div key={`equity-row-${n}`} className="flex items-center gap-3 px-2.5 py-1.5">
+          <span className="shimmer h-2.5 w-12 rounded" />
+          <span className="shimmer h-2.5 w-28 rounded" />
+          <span className="shimmer h-2.5 w-20 rounded" />
+          <span className="ml-auto shimmer h-2.5 w-16 rounded" />
+          {!realDataOnly ? (
+            <>
+              <span className="shimmer h-2.5 w-16 rounded" />
+              <span className="shimmer h-2.5 w-20 rounded" />
+              <span className="shimmer h-2.5 w-20 rounded" />
+            </>
+          ) : null}
+          <span className="shimmer h-2.5 w-14 rounded" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConstituentSectorList({
+  sectors,
+}: {
+  sectors: { sector: string; count: number; avgChangePct: number; totalMarketCap: number }[];
+}) {
+  const sorted = [...sectors].sort((a, b) => b.avgChangePct - a.avgChangePct);
+  return (
+    <ul role="list" className="glass-inset divide-y divide-[hsl(var(--glass-border))]/60 overflow-hidden">
+      {sorted.map((s) => {
+        const up = s.avgChangePct > 0;
+        const down = s.avgChangePct < 0;
+        const tone = up ? "text-up" : down ? "text-down" : "text-muted-foreground";
+        return (
+          <li
+            key={s.sector}
+            className="group flex items-center gap-3 px-3 py-2 transition-colors hover:bg-[hsl(var(--primary)/0.04)]"
+            title={`${s.sector} · ${formatPct(s.avgChangePct)} · ${s.count} constituents`}
+          >
+            <span
+              aria-hidden
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full",
+                up ? "bg-up" : down ? "bg-down" : "bg-muted-foreground/50",
+              )}
+            />
+            <span className="flex-1 truncate text-sm font-medium text-foreground/90">{s.sector}</span>
+            <span className={cn("w-16 shrink-0 text-right font-mono text-xs font-semibold tabular-nums", tone)}>
+              {formatPct(s.avgChangePct)}
+            </span>
+            <span className="w-14 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+              {s.count}
+              <span className="ml-1 text-muted-foreground/60">cnt</span>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function SeedSectorList({ sectors }: { sectors: { sector: string; weight: number; change: number }[] }) {
+  const sorted = [...sectors].sort((a, b) => b.weight - a.weight);
+  const maxWeight = sorted.reduce((m, x) => (x.weight > m ? x.weight : m), 0);
+  return (
+    <ul role="list" className="glass-inset divide-y divide-[hsl(var(--glass-border))]/60 overflow-hidden">
+      {sorted.map((s) => {
+        const up = s.change > 0;
+        const down = s.change < 0;
+        const tone = up ? "text-up" : down ? "text-down" : "text-muted-foreground";
+        const fill = up ? "bg-up/30" : down ? "bg-down/30" : "bg-muted-foreground/30";
+        const barPct = maxWeight > 0 ? Math.min(100, (s.weight / maxWeight) * 100) : 0;
+        return (
+          <li
+            key={s.sector}
+            className="group flex items-center gap-3 px-3 py-2 transition-colors hover:bg-[hsl(var(--primary)/0.04)]"
+            title={`${s.sector} · ${formatPct(s.change)} · weight ${s.weight.toFixed(1)}%`}
+          >
+            <div className="relative h-1.5 w-12 shrink-0 overflow-hidden rounded-full bg-muted/40" aria-hidden>
+              <div className={cn("absolute inset-y-0 left-0", fill)} style={{ width: `${barPct}%` }} />
+            </div>
+            <span className="flex-1 truncate text-sm font-medium text-foreground/90">{s.sector}</span>
+            <span className={cn("w-14 shrink-0 text-right font-mono text-xs font-semibold tabular-nums", tone)}>
+              {formatPct(s.change)}
+            </span>
+            <span className="w-16 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+              {s.weight.toFixed(1)}%
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function RealMoversList({ movers }: { movers: UniverseSecurity[] }) {
+  return (
+    <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))]/60 overflow-hidden">
+      {movers.map((m) => {
+        const chg = m.change_percent ?? 0;
+        const up = chg > 0;
+        const down = chg < 0;
+        const price = m.last_price != null ? m.last_price / 100 : null;
+        return (
+          <li
+            key={m.symbol}
+            className="flex items-center gap-2 px-3 py-2 transition-colors hover:bg-[hsl(var(--primary)/0.04)]"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-mono text-xs font-semibold">{bareSymbol(m.symbol)}</p>
+              <p className="truncate text-[9.5px] text-muted-foreground">{m.name ?? bareSymbol(m.symbol)}</p>
+            </div>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
+              {price != null ? formatZAR(price) : "—"}
+            </span>
+            <span
+              className={cn(
+                "ml-1 shrink-0 font-mono text-[11px] tabular-nums",
+                up ? "text-up" : down ? "text-down" : "text-muted-foreground",
+              )}
+            >
+              {formatPct(chg)}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function MockMoversList({ equities }: { equities: { symbol: string; name: string }[] }) {
+  return (
+    <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))]/60 overflow-hidden">
+      {equities.slice(0, 7).map((m) => (
+        <li
+          key={m.symbol}
+          className="flex items-center gap-2 px-3 py-2 transition-colors hover:bg-[hsl(var(--primary)/0.04)]"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-mono text-xs font-semibold">{m.symbol}</p>
+            <p className="truncate text-[9.5px] text-muted-foreground">{m.name}</p>
+          </div>
+          <NumberCell sym={m.symbol} fallback={0} decimals={2} size="xs" />
+          <NumberCell sym={m.symbol} fallback={0} decimals={2} size="xs" showChange className="ml-1" />
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -343,32 +607,32 @@ function EquityRow({
   const showNoTick = realDataOnly && tick.ts === 0;
 
   return (
-    <tr className="hover:bg-muted/30">
-      <td className="px-2.5 py-1.5 font-semibold">
+    <tr className={GLASS_TABLE_ROW}>
+      <td className="px-3 py-2 font-semibold">
         <span className="inline-flex items-center gap-1.5">
           {symbol}
           {showNoTick ? <Pill tone="neutral" size="xs">no tick</Pill> : null}
         </span>
       </td>
-      <td className="px-2.5 py-1.5 text-muted-foreground">{name}</td>
-      <td className="px-2.5 py-1.5 text-muted-foreground">{sector}</td>
-      <td className="px-2.5 py-1.5 text-right tabular-nums">
+      <td className="px-3 py-2 text-muted-foreground">{name}</td>
+      <td className="px-3 py-2 text-muted-foreground">{sector}</td>
+      <td className="px-3 py-2 text-right tabular-nums">
         <NumberCell sym={symbol} fallback={ref} decimals={2} />
       </td>
       {realDataOnly ? null : (
         <>
-          <td className="px-2.5 py-1.5 text-right tabular-nums text-muted-foreground">
+          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
             <>
               <span className="text-up">{(ref * 0.9997).toFixed(2)}</span> / <span className="text-down">{(ref * 1.0003).toFixed(2)}</span>
             </>
           </td>
-          <td className="px-2.5 py-1.5 text-right tabular-nums">{formatNumber(vwap)}</td>
-          <td className="px-2.5 py-1.5 text-right tabular-nums text-muted-foreground">
+          <td className="px-3 py-2 text-right tabular-nums">{formatNumber(vwap)}</td>
+          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
             {volume != null && volume > 0 ? formatNumber(volume) : "—"}
           </td>
         </>
       )}
-      <td className="px-2.5 py-1.5 text-right">
+      <td className="px-3 py-2 text-right">
         <NumberCell sym={symbol} fallback={ref} decimals={2} showChange size="xs" />
       </td>
     </tr>
@@ -399,19 +663,7 @@ function RealEquitiesTable({
   response: EquitiesUniverseResponse | undefined;
 }) {
   if (isLoading) {
-    return (
-      <div className="space-y-1.5" aria-busy="true" aria-live="polite">
-        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
-          <div key={`equity-row-${n}`} className="flex items-center gap-3 px-2.5 py-1.5">
-            <span className="shimmer h-2.5 w-12 rounded" />
-            <span className="shimmer h-2.5 w-28 rounded" />
-            <span className="shimmer h-2.5 w-20 rounded" />
-            <span className="ml-auto shimmer h-2.5 w-16 rounded" />
-            <span className="shimmer h-2.5 w-14 rounded" />
-          </div>
-        ))}
-      </div>
-    );
+    return <TableSkeleton realDataOnly={true} />;
   }
 
   if (rows.length === 0) {
@@ -434,52 +686,53 @@ function RealEquitiesTable({
         <span className="font-mono">{rows.length}</span> priced live from IRESS (last + day change);
         the rest fall back to Yahoo. Fundamentals / market cap / sector are Yahoo (no IRESS source).
       </p>
-      <table className="w-full font-mono text-xs">
-        <thead>
-          <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-            <th className="px-2.5 py-2 text-left">Sym</th>
-            <th className="px-2.5 py-2 text-left">Name</th>
-            <th className="px-2.5 py-2 text-left">Sector</th>
-            <th className="px-2.5 py-2 text-right">Last</th>
-            <th className="px-2.5 py-2 text-right">Chg %</th>
-            <th className="px-2.5 py-2 text-center">Src</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border/60">
-          {rows.map((e) => {
-            const sym = bareSymbol(e.symbol);
-            // last_price is INTEGER CENTS → Rands.
-            const lastRands = e.last_price != null ? e.last_price / 100 : null;
-            const chg = Number(e.change_percent);
-            const hasChg = Number.isFinite(chg);
-            const onIress = e.price_source === "iress";
-            return (
-              <tr key={e.symbol} className="hover:bg-muted/30">
-                <td className="px-2.5 py-1.5 font-semibold">{sym}</td>
-                <td className="px-2.5 py-1.5 text-muted-foreground">{e.name ?? "—"}</td>
-                <td className="px-2.5 py-1.5 text-muted-foreground">{e.sector ?? "—"}</td>
-                <td className="px-2.5 py-1.5 text-right tabular-nums">
-                  {lastRands != null ? formatZAR(lastRands) : <span className="text-muted-foreground">—</span>}
-                </td>
-                <td className="px-2.5 py-1.5 text-right tabular-nums">
-                  {hasChg ? (
-                    <span className={cn("font-mono text-xs", chg > 0 ? "text-up" : chg < 0 ? "text-down" : "text-muted-foreground")}>
-                      {formatPct(chg)}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground">—</span>
-                  )}
-                </td>
-                <td className="px-2.5 py-1.5 text-center">
-                  <Pill tone={onIress ? "success" : "neutral"} size="xs" title={onIress ? "Live IRESS last + change" : "Yahoo fallback (no IRESS snapshot for this name yet)"}>
-                    {onIress ? "IRESS" : "Yahoo"}
-                  </Pill>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <GlassInsetTable>
+        <table className="w-full font-mono text-xs">
+          <thead>
+            <tr className={GLASS_TABLE_HEAD}>
+              <th className="px-3 py-2.5 text-left text-caption font-medium">Sym</th>
+              <th className="px-3 py-2.5 text-left text-caption font-medium">Name</th>
+              <th className="px-3 py-2.5 text-left text-caption font-medium">Sector</th>
+              <th className="px-3 py-2.5 text-right text-caption font-medium">Last</th>
+              <th className="px-3 py-2.5 text-right text-caption font-medium">Chg %</th>
+              <th className="px-3 py-2.5 text-center text-caption font-medium">Src</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((e) => {
+              const sym = bareSymbol(e.symbol);
+              const lastRands = e.last_price != null ? e.last_price / 100 : null;
+              const chg = Number(e.change_percent);
+              const hasChg = Number.isFinite(chg);
+              const onIress = e.price_source === "iress";
+              return (
+                <tr key={e.symbol} className={GLASS_TABLE_ROW}>
+                  <td className="px-3 py-2 font-semibold">{sym}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{e.name ?? "—"}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{e.sector ?? "—"}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {lastRands != null ? formatZAR(lastRands) : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {hasChg ? (
+                      <span className={cn("font-mono text-xs", chg > 0 ? "text-up" : chg < 0 ? "text-down" : "text-muted-foreground")}>
+                        {formatPct(chg)}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <Pill tone={onIress ? "success" : "neutral"} size="xs" title={onIress ? "Live IRESS last + change" : "Yahoo fallback (no IRESS snapshot for this name yet)"}>
+                      {onIress ? "IRESS" : "Yahoo"}
+                    </Pill>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </GlassInsetTable>
     </>
   );
 }

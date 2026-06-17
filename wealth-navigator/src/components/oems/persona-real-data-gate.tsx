@@ -1,7 +1,7 @@
 "use client";
 
 import { PersonaHeader } from "@/components/oems/primitives/persona-header";
-import { Panel } from "@/components/oems/primitives/panel";
+import { GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { OEMSShell } from "@/components/oems/shell/oems-shell";
 import { CommandPaletteProvider } from "@/components/oems/command-palette";
@@ -31,16 +31,16 @@ export function PersonaRealDataGate({
   return (
     <CommandPaletteProvider>
       <OEMSShell>
-        <div className="space-y-3">
+        <PageCanvas>
           <PersonaHeader persona={persona} description={description} />
           {realDataOnly ? (
-            <Panel title="Not configured" endpoint={endpoint}>
+            <GlassSection title="Not configured" endpoint={endpoint}>
               <EmptyDataState message={message} />
-            </Panel>
+            </GlassSection>
           ) : (
             children
           )}
-        </div>
+        </PageCanvas>
       </OEMSShell>
     </CommandPaletteProvider>
   );

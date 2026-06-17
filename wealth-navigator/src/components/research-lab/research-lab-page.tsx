@@ -24,7 +24,7 @@ import {
   GlassSection,
   GlassSegment,
   ResearchLabCanvas,
-} from "@/components/research-lab/glass";
+} from "@/components/oems/primitives/glass";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,

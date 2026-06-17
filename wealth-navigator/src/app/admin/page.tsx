@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Shield, Check, X, ScrollText, Users as UsersIcon, ChevronDown } from "lucide-react";
+import { ArrowRight, Check, X, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { PersonaRealDataGate } from "@/components/oems/persona-real-data-gate";
-import { Panel } from "@/components/oems/primitives/panel";
+import { GlassSection } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Button } from "@/components/ui/button";
 import { pendingApprovals, auditTrail } from "@/lib/iress/seed";
@@ -53,20 +53,19 @@ export default function AdminPage() {
       message="Admin approvals and audit trail require compliance / ops system integration."
       endpoint="Compliance / ops system"
     >
-        {/* Row 1: Pending approvals | Audit trail */}
-        <div className="grid grid-cols-12 gap-2.5">
-          <Panel
+        <div className="grid grid-cols-12 gap-3">
+          <GlassSection
             title="Pending approvals"
             endpoint="GET /v1/compliance/approvals?status=pending"
             right={<Pill tone="warning" size="xs">{pendingApprovals.length} pending</Pill>}
             className="col-span-12 lg:col-span-7"
-            density="scroll"
+            noPadding
           >
-            <ul className="divide-y divide-border/60">
+            <ul className="max-h-[400px] divide-y divide-[hsl(var(--glass-border))] overflow-y-auto scrollbar-thin">
               {pendingApprovals.map((a) => {
                 const verdict = decided[a.id];
                 return (
-                  <li key={a.id} className="px-3 py-2.5 hover:bg-muted/30">
+                  <li key={a.id} className="px-3 py-2.5 hover:bg-[hsl(var(--foreground)/0.03)]">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
@@ -109,18 +108,18 @@ export default function AdminPage() {
                 );
               })}
             </ul>
-          </Panel>
+          </GlassSection>
 
-          <Panel
+          <GlassSection
             title="Audit trail"
             endpoint="GET /v1/audit?limit=10"
             right={<span className="font-mono text-[10px]">last 7 events</span>}
             className="col-span-12 lg:col-span-5"
-            density="scroll"
+            noPadding
           >
-            <ul className="divide-y divide-border/60">
+            <ul className="max-h-[400px] divide-y divide-[hsl(var(--glass-border))] overflow-y-auto scrollbar-thin">
               {auditTrail.map((e) => (
-                <li key={e.id} className="flex items-start gap-2 px-3 py-2 hover:bg-muted/30">
+                <li key={e.id} className="flex items-start gap-2 px-3 py-2 hover:bg-[hsl(var(--foreground)/0.03)]">
                   <span className="w-14 shrink-0 font-mono text-[10px] text-muted-foreground">
                     {new Date(e.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Africa/Johannesburg" })}
                   </span>
@@ -147,25 +146,24 @@ export default function AdminPage() {
                 </li>
               ))}
             </ul>
-          </Panel>
+          </GlassSection>
         </div>
 
-        {/* Row 2: User & role access */}
-        <Panel
+        <GlassSection
           title="User & role access"
           endpoint="GET /v1/iam/users"
           right={<Pill tone="info" size="xs">{Object.keys(PERSONA_USERS).length} personas</Pill>}
         >
-          <ul className="grid grid-cols-1 gap-2 md:grid-cols-2 lg:grid-cols-3">
+          <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
             {(Object.keys(PERSONA_USERS) as Persona[]).map((p) => {
               const u = PERSONA_USERS[p];
               const open = openPersona === p;
               return (
-                <li key={p} className="rounded-md border border-border/60 bg-surface-2/30">
+                <li key={p} className="glass-inset overflow-hidden">
                   <button
                     type="button"
                     onClick={() => setOpenPersona(open ? null : p)}
-                    className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-muted/30"
+                    className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left transition-colors hover:bg-[hsl(var(--foreground)/0.03)]"
                   >
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-xs font-medium">{u.name}</p>
@@ -179,12 +177,12 @@ export default function AdminPage() {
                     />
                   </button>
                   {open && (
-                    <div className="border-t border-border/60 px-3 py-2 text-[10.5px] text-muted-foreground">
+                    <div className="border-t border-[hsl(var(--glass-border))] px-3 py-2 text-[10.5px] text-muted-foreground">
                       {PERSONA_DESCRIPTIONS[p]}
                     </div>
                   )}
                   {!open && (
-                    <div className="flex items-center justify-between border-t border-border/60 px-3 py-1.5">
+                    <div className="flex items-center justify-between border-t border-[hsl(var(--glass-border))] px-3 py-1.5">
                       <Pill tone="neutral" size="xs">{u.id}</Pill>
                       <Button
                         size="sm"
@@ -200,12 +198,11 @@ export default function AdminPage() {
               );
             })}
           </ul>
-        </Panel>
+        </GlassSection>
 
-        {/* Secondary action */}
-        <div className="flex items-center justify-end pt-1">
+        <div className="flex items-center justify-end">
           <Link href="/oems">
-            <Button variant="outline" size="sm" className="h-7 text-[11px]">
+            <Button variant="outline" size="sm" className="glass-inset h-8 border-0 text-[11px]">
               Open OEMS desk
               <ArrowRight className="h-3 w-3" />
             </Button>

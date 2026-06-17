@@ -2,7 +2,7 @@
 
 import { Briefcase, Building2, HeartPulse, LineChart, Shield, ChevronUp } from "lucide-react";
 import Link from "next/link";
-import { Pill } from "@/components/oems/primitives/pill";
+import { GlassBadge } from "@/components/oems/primitives/glass";
 import { PERSONA_USERS, type Persona } from "@/lib/store/session-provider";
 import { cn } from "@/lib/cn";
 
@@ -40,27 +40,34 @@ interface PersonaHeaderProps {
 export function PersonaHeader({ persona, description, className }: PersonaHeaderProps) {
   const user = PERSONA_USERS[persona];
   const Icon = PERSONA_ICON[persona];
+  const badgeTone: "neutral" | "primary" | "success" =
+    PERSONA_TONE[persona] === "success" ? "success" :
+    PERSONA_TONE[persona] === "primary" ? "primary" :
+    "neutral";
   return (
-    <header className={cn("flex flex-wrap items-end justify-between gap-3 pb-1", className)}>
-      <div>
-        <div className="mb-1.5 flex items-center gap-2">
-          <Pill tone={PERSONA_TONE[persona]} size="sm">
-            <Icon className="h-3 w-3" />
+    <header className={cn("glass-panel relative overflow-hidden p-6 md:p-7", className)}>
+      <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-primary/12 blur-3xl" />
+      <div className="relative flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0 space-y-3">
+          <GlassBadge tone={badgeTone}>
+            <Icon className="h-3.5 w-3.5" />
             Persona · {user.subtitle}
-          </Pill>
+          </GlassBadge>
+          <div>
+            <h1 className="text-display">{user.name}</h1>
+            <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+              {description}
+            </p>
+          </div>
         </div>
-        <h1 className="text-lg font-semibold tracking-tight">{user.name}</h1>
-        <p className="text-xs text-muted-foreground">
-          {description}
-        </p>
+        <Link
+          href="#persona-switcher"
+          className="glass-inset inline-flex items-center gap-1.5 px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronUp className="h-3.5 w-3.5" />
+          Switch persona
+        </Link>
       </div>
-      <Link
-        href="#persona-switcher"
-        className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[10.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      >
-        <ChevronUp className="h-3 w-3" />
-        Switch persona (top bar avatar)
-      </Link>
     </header>
   );
 }

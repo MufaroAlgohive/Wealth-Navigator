@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search, AlertCircle } from "lucide-react";
 
-import { Panel } from "@/components/oems/primitives/panel";
+import { GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Input } from "@/components/ui/input";
@@ -36,6 +36,9 @@ interface NewsResponse {
   message?: string;
 }
 
+const TAB_TRIGGER =
+  "h-7 rounded-lg px-3 text-[11px] font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-[0_2px_12px_hsl(var(--primary)/0.35)]";
+
 export default function NewsPage() {
   const realDataOnly = isRealDataOnlyClient();
   const newsQ = useQuery<NewsResponse>({
@@ -53,19 +56,19 @@ export default function NewsPage() {
 
   if (!realDataOnly) {
     return (
-      <div className="space-y-3">
+      <PageCanvas>
         <header>
           <h1 className="text-lg font-semibold tracking-tight">News & SENS</h1>
           <p className="text-xs text-muted-foreground">Reuters · Bloomberg · Moneyweb · Dow Jones · SENS regulatory tape</p>
         </header>
-        <Panel title="News tape" endpoint="news_item_c">
+        <GlassSection title="News tape" endpoint="news_item_c">
           <EmptyDataState
             message="Mock mode disables the news module."
             hint="Switch to real-data mode and ensure the worker has written news_item_c rows."
             badgeLabel="mock"
           />
-        </Panel>
-      </div>
+        </GlassSection>
+      </PageCanvas>
     );
   }
 
@@ -98,7 +101,7 @@ export default function NewsPage() {
   );
 
   return (
-    <div className="space-y-3">
+    <PageCanvas>
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold tracking-tight">News & SENS</h1>
@@ -106,51 +109,57 @@ export default function NewsPage() {
         </div>
         <div className="flex items-center gap-2">
           <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
-            <TabsList className="h-8">
-              <TabsTrigger value="all" className="h-6 px-3 text-[11px]">All · {all.length}</TabsTrigger>
-              <TabsTrigger value="sens" className="h-6 px-3 text-[11px]">SENS · {sens.length}</TabsTrigger>
-              <TabsTrigger value="wire" className="h-6 px-3 text-[11px]">Wires · {wire.length}</TabsTrigger>
+            <TabsList className="glass-inset h-auto gap-0.5 p-1">
+              <TabsTrigger value="all" className={TAB_TRIGGER}>All · {all.length}</TabsTrigger>
+              <TabsTrigger value="sens" className={TAB_TRIGGER}>SENS · {sens.length}</TabsTrigger>
+              <TabsTrigger value="wire" className={TAB_TRIGGER}>Wires · {wire.length}</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="relative w-72">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Headline, ticker, source…" className="h-8 pl-8 text-xs" />
+            <Input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Headline, ticker, source…"
+              className="glass-inset h-8 border-0 pl-8 text-xs shadow-none"
+            />
           </div>
         </div>
       </header>
 
-      <Panel
+      <GlassSection
         title={`News tape · ${filtered.length} items`}
         endpoint="GET /api/news"
         dataSource={newsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
-        density="scroll"
-        className="h-[calc(100vh-220px)]"
+        noPadding
+        className="flex h-[calc(100vh-220px)] min-h-0 flex-col"
       >
-        {newsQ.isLoading ? (
-          <div className="space-y-1.5 px-4 py-3" aria-busy="true" aria-live="polite">
-            {[0, 1, 2, 3, 4, 5, 6, 7].map((n) => (
-              <div key={`news-item-${n}`} className="space-y-1.5 border-b border-border/60 pb-3 last:border-0">
-                <div className="flex items-center gap-2">
-                  <span className="shimmer h-3 w-12 rounded" />
-                  <span className="shimmer h-3 w-10 rounded" />
-                  <span className="ml-auto shimmer h-3 w-10 rounded" />
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin p-3">
+          {newsQ.isLoading ? (
+            <div className="glass-inset space-y-1.5 overflow-hidden px-4 py-3" aria-busy="true" aria-live="polite">
+              {[0, 1, 2, 3, 4, 5, 6, 7].map((n) => (
+                <div key={`news-item-${n}`} className="space-y-1.5 border-b border-[hsl(var(--glass-border))] pb-3 last:border-0">
+                  <div className="flex items-center gap-2">
+                    <span className="shimmer h-3 w-12 rounded" />
+                    <span className="shimmer h-3 w-10 rounded" />
+                    <span className="ml-auto shimmer h-3 w-10 rounded" />
+                  </div>
+                  <span className="shimmer block h-3 w-3/4 rounded" />
                 </div>
-                <span className="shimmer block h-3 w-3/4 rounded" />
-              </div>
-            ))}
-          </div>
-        ) : filtered.length === 0 ? (
+              ))}
+            </div>
+          ) : filtered.length === 0 ? (
             <EmptyDataState
               message="No news items ingested."
               hint={newsQ.data?.message ?? "SENS requires the JSE SENS Web Feed subscription. Wires require Reuters / Bloomberg / Moneyweb contracts."}
               badgeLabel="blocked-vendor"
             />
-        ) : (
-          <ul className="divide-y divide-border/60">
-            {filtered.map((a) => {
-              const isSens = a.category.toUpperCase() === "SENS";
-              return (
-                <li key={a.id} className="px-4 py-3 hover:bg-muted/30">
+          ) : (
+            <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))] overflow-hidden">
+              {filtered.map((a) => {
+                const isSens = a.category.toUpperCase() === "SENS";
+                return (
+                  <li key={a.id} className="px-4 py-3 transition-colors hover:bg-[hsl(var(--primary)/0.06)]">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <Pill tone={isSens ? "primary" : "info"} size="xs">
                       {isSens ? "SENS" : a.source}
@@ -211,12 +220,13 @@ export default function NewsPage() {
                   })()}
                 </li>
               );
-            })}
-          </ul>
-        )}
-      </Panel>
+              })}
+            </ul>
+          )}
+        </div>
+      </GlassSection>
 
-      <div className="rounded-md border border-info/30 bg-info/5 p-3 text-[11.5px] text-info">
+      <div className="glass-inset border-info/30 bg-info/5 p-3 text-[11.5px] text-info">
         <p className="flex items-center gap-2 font-semibold">
           <AlertCircle className="h-3.5 w-3.5" />
           News tape = Alliance News wire (live) + SENS (pending)
@@ -225,6 +235,6 @@ export default function NewsPage() {
           The wire tape reads the <span className="font-mono">News_articles</span> feed (Alliance News) from the retail DB — live. The <span className="font-mono">SENS</span> tab is the JSE regulatory announcement tape, which needs a separate JSE SENS Web Feed subscription, so it stays empty until that lands.
         </p>
       </div>
-    </div>
+    </PageCanvas>
   );
 }

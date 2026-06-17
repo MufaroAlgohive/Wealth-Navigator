@@ -8,6 +8,7 @@ import { CockpitClient } from "./cockpit-client";
 // We pin the timezone to Africa/Johannesburg to match the rest of the
 // desk's time formatting (see lib/format.ts) so the day boundary is
 // stable regardless of the host machine's locale.
+// Glass layout (Research Lab parity) lives in CockpitClient — see cockpit-client.tsx.
 export default function CockpitPage() {
   const mastheadDate = new Date().toLocaleDateString("en-ZA", {
     weekday: "long",

@@ -2,11 +2,10 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { ArrowRight, Layers, Briefcase, AlertTriangle } from "lucide-react";
+import { ArrowRight, AlertTriangle } from "lucide-react";
 import { PersonaRealDataGate } from "@/components/oems/persona-real-data-gate";
-import { Panel } from "@/components/oems/primitives/panel";
+import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Button } from "@/components/ui/button";
 import { oemsStrategies, deals } from "@/lib/iress/seed";
 import { formatPct, formatZAR } from "@/lib/format";
@@ -51,42 +50,37 @@ export default function BusinessPage() {
       description="House view performance · sales pipeline · compliance flags."
       message="Business pipeline and house-view KPIs require CRM / sales system integration."
     >
-        {/* KPI strip */}
-        <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-          <KpiTile
-            icon={<Layers className="h-3.5 w-3.5" />}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <GlassKpi
             label="House-view AUM"
             value={formatZAR(totalAum)}
             sub={`${oemsStrategies.length} strategies`}
+            accent="primary"
           />
-          <KpiTile
-            icon={<Briefcase className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Total client mandates"
             value={totalClients.toString()}
             sub="across all strategies"
           />
-          <KpiTile
-            icon={<Briefcase className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Pipeline (weighted)"
             value={formatZAR(weightedPipeline)}
             sub={`${deals.length} open deals · ${formatZAR(pipelineValue)} gross`}
           />
-          <KpiTile
-            icon={<AlertTriangle className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Compliance flags"
             value={COMPLIANCE_FLAGS.length.toString()}
             sub="require action"
-            tone={COMPLIANCE_FLAGS.length > 0 ? "warning" : "default"}
           />
         </div>
 
-        {/* Row 1: House view performance | Pipeline */}
-        <div className="grid grid-cols-12 gap-2.5">
-          <Panel
+        <div className="grid grid-cols-12 gap-3">
+          <GlassSection
             title="House view performance"
             endpoint="GET /v1/strategies?salesView=true"
             right={<Pill tone="info" size="xs">SALES</Pill>}
             className="col-span-12 lg:col-span-7"
+            noPadding
           >
             <table className="w-full font-mono text-[11px]">
               <thead className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
@@ -97,9 +91,9 @@ export default function BusinessPage() {
                   <th className="px-2.5 py-1.5 text-right">YTD</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border/60">
+              <tbody className="divide-y divide-[hsl(var(--glass-border))]">
                 {oemsStrategies.map((s) => (
-                  <tr key={s.id} className="hover:bg-muted/30">
+                  <tr key={s.id} className="hover:bg-[hsl(var(--foreground)/0.03)]">
                     <td className="px-2.5 py-1.5 font-sans text-xs">
                       <div className="font-medium">{s.name}</div>
                       <div className="text-[10.5px] italic text-muted-foreground">
@@ -115,18 +109,18 @@ export default function BusinessPage() {
                 ))}
               </tbody>
             </table>
-          </Panel>
+          </GlassSection>
 
-          <Panel
+          <GlassSection
             title="Pipeline"
             endpoint="GET /v1/crm/deals?stage=open"
             right={<Pill tone="primary" size="xs">{deals.length} deals</Pill>}
             className="col-span-12 lg:col-span-5"
-            density="scroll"
+            noPadding
           >
-            <ul className="divide-y divide-border/60">
+            <ul className="max-h-[360px] divide-y divide-[hsl(var(--glass-border))] overflow-y-auto scrollbar-thin">
               {deals.map((d) => (
-                <li key={d.id} className="px-3 py-2.5 hover:bg-muted/30">
+                <li key={d.id} className="px-3 py-2.5 hover:bg-[hsl(var(--foreground)/0.03)]">
                   <div className="flex items-center justify-between gap-2">
                     <p className="truncate text-xs font-medium">{d.client}</p>
                     <Pill tone={STAGE_TONE[d.stage]} size="xs">{d.stage.toUpperCase()}</Pill>
@@ -142,18 +136,18 @@ export default function BusinessPage() {
                 </li>
               ))}
             </ul>
-          </Panel>
+          </GlassSection>
         </div>
 
-        {/* Row 2: Compliance flags */}
-        <Panel
+        <GlassSection
           title="Compliance flags"
           endpoint="GET /v1/compliance/flags?scope=business"
           right={<Pill tone="warning" size="xs">{COMPLIANCE_FLAGS.length} open</Pill>}
+          noPadding
         >
-          <ul className="divide-y divide-border/60">
+          <ul className="divide-y divide-[hsl(var(--glass-border))]">
             {COMPLIANCE_FLAGS.map((f) => (
-              <li key={f.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30">
+              <li key={f.id} className="flex items-center gap-3 px-3 py-2.5 hover:bg-[hsl(var(--foreground)/0.03)]">
                 <AlertTriangle
                   className={cn(
                     "h-3.5 w-3.5 shrink-0",
@@ -165,12 +159,11 @@ export default function BusinessPage() {
               </li>
             ))}
           </ul>
-        </Panel>
+        </GlassSection>
 
-        {/* Secondary action */}
-        <div className="flex items-center justify-end pt-1">
+        <div className="flex items-center justify-end">
           <Link href="/oems">
-            <Button variant="outline" size="sm" className="h-7 text-[11px]">
+            <Button variant="outline" size="sm" className="glass-inset h-8 border-0 text-[11px]">
               Open OEMS desk
               <ArrowRight className="h-3 w-3" />
             </Button>

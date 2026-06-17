@@ -11,8 +11,11 @@ import {
   Newspaper, ArrowUpRight, ArrowDownRight,
 } from "lucide-react";
 
-import { Panel } from "@/components/oems/primitives/panel";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
+import {
+  GlassBadge,
+  GlassSection,
+  ResearchLabCanvas,
+} from "@/components/oems/primitives/glass";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { Pill } from "@/components/oems/primitives/pill";
@@ -120,6 +123,98 @@ function bareSymbol(symbol: string): string {
   return symbol.replace(/\.JO$/i, "");
 }
 
+type CockpitKpiAccent = "default" | "positive" | "negative" | "primary" | "warning";
+
+/** KPI tile with glass styling — supports live NumberCell and warning accent. */
+function CockpitKpi({
+  icon,
+  label,
+  value,
+  sub,
+  live,
+  accent = "default",
+}: {
+  icon?: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: React.ReactNode;
+  live?: { sym: string; fallback: number; decimals?: number; prefix?: boolean; suffix?: string; showChange?: boolean };
+  accent?: CockpitKpiAccent;
+}) {
+  return (
+    <div className="glass-kpi group relative">
+      <div className="flex items-center gap-2">
+        {icon && (
+          <div
+            className={cn(
+              "flex h-5 w-5 items-center justify-center rounded-lg",
+              accent === "positive" && "bg-up/10 text-up",
+              accent === "negative" && "bg-down/10 text-down",
+              accent === "warning" && "bg-warning/10 text-warning",
+              accent === "primary" && "bg-primary/10 text-primary",
+              accent === "default" && "bg-primary/10 text-primary",
+            )}
+          >
+            {icon}
+          </div>
+        )}
+        <p className="text-caption">{label}</p>
+      </div>
+      <div
+        className={cn(
+          "text-metric mt-1.5",
+          accent === "positive" && "text-up",
+          accent === "negative" && "text-down",
+          accent === "warning" && "text-warning",
+          accent === "primary" && "text-primary",
+        )}
+      >
+        {live ? (
+          <NumberCell
+            sym={live.sym}
+            fallback={live.fallback}
+            decimals={live.decimals ?? 2}
+            prefix={live.prefix}
+            suffix={live.suffix}
+            showChange={live.showChange}
+            size="md"
+          />
+        ) : (
+          value
+        )}
+      </div>
+      {sub && (
+        <p
+          className={cn(
+            "mt-1 font-mono text-xs tabular-nums",
+            accent === "positive" && "text-up/80",
+            accent === "negative" && "text-down/80",
+            accent === "warning" && "text-warning/80",
+            accent === "default" && "text-muted-foreground",
+          )}
+        >
+          {sub}
+        </p>
+      )}
+      <div
+        className={cn(
+          "pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100",
+          accent === "primary" ? "bg-primary/20" : "bg-primary/10",
+        )}
+      />
+    </div>
+  );
+}
+
+/** Scrollable body for fixed-height glass sections. */
+function GlassScrollBody({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("min-h-0 flex-1 overflow-y-auto scrollbar-thin px-5 pb-5", className)}>
+      {children}
+    </div>
+  );
+}
+
 /**
  * Symbols the Cockpit polls once per quote interval. The mover set sits on
  * the existing JSE Top-40; the FX / money-market entries (USDZAR, JIBAR_3M)
@@ -131,7 +226,7 @@ const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL", "USDZAR"
 /**
  * Cause-based subtext for the AUM tile (audit #5). Reads the BFF's
  * `reason` + `migration` + `error` fields and returns a JSX
- * snippet the KpiTile can render as a single line. The migration
+ * snippet the CockpitKpi can render as a single line. The migration
  * filename is rendered in a monospace pill so the operator can
  * copy-paste it.
  */
@@ -178,7 +273,7 @@ function portfolioRebalanceSub(portfolio: { source: string; reason?: string; mig
  *
  * Uses the shared tick stream (audit #1) so we don't add a second
  * subscription. Renders a stable short string under 60 chars so it
- * fits the KpiTile's single-line sub slot.
+ * fits the CockpitKpi's single-line sub slot.
  */
 function JibarOrUsdzarSub({
   sym,
@@ -515,28 +610,32 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const curveMetricsSource = curveMetricsQ.data?.source ?? "unavailable";
 
   return (
-    <div className="space-y-3">
-      {/* Page header */}
-      <header className="flex flex-wrap items-end justify-between gap-3 pb-1">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">Cockpit</h1>
-          <p className="text-xs text-muted-foreground">
-            Institutional trading desk · JSE + ZAR + SARB · {mastheadDate}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <DataSourceBadge source={cockpitDataSource} />
-          {/* Yellow #27 — range tabs were non-functional (charts don't
-              read the range). Replaced with a static label
-              "Range · 1D" until TimeSeriesGet2 is flipped and the
-              BFF can honor `?range=5D`. The `range` state is kept
-              for the future re-introduction. */}
-          <span className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Range · 1D</span>
+    <ResearchLabCanvas>
+      {/* Hero masthead */}
+      <header className="glass-panel relative overflow-hidden p-6 md:p-8">
+        <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
+        <div className="relative flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 space-y-3">
+            <GlassBadge tone="primary">
+              <Activity className="h-3.5 w-3.5" />
+              Institutional trading desk
+            </GlassBadge>
+            <h1 className="text-display">Cockpit</h1>
+            <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
+              JSE + ZAR + SARB market overview · {mastheadDate}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <DataSourceBadge source={cockpitDataSource} />
+            <span className="glass-inset inline-flex px-3 py-1.5 text-caption font-mono">
+              Range · 1D
+            </span>
+          </div>
         </div>
       </header>
 
       {/* KPI strip */}
-      <div className="grid grid-cols-2 gap-2.5 md:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
         {strategiesQ.isLoading || jibarQ.isLoading ? (
           [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`cockpit-kpi-${n}`} />)
         ) : realDataOnly ? (
@@ -548,7 +647,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               client-book source is "unavailable" the tiles render "—"
               with an honest cause-based sub-line.
             */}
-            <KpiTile
+            <CockpitKpi
               icon={<Layers className="h-3.5 w-3.5" />}
               label="Platform AUM"
               value={clientBookAvailable ? formatZAR(clientBook!.aum) : "—"}
@@ -558,7 +657,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   : "Retail client book unavailable"
               }
             />
-            <KpiTile
+            <CockpitKpi
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Day P&L"
               value={clientBookAvailable ? formatZAR(clientBook!.dayPnl) : "—"}
@@ -567,7 +666,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   ? `as of ${clientBook!.asOf ?? "—"}`
                   : "Retail client book unavailable"
               }
-              tone={
+              accent={
                 clientBookAvailable
                   ? clientBook!.dayPnl >= 0
                     ? "positive"
@@ -575,12 +674,12 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   : "default"
               }
             />
-            <KpiTile
+            <CockpitKpi
               icon={<Lock className="h-3.5 w-3.5" />}
               label="Rebalance Locked"
               value={portfolioQ.data?.source === "supabase" ? (portfolioQ.data.rebalanceLocked ? "Yes" : "No") : "—"}
               sub={portfolioRebalanceSub(portfolioQ.data)}
-              tone={
+              accent={
                 portfolioQ.data?.source === "supabase"
                   ? portfolioQ.data.rebalanceLocked
                     ? "warning"
@@ -588,12 +687,12 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   : "default"
               }
             />
-            <KpiTile
+            <CockpitKpi
               icon={<AlertTriangle className="h-3.5 w-3.5" />}
               label="Open Orders"
               value={openOrders.length.toString()}
               sub={`${rejected} rejected · audit`}
-              tone={openOrders.length > 0 ? "warning" : "default"}
+              accent={openOrders.length > 0 ? "warning" : "default"}
             />
             {/*
               JIBAR 3M + USD/ZAR wire through the worker → stock_intraday_c
@@ -605,7 +704,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               polled this symbol / worker not configured / migration
               pending}.
             */}
-            <KpiTile
+            <CockpitKpi
               icon={<Banknote className="h-3.5 w-3.5" />}
               label="ZARONIA"
               value={saRates?.zaronia?.value != null ? `${saRates.zaronia.value.toFixed(3)}%` : "—"}
@@ -619,7 +718,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 )
               }
             />
-            <KpiTile
+            <CockpitKpi
               icon={<TrendingUp className="h-3.5 w-3.5" />}
               label="USD/ZAR"
               value={fxQ.data?.rate != null ? fxQ.data.rate.toFixed(4) : "—"}
@@ -639,34 +738,34 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           </>
         ) : (
           <>
-            <KpiTile
+            <CockpitKpi
               icon={<Layers className="h-3.5 w-3.5" />}
               label="Platform AUM"
               value={formatZAR(totalAum)}
               sub={`${strategies.length} strategies · ${liveStrats} live`}
             />
-            <KpiTile
+            <CockpitKpi
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Day P&L"
               value={formatZAR(livePnl)}
               sub={formatPct((livePnl / (totalAum || 1)) * 100, 3)}
-              tone={livePnl >= 0 ? "positive" : "negative"}
+              accent={livePnl >= 0 ? "positive" : "negative"}
             />
-            <KpiTile
+            <CockpitKpi
               icon={<Lock className="h-3.5 w-3.5" />}
               label="Rebalance Locked"
               value={blocked.toString()}
               sub="no investors / halted"
-              tone={blocked > 0 ? "warning" : "default"}
+              accent={blocked > 0 ? "warning" : "default"}
             />
-            <KpiTile
+            <CockpitKpi
               icon={<AlertTriangle className="h-3.5 w-3.5" />}
               label="Open Orders"
               value={openOrders.length.toString()}
               sub={`${rejected} rejected`}
-              tone={openOrders.length > 0 ? "warning" : "default"}
+              accent={openOrders.length > 0 ? "warning" : "default"}
             />
-            <KpiTile
+            <CockpitKpi
               icon={<Banknote className="h-3.5 w-3.5" />}
               label="JIBAR 3M"
               live={{ sym: "JIBAR_3M", fallback: 8.11, decimals: 3, suffix: "%" }}
@@ -677,7 +776,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 ) : <span>—</span>
               }
             />
-            <KpiTile
+            <CockpitKpi
               icon={<TrendingUp className="h-3.5 w-3.5" />}
               label="USD/ZAR"
               live={{ sym: "USDZAR", fallback: 18.452, decimals: 4, showChange: false }}
@@ -689,24 +788,25 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       </div>
 
       {/* Row 1: heatmap | govi | movers */}
-      <div className="grid grid-cols-12 gap-2.5">
+      <div className="grid grid-cols-12 gap-3">
         {realDataOnly ? (
           equitiesQ.isLoading ? (
             <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
           ) : equitiesAvailable && (equitiesData?.sectors.length ?? 0) > 0 ? (
             // Heatmap computed from JSE constituents (securities_c), not the
             // official J2xx index families — these need TimeSeriesGet2.
-            <Panel
+            <GlassSection
               title="Sector Heatmap"
               endpoint="GET /api/equities"
               dataSource="supabase"
-              className="col-span-12 lg:col-span-5 h-[300px]"
-              density="scroll"
+              noPadding
+              className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
               right={
-                <span className="font-mono text-[10px]">computed from JSE constituents (not official J2xx indices)</span>
+                <span className="text-caption font-mono">computed from JSE constituents (not official J2xx indices)</span>
               }
             >
-              <ul role="list" className="divide-y divide-border/40">
+              <GlassScrollBody>
+              <ul role="list" className="divide-y divide-[hsl(var(--glass-border))]/60">
                 {[...(equitiesData?.sectors ?? [])]
                   .sort((a, b) => b.avgChangePct - a.avgChangePct)
                   .map((s) => {
@@ -745,15 +845,16 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     );
                   })}
               </ul>
-            </Panel>
+              </GlassScrollBody>
+            </GlassSection>
           ) : (
             // `/api/equities` unavailable — keep the institutional
             // TimeSeriesGet2 entitlement empty state.
-            <Panel
+            <GlassSection
               title="Sector Heatmap"
               endpoint="GET /api/equities"
               dataSource="unavailable"
-              className="col-span-12 lg:col-span-5 h-[300px]"
+              className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
             >
               {/* Yellow #16 — same EntitlementRequired primitive the
                   Curves and Fixed Income pages use. */}
@@ -762,17 +863,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 codes={["J200", "J203"]}
                 note="Official J2xx sector indices have no data on the prod-test (CT) feed (TimeSeriesGet2 works; the index feed isn't on CT for DFM@MINT). The heatmap above is computed live from JSE constituents instead."
               />
-            </Panel>
+            </GlassSection>
           )
         ) : sectorsQ.isLoading ? (
           <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
         ) : sectorsQ.isError ? (
-          <PanelErrorShell title="Sector Heatmap" className="col-span-12 lg:col-span-5 h-[300px]" />
+          <PanelErrorShell title="Sector Heatmap" className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0" />
         ) : (
           <SectorHeatmap
             data={sectors}
             dataSource="seed"
-            className="col-span-12 lg:col-span-5 h-[300px]"
+            className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
           />
         )}
 
@@ -780,11 +881,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           curveBffQ.isLoading ? (
             <PanelSkeleton rows={4} height="h-[300px]" className="col-span-12 lg:col-span-4" />
           ) : curveBffQ.isError || (curveBffQ.data?.source === "entitlement-required") ? (
-            <Panel
+            <GlassSection
               title="ZAR Sovereign Curve · NSS"
               endpoint="GET /api/curves/ZAR_NSS"
               dataSource={curveBffQ.data?.source === "entitlement-required" ? "unconfigured" : "unavailable"}
-              className="col-span-12 lg:col-span-4 h-[300px]"
+              className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
             >
               <EmptyDataState
                 title={curveBffQ.data?.source === "entitlement-required" ? "ZAR curve feed not on prod-test" : "Curve data unavailable"}
@@ -793,13 +894,13 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   "TimeSeriesGet2 works; the NSS/GOVI curve has no data on the prod-test (CT) feed. Needs the curve code + DataSource enabled for DFM@MINT, or production."
                 }
               />
-            </Panel>
+            </GlassSection>
           ) : curveBffQ.data && curveBffQ.data.points.length > 0 ? (
-            <Panel
+            <GlassSection
               title="ZAR Sovereign Curve · NSS"
               endpoint="GET /api/curves/ZAR_NSS"
               dataSource="supabase"
-              className="col-span-12 lg:col-span-4 h-[300px]"
+              className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
               right={(() => {
                 // Show the benchmark nearest 10y. The basket tenors (R2035 ~8.7y,
                 // R2037 ~10.6y) rarely round to exactly 10, so pick the closest
@@ -814,6 +915,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 );
               })()}
             >
+              <div className="glass-inset min-h-0 flex-1 p-3">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={curveBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
                   <defs>
@@ -833,30 +935,32 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
                 </LineChart>
               </ResponsiveContainer>
-            </Panel>
+              </div>
+            </GlassSection>
           ) : (
-            <Panel
+            <GlassSection
               title="ZAR Sovereign Curve · NSS"
               endpoint="GET /api/curves/ZAR_NSS"
               dataSource="unconfigured"
-              className="col-span-12 lg:col-span-4 h-[300px]"
+              className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
             >
               <EmptyDataState message="Yield curve feed not yet populated — worker has not synced a NSS series." />
-            </Panel>
+            </GlassSection>
           )
         ) : curveQ.isLoading ? (
           <PanelSkeleton rows={4} height="h-[300px]" className="col-span-12 lg:col-span-4" />
         ) : (
-          <Panel
+          <GlassSection
             title="ZAR Sovereign Curve · NSS"
             endpoint="GET /v1/yieldcurve/zar?model=nss"
-            className="col-span-12 lg:col-span-4 h-[300px]"
+            className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
             right={
               <span className="font-mono">
                 10Y · <NumberCell sym="R2035" fallback={11.42} decimals={3} />%
               </span>
             }
           >
+            <div className="glass-inset min-h-0 flex-1 p-3">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={curve} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
                 <defs>
@@ -876,7 +980,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
               </LineChart>
             </ResponsiveContainer>
-          </Panel>
+            </div>
+          </GlassSection>
         )}
 
         {realDataOnly ? (
@@ -884,20 +989,21 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             // Mirrors the heatmap's JSE|US switch — US gainers + losers from
             // the Yahoo screener (already fetched by globalMoversQ). Prices
             // are USD. Degrades to an honest empty state if Yahoo blocked us.
-            <Panel
+            <GlassSection
               title="Top Movers · US"
               endpoint="GET /api/global-movers"
               dataSource={globalMoversQ.data?.source === "yahoo" ? "supabase" : "unconfigured"}
-              className="col-span-12 lg:col-span-3 h-[300px]"
-              density="scroll"
-              right={<span className="font-mono text-[9.5px] text-muted-foreground">Yahoo</span>}
+              noPadding
+              className="col-span-12 lg:col-span-3 flex h-[300px] flex-col min-h-0"
+              right={<span className="text-caption font-mono">Yahoo</span>}
             >
               {globalMoversQ.isLoading ? (
-                <PanelSkeleton rows={7} />
+                <div className="p-5"><PanelSkeleton rows={7} /></div>
               ) : (globalMoversQ.data?.gainers?.length ?? 0) + (globalMoversQ.data?.losers?.length ?? 0) === 0 ? (
-                <EmptyDataState message="Yahoo returned no US movers this cycle — it retries automatically." />
+                <div className="p-5"><EmptyDataState message="Yahoo returned no US movers this cycle — it retries automatically." /></div>
               ) : (
-                <ul className="divide-y divide-border/70">
+                <GlassScrollBody>
+                <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
                   {[
                     ...(globalMoversQ.data?.gainers ?? []).slice(0, 4),
                     ...(globalMoversQ.data?.losers ?? []).slice(0, 4),
@@ -925,8 +1031,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     );
                   })}
                 </ul>
+                </GlassScrollBody>
               )}
-            </Panel>
+            </GlassSection>
           ) : equitiesQ.isLoading ? (
             <PanelSkeleton rows={7} height="h-[300px]" className="col-span-12 lg:col-span-3" />
           ) : equitiesAvailable && topMovers.length > 0 ? (
@@ -935,19 +1042,20 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             // signed day change (positive = up) — the same convention the
             // ticker strip uses, so the two never disagree on sign.
             // `last_price` is INTEGER CENTS → /100 for Rands.
-            <Panel
+            <GlassSection
               title="Top Movers · JSE"
               endpoint="GET /api/equities"
               dataSource="supabase"
-              className="col-span-12 lg:col-span-3 h-[300px]"
-              density="scroll"
+              noPadding
+              className="col-span-12 lg:col-span-3 flex h-[300px] flex-col min-h-0"
               right={
-                <Link href="/oems/equities" className="text-[10px] text-primary hover:underline">
+                <Link href="/oems/equities" className="text-caption text-primary hover:underline">
                   All →
                 </Link>
               }
             >
-              <ul className="divide-y divide-border/70">
+              <GlassScrollBody>
+              <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
                 {topMovers.map((m) => {
                   const chg = m.change_percent ?? 0;
                   const up = chg > 0;
@@ -974,33 +1082,35 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   );
                 })}
               </ul>
-            </Panel>
+              </GlassScrollBody>
+            </GlassSection>
           ) : (
-            <Panel
+            <GlassSection
               title="Top Movers · JSE"
               endpoint="GET /api/equities"
               dataSource="unavailable"
-              className="col-span-12 lg:col-span-3 h-[300px]"
+              className="col-span-12 lg:col-span-3 flex h-[300px] flex-col min-h-0"
             >
               <EmptyDataState message="Equities board unavailable — retail securities feed returned no rows." />
-            </Panel>
+            </GlassSection>
           )
         ) : moversQ.isLoading ? (
           <PanelSkeleton rows={7} height="h-[300px]" className="col-span-12 lg:col-span-3" />
         ) : (
-          <Panel
+          <GlassSection
             title="Top Movers · JSE"
             endpoint="PricingQuoteGet"
             dataSource={liveQuotes.dataSource}
-            className="col-span-12 lg:col-span-3 h-[300px]"
-            density="scroll"
+            noPadding
+            className="col-span-12 lg:col-span-3 flex h-[300px] flex-col min-h-0"
             right={
-              <Link href="/oems/equities" className="text-[10px] text-primary hover:underline">
+              <Link href="/oems/equities" className="text-caption text-primary hover:underline">
                 All →
               </Link>
             }
           >
-            <ul className="divide-y divide-border/70">
+            <GlassScrollBody>
+            <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
               {movers.slice(0, 7).map((m) => (
                 <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
                   <div className="min-w-0 flex-1">
@@ -1013,32 +1123,33 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 </li>
               ))}
             </ul>
-          </Panel>
+            </GlassScrollBody>
+          </GlassSection>
         )}
       </div>
 
       {/* Row 2: ALSI intraday | SENS feed */}
-      <div className="grid grid-cols-12 gap-2.5">
+      <div className="grid grid-cols-12 gap-3">
         {realDataOnly ? (
           alsiBffQ.isLoading ? (
             <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
           ) : alsiBffQ.isError || (alsiBffQ.data?.source === "entitlement-required") ? (
-            <Panel
+            <GlassSection
               title={`${heatmap.market} Market · Heatmap`}
               endpoint={heatmap.market === "JSE" ? "GET /api/equities" : "GET /api/global-movers"}
               dataSource={heatmap.status === "empty" ? "unconfigured" : "supabase"}
-              className="col-span-12 lg:col-span-8 h-[320px]"
+              className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
               right={
                 <div className="flex items-center gap-2">
-                  <div className="flex overflow-hidden rounded border border-border/60">
+                  <div className="glass-inset inline-flex overflow-hidden p-0.5">
                     {(["JSE", "US"] as const).map((m) => (
                       <button
                         key={m}
                         type="button"
                         onClick={() => setHeatmapMarket(m)}
                         className={cn(
-                          "px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors",
-                          heatmapMarket === m ? "bg-primary/20 text-primary" : "text-muted-foreground hover:bg-muted/40",
+                          "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
+                          heatmapMarket === m ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground",
                         )}
                       >
                         {m}
@@ -1062,7 +1173,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               {heatmap.status === "loading" ? (
                 <PanelSkeleton rows={6} />
               ) : heatmap.status === "ok" ? (
-                <div className="flex h-full flex-col gap-1.5">
+                <div className="glass-inset flex h-full min-h-0 flex-col gap-1.5 p-3">
                   <div className="grid flex-1 auto-rows-fr grid-cols-4 gap-1 overflow-hidden sm:grid-cols-6 lg:grid-cols-9">
                     {heatmap.tiles.map((t) => {
                       // Shade red→green by day move; intensity saturates at ±4%.
@@ -1116,13 +1227,13 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   }
                 />
               )}
-            </Panel>
+            </GlassSection>
           ) : alsiBffQ.data && alsiBffQ.data.points.length > 0 ? (
-            <Panel
+            <GlassSection
               title="JSE All Share · Intraday"
               endpoint="GET /api/indices/J203"
               dataSource="supabase"
-              className="col-span-12 lg:col-span-8 h-[320px]"
+              className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
               right={(() => {
                 const pts = alsiBffQ.data.points;
                 if (pts.length === 0) return null;
@@ -1143,6 +1254,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 );
               })()}
             >
+              <div className="glass-inset min-h-0 flex-1 p-3">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={alsiBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
                   <defs>
@@ -1169,24 +1281,25 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
                 </AreaChart>
               </ResponsiveContainer>
-            </Panel>
+              </div>
+            </GlassSection>
           ) : (
-            <Panel
+            <GlassSection
               title="JSE All Share · Intraday"
               endpoint="GET /api/indices/J203"
               dataSource="unconfigured"
-              className="col-span-12 lg:col-span-8 h-[320px]"
+              className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
             >
               <EmptyDataState message="ALSI intraday not yet populated — worker has not synced a J203 series." />
-            </Panel>
+            </GlassSection>
           )
         ) : indicesQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
         ) : (
-          <Panel
+          <GlassSection
             title="JSE All Share · Intraday"
             endpoint="WS /v1/indices/J203/stream"
-            className="col-span-12 lg:col-span-8 h-[320px]"
+            className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
             right={
               alsi ? (
                 <div className="font-mono text-right">
@@ -1200,6 +1313,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               ) : null
             }
           >
+            <div className="glass-inset min-h-0 flex-1 p-3">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={intraday} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
                 <defs>
@@ -1219,51 +1333,54 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
               </AreaChart>
             </ResponsiveContainer>
-          </Panel>
+            </div>
+          </GlassSection>
         )}
 
         {realDataOnly ? (
-          <Panel title="SENS · Live" endpoint="External vendor required" className="col-span-12 lg:col-span-4 h-[320px]">
+          <GlassSection title="SENS · Live" endpoint="External vendor required" className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0">
             <EmptyDataState message="SENS feed not configured." />
-          </Panel>
+          </GlassSection>
         ) : sensQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-4" />
         ) : (
-          <Panel
+          <GlassSection
             title="SENS · Live"
             endpoint="WS /v1/news/sens/stream"
-            className="col-span-12 lg:col-span-4 h-[320px]"
-            density="scroll"
+            noPadding
+            className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
             right={
-              <Link href="/oems/news" className="text-[10px] text-primary hover:underline">
+              <Link href="/oems/news" className="text-caption text-primary hover:underline">
                 News →
               </Link>
             }
           >
+            <GlassScrollBody>
             <SensTape items={sens} limit={5} />
-          </Panel>
+            </GlassScrollBody>
+          </GlassSection>
         )}
       </div>
 
       {/* Row 3: open orders | macro pulse */}
-      <div className="grid grid-cols-12 gap-2.5">
+      <div className="grid grid-cols-12 gap-3">
         {ordersLoading ? (
           <PanelSkeleton rows={8} height="h-[340px]" className="col-span-12 lg:col-span-8" />
         ) : (
-          <Panel
+          <GlassSection
             title={`Open Orders · ${openOrders.length}`}
             endpoint="Order audit table · oems_order_audit"
             dataSource={realDataOnly ? "supabase" : "seed"}
-            className="col-span-12 lg:col-span-8 h-[340px]"
-            density="scroll"
+            noPadding
+            className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"
             right={
-              <Link href="/oems/blotter" className="text-[10px] text-primary hover:underline">
+              <Link href="/oems/blotter" className="text-caption text-primary hover:underline">
                 Blotter →
               </Link>
             }
           >
             {openOrders.length === 0 ? (
-              <>
+              <div className="p-5">
                 <EmptyDataState
                   title="No open orders"
                   message={
@@ -1304,11 +1421,13 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     </div>
                   </details>
                 ) : null}
-              </>
+              </div>
             ) : (
-            <table className="w-full font-mono text-[11px]">
-              <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
-                <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
+            <GlassScrollBody className="px-0">
+            <div className="glass-inset mx-5 mb-5 overflow-hidden">
+            <table className="w-full font-mono text-xs">
+              <thead className="sticky top-0 z-10 bg-[hsl(var(--foreground)/0.04)] backdrop-blur-sm">
+                <tr className="text-caption text-left">
                   <th className="px-2.5 py-1.5 text-left">Time</th>
                   <th className="px-2.5 py-1.5 text-left">Strategy</th>
                   <th className="px-2.5 py-1.5 text-left">Side</th>
@@ -1353,25 +1472,28 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 ))}
               </tbody>
             </table>
+            </div>
+            </GlassScrollBody>
             )}
-          </Panel>
+          </GlassSection>
         )}
 
         {realDataOnly ? (
-          <Panel
+          <GlassSection
             title="Macro Pulse"
             endpoint="GET /api/sa-rates"
             dataSource={saRatesQ.data?.source === "sarb" ? "supabase" : "unconfigured"}
-            className="col-span-12 lg:col-span-4 h-[340px]"
-            density="scroll"
-            right={<span className="font-mono text-[9.5px] text-muted-foreground">{saRatesQ.data?.sourceLabel ?? "SARB"}</span>}
+            noPadding
+            className="col-span-12 lg:col-span-4 flex h-[340px] flex-col min-h-0"
+            right={<span className="text-caption font-mono">{saRatesQ.data?.sourceLabel ?? "SARB"}</span>}
           >
             {saRatesQ.isLoading ? (
-              <PanelSkeleton rows={4} />
+              <div className="p-5"><PanelSkeleton rows={4} /></div>
             ) : saRatesQ.data?.source !== "sarb" || !saRates ? (
-              <EmptyDataState message="SARB feed unavailable." hint="Official SA rates/macro come from the SARB public Web API (resbank.co.za)." />
+              <div className="p-5"><EmptyDataState message="SARB feed unavailable." hint="Official SA rates/macro come from the SARB public Web API (resbank.co.za)." /></div>
             ) : (
-              <div className="grid grid-cols-2 gap-1.5">
+              <GlassScrollBody>
+              <div className="grid grid-cols-2 gap-2">
                 {([
                   ["Repo", saRates.repo],
                   ["Prime", saRates.prime],
@@ -1380,69 +1502,75 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   ["ZARONIA", saRates.zaronia],
                   ["Sabor", saRates.sabor],
                 ] as const).map(([k, r]) => (
-                  <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
-                    <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
-                    <p className="mt-0.5 font-mono text-sm font-semibold">{r?.value != null ? `${r.value.toFixed(2)}%` : "—"}</p>
-                    {r?.asOf && <p className="text-[8.5px] text-muted-foreground/70">{r.asOf.slice(0, 10)}</p>}
+                  <div key={k} className="glass-inset p-3">
+                    <p className="text-caption">{k}</p>
+                    <p className="text-metric mt-1">{r?.value != null ? `${r.value.toFixed(2)}%` : "—"}</p>
+                    {r?.asOf && <p className="mt-0.5 text-caption opacity-70">{r.asOf.slice(0, 10)}</p>}
                   </div>
                 ))}
               </div>
+              </GlassScrollBody>
             )}
-          </Panel>
+          </GlassSection>
         ) : macroQ.isLoading ? (
           <PanelSkeleton rows={4} height="h-[340px]" className="col-span-12 lg:col-span-4" />
         ) : (
-          <Panel
+          <GlassSection
             title="Macro Pulse"
             endpoint="GET /v1/macro/series"
-            className="col-span-12 lg:col-span-4 h-[340px]"
-            density="scroll"
+            noPadding
+            className="col-span-12 lg:col-span-4 flex h-[340px] flex-col min-h-0"
             right={
-              <Link href="/oems/macro" className="text-[10px] text-primary hover:underline">
+              <Link href="/oems/macro" className="text-caption text-primary hover:underline">
                 Macro →
               </Link>
             }
           >
-            <div className="grid grid-cols-2 gap-1.5">
+            <GlassScrollBody>
+            <div className="grid grid-cols-2 gap-2">
               {macro.map((m) => (
-                <div key={m.name} className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
+                <div key={m.name} className="glass-inset p-3">
                   <div className="flex items-center justify-between">
-                    <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{m.name}</p>
+                    <p className="text-caption">{m.name}</p>
                     {m.trend === "up" ? <ArrowUpRight className="h-3 w-3 text-up" /> :
                       m.trend === "down" ? <ArrowDownRight className="h-3 w-3 text-down" /> :
                       <span className="text-muted-foreground/50">—</span>}
                   </div>
-                  <p className="mt-1 font-mono text-sm font-semibold tabular-nums">
-                    {m.value}<span className="ml-1 text-[10px] text-muted-foreground">{m.unit}</span>
+                  <p className="text-metric mt-1">
+                    {m.value}<span className="ml-1 text-caption">{m.unit}</span>
                   </p>
-                  <p className="font-mono text-[10px] text-muted-foreground">prior {m.prior}</p>
+                  <p className="mt-0.5 font-mono text-xs text-muted-foreground">prior {m.prior}</p>
                 </div>
               ))}
             </div>
-          </Panel>
+            </GlassScrollBody>
+          </GlassSection>
         )}
       </div>
 
       {/* Row 4: News flash strip + curve move decomposition */}
-      <div className="grid grid-cols-12 gap-2.5">
+      <div className="grid grid-cols-12 gap-3">
         {realDataOnly ? (
-          <Panel
+          <GlassSection
             title="News Flow · Latest"
             endpoint="GET /api/news"
             dataSource={(newsBffQ.data?.items?.length ?? 0) > 0 ? "supabase" : "unconfigured"}
-            className="col-span-12 lg:col-span-8 h-[260px]"
-            density="scroll"
-            right={<span className="font-mono text-[9.5px] text-muted-foreground">{newsBffQ.data?.sourceLabel ?? "RSS"}</span>}
+            noPadding
+            className="col-span-12 lg:col-span-8 flex h-[260px] flex-col min-h-0"
+            right={<span className="text-caption font-mono">{newsBffQ.data?.sourceLabel ?? "RSS"}</span>}
           >
             {newsBffQ.isLoading ? (
-              <PanelSkeleton rows={5} />
+              <div className="p-5"><PanelSkeleton rows={5} /></div>
             ) : (newsBffQ.data?.items?.length ?? 0) === 0 ? (
+              <div className="p-5">
               <EmptyDataState
                 message="No news items right now."
                 hint="Live RSS (Moneyweb / BusinessTech) + Alliance wire. Official JSE SENS regulatory announcements still require the paid web feed."
               />
+              </div>
             ) : (
-              <ul className="divide-y divide-border/60">
+              <GlassScrollBody>
+              <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
                 {newsBffQ.data!.items.slice(0, 6).map((n) => (
                   <li key={n.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-muted/30">
                     <div className="flex-1 min-w-0">
@@ -1465,18 +1593,20 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   </li>
                 ))}
               </ul>
+              </GlassScrollBody>
             )}
-          </Panel>
+          </GlassSection>
         ) : newsQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[260px]" className="col-span-12 lg:col-span-8" />
         ) : (
-          <Panel
+          <GlassSection
             title="News Flow · Last 60 min"
             endpoint="WS /v1/news/stream"
-            className="col-span-12 lg:col-span-8 h-[260px]"
-            density="scroll"
+            noPadding
+            className="col-span-12 lg:col-span-8 flex h-[260px] flex-col min-h-0"
           >
-            <ul className="divide-y divide-border/60">
+            <GlassScrollBody>
+            <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
               {news.slice(0, 5).map((n) => (
                 <li key={n.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-muted/30">
                   {n.priority === "high" && <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-destructive" />}
@@ -1495,10 +1625,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 </li>
               ))}
             </ul>
-          </Panel>
+            </GlassScrollBody>
+          </GlassSection>
         )}
 
-        <Panel
+        <GlassSection
           title="Curve Move · PCA"
           endpoint="GET /api/curves/ZAR_NSS/metrics"
           dataSource={
@@ -1508,15 +1639,16 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 ? "unconfigured"
                 : "unconfigured"
           }
-          className="col-span-12 lg:col-span-4 h-[260px]"
-          right={<span className="font-mono text-[10px]">today vs 1D</span>}
+          className="col-span-12 lg:col-span-4 flex h-[260px] flex-col min-h-0"
+          right={<span className="text-caption font-mono">today vs 1D</span>}
         >
           {realDataOnly ? (
             curveMetricsQ.isLoading ? (
               <div className="flex h-full items-center justify-center">
-                <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">computing PCA…</p>
+                <p className="text-caption">computing PCA…</p>
               </div>
             ) : pcaRows ? (
+              <div className="glass-inset min-h-0 flex-1 p-3">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={pcaRows} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
                   <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
@@ -1530,6 +1662,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
+              </div>
             ) : (
               <EmptyDataState
                 message="Curve is live — PCA accumulating from daily snapshots."
@@ -1548,28 +1681,30 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               />
             </div>
           )}
-        </Panel>
+        </GlassSection>
       </div>
 
       {/* Row 4: Portfolio (IPS) — accounts + positions, only on real-data */}
       {realDataOnly && (
-        <div className="grid grid-cols-12 gap-2.5">
+        <div className="grid grid-cols-12 gap-3">
           {portfolioQ.isLoading ? (
             <PanelSkeleton rows={5} height="h-[340px]" className="col-span-12 lg:col-span-4" />
           ) : (
-            <Panel
+            <GlassSection
               title="Portfolio · Accounts"
               endpoint="GET /api/portfolio"
               dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
-              className="col-span-12 lg:col-span-4 h-[340px]"
+              noPadding
+              className="col-span-12 lg:col-span-4 flex h-[340px] flex-col min-h-0"
               right={
                 portfolioQ.data?.source === "supabase" ? (
-                  <span className="font-mono text-[10px]">{portfolioQ.data.accounts.length} accts</span>
+                  <span className="text-caption font-mono">{portfolioQ.data.accounts.length} accts</span>
                 ) : undefined
               }
             >
               {portfolioQ.data?.source === "supabase" ? (
-                <ul className="divide-y divide-border/70">
+                <GlassScrollBody>
+                <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
                   {portfolioQ.data.accounts.map((a) => (
                     <li key={a.account_code} className="px-3.5 py-2.5">
                       <div className="flex items-center justify-between gap-2">
@@ -1587,34 +1722,39 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     </li>
                   ))}
                 </ul>
+                </GlassScrollBody>
               ) : (
+                <div className="p-5">
                 <EmptyDataState
                   title="No account master"
                   message="IOS+ is live (orders + positions flow from the order pad for DFM@MINT, account 56378). There's no separate account-master feed wired — we don't use IPS — so this list stays empty until an account directory is sourced."
                 />
+                </div>
               )}
-            </Panel>
+            </GlassSection>
           )}
 
           {portfolioQ.isLoading ? (
             <PanelSkeleton rows={6} height="h-[340px]" className="col-span-12 lg:col-span-8" />
           ) : (
-            <Panel
+            <GlassSection
               title="Portfolio · Positions"
               endpoint="GET /api/portfolio"
               dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
-              className="col-span-12 lg:col-span-8 h-[340px]"
+              noPadding
+              className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"
               right={
                 portfolioQ.data?.source === "supabase" ? (
-                  <span className="font-mono text-[10px]">{portfolioQ.data.positions.length} positions · MV {formatZAR(portfolioQ.data.positions.reduce((acc, p) => acc + Number(p.market_value ?? 0), 0))}</span>
+                  <span className="text-caption font-mono">{portfolioQ.data.positions.length} positions · MV {formatZAR(portfolioQ.data.positions.reduce((acc, p) => acc + Number(p.market_value ?? 0), 0))}</span>
                 ) : undefined
               }
             >
               {portfolioQ.data?.source === "supabase" && portfolioQ.data.positions.length > 0 ? (
-                <div className="h-full overflow-auto">
-                  <table className="w-full text-[11px]">
-                    <thead className="sticky top-0 bg-card/90 backdrop-blur-sm">
-                      <tr className="text-left text-[9.5px] uppercase tracking-wider text-muted-foreground">
+                <GlassScrollBody className="px-0">
+                <div className="glass-inset mx-5 mb-5 overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-[hsl(var(--foreground)/0.04)] backdrop-blur-sm">
+                      <tr className="text-caption text-left">
                         <th className="px-3.5 py-1.5 font-medium">Symbol</th>
                         <th className="px-3 py-1.5 font-medium">Account</th>
                         <th className="px-3 py-1.5 text-right font-medium">Qty</th>
@@ -1645,7 +1785,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     </tbody>
                   </table>
                 </div>
+                </GlassScrollBody>
               ) : (
+                <div className="p-5">
                 <EmptyDataState
                   title="No open positions"
                   message={
@@ -1654,12 +1796,13 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                       : "Positions are derived from IOS+ order fills (we don't use IPS) for DFM@MINT, account 56378."
                   }
                 />
+                </div>
               )}
-            </Panel>
+            </GlassSection>
           )}
         </div>
       )}
-    </div>
+    </ResearchLabCanvas>
   );
 }
 

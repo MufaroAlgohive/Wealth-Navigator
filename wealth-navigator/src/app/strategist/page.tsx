@@ -2,12 +2,11 @@
 
 import { useMemo } from "react";
 import Link from "next/link";
-import { ArrowRight, Layers, BookOpen, BarChart3 } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Cell } from "recharts";
 import { PersonaRealDataGate } from "@/components/oems/persona-real-data-gate";
-import { Panel } from "@/components/oems/primitives/panel";
+import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { Button } from "@/components/ui/button";
 import { oemsStrategies, mandateTemplates } from "@/lib/iress/seed";
 import { formatPct, formatZAR } from "@/lib/format";
@@ -23,7 +22,6 @@ export default function StrategistPage() {
   const liveCount = myStrategies.filter((s) => s.status === "live").length;
   const headline = myStrategies[0];
 
-  // Mock YTD attribution for the first strategy (sector + allocation + interaction).
   const attribution = useMemo(
     () => [
       { source: "Sector selection", value:  6.4, fill: "hsl(263 80% 65%)" },
@@ -40,42 +38,38 @@ export default function StrategistPage() {
       description="Strategies under your mandate · reusable templates · performance attribution."
       message="Strategist mandate KPIs require CRM / portfolio system integration."
     >
-        {/* KPI strip */}
-        <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4">
-          <KpiTile
-            icon={<Layers className="h-3.5 w-3.5" />}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <GlassKpi
             label="Strategies under mandate"
             value={myStrategies.length.toString()}
             sub={`${liveCount} live · ${myStrategies.length - liveCount} paper`}
           />
-          <KpiTile
-            icon={<Layers className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Mandate AUM"
             value={formatZAR(totalAum)}
             sub="gross, live strategies"
+            accent="primary"
           />
-          <KpiTile
-            icon={<BarChart3 className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Headline YTD"
             value={headline ? formatPct(headline.ytd, 2) : "—"}
             sub={headline?.name ?? "—"}
-            tone={headline && headline.ytd >= 0 ? "positive" : "negative"}
+            accent={headline && headline.ytd >= 0 ? "positive" : "negative"}
           />
-          <KpiTile
-            icon={<BookOpen className="h-3.5 w-3.5" />}
+          <GlassKpi
             label="Templates available"
             value={mandateTemplates.length.toString()}
             sub="reusable mandate kit"
           />
         </div>
 
-        {/* Row 1: Strategies under mandate | Mandate templates */}
-        <div className="grid grid-cols-12 gap-2.5">
-          <Panel
+        <div className="grid grid-cols-12 gap-3">
+          <GlassSection
             title="Strategies under my mandate"
             endpoint="GET /v1/strategies?managerId=st1"
             right={<span className="font-mono text-[10px]">{myStrategies.length} strategies</span>}
             className="col-span-12 lg:col-span-7"
+            noPadding
           >
             <table className="w-full font-mono text-[11px]">
               <thead className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
@@ -87,9 +81,9 @@ export default function StrategistPage() {
                   <th className="px-2.5 py-1.5 text-left">Status</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border/60">
+              <tbody className="divide-y divide-[hsl(var(--glass-border))]">
                 {myStrategies.map((s) => (
-                  <tr key={s.id} className="hover:bg-muted/30">
+                  <tr key={s.id} className="hover:bg-[hsl(var(--foreground)/0.03)]">
                     <td className="px-2.5 py-1.5 font-sans text-xs font-medium">
                       <div>{s.name}</div>
                       <div className="text-[9.5px] text-muted-foreground">{s.benchmark}</div>
@@ -116,18 +110,18 @@ export default function StrategistPage() {
                 ))}
               </tbody>
             </table>
-          </Panel>
+          </GlassSection>
 
-          <Panel
+          <GlassSection
             title="Mandate templates"
             endpoint="GET /v1/mandates/templates"
             right={<Pill tone="info" size="xs">{mandateTemplates.length} kits</Pill>}
             className="col-span-12 lg:col-span-5"
-            density="scroll"
+            noPadding
           >
-            <ul className="divide-y divide-border/60">
+            <ul className="max-h-[360px] divide-y divide-[hsl(var(--glass-border))] overflow-y-auto scrollbar-thin">
               {mandateTemplates.map((t) => (
-                <li key={t.id} className="px-3 py-2.5 hover:bg-muted/30">
+                <li key={t.id} className="px-3 py-2.5 hover:bg-[hsl(var(--foreground)/0.03)]">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs font-medium">{t.name}</p>
                     <Pill
@@ -152,49 +146,50 @@ export default function StrategistPage() {
                 </li>
               ))}
             </ul>
-          </Panel>
+          </GlassSection>
         </div>
 
-        {/* Row 2: Performance attribution */}
-        <Panel
+        <GlassSection
           title={`Performance attribution · YTD · ${headline?.name ?? ""}`}
           endpoint="INTERNAL · Brinson-Fachler decomp"
           right={<span className="font-mono text-[10px]">net of fees · ZAR</span>}
-          className="h-[280px]"
+          className="flex h-[300px] flex-col"
+          noPadding
         >
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={attribution} layout="vertical" margin={{ top: 8, right: 16, left: 16, bottom: 0 }}>
-              <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
-              <XAxis
-                type="number"
-                tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
-                stroke="hsl(var(--border))"
-                tickFormatter={(v) => `${v}%`}
-              />
-              <YAxis
-                type="category"
-                dataKey="source"
-                tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                stroke="hsl(var(--border))"
-                width={130}
-              />
-              <Tooltip
-                contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
-                formatter={(v: number) => [`${v.toFixed(2)}%`, "Attribution"]}
-              />
-              <Bar dataKey="value" radius={[0, 2, 2, 0]}>
-                {attribution.map((a, i) => (
-                  <Cell key={i} fill={a.fill} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </Panel>
+          <div className="min-h-0 flex-1 px-5 pb-5">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={attribution} layout="vertical" margin={{ top: 8, right: 16, left: 16, bottom: 0 }}>
+                <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                  stroke="hsl(var(--border))"
+                  tickFormatter={(v) => `${v}%`}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="source"
+                  tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                  stroke="hsl(var(--border))"
+                  width={130}
+                />
+                <Tooltip
+                  contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                  formatter={(v: number) => [`${v.toFixed(2)}%`, "Attribution"]}
+                />
+                <Bar dataKey="value" radius={[0, 2, 2, 0]}>
+                  {attribution.map((a, i) => (
+                    <Cell key={i} fill={a.fill} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </GlassSection>
 
-        {/* Secondary action */}
-        <div className="flex items-center justify-end pt-1">
+        <div className="flex items-center justify-end">
           <Link href="/oems">
-            <Button variant="outline" size="sm" className="h-7 text-[11px]">
+            <Button variant="outline" size="sm" className="glass-inset h-8 border-0 text-[11px]">
               Open OEMS desk
               <ArrowRight className="h-3 w-3" />
             </Button>

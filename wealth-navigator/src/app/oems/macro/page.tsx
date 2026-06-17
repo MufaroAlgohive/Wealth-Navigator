@@ -3,10 +3,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, ArrowDownRight, AlertCircle } from "lucide-react";
 
-import { Panel } from "@/components/oems/primitives/panel";
-import { KpiTile } from "@/components/oems/primitives/kpi-tile";
+import { GlassSection, GlassKpi, PageCanvas } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
-import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { cn } from "@/lib/cn";
@@ -42,6 +40,12 @@ interface MacroResponse {
   releases: ReleaseRow[];
   source: string;
   message?: string;
+}
+
+function trendAccent(trend: IndicatorRow["trend"]): "default" | "positive" | "negative" {
+  if (trend === "up") return "positive";
+  if (trend === "down") return "negative";
+  return "default";
 }
 
 export default function MacroPage() {
@@ -95,133 +99,208 @@ export default function MacroPage() {
   const releases = macroQ.data?.releases ?? [];
   const isLoading = macroQ.isLoading || saRatesQ.isLoading;
   const hasData = indicators.length > 0 || releases.length > 0;
+  const indicatorSource = macroQ.data?.indicators?.length ? "supabase" : "live";
 
   if (!realDataOnly) {
     return (
-      <div className="space-y-3">
+      <PageCanvas>
         <header>
-          <h1 className="text-lg font-semibold tracking-tight">Macro</h1>
-          <p className="text-xs text-muted-foreground">SARB · StatsSA · G10 series · indicator surprise · upcoming releases</p>
+          <h1 className="text-display">Macro</h1>
+          <p className="text-caption mt-1">SARB · StatsSA · G10 series · indicator surprise · upcoming releases</p>
         </header>
-        <Panel title="Macro indicators" endpoint="macro_indicator_c + macro_release_c">
+        <GlassSection title="Macro indicators" endpoint="macro_indicator_c + macro_release_c" dataSource="mock">
           <EmptyDataState
             message="Mock mode disables the macro module."
             hint="Switch to real-data mode and ensure the worker has written macro_indicator_c + macro_release_c rows."
             badgeLabel="mock"
           />
-        </Panel>
-      </div>
+        </GlassSection>
+      </PageCanvas>
     );
   }
 
   return (
-    <div className="space-y-3">
+    <PageCanvas>
       <header>
-        <h1 className="text-lg font-semibold tracking-tight">Macro</h1>
-        <p className="text-xs text-muted-foreground">SARB · StatsSA · G10 series · indicator surprise · upcoming releases</p>
+        <h1 className="text-display">Macro</h1>
+        <p className="text-caption mt-1">SARB · StatsSA · G10 series · indicator surprise · upcoming releases</p>
       </header>
 
-      <div className="grid grid-cols-2 gap-2.5 md:grid-cols-4 lg:grid-cols-6">
+      <GlassSection
+        title="Macro indicators"
+        subtitle="SARB repo · prime · inflation · FX"
+        endpoint="GET /api/sa-rates"
+        dataSource={indicators.length > 0 ? indicatorSource : "unconfigured"}
+      >
         {isLoading ? (
-          [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`macro-kpi-${n}`} />)
-        ) : indicators.length === 0 ? (
-          <div className="col-span-full">
-            <Panel
-              title="Macro indicators"
-              endpoint="GET /api/sa-rates"
-              dataSource="unconfigured"
-            >
-              <EmptyDataState
-                message="SARB feed unavailable."
-                hint={macroQ.data?.message ?? "Official SA rates + inflation come from the SARB public Web API (resbank.co.za); it returned no data this cycle."}
-              />
-            </Panel>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, n) => (
+              <div key={`macro-kpi-${n}`} className="h-20 animate-pulse rounded-2xl bg-[hsl(var(--foreground)/0.05)]" />
+            ))}
           </div>
+        ) : indicators.length === 0 ? (
+          <EmptyDataState
+            message="SARB feed unavailable."
+            hint={macroQ.data?.message ?? "Official SA rates + inflation come from the SARB public Web API (resbank.co.za); it returned no data this cycle."}
+          />
         ) : (
-          indicators.slice(0, 6).map((m) => (
-            <KpiTile
-              key={m.id}
-              label={m.name}
-              value={`${m.value}${m.unit}`}
-              sub={<span className="flex items-center gap-1">prior {m.prior}</span>}
-              icon={m.trend === "up" ? <ArrowUpRight className="h-3 w-3" /> : m.trend === "down" ? <ArrowDownRight className="h-3 w-3" /> : undefined}
-              tone={m.trend === "up" ? "positive" : m.trend === "down" ? "negative" : "default"}
-            />
-          ))
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-4">
+              {indicators.map((m) => (
+                <GlassKpi
+                  key={m.id}
+                  label={m.name}
+                  value={`${m.value}${m.unit}`}
+                  sub={`prior ${m.prior}${m.unit}`}
+                  accent={trendAccent(m.trend)}
+                />
+              ))}
+            </div>
+
+            <div className="glass-inset overflow-hidden">
+              <div className="overflow-x-auto scrollbar-thin">
+                <table className="w-full min-w-[640px] font-mono text-xs">
+                  <thead>
+                    <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)]">
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Indicator</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Country</th>
+                      <th className="px-4 py-2.5 text-right text-caption font-medium">Value</th>
+                      <th className="px-4 py-2.5 text-right text-caption font-medium">Prior</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Trend</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">As of</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {indicators.map((m) => (
+                      <tr
+                        key={m.id}
+                        className="border-b border-[hsl(var(--glass-border))]/60 transition-colors hover:bg-[hsl(var(--primary)/0.04)]"
+                      >
+                        <td className="px-4 py-2 font-semibold">{m.name}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{m.country}</td>
+                        <td className="px-4 py-2 text-right tabular-nums font-semibold">
+                          {m.value}
+                          {m.unit}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
+                          {m.prior}
+                          {m.unit}
+                        </td>
+                        <td className="px-4 py-2">
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1 text-[11px] font-medium",
+                              m.trend === "up" && "text-up",
+                              m.trend === "down" && "text-down",
+                              m.trend === "flat" && "text-muted-foreground",
+                            )}
+                          >
+                            {m.trend === "up" && <ArrowUpRight className="h-3 w-3" />}
+                            {m.trend === "down" && <ArrowDownRight className="h-3 w-3" />}
+                            {m.trend}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-muted-foreground">{m.asOf || "—"}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{m.source}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         )}
-      </div>
+      </GlassSection>
 
       {hasData && releases.length > 0 && (
-        <Panel
+        <GlassSection
           title="Upcoming releases · 14 days"
           endpoint="macro_release_c"
           dataSource="supabase"
-          right={<span className="font-mono text-[10px]">{releases.length} scheduled</span>}
-          density="scroll"
-          className="h-[380px]"
+          right={<span className="font-mono text-[10px] text-muted-foreground">{releases.length} scheduled</span>}
+          noPadding
+          className="flex flex-col"
         >
-          <table className="w-full font-mono text-xs">
-            <thead>
-              <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-                <th className="px-3 py-2 text-left">Date / Time</th>
-                <th className="px-3 py-2 text-left">Series</th>
-                <th className="px-3 py-2 text-left">Source</th>
-                <th className="px-3 py-2 text-left">Country</th>
-                <th className="px-3 py-2 text-right">Consensus</th>
-                <th className="px-3 py-2 text-right">Prior</th>
-                <th className="px-3 py-2 text-left">Importance</th>
-                <th className="px-3 py-2 text-left">Tags</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/60">
-              {releases.map((r) => (
-                <tr key={r.id} className="hover:bg-muted/30">
-                  <td className="px-3 py-1.5">
-                    <p className="font-semibold">{new Date(r.ts).toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" })}</p>
-                    <p className="text-[9.5px] text-muted-foreground">
-                      {new Date(r.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })} SAST
-                    </p>
-                  </td>
-                  <td className="px-3 py-1.5">{r.name}</td>
-                  <td className="px-3 py-1.5 text-muted-foreground">{r.source}</td>
-                  <td className="px-3 py-1.5 text-muted-foreground">{r.country}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums font-semibold">{r.consensus}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums text-muted-foreground">{r.prior}</td>
-                  <td className="px-3 py-1.5">
-                    <Pill
-                      tone={r.importance === "high" ? "destructive" : r.importance === "medium" ? "warning" : "neutral"}
-                      size="xs"
-                      dot
-                    >
-                      {r.importance}
-                    </Pill>
-                  </td>
-                  <td className="px-3 py-1.5 flex flex-wrap gap-1">
-                    {r.tags.map((t) => (
-                      <span key={t} className="rounded bg-muted/60 px-1.5 py-0.5 text-[9.5px] text-muted-foreground">
-                        {t}
-                      </span>
+          <div className="p-5 pt-0">
+            <div className="glass-inset max-h-[320px] overflow-hidden">
+              <div className="max-h-[320px] overflow-y-auto scrollbar-thin">
+                <table className="w-full font-mono text-xs">
+                  <thead className="sticky top-0 z-10 bg-[hsl(var(--foreground)/0.03)] backdrop-blur-sm">
+                    <tr className="border-b border-[hsl(var(--glass-border))]">
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Date / Time</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Series</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Source</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Country</th>
+                      <th className="px-4 py-2.5 text-right text-caption font-medium">Consensus</th>
+                      <th className="px-4 py-2.5 text-right text-caption font-medium">Prior</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Importance</th>
+                      <th className="px-4 py-2.5 text-left text-caption font-medium">Tags</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {releases.map((r) => (
+                      <tr
+                        key={r.id}
+                        className="border-b border-[hsl(var(--glass-border))]/60 transition-colors hover:bg-[hsl(var(--primary)/0.04)]"
+                      >
+                        <td className="px-4 py-2">
+                          <p className="font-semibold">
+                            {new Date(r.ts).toLocaleDateString("en-ZA", { weekday: "short", day: "2-digit", month: "short" })}
+                          </p>
+                          <p className="text-[9.5px] text-muted-foreground">
+                            {new Date(r.ts).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}{" "}
+                            SAST
+                          </p>
+                        </td>
+                        <td className="px-4 py-2">{r.name}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{r.source}</td>
+                        <td className="px-4 py-2 text-muted-foreground">{r.country}</td>
+                        <td className="px-4 py-2 text-right tabular-nums font-semibold">{r.consensus}</td>
+                        <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">{r.prior}</td>
+                        <td className="px-4 py-2">
+                          <Pill
+                            tone={r.importance === "high" ? "destructive" : r.importance === "medium" ? "warning" : "neutral"}
+                            size="xs"
+                            dot
+                          >
+                            {r.importance}
+                          </Pill>
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex flex-wrap gap-1">
+                            {r.tags.map((t) => (
+                              <span
+                                key={t}
+                                className="rounded-md bg-[hsl(var(--foreground)/0.06)] px-1.5 py-0.5 text-[9.5px] text-muted-foreground"
+                              >
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
                     ))}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Panel>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </GlassSection>
       )}
 
-      <div className="rounded-md border border-info/30 bg-info/5 p-3 text-[11.5px] text-info">
-        <p className="flex items-center gap-2 font-semibold">
-          <AlertCircle className="h-3.5 w-3.5" />
+      <div className="glass-inset p-4 text-[11.5px]">
+        <p className="flex items-center gap-2 font-semibold text-info">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           Indicators are live from SARB; the release calendar needs a vendor
         </p>
-        <p className="mt-1 text-muted-foreground">
+        <p className="mt-1.5 text-caption leading-relaxed">
           Indicators (repo, prime, CPI, PPI, ZARONIA, Sabor, ZAR FX) come live from the{" "}
           <span className="font-mono">SARB public Web API</span> via <span className="font-mono">/api/sa-rates</span>.
           The <span className="font-mono">Upcoming releases</span> calendar still needs an economic-calendar vendor
           (StatsSA / Reuters) — it stays empty until <span className="font-mono">macro_release_c</span> is populated.
         </p>
       </div>
-    </div>
+    </PageCanvas>
   );
 }

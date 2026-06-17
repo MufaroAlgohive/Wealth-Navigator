@@ -5,10 +5,13 @@ import { cn } from "@/lib/cn";
 import type { DataSourceKind } from "@/components/oems/primitives/data-source-badge";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
-/** Full-page ambient wrapper for Research Lab */
+/** Full-page ambient wrapper for OEMS pages */
 export function ResearchLabCanvas({ children }: { children: React.ReactNode }) {
   return <div className="relative space-y-5 pb-8">{children}</div>;
 }
+
+/** Alias for non–Research Lab pages */
+export const PageCanvas = ResearchLabCanvas;
 
 interface GlassSectionProps extends React.HTMLAttributes<HTMLElement> {
   title: string;
