@@ -880,7 +880,54 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         )}
 
         {realDataOnly ? (
-          equitiesQ.isLoading ? (
+          heatmapMarket === "US" ? (
+            // Mirrors the heatmap's JSE|US switch — US gainers + losers from
+            // the Yahoo screener (already fetched by globalMoversQ). Prices
+            // are USD. Degrades to an honest empty state if Yahoo blocked us.
+            <Panel
+              title="Top Movers · US"
+              endpoint="GET /api/global-movers"
+              dataSource={globalMoversQ.data?.source === "yahoo" ? "supabase" : "unconfigured"}
+              className="col-span-12 lg:col-span-3 h-[300px]"
+              density="scroll"
+              right={<span className="font-mono text-[9.5px] text-muted-foreground">Yahoo</span>}
+            >
+              {globalMoversQ.isLoading ? (
+                <PanelSkeleton rows={7} />
+              ) : (globalMoversQ.data?.gainers?.length ?? 0) + (globalMoversQ.data?.losers?.length ?? 0) === 0 ? (
+                <EmptyDataState message="Yahoo returned no US movers this cycle — it retries automatically." />
+              ) : (
+                <ul className="divide-y divide-border/70">
+                  {[
+                    ...(globalMoversQ.data?.gainers ?? []).slice(0, 4),
+                    ...(globalMoversQ.data?.losers ?? []).slice(0, 4),
+                  ].map((m) => {
+                    const up = m.chg > 0;
+                    const down = m.chg < 0;
+                    return (
+                      <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-mono text-xs font-semibold">{m.symbol}</p>
+                          <p className="truncate text-[9.5px] text-muted-foreground">{m.name}</p>
+                        </div>
+                        <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
+                          {m.price != null ? `$${m.price.toFixed(2)}` : "—"}
+                        </span>
+                        <span
+                          className={cn(
+                            "ml-1 shrink-0 font-mono text-[11px] tabular-nums",
+                            up ? "text-up" : down ? "text-down" : "text-muted-foreground",
+                          )}
+                        >
+                          {formatPct(m.chg)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Panel>
+          ) : equitiesQ.isLoading ? (
             <PanelSkeleton rows={7} height="h-[300px]" className="col-span-12 lg:col-span-3" />
           ) : equitiesAvailable && topMovers.length > 0 ? (
             // Top gainers + losers from the retail equities board
