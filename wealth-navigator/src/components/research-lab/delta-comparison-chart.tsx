@@ -17,7 +17,7 @@ export function DeltaComparisonChart({ label, current, proposed }: DeltaComparis
   ];
 
   return (
-    <div className="rounded-md border border-border bg-card p-3">
+    <div className="glass-panel p-4">
       <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
       <div className="mt-2 h-[100px] w-full">
         <ResponsiveContainer width="100%" height="100%">

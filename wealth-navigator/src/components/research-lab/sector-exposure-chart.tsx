@@ -23,7 +23,7 @@ export function SectorExposureChart({ title, data, variant = "both" }: SectorExp
 
   return (
     <div className="space-y-3">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</p>
+      <p className="text-caption">{title}</p>
 
       {(variant === "pie" || variant === "both") && (
         <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
@@ -112,10 +112,10 @@ interface SectorCompareProps {
 export function SectorCompareCharts({ before, after }: SectorCompareProps) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <div className="rounded-md border border-border/60 bg-muted/10 p-3">
+      <div className="glass-inset p-4">
         <SectorExposureChart title="Sector exposure — Before" data={before} variant="pie" />
       </div>
-      <div className="rounded-md border border-primary/20 bg-primary/5 p-3">
+      <div className="glass-inset border-[hsl(var(--glass-border-strong))] bg-[hsl(var(--primary)/0.04)] p-4">
         <SectorExposureChart title="Sector exposure — After" data={after} variant="pie" />
       </div>
     </div>

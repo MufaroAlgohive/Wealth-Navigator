@@ -12,9 +12,9 @@ export function OEMSShell({ children }: { children: React.ReactNode }) {
         <main
           id="main-content"
           tabIndex={-1}
-          className="flex-1 min-w-0 overflow-y-auto p-3 scrollbar-thin focus:outline-none"
+          className="mint-ambient relative flex-1 min-w-0 overflow-y-auto p-4 scrollbar-thin focus:outline-none md:p-5"
         >
-          <div className="mx-auto max-w-[1800px] animate-fade-in">{children}</div>
+          <div className="relative mx-auto max-w-[1800px] animate-fade-in">{children}</div>
         </main>
       </div>
     </div>

@@ -32,78 +32,97 @@ export function HoldingsTable({
   cashLabel = "Cash reserve",
 }: HoldingsTableProps) {
   return (
-    <div className="overflow-x-auto scrollbar-thin">
-      <table className="w-full min-w-[720px] font-mono text-[11px]">
-        <thead className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-          <tr className="border-b border-border/70">
-            <th className="px-2.5 py-2 text-left">Ticker</th>
-            <th className="px-2.5 py-2 text-left">Name</th>
-            {!showRating && <th className="px-2.5 py-2 text-left">Asset class</th>}
-            <th className="px-2.5 py-2 text-left">Sector</th>
-            {showRating && <th className="px-2.5 py-2 text-left">Rating</th>}
-            <th className="px-2.5 py-2 text-right">Shares</th>
-            <th className="px-2.5 py-2 text-right">Price</th>
-            <th className="px-2.5 py-2 text-right">Value</th>
-            <th className="px-2.5 py-2 text-right">Const. wt</th>
-            <th className="px-2.5 py-2 text-right">Basket wt</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border/50">
-          {rows.map((r) => (
-            <tr key={r.ticker} className="hover:bg-muted/25">
-              <td className="px-2.5 py-1.5 font-semibold text-primary">{r.ticker}</td>
-              <td className="max-w-[140px] truncate px-2.5 py-1.5 font-sans text-xs">{r.name}</td>
-              {!showRating && <td className="px-2.5 py-1.5 text-muted-foreground">{r.assetClass}</td>}
-              <td className="max-w-[120px] truncate px-2.5 py-1.5 text-muted-foreground">{r.sector}</td>
-              {showRating && (
-                <td className="px-2.5 py-1.5">
-                  {r.rating ? (
-                    <Pill tone={verdictTone(r.rating)} size="xs">
-                      {r.rating}
-                    </Pill>
-                  ) : (
-                    "—"
-                  )}
-                </td>
-              )}
-              <td className="px-2.5 py-1.5 text-right tabular-nums">{r.shares}</td>
-              <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZARExact(r.price)}</td>
-              <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZARExact(r.value)}</td>
-              <td className="px-2.5 py-1.5 text-right tabular-nums">{r.constWeight.toFixed(2)}%</td>
-              <td className="px-2.5 py-1.5 text-right tabular-nums">{r.basketWeight.toFixed(2)}%</td>
+    <div className="glass-inset overflow-hidden">
+      <div className="overflow-x-auto scrollbar-thin">
+        <table className="w-full min-w-[720px]">
+          <thead>
+            <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)]">
+              <th className="px-4 py-3 text-left text-caption font-medium">Ticker</th>
+              <th className="px-4 py-3 text-left text-caption font-medium">Name</th>
+              {!showRating && <th className="px-4 py-3 text-left text-caption font-medium">Class</th>}
+              <th className="px-4 py-3 text-left text-caption font-medium">Sector</th>
+              {showRating && <th className="px-4 py-3 text-left text-caption font-medium">Rating</th>}
+              <th className="px-4 py-3 text-right text-caption font-medium">Shares</th>
+              <th className="px-4 py-3 text-right text-caption font-medium">Price</th>
+              <th className="px-4 py-3 text-right text-caption font-medium">Value</th>
+              <th className="px-4 py-3 text-right text-caption font-medium">Const.</th>
+              <th className="px-4 py-3 text-right text-caption font-medium">Basket</th>
             </tr>
-          ))}
-          <tr className="bg-muted/20 font-semibold">
-            <td colSpan={6} className="px-2.5 py-1.5 text-right font-sans text-xs">
-              Constituent total
-            </td>
-            <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZARExact(constituentTotal)}</td>
-            <td className="px-2.5 py-1.5 text-right tabular-nums">100.00%</td>
-            <td className="px-2.5 py-1.5 text-right tabular-nums">
-              {(100 - cashPct).toFixed(2)}%
-            </td>
-          </tr>
-          <tr className="text-muted-foreground">
-            <td className="px-2.5 py-1.5 font-semibold text-foreground">CASH</td>
-            <td colSpan={5} className="px-2.5 py-1.5 font-sans text-xs">
-              {cashLabel}
-            </td>
-            <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZARExact(cash)}</td>
-            <td className="px-2.5 py-1.5 text-right">—</td>
-            <td className="px-2.5 py-1.5 text-right tabular-nums">{cashPct.toFixed(2)}%</td>
-          </tr>
-          <tr className="border-t border-border bg-primary/5 font-semibold">
-            <td colSpan={6} className="px-2.5 py-1.5 font-sans text-xs">
-              Basket minimum price
-            </td>
-            <td className="px-2.5 py-1.5 text-right tabular-nums text-primary">
-              {formatZARExact(basketMin)}
-            </td>
-            <td className="px-2.5 py-1.5 text-right">—</td>
-            <td className="px-2.5 py-1.5 text-right tabular-nums">100.00%</td>
-          </tr>
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr
+                key={r.ticker}
+                className="border-b border-[hsl(var(--glass-border))]/60 transition-colors hover:bg-[hsl(var(--primary)/0.04)]"
+              >
+                <td className="px-4 py-3 font-mono text-sm font-semibold text-primary">{r.ticker}</td>
+                <td className="max-w-[160px] truncate px-4 py-3 text-sm text-foreground/90">{r.name}</td>
+                {!showRating && (
+                  <td className="px-4 py-3 text-caption">{r.assetClass}</td>
+                )}
+                <td className="max-w-[130px] truncate px-4 py-3 text-caption">{r.sector}</td>
+                {showRating && (
+                  <td className="px-4 py-3">
+                    {r.rating ? (
+                      <Pill tone={verdictTone(r.rating)} size="xs">
+                        {r.rating}
+                      </Pill>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                )}
+                <td className="px-4 py-3 text-right font-mono text-sm tabular-nums">{r.shares}</td>
+                <td className="px-4 py-3 text-right font-mono text-sm tabular-nums">
+                  {formatZARExact(r.price)}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-sm font-medium tabular-nums">
+                  {formatZARExact(r.value)}
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-xs tabular-nums text-muted-foreground">
+                  {r.constWeight.toFixed(1)}%
+                </td>
+                <td className="px-4 py-3 text-right font-mono text-xs font-medium tabular-nums">
+                  {r.basketWeight.toFixed(1)}%
+                </td>
+              </tr>
+            ))}
+            <tr className="bg-[hsl(var(--foreground)/0.03)]">
+              <td colSpan={6} className="px-4 py-3 text-right text-sm font-medium">
+                Constituent total
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-sm font-semibold tabular-nums">
+                {formatZARExact(constituentTotal)}
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">100%</td>
+              <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">
+                {(100 - cashPct).toFixed(1)}%
+              </td>
+            </tr>
+            <tr>
+              <td className="px-4 py-3 font-mono text-sm font-semibold">CASH</td>
+              <td colSpan={5} className="px-4 py-3 text-caption">
+                {cashLabel}
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-sm tabular-nums">
+                {formatZARExact(cash)}
+              </td>
+              <td className="px-4 py-3 text-right">—</td>
+              <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">{cashPct.toFixed(1)}%</td>
+            </tr>
+            <tr className="border-t border-[hsl(var(--primary)/0.2)] bg-[hsl(var(--primary)/0.06)]">
+              <td colSpan={6} className="px-4 py-3 text-sm font-medium">
+                Basket minimum price
+              </td>
+              <td className="px-4 py-3 text-right font-mono text-sm font-semibold text-primary tabular-nums">
+                {formatZARExact(basketMin)}
+              </td>
+              <td className="px-4 py-3 text-right">—</td>
+              <td className="px-4 py-3 text-right font-mono text-xs tabular-nums">100%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

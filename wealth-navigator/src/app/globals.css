@@ -60,7 +60,15 @@
     --chart-5: 320 75% 62%;
     --chart-6: 0 80% 60%;
 
-    --radius: 0.5rem;
+    --radius: 0.625rem;
+
+    /* Glass surface tokens */
+    --glass-bg: 252 28% 11% / 0.55;
+    --glass-bg-strong: 252 26% 14% / 0.72;
+    --glass-border: 250 30% 100% / 0.08;
+    --glass-border-strong: 263 60% 75% / 0.22;
+    --glass-highlight: 250 40% 100% / 0.04;
+    --glass-shadow: 252 40% 4% / 0.45;
 
     --color-bg: #101214;
 
@@ -143,6 +151,13 @@
     --chart-4: 200 85% 46%;
     --chart-5: 320 70% 50%;
     --chart-6: 0 75% 46%;
+
+    --glass-bg: 0 0% 100% / 0.72;
+    --glass-bg-strong: 0 0% 100% / 0.88;
+    --glass-border: 263 40% 50% / 0.12;
+    --glass-border-strong: 263 60% 50% / 0.28;
+    --glass-highlight: 0 0% 100% / 0.85;
+    --glass-shadow: 252 30% 20% / 0.08;
   }
   .dark {
     --color-bg: #101214;
@@ -234,5 +249,82 @@
   }
   .mask-fade-x {
     mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
+  }
+
+  /* ── Glassmorphism system (Research Lab + OEMS surfaces) ───────────── */
+  .glass-panel {
+    @apply relative overflow-hidden rounded-2xl border backdrop-blur-xl;
+    background: linear-gradient(
+      145deg,
+      hsl(var(--glass-highlight)) 0%,
+      hsl(var(--glass-bg)) 40%,
+      hsl(var(--glass-bg-strong)) 100%
+    );
+    border-color: hsl(var(--glass-border));
+    box-shadow:
+      0 0 0 1px hsl(var(--glass-border)) inset,
+      0 1px 0 hsl(var(--glass-highlight)) inset,
+      0 24px 48px -12px hsl(var(--glass-shadow));
+  }
+
+  .glass-panel::before {
+    content: "";
+    @apply pointer-events-none absolute inset-x-0 top-0 h-px;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(var(--primary) / 0.35) 50%,
+      transparent
+    );
+  }
+
+  .glass-kpi {
+    @apply glass-panel p-4 transition-all duration-300;
+  }
+  .glass-kpi:hover {
+    border-color: hsl(var(--glass-border-strong));
+    box-shadow:
+      0 0 0 1px hsl(var(--glass-border-strong)) inset,
+      0 1px 0 hsl(var(--glass-highlight)) inset,
+      0 28px 56px -16px hsl(var(--glass-shadow)),
+      0 0 40px -20px hsl(var(--primary) / 0.25);
+  }
+
+  .glass-inset {
+    @apply rounded-xl border backdrop-blur-md;
+    background: hsl(var(--foreground) / 0.03);
+    border-color: hsl(var(--glass-border));
+  }
+
+  .mint-ambient {
+    background-color: hsl(var(--canvas));
+    background-image:
+      radial-gradient(ellipse 80% 50% at 0% -10%, hsl(var(--primary) / 0.18), transparent 55%),
+      radial-gradient(ellipse 60% 40% at 100% 0%, hsl(var(--chart-4) / 0.12), transparent 50%),
+      radial-gradient(ellipse 50% 30% at 50% 100%, hsl(var(--chart-2) / 0.08), transparent 45%);
+  }
+
+  .light .mint-ambient {
+    background-image:
+      radial-gradient(ellipse 80% 50% at 0% -10%, hsl(var(--primary) / 0.12), transparent 55%),
+      radial-gradient(ellipse 60% 40% at 100% 0%, hsl(var(--chart-4) / 0.08), transparent 50%),
+      radial-gradient(ellipse 50% 30% at 50% 100%, hsl(var(--primary) / 0.06), transparent 45%);
+  }
+
+  .text-display {
+    @apply font-sans text-3xl font-semibold tracking-tight text-foreground;
+    letter-spacing: -0.02em;
+  }
+
+  .text-section {
+    @apply font-sans text-sm font-medium tracking-tight text-foreground;
+  }
+
+  .text-caption {
+    @apply font-sans text-xs text-muted-foreground;
+  }
+
+  .text-metric {
+    @apply font-mono text-xl font-semibold tabular-nums tracking-tight text-foreground;
   }
 }
