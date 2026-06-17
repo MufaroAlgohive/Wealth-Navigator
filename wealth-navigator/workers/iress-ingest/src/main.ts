@@ -247,7 +247,10 @@ async function retailIngestLoop(): Promise<void> {
   if (!retailIngestEnabled) return;
   while (!shuttingDown) {
     try {
-      const r = await syncRetailPrices({ env, sessions, retail: retailSupabase });
+      // `institutional: supabase` → persist the full-universe IRESS L1 snapshot
+      // to quote_snapshot_c (OEMS-owned), independent of the retail write gate,
+      // so the dashboard's IRESS-first overlay covers every name.
+      const r = await syncRetailPrices({ env, sessions, retail: retailSupabase, institutional: supabase });
       console.info(
         `[iress-ingest] retail price ingest ${r.dryRun ? "(shadow)" : "(WRITE)"}: ` +
           `${r.covered}/${r.requested} covered, ${r.written} written, ${r.skipped} skipped`,

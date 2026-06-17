@@ -72,11 +72,21 @@ export async function syncRetailPrices(opts: {
   env: WorkerEnv;
   sessions: WorkerSessionManager;
   retail: WorkerSupabase | null;
+  /**
+   * Institutional client (OEMS-owned). When provided, the same per-symbol IRESS
+   * quotes this loop already fetches are persisted to `quote_snapshot_c` so the
+   * dashboard's IRESS-first overlay (last + change% from prev_close) covers the
+   * FULL JSE universe, not just the 15s watchlist. This write is independent of
+   * the retail customer-DB gate (IRESS_RETAIL_DRY_RUN) — it never touches a
+   * customer table.
+   */
+  institutional?: WorkerSupabase | null;
   exchange?: string;
   /** Optional cap (e.g. a small shadow run). */
   limit?: number;
 }): Promise<RetailSyncResult> {
   const { env, sessions, retail } = opts;
+  const institutional = opts.institutional ?? null;
   const exchange = opts.exchange ?? env.defaultExchange ?? "JSE";
   // Retail writes use their OWN explicit gate (default: shadow), independent of
   // the worker-wide dryRun/allowWrites that govern the institutional feed. Flip
@@ -96,15 +106,20 @@ export async function syncRetailPrices(opts: {
   let written = 0;
   let skipped = 0;
   const sample: RetailSyncResult["sample"] = [];
+  // Institutional L1 snapshot rows (full universe) → quote_snapshot_c. Collected
+  // regardless of the retail write gate; upserted after the session loop.
+  const snapshotRows: Array<Record<string, unknown>> = [];
 
   await sessions.withSession(async (session) => {
     for (const sec of list) {
       const iressCode = toIressCode(sec.symbol);
       let lastRands = 0;
       let outcome = "error";
+      let quoteRow: Awaited<ReturnType<typeof fetchLiveQuote>>["row"] | null = null;
       try {
         const r = await fetchLiveQuote(session, iressCode, exchange);
         outcome = r.outcome;
+        quoteRow = r.row ?? null;
         lastRands = r.row?.last ?? 0;
       } catch (err) {
         if (isIressSessionDeadError(err)) throw err; // let withSession recover + retry
@@ -125,7 +140,32 @@ export async function syncRetailPrices(opts: {
         sample.push({ symbol: sec.symbol, iressCents: choice.cents, yahooCents: refCents || null, basis: choice.basis });
       }
 
-      if (!writesOn) continue; // shadow: comparison captured, nothing written
+      // Build the institutional L1 snapshot (cents scale matching securities_c),
+      // so the dashboard overlay has IRESS last + prev_close for this symbol.
+      if (institutional) {
+        const mlt = choice.centsMultiplier;
+        const px = (v: number | null | undefined) => (v != null && v > 0 ? Math.round(v * mlt) : null);
+        snapshotRows.push({
+          security_code: iressCode,
+          exchange,
+          last: choice.cents,
+          open: px(quoteRow?.open),
+          high: px(quoteRow?.high),
+          low: px(quoteRow?.low),
+          bid: px(quoteRow?.bid),
+          ask: px(quoteRow?.ask),
+          prev_close: px(quoteRow?.prevClose),
+          volume: quoteRow?.volume && quoteRow.volume > 0 ? quoteRow.volume : null,
+          vwap: px(quoteRow?.vwap),
+          currency: quoteRow?.currency || null,
+          market_state: quoteRow?.marketState || null,
+          as_of: quoteRow?.ts && quoteRow.ts > 0 ? new Date(quoteRow.ts).toISOString() : ts,
+          source: "iress-retail-universe",
+          updated_at: ts,
+        });
+      }
+
+      if (!writesOn) continue; // shadow: comparison captured, nothing written to RETAIL
 
       const { error: tickErr } = await retail.from("stock_intraday_c").insert({
         security_id: sec.id,
@@ -146,6 +186,23 @@ export async function syncRetailPrices(opts: {
       written += 1;
     }
   });
+
+  // Persist the full-universe IRESS L1 snapshot → institutional quote_snapshot_c.
+  // Best-effort + isolated: a failure here must NOT affect the retail result.
+  // This powers the dashboard's IRESS-first price/change overlay across all 246
+  // names (not just the 15s watchlist) and the Security L1 panel for any symbol.
+  if (institutional && snapshotRows.length > 0) {
+    const { error: snapErr } = await institutional
+      .from("quote_snapshot_c")
+      .upsert(snapshotRows, { onConflict: "security_code,exchange" });
+    if (snapErr) {
+      console.warn(`[retail-ingest] quote_snapshot_c upsert failed: ${snapErr.message}`);
+    } else {
+      console.info(
+        JSON.stringify({ level: "info", event: "quote_snapshot_c_universe_upserted", count: snapshotRows.length }),
+      );
+    }
+  }
 
   recordWorkerEvent({
     level: "info",

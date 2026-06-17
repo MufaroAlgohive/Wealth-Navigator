@@ -17,7 +17,12 @@ import { IressError } from "@/lib/iress/errors";
 import { getMintSession, withMintSession, invalidateMintSession } from "@/lib/iress/session-manager";
 import { emptyQuote, isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { initialQuotes, zarGoviCurve } from "@/lib/iress/seed";
-import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
+import {
+  createRetailServiceRoleClient,
+  isRetailSupabaseConfigured,
+  createServiceRoleClient,
+  isSupabaseConfigured,
+} from "@/lib/supabase/server";
 import type { Order, Quote } from "@/types/iress";
 
 export type QuoteSource = "live" | "seed-fallback" | "mock" | "supabase" | "unavailable";
@@ -63,21 +68,33 @@ interface SecurityMetaRow {
   change_percent: number | null;
 }
 
-/** Build a Quote from a Supabase intraday tick + securities_c metadata. */
+/** Build a Quote from a Supabase intraday tick + securities_c metadata.
+ *  IRESS-first: when an institutional quote_snapshot row is supplied, the day
+ *  change is derived from IRESS prev_close (scale-invariant); only without it
+ *  do we fall back to Yahoo's securities_c.change_percent. */
 function buildQuoteFromIntraday(
   meta: SecurityMetaRow | undefined,
   intraday: IntradayRow,
   symbol: string,
   exchange: string,
+  iress?: { last: number | null; prev: number | null },
 ): Quote {
-  // Retail securities_c has last_price + change_percent (Yahoo); no prev_close
-  // column, so derive the prior close from the day change %.
   const tickCents = Number(intraday.current_price) || 0;
   const metaCents = Number(meta?.last_price) || 0;
-  const priceCents = tickCents > 0 ? tickCents : metaCents;
+  const iressLastCents = iress?.last != null && iress.last > 0 ? iress.last : 0;
+  const priceCents = tickCents > 0 ? tickCents : iressLastCents > 0 ? iressLastCents : metaCents;
   const last = priceCents / 100;
-  const changePct = Number(meta?.change_percent) || 0;
-  const prev = changePct !== 0 ? last / (1 + changePct / 100) : last;
+  let changePct: number;
+  let prev: number;
+  if (iress?.prev != null && iress.prev > 0 && priceCents > 0) {
+    // IRESS prev_close (cents) → change is scale-invariant.
+    prev = iress.prev / 100;
+    changePct = ((priceCents - iress.prev) / iress.prev) * 100;
+  } else {
+    // Yahoo fallback: securities_c has no prev_close, so derive it from the %.
+    changePct = Number(meta?.change_percent) || 0;
+    prev = changePct !== 0 ? last / (1 + changePct / 100) : last;
+  }
   const change = last - prev;
   const ts = new Date(intraday.timestamp).getTime();
   return {
@@ -100,6 +117,33 @@ function buildQuoteFromIntraday(
     marketState: "OPEN",
     ts,
   };
+}
+
+/** Read IRESS L1 (last + prev_close, cents) from the institutional
+ *  quote_snapshot_c, keyed by bare security code. Best-effort: returns an empty
+ *  map (→ Yahoo fallback) if the institutional DB is unconfigured or errors. */
+async function fetchIressSnapshot(
+  bareSymbols: string[],
+  exchange: string,
+): Promise<Map<string, { last: number | null; prev: number | null }>> {
+  const map = new Map<string, { last: number | null; prev: number | null }>();
+  if (!isSupabaseConfigured() || bareSymbols.length === 0) return map;
+  try {
+    const inst = createServiceRoleClient();
+    const codes = Array.from(new Set(bareSymbols.map((s) => s.toUpperCase())));
+    const { data, error } = await inst
+      .from("quote_snapshot_c")
+      .select("security_code,exchange,last,prev_close")
+      .eq("exchange", exchange)
+      .in("security_code", codes);
+    if (error || !data) return map;
+    for (const r of data as Array<{ security_code: string; last: number | null; prev_close: number | null }>) {
+      map.set(String(r.security_code).toUpperCase(), { last: r.last, prev: r.prev_close });
+    }
+  } catch {
+    /* leave map empty → Yahoo fallback */
+  }
+  return map;
 }
 
 async function fetchQuotesFromSupabase(
@@ -152,6 +196,12 @@ async function fetchQuotesFromSupabase(
   }
 
   const metaByBare = new Map(metaRows.map((m) => [bareKey(m.symbol), m]));
+
+  // IRESS-first overlay: pull prev_close (+ last) from the institutional
+  // quote_snapshot_c so the day change comes from IRESS, not Yahoo. Best-effort
+  // + isolated — any failure leaves the Yahoo-derived change untouched.
+  const iressByBare = await fetchIressSnapshot(normalised, exchange);
+
   const out: QuoteWithSource[] = [];
 
   for (const sym of normalised) {
@@ -167,7 +217,7 @@ async function fetchQuotesFromSupabase(
     }
     out.push({
       symbol: sym,
-      quote: buildQuoteFromIntraday(meta, tick, sym, exchange),
+      quote: buildQuoteFromIntraday(meta, tick, sym, exchange, iressByBare.get(sym)),
       source: "supabase",
     });
   }
