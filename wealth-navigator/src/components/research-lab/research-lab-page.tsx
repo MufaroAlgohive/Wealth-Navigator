@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -43,14 +43,24 @@ import { HoldingsWeightChart } from "@/components/research-lab/holdings-weight-c
 import { CashInvestedBar } from "@/components/research-lab/cash-invested-bar";
 import { FundamentalsChart, VerdictStrip } from "@/components/research-lab/fundamentals-chart";
 import { DeltaComparisonChart } from "@/components/research-lab/delta-comparison-chart";
+import {
+  ProposalWorkflowDialog,
+  type ProposalWorkflowOpen,
+} from "@/components/research-lab/proposal-workflow-dialog";
+import {
+  ProposalActionBar,
+  SessionProposalsList,
+} from "@/components/research-lab/session-proposals-list";
 import type { DataSourceKind } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 import { formatZARExact } from "@/lib/format";
 import { queryOpts } from "@/lib/store/query-provider";
+import { projectHoldingsFromProposals, securitiesMapFromEquities } from "@/lib/research-lab/proposals";
 import type {
   ResearchLabListItem,
   ResearchLabPayload,
   ResearchRole,
+  SessionProposal,
 } from "@/lib/research-lab/types";
 
 const YIELD_BASKET_FALLBACK_ID = "640dcffb-dc23-4099-9772-0f72ed9688de";
@@ -66,6 +76,10 @@ export function ResearchLabPage() {
   const [strategyId, setStrategyId] = useState<string>(YIELD_BASKET_FALLBACK_ID);
   const [compareQ, setCompareQ] = useState("");
   const [extraTickers, setExtraTickers] = useState<string[]>([]);
+  const [sessionProposals, setSessionProposals] = useState<Record<string, SessionProposal[]>>({});
+  const [workflowOpen, setWorkflowOpen] = useState(false);
+  const [workflowInitial, setWorkflowInitial] = useState<ProposalWorkflowOpen | null>(null);
+  const [activeTab, setActiveTab] = useState<"before" | "proposed">("before");
 
   const listQ = useQuery<{ strategies: ResearchLabListItem[]; source: string }>({
     queryKey: ["bff-research-lab-list"],
@@ -92,7 +106,22 @@ export function ResearchLabPage() {
     ...queryOpts("reference"),
   });
 
-  const equitiesQ = useQuery<{ securities: Array<{ symbol: string; name: string | null }> }>({
+  const equitiesQ = useQuery<{
+    securities: Array<{
+      symbol: string;
+      name: string | null;
+      sector: string | null;
+      industry?: string | null;
+      last_price: number | null;
+      pe?: number | null;
+      eps?: number | null;
+      dividend_yield?: number | null;
+      beta?: number | null;
+      market_cap?: number | null;
+      ytd_performance?: number | null;
+      price_source?: "iress" | "yahoo";
+    }>;
+  }>({
     queryKey: ["equities-universe"],
     queryFn: async () => {
       const r = await fetch("/api/equities", { cache: "no-store" });
@@ -101,6 +130,35 @@ export function ResearchLabPage() {
     },
     ...queryOpts("reference"),
   });
+
+  const proposalsForStrategy = sessionProposals[strategyId] ?? [];
+  const submittedProposals = proposalsForStrategy.filter((p) => p.status === "submitted");
+
+  const openWorkflow = useCallback((initial: ProposalWorkflowOpen) => {
+    setWorkflowInitial(initial);
+    setWorkflowOpen(true);
+  }, []);
+
+  const handleProposalConfirm = useCallback(
+    (proposal: SessionProposal) => {
+      setSessionProposals((prev) => ({
+        ...prev,
+        [strategyId]: [...(prev[strategyId] ?? []), proposal],
+      }));
+      setActiveTab("proposed");
+    },
+    [strategyId],
+  );
+
+  const removeProposal = useCallback(
+    (id: string) => {
+      setSessionProposals((prev) => ({
+        ...prev,
+        [strategyId]: (prev[strategyId] ?? []).filter((p) => p.id !== id),
+      }));
+    },
+    [strategyId],
+  );
 
   const strategies = listQ.data?.strategies ?? [];
   const payload = labQ.data;
@@ -128,6 +186,18 @@ export function ResearchLabPage() {
     const base = payload?.tickers ?? [];
     return [...base, ...extraTickers.filter((t) => !base.includes(t))];
   }, [payload?.tickers, extraTickers]);
+
+  const currentHoldings = payload?.current;
+  const sessionProjected = useMemo(() => {
+    if (!currentHoldings || proposalsForStrategy.length === 0) return null;
+    const secMap = securitiesMapFromEquities(equitiesQ.data?.securities ?? []);
+    return projectHoldingsFromProposals(
+      currentHoldings.holdings,
+      proposalsForStrategy,
+      currentHoldings.totals.basketMin,
+      secMap,
+    );
+  }, [currentHoldings, proposalsForStrategy, equitiesQ.data?.securities]);
 
   if (listQ.isLoading) {
     return (
@@ -158,7 +228,18 @@ export function ResearchLabPage() {
 
   const meta = payload?.strategy;
   const current = payload?.current;
-  const proposed = payload?.proposed;
+  const dbProposed = payload?.proposed;
+
+  const proposed =
+    sessionProjected != null
+      ? {
+          holdings: sessionProjected.holdings,
+          totals: sessionProjected.totals,
+          sectors: sessionProjected.sectors,
+        }
+      : dbProposed;
+
+  const hasProposedView = Boolean(proposed);
 
   return (
     <ResearchLabCanvas>
@@ -286,7 +367,7 @@ export function ResearchLabPage() {
         <>
           <CashInvestedBar totals={current.totals} />
 
-          <Tabs defaultValue="before" className="space-y-4">
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "before" | "proposed")} className="space-y-4">
             <TabsList className="glass-inset h-auto gap-1 p-1">
               <TabsTrigger
                 value="before"
@@ -297,12 +378,14 @@ export function ResearchLabPage() {
               <TabsTrigger
                 value="proposed"
                 className="rounded-lg px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground disabled:opacity-40"
-                disabled={!proposed}
+                disabled={!hasProposedView}
               >
                 Proposed
-                {proposed && (
+                {hasProposedView && (
                   <span className="ml-2 rounded-full bg-warning/20 px-2 py-0.5 text-xs text-warning">
-                    {proposed.holdings.filter((h) => h.pending).length}
+                    {proposalsForStrategy.length > 0
+                      ? proposalsForStrategy.length
+                      : proposed?.holdings.filter((h) => h.pending).length}
                   </span>
                 )}
               </TabsTrigger>
@@ -316,7 +399,12 @@ export function ResearchLabPage() {
                 dataSource={panelSource}
                 noPadding
                 right={
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <ProposalActionBar
+                      onAdd={() => openWorkflow({ action: "add" })}
+                      onRemove={() => openWorkflow({ action: "remove" })}
+                      proposalCount={proposalsForStrategy.length}
+                    />
                     <GlassBadge>{meta?.benchmark}</GlassBadge>
                     {payload?.iressOverlay ? (
                       <GlassBadge tone="success">{payload.iressOverlay} IRESS</GlassBadge>
@@ -365,11 +453,25 @@ export function ResearchLabPage() {
             <TabsContent value="proposed" className="mt-0 space-y-4">
               {proposed ? (
                 <>
+                  {proposalsForStrategy.length > 0 && (
+                    <GlassSection
+                      title="Session proposals"
+                      subtitle="Strategist workflow · not yet persisted"
+                      endpoint="research_workflow"
+                      dataSource="code-gap"
+                    >
+                      <SessionProposalsList proposals={proposalsForStrategy} onRemove={removeProposal} />
+                    </GlassSection>
+                  )}
                   <GlassSection
                     title="Proposed holdings"
-                    subtitle="Pending flags from strategies_c"
-                    endpoint="strategies_c"
-                    dataSource={panelSource}
+                    subtitle={
+                      proposalsForStrategy.length > 0
+                        ? "Projected from session proposals + live marks"
+                        : "Pending flags from strategies_c"
+                    }
+                    endpoint={proposalsForStrategy.length > 0 ? "session" : "strategies_c"}
+                    dataSource={proposalsForStrategy.length > 0 ? "code-gap" : panelSource}
                     noPadding
                   >
                     <div className="grid grid-cols-1 gap-6 p-5 xl:grid-cols-12">
@@ -418,11 +520,18 @@ export function ResearchLabPage() {
                 </>
               ) : (
                 <GlassSection title="Proposed changes" dataSource="code-gap">
-                  <EmptyDataState
-                    message="No pending changes on this strategy."
-                    hint="Mark a holding with pending: true in strategies_c, or use Compare below to research candidates."
-                    badgeLabel="unconfigured"
-                  />
+                  <div className="space-y-4">
+                    <ProposalActionBar
+                      onAdd={() => openWorkflow({ action: "add" })}
+                      onRemove={() => openWorkflow({ action: "remove" })}
+                      proposalCount={0}
+                    />
+                    <EmptyDataState
+                      message="No pending changes on this strategy."
+                      hint="Use Add stock or Remove stock to propose a change with investment thesis and impact preview."
+                      badgeLabel="unconfigured"
+                    />
+                  </div>
                 </GlassSection>
               )}
             </TabsContent>
@@ -526,11 +635,27 @@ export function ResearchLabPage() {
               dataSource="code-gap"
               right={
                 <GlassBadge>
-                  <Scale className="h-3 w-3" />0 pending
+                  <Scale className="h-3 w-3" />
+                  {submittedProposals.length} pending
                 </GlassBadge>
               }
             >
-              {role === "head" ? (
+              {submittedProposals.length > 0 ? (
+                <div className="space-y-3">
+                  {role === "head" ? (
+                    <p className="text-xs text-muted-foreground">
+                      Approve or decline once research_workflow BFF is connected. Session proposals shown
+                      below.
+                    </p>
+                  ) : (
+                    <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <ClipboardCheck className="h-4 w-4 text-primary" />
+                      Submitted — awaiting Head of Investments review.
+                    </p>
+                  )}
+                  <SessionProposalsList proposals={submittedProposals} onRemove={removeProposal} compact />
+                </div>
+              ) : role === "head" ? (
                 <EmptyDataState
                   message="No pending requests."
                   hint="Committee workflow tables not yet connected — strategist proposals will route here."
@@ -540,11 +665,11 @@ export function ResearchLabPage() {
                 <div className="space-y-2">
                   <p className="flex items-center gap-2 text-xs text-muted-foreground">
                     <ClipboardCheck className="h-4 w-4 text-primary" />
-                    Switch role to Head of Investments to approve.
+                    Propose changes above; they appear here after submission.
                   </p>
                   <EmptyDataState
                     message="No pending requests."
-                    hint="Committee workflow not yet wired to Supabase."
+                    hint="Submit an add/remove proposal to queue committee review."
                     badgeLabel="code-gap"
                   />
                 </div>
@@ -558,14 +683,48 @@ export function ResearchLabPage() {
               dataSource="code-gap"
               right={<History className="h-4 w-4 text-muted-foreground" />}
             >
-              <EmptyDataState
-                message="No activity yet."
-                hint="Submitted requests, approvals and declines will appear when the workflow BFF is live."
-                badgeLabel="code-gap"
-              />
+              {submittedProposals.length > 0 ? (
+                <ul className="space-y-2 text-sm">
+                  {submittedProposals.map((p) => (
+                    <li key={p.id} className="glass-inset flex flex-wrap gap-2 px-3 py-2">
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {new Date(p.createdAt).toLocaleString("en-ZA", {
+                          day: "2-digit",
+                          month: "short",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                      <span className="font-medium">
+                        {p.action === "add" ? "Proposed add" : "Proposed remove"} {p.ticker}
+                      </span>
+                      <span className="text-caption">({p.shares} shares)</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <EmptyDataState
+                  message="No activity yet."
+                  hint="Submitted requests, approvals and declines will appear when the workflow BFF is live."
+                  badgeLabel="code-gap"
+                />
+              )}
             </GlassSection>
           </div>
         </>
+      )}
+
+      {current && (
+        <ProposalWorkflowDialog
+          open={workflowOpen}
+          onOpenChange={setWorkflowOpen}
+          initial={workflowInitial}
+          currentHoldings={current.holdings}
+          basketMin={current.totals.basketMin}
+          equities={equitiesQ.data?.securities ?? []}
+          existingProposals={proposalsForStrategy}
+          onConfirm={handleProposalConfirm}
+        />
       )}
 
       <footer className="text-center text-caption">

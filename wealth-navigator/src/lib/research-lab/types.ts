@@ -81,3 +81,20 @@ export interface ResearchLabListItem {
   minInvestment: number;
   status: string;
 }
+
+export type ProposalAction = "add" | "remove";
+export type ProposalStatus = "draft" | "submitted";
+
+/** Session-scoped strategist proposal — persisted to Supabase in a later phase. */
+export interface SessionProposal {
+  id: string;
+  action: ProposalAction;
+  ticker: string;
+  name: string;
+  shares: number;
+  thesis: string;
+  /** Required for removals — what would trigger the sale. */
+  saleTrigger?: string;
+  status: ProposalStatus;
+  createdAt: string;
+}
