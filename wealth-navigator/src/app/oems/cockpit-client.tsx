@@ -297,6 +297,21 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     refetchInterval: 300_000,
     ...queryOpts("reference"),
   });
+  // Official SARB rates + macro (repo / prime / ZARONIA / Sabor / CPI / PPI).
+  // IRESS V4 on DFM@MINT has no rates or macro feed; SARB's free Web API does.
+  type SaRate = { label: string; value: number | null; asOf: string | null } | null;
+  const saRatesQ = useQuery<{ source: string; sourceLabel?: string; asOf: string | null; rates: Record<string, SaRate> }>({
+    queryKey: ["bff-sa-rates"],
+    queryFn: async () => {
+      const r = await fetch("/api/sa-rates", { cache: "no-store" });
+      if (!r.ok) throw new Error(`sa-rates ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 3_600_000,
+    ...queryOpts("reference"),
+  });
+  const saRates = saRatesQ.data?.rates;
 
   // Tier 2 BFFs — DB-first when realDataOnly. Falls back to seed in
   // mock/dev (realDataOnly=false). The BFF returns `source` so the panel
@@ -527,10 +542,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             */}
             <KpiTile
               icon={<Banknote className="h-3.5 w-3.5" />}
-              label="JIBAR 3M"
-              live={{ sym: "JIBAR_3M", fallback: 0, decimals: 3, suffix: "%" }}
-              value=""
-              sub={<JibarOrUsdzarSub sym="JIBAR_3M" primaryWorker={workerQ.data?.workers?.[0]} />}
+              label="ZARONIA"
+              value={saRates?.zaronia?.value != null ? `${saRates.zaronia.value.toFixed(3)}%` : "—"}
+              sub={
+                saRates?.zaronia?.value != null ? (
+                  <span>overnight · SARB{saRates.zaronia.asOf ? ` · ${saRates.zaronia.asOf.slice(0, 10)}` : ""}</span>
+                ) : saRatesQ.isLoading ? (
+                  "Loading SARB…"
+                ) : (
+                  "SARB feed unavailable"
+                )
+              }
             />
             <KpiTile
               icon={<TrendingUp className="h-3.5 w-3.5" />}
@@ -1139,8 +1161,36 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         )}
 
         {realDataOnly ? (
-          <Panel title="Macro Pulse" endpoint="External vendor required" className="col-span-12 lg:col-span-4 h-[340px]">
-            <EmptyDataState message="Macro data feed not configured." />
+          <Panel
+            title="Macro Pulse"
+            endpoint="GET /api/sa-rates"
+            dataSource={saRatesQ.data?.source === "sarb" ? "supabase" : "unconfigured"}
+            className="col-span-12 lg:col-span-4 h-[340px]"
+            density="scroll"
+            right={<span className="font-mono text-[9.5px] text-muted-foreground">{saRatesQ.data?.sourceLabel ?? "SARB"}</span>}
+          >
+            {saRatesQ.isLoading ? (
+              <PanelSkeleton rows={4} />
+            ) : saRatesQ.data?.source !== "sarb" || !saRates ? (
+              <EmptyDataState message="SARB feed unavailable." hint="Official SA rates/macro come from the SARB public Web API (resbank.co.za)." />
+            ) : (
+              <div className="grid grid-cols-2 gap-1.5">
+                {([
+                  ["Repo", saRates.repo],
+                  ["Prime", saRates.prime],
+                  ["CPI y/y", saRates.cpi],
+                  ["PPI y/y", saRates.ppi],
+                  ["ZARONIA", saRates.zaronia],
+                  ["Sabor", saRates.sabor],
+                ] as const).map(([k, r]) => (
+                  <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
+                    <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
+                    <p className="mt-0.5 font-mono text-sm font-semibold">{r?.value != null ? `${r.value.toFixed(2)}%` : "—"}</p>
+                    {r?.asOf && <p className="text-[8.5px] text-muted-foreground/70">{r.asOf.slice(0, 10)}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
           </Panel>
         ) : macroQ.isLoading ? (
           <PanelSkeleton rows={4} height="h-[340px]" className="col-span-12 lg:col-span-4" />
