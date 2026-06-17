@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ArrowDownRight,
   ChevronDown,
   ClipboardCheck,
   ExternalLink,
@@ -33,10 +32,15 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { HoldingsTable } from "@/components/research-lab/holdings-table";
 import { FundamentalsMatrix } from "@/components/research-lab/fundamentals-matrix";
-import { SectorExposureChart } from "@/components/research-lab/sector-exposure-chart";
+import { SectorExposureChart, SectorCompareCharts } from "@/components/research-lab/sector-exposure-chart";
+import { AllocationDonut } from "@/components/research-lab/allocation-donut";
+import { HoldingsWeightChart } from "@/components/research-lab/holdings-weight-chart";
+import { CashInvestedBar } from "@/components/research-lab/cash-invested-bar";
+import { FundamentalsChart, VerdictStrip } from "@/components/research-lab/fundamentals-chart";
+import { DeltaComparisonChart } from "@/components/research-lab/delta-comparison-chart";
 import type { DataSourceKind } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
-import { formatZARExact, formatPctAbs } from "@/lib/format";
+import { formatZARExact } from "@/lib/format";
 import { queryOpts } from "@/lib/store/query-provider";
 import type {
   ResearchLabListItem,
@@ -45,33 +49,6 @@ import type {
 } from "@/lib/research-lab/types";
 
 const YIELD_BASKET_FALLBACK_ID = "640dcffb-dc23-4099-9772-0f72ed9688de";
-
-function DeltaKpi({
-  label,
-  current,
-  proposed,
-}: {
-  label: string;
-  current: number;
-  proposed: number;
-}) {
-  const delta = proposed - current;
-  const pct = current !== 0 ? (delta / current) * 100 : 0;
-  const negative = delta < 0;
-
-  return (
-    <div className="rounded-md border border-border bg-card p-3">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
-      <p className="mt-1 font-mono text-base font-semibold tabular-nums">{formatZARExact(proposed)}</p>
-      <p className="mt-1 font-mono text-[10px] text-muted-foreground">from {formatZARExact(current)}</p>
-      <p className={cn("mt-0.5 flex items-center gap-1 font-mono text-[10px]", negative ? "text-down" : "text-up")}>
-        <ArrowDownRight className={cn("h-3 w-3", !negative && "rotate-180")} />
-        {formatZARExact(Math.abs(delta))} ({negative ? "−" : "+"}
-        {formatPctAbs(pct)})
-      </p>
-    </div>
-  );
-}
 
 function resolvePanelSource(payload: ResearchLabPayload | undefined): DataSourceKind {
   if (!payload || payload.source !== "retail-supabase") return "unavailable";
@@ -309,6 +286,8 @@ export function ResearchLabPage() {
 
       {current && (
         <>
+          <CashInvestedBar totals={current.totals} />
+
           <Tabs defaultValue="before" className="space-y-3">
             <TabsList className="h-8 bg-muted/40">
               <TabsTrigger value="before" className="font-mono text-[10px] uppercase">
@@ -351,19 +330,27 @@ export function ResearchLabPage() {
                     badgeLabel="unconfigured"
                   />
                 ) : (
-                  <HoldingsTable
-                    rows={current.holdings}
-                    constituentTotal={current.totals.constituent}
-                    cash={current.totals.cash}
-                    cashPct={current.totals.cashPct}
-                    basketMin={current.totals.basketMin}
-                  />
+                  <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+                    <div className="xl:col-span-7">
+                      <HoldingsTable
+                        rows={current.holdings}
+                        constituentTotal={current.totals.constituent}
+                        cash={current.totals.cash}
+                        cashPct={current.totals.cashPct}
+                        basketMin={current.totals.basketMin}
+                      />
+                    </div>
+                    <div className="space-y-4 border-t border-border/60 pt-4 xl:col-span-5 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
+                      <AllocationDonut holdings={current.holdings} totals={current.totals} />
+                      <HoldingsWeightChart holdings={current.holdings} />
+                    </div>
+                  </div>
                 )}
               </Panel>
 
               <Panel title="Sector exposure" dataSource={panelSource} density="comfortable">
                 {current.sectors.length > 0 ? (
-                  <SectorExposureChart title="Current allocation" data={current.sectors} />
+                  <SectorExposureChart title="Current allocation" data={current.sectors} variant="both" />
                 ) : (
                   <EmptyDataState message="No sector weights to display." badgeLabel="unconfigured" />
                 )}
@@ -380,38 +367,45 @@ export function ResearchLabPage() {
                     dataSource={panelSource}
                     density="dense"
                   >
-                    <HoldingsTable
-                      rows={proposed.holdings}
-                      constituentTotal={proposed.totals.constituent}
-                      cash={proposed.totals.cash}
-                      cashPct={proposed.totals.cashPct}
-                      basketMin={proposed.totals.basketMin}
-                      showRating
-                      cashLabel={`Cash reserve (${proposed.totals.cashPct.toFixed(1)}%)`}
-                    />
+                    <div className="grid grid-cols-1 gap-4 xl:grid-cols-12">
+                      <div className="xl:col-span-7">
+                        <HoldingsTable
+                          rows={proposed.holdings}
+                          constituentTotal={proposed.totals.constituent}
+                          cash={proposed.totals.cash}
+                          cashPct={proposed.totals.cashPct}
+                          basketMin={proposed.totals.basketMin}
+                          showRating
+                          cashLabel={`Cash reserve (${proposed.totals.cashPct.toFixed(1)}%)`}
+                        />
+                      </div>
+                      <div className="space-y-4 border-t border-border/60 pt-4 xl:col-span-5 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
+                        <AllocationDonut
+                          holdings={proposed.holdings}
+                          totals={proposed.totals}
+                          title="Proposed allocation"
+                        />
+                        <HoldingsWeightChart holdings={proposed.holdings} title="Proposed weights" />
+                      </div>
+                    </div>
                   </Panel>
 
                   <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
-                    <DeltaKpi
+                    <DeltaComparisonChart
                       label="Constituent value"
                       current={current.totals.constituent}
                       proposed={proposed.totals.constituent}
                     />
-                    <DeltaKpi
+                    <DeltaComparisonChart
                       label="Basket minimum price"
                       current={current.totals.basketMin}
                       proposed={proposed.totals.basketMin}
                     />
                   </div>
 
-                  <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
-                    <Panel title="Sector exposure — Current" dataSource={panelSource}>
-                      <SectorExposureChart title="Before" data={current.sectors} />
-                    </Panel>
-                    <Panel title="Sector exposure — Proposed" dataSource={panelSource}>
-                      <SectorExposureChart title="After pending names" data={proposed.sectors} />
-                    </Panel>
-                  </div>
+                  <Panel title="Sector shift" dataSource={panelSource} density="comfortable">
+                    <SectorCompareCharts before={current.sectors} after={proposed.sectors} />
+                  </Panel>
                 </>
               ) : (
                 <Panel title="Proposed changes" dataSource="code-gap">
@@ -495,7 +489,11 @@ export function ResearchLabPage() {
               </div>
             }
           >
-            <FundamentalsMatrix metrics={payload?.fundamentals ?? []} tickers={matrixTickers} />
+            <div className="space-y-4">
+              <VerdictStrip tickers={matrixTickers} metrics={payload?.fundamentals ?? []} />
+              <FundamentalsChart tickers={matrixTickers} metrics={payload?.fundamentals ?? []} />
+              <FundamentalsMatrix metrics={payload?.fundamentals ?? []} tickers={matrixTickers} />
+            </div>
             {payload?.gaps.map((g) => (
               <p key={g} className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
                 {g}
