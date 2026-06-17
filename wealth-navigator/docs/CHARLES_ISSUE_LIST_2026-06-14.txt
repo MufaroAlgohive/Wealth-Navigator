@@ -1,0 +1,76 @@
+══════════════════════════════════════════════════════════════════════════════
+ MINT OEMS — IRESS V4 issue list        Account: DFM@Mint · live CT · 2026-06-14
+ Live, re-runnable evidence:
+   GET https://iress-worker-production.up.railway.app/debug/iress-methods
+══════════════════════════════════════════════════════════════════════════════
+
+ METHOD / AREA                 STATUS      DETAIL
+ ─────────────────────────────────────────────────────────────────────────────
+ IRESSSessionStart             ✅ OK       Iress session established
+ PricingQuoteGet               ✅ OK       NPN returns — JSE equities work
+ ─────────────────────────────────────────────────────────────────────────────
+ ServiceSessionStart(IOSPlus)  ❌ FAULT    HTTP 500 soap:Receiver — entitled? correct Server name?
+ ServiceSessionStart(IPS)      ❌ FAULT    HTTP 500 soap:Receiver — entitled? correct Server name?
+ ServiceSessionStart(FIXPlus)  ❌ FAULT    HTTP 500 soap:Receiver — entitled? correct Server name?
+ TimeSeriesGet2                ❌ FAULT    "Invalid Parameter Value: 5 as Frequency"
+                                           — every Frequency int AND <Interval>Daily</Interval> rejected
+ PricingQuoteExGet (L2)        ⚠️ N/A      not exposed in V4 client — is L2 depth/time&sales available?
+ ─────────────────────────────────────────────────────────────────────────────
+ OrderPadGetByAccount          🔒 BLOCKED  needs IOS+ session   (→ fixed by #1)
+ OrderCreate3 / Amend2 / Delete🔒 BLOCKED  needs IOS+ session   (→ fixed by #1)
+ BookingGetByOrganisation2     🔒 BLOCKED  needs IOS+ session   (→ fixed by #1)
+ IPSAccountGetAll1             🔒 BLOCKED  needs IPS session    (→ fixed by #1)
+ IPSPositionGetAll1            🔒 BLOCKED  needs IPS session    (→ fixed by #1)
+ IPSTransactionGetByAccount5   🔒 BLOCKED  needs IPS session    (→ fixed by #1)
+ TargetIDGet / StatusGet       🔒 BLOCKED  needs FIX+ session   (→ fixed by #1)
+
+══════════════════════════════════════════════════════════════════════════════
+ WHAT WE NEED FROM IRESS  (priority order — #1 & #2 unlock most of the desk)
+══════════════════════════════════════════════════════════════════════════════
+
+ 1. SERVICE SESSIONS (IOS+, IPS, FIX+)
+    All three ServiceSessionStart calls return HTTP 500 / soap:Receiver.
+    We pass  Server = IOSPLUSAPI / IPSAPI / FIXPLUSAPI.
+    Please confirm:
+      (a) Are IOSPlus, IPS and FIXPlus entitled on the DFM@Mint account?
+      (b) What are the correct `Server` identifiers on this CT instance?
+          (a wrong Server name alone would explain the 500.)
+    UNLOCKS → orders, blotter, portfolio (AUM / P&L / positions), bookings, FIX+.
+
+ 2. TimeSeriesGet2
+    Every request rejected. We've tried all Frequency integers AND the documented
+    <Interval>Daily</Interval> string — same fault each time — so the live CT WSDL
+    appears to differ from the published V4 docs.
+    Please confirm:
+      (a) Is TimeSeriesGet2 entitled on DFM@Mint?
+      (b) The EXACT request shape the CT build expects, plus ONE working example
+          (daily J203): is the period selector `Frequency` (long) or `Interval`
+          (string), and what are the valid values?
+    UNLOCKS → ZAR yield curves, ALSI / J203 index, sector indices,
+              money-market (JIBAR), macro time-series.
+
+ 3. TRADING ACCOUNT CODE(S)
+    Confirm the production account code(s) for OrderPadGetByAccount / IPS calls
+    (we're on a placeholder).
+
+ 4. PRICING COVERAGE
+    Confirm PricingQuoteGet covers the full JSE board + the ETFs our portfolios
+    hold (Satrix / Sygnia / 1nvest — e.g. STX40, STXWDM, ETFGLD, SYGEMF).
+    Flag any that need a separate subscription.
+
+ 5. L2 DEPTH / TIME & SALES
+    Is full order-book depth (L2) and trade-by-trade (time & sales) available in
+    V4 — via PricingQuoteExGet or another method? If not exposed, we'll plan a
+    separate JSE depth feed. (We just need the confirmation + WSDL shape.)
+
+──────────────────────────────────────────────────────────────────────────────
+ NOT IRESS — vendor track (listed only so it's clear it's not on your side)
+──────────────────────────────────────────────────────────────────────────────
+   SENS regulatory tape   →  JSE SENS Web Feed subscription
+   Macro indicators       →  SARB / StatsSA provider (or TimeSeriesGet2 if entitled)
+
+══════════════════════════════════════════════════════════════════════════════
+ Everything above is proven by a live diagnostic. After you change anything,
+ re-run  GET  /debug/iress-methods  — the matrix updates in real time and
+ confirms the fix with zero ambiguity. Happy to hop on a call.
+══════════════════════════════════════════════════════════════════════════════

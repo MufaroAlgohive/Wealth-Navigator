@@ -51,9 +51,10 @@ const NAV: { title: string; items: NavItem[] }[] = [
   {
     title: "Intelligence",
     items: [
-      { to: "/oems/macro",    label: "Macro" },
-      { to: "/oems/news",     label: "News & SENS" },
-      { to: "/oems/security", label: "Security" },
+      { to: "/oems/macro",         label: "Macro" },
+      { to: "/oems/news",          label: "News & SENS" },
+      { to: "/oems/research-lab",  label: "Research Lab" },
+      { to: "/oems/security",      label: "Security" },
     ],
   },
   {

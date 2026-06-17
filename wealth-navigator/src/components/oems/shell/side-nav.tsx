@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, ClipboardList, Layers, LineChart, Banknote, TrendingUp,
-  Globe2, Newspaper, Search, Cable, ChevronsLeft, ChevronsRight, Activity,
+  Globe2, Newspaper, Search, Cable, ChevronsLeft, ChevronsRight, Activity, FlaskConical,
 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -55,6 +55,7 @@ const NAV: NavSection[] = [
     items: [
       { to: "/oems/macro",          label: "Macro",        icon: Globe2 },
       { to: "/oems/news",           label: "News & SENS",  icon: Newspaper, badge: "4" },
+      { to: "/oems/research-lab",   label: "Research Lab", icon: FlaskConical },
     ],
   },
   {
