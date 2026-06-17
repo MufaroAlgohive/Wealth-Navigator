@@ -151,7 +151,10 @@ function SecurityPageContent() {
             density="scroll"
           >
             {realDataOnly ? (
-              <EmptyDataState message="Depth L2 feed not configured." />
+              <EmptyDataState
+                title="No L2 order book"
+                message="IRESS V4 on this account returns top-of-book only (PricingQuoteExGet = best bid/ask + order counts) — not a multi-level depth ladder. Best Bid/Ask is shown in Key Statistics below."
+              />
             ) : (
               <DepthLadder mid={seedLastFor(activeSym)} tick={seedLastFor(activeSym) > 1000 ? 0.5 : 0.05} levels={8} />
             )}
