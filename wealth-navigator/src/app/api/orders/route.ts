@@ -42,6 +42,8 @@ function mapAuditRow(row: AuditRow): Order {
   const payload = row.payload ?? {};
   const result = row.result_payload ?? {};
   const limit = row.price_cents != null ? Number(row.price_cents) / 100 : null;
+  // Arrival reference (used as the "Last" display fallback). Distinct from the
+  // execution fields below, which must stay null when there's no real fill.
   const arrivalMid = typeof result.arrivalMid === "number" ? result.arrivalMid : limit ?? 0;
   const filled = typeof payload.filled === "number" ? payload.filled : 0;
   const tsRaw = payload.ts;
@@ -61,13 +63,13 @@ function mapAuditRow(row: AuditRow): Order {
     filled,
     limit,
     stop: null,
-    avgPx: typeof payload.avgPx === "number" ? payload.avgPx : arrivalMid,
-    vwap: typeof payload.vwap === "number" ? payload.vwap : arrivalMid,
+    avgPx: typeof payload.avgPx === "number" ? payload.avgPx : null,
+    vwap: typeof payload.vwap === "number" ? payload.vwap : null,
     trader: typeof payload.trader === "string" ? payload.trader : "—",
     ts,
     state: STATUS_TO_STATE[row.status] ?? "WORKING",
     rejectReason: typeof result.rejectReason === "string" ? result.rejectReason : undefined,
-    slippageBps: typeof result.slippageBps === "number" ? result.slippageBps : 0,
+    slippageBps: typeof result.slippageBps === "number" ? result.slippageBps : null,
     arrivalMid,
     orderTag: typeof payload.orderTag === "string" ? payload.orderTag : row.order_id,
   };

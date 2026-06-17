@@ -1337,9 +1337,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     <td className="px-2.5 py-1.5 text-right tabular-nums">
                       <NumberCell sym={o.symbol} fallback={o.arrivalMid} decimals={2} />
                     </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{o.vwap.toFixed(2)}</td>
-                    <td className={cn("px-2.5 py-1.5 text-right tabular-nums", o.slippageBps >= 0 ? "text-up" : "text-down")}>
-                      {o.slippageBps.toFixed(1)}bp
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{o.vwap != null ? o.vwap.toFixed(2) : "—"}</td>
+                    <td
+                      className={cn(
+                        "px-2.5 py-1.5 text-right tabular-nums",
+                        o.slippageBps == null ? "text-muted-foreground" : o.slippageBps >= 0 ? "text-up" : "text-down",
+                      )}
+                    >
+                      {o.slippageBps != null ? `${o.slippageBps.toFixed(1)}bp` : "—"}
                     </td>
                     <td className="px-2.5 py-1.5">
                       <OrderStatePill state={o.state} />

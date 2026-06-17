@@ -216,9 +216,14 @@ function OrderRow({ order }: { order: Order }) {
       <td className="px-2.5 py-1.5 text-right tabular-nums">
         <NumberCell sym={order.symbol} fallback={order.arrivalMid} decimals={2} />
       </td>
-      <td className="px-2.5 py-1.5 text-right tabular-nums">{order.vwap.toFixed(2)}</td>
-      <td className={cn("px-2.5 py-1.5 text-right tabular-nums", order.slippageBps >= 0 ? "text-up" : "text-down")}>
-        {order.slippageBps.toFixed(1)}
+      <td className="px-2.5 py-1.5 text-right tabular-nums">{order.vwap != null ? order.vwap.toFixed(2) : "—"}</td>
+      <td
+        className={cn(
+          "px-2.5 py-1.5 text-right tabular-nums",
+          order.slippageBps == null ? "text-muted-foreground" : order.slippageBps >= 0 ? "text-up" : "text-down",
+        )}
+      >
+        {order.slippageBps != null ? order.slippageBps.toFixed(1) : "—"}
       </td>
       <td className="px-2.5 py-1.5 text-muted-foreground">{order.destination}</td>
       <td className="px-2.5 py-1.5 text-muted-foreground">{order.tif}</td>

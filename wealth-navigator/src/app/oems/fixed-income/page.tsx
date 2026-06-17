@@ -20,18 +20,24 @@ interface BondRow {
   code: string;
   name: string;
   issuer: string;
-  coupon: number;
+  coupon: number | null;
   maturity: string;
-  ytm: number;
-  clean: number;
-  dirty: number;
-  modDur: number;
-  dv01: number;
-  convexity: number;
-  spread: number;
+  // null = not priced by the worker yet → renders "—" (never a fabricated 0).
+  ytm: number | null;
+  clean: number | null;
+  dirty: number | null;
+  modDur: number | null;
+  dv01: number | null;
+  convexity: number | null;
+  spread: number | null;
   rating: string;
   liquidity: string;
   asOf: string;
+}
+
+/** Format a nullable metric, showing "—" when the value isn't available. */
+function fx(v: number | null | undefined, dp = 2, suffix = ""): string {
+  return v != null ? `${v.toFixed(dp)}${suffix}` : "—";
 }
 
 interface BondsResponse {
@@ -78,10 +84,14 @@ export default function FixedIncomePage() {
   // bond (no schema for that today) — we keep the panel as a
   // *sensitivity* view of DV01 + convexity only.
   const sensitivity = useMemo(() => {
-    if (!bond) return [];
+    // Needs real DV01 + convexity; if the bond isn't priced yet, return empty
+    // so the panel shows its empty state rather than a fabricated curve.
+    if (!bond || bond.dv01 == null || bond.convexity == null) return [];
+    const dv01 = bond.dv01;
+    const convexity = bond.convexity;
     return [-100, -50, -25, 0, 25, 50, 100].map((bp) => ({
       bp: `${bp >= 0 ? "+" : ""}${bp}`,
-      pnl: -bond.dv01 * bp - 0.5 * bond.convexity * Math.pow(bp / 100, 2) * 10000,
+      pnl: -dv01 * bp - 0.5 * convexity * Math.pow(bp / 100, 2) * 10000,
     }));
   }, [bond]);
 
@@ -149,12 +159,12 @@ export default function FixedIncomePage() {
                   >
                     <td className="px-2.5 py-1.5 font-semibold">{b.name}</td>
                     <td className="px-2.5 py-1.5 text-muted-foreground">{b.issuer}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{b.ytm.toFixed(2)}%</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{b.clean.toFixed(2)}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{b.modDur.toFixed(2)}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{b.dv01.toFixed(2)}</td>
-                    <td className={cn("px-2.5 py-1.5 text-right tabular-nums", b.spread > 0 && "text-warning")}>
-                      {b.spread > 0 ? `+${b.spread}` : "—"}
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fx(b.ytm, 2, "%")}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fx(b.clean, 2)}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fx(b.modDur, 2)}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{fx(b.dv01, 2)}</td>
+                    <td className={cn("px-2.5 py-1.5 text-right tabular-nums", (b.spread ?? 0) > 0 && "text-warning")}>
+                      {b.spread != null && b.spread > 0 ? `+${b.spread}` : "—"}
                     </td>
                     <td className="px-2.5 py-1.5">
                       <Pill
@@ -183,16 +193,16 @@ export default function FixedIncomePage() {
                 <div className="grid grid-cols-3 gap-2 text-xs">
                   {[
                     ["Issuer", bond.issuer],
-                    ["Coupon", `${bond.coupon}%`],
+                    ["Coupon", bond.coupon != null ? `${bond.coupon}%` : "—"],
                     ["Maturity", bond.maturity],
-                    ["YTM", `${bond.ytm.toFixed(3)}%`],
-                    ["Clean", bond.clean.toFixed(3)],
-                    ["Dirty", bond.dirty.toFixed(3)],
-                    ["Mod Dur", bond.modDur.toFixed(2)],
-                    ["DV01", `R${bond.dv01.toFixed(2)}`],
-                    ["Convexity", bond.convexity.toFixed(1)],
+                    ["YTM", fx(bond.ytm, 3, "%")],
+                    ["Clean", fx(bond.clean, 3)],
+                    ["Dirty", fx(bond.dirty, 3)],
+                    ["Mod Dur", fx(bond.modDur, 2)],
+                    ["DV01", bond.dv01 != null ? `R${bond.dv01.toFixed(2)}` : "—"],
+                    ["Convexity", fx(bond.convexity, 1)],
                     ["Rating", bond.rating],
-                    ["Spread", `${bond.spread}bp`],
+                    ["Spread", bond.spread != null ? `${bond.spread}bp` : "—"],
                     ["Liquidity", bond.liquidity],
                   ].map(([l, v]) => (
                     <div key={l} className="rounded-md border border-border/60 bg-surface-2/30 p-1.5">

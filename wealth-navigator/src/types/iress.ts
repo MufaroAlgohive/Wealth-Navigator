@@ -71,13 +71,16 @@ export interface Order {
   filled: number;
   limit: number | null;
   stop: number | null;
-  avgPx: number;
-  vwap: number;
+  // null = no real execution data (e.g. an audit row with no fills). Renders
+  // "—" rather than a fabricated price/slippage. Mock + live-IRESS producers
+  // still set real numbers; only the audit BFF leaves them null when absent.
+  avgPx: number | null;
+  vwap: number | null;
   trader: string;
   ts: number;
   state: OrderState;
   rejectReason?: string;
-  slippageBps: number;
+  slippageBps: number | null;
   arrivalMid: number;
   orderTag: string; // IRESS idempotency key
 }

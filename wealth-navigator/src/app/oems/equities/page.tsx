@@ -132,9 +132,14 @@ export default function EquitiesPage() {
     if (portfolioQ.data?.source !== "supabase") return 0;
     return (portfolioQ.data.positions ?? []).reduce((acc, p) => acc + (Number(p.market_value) || 0), 0);
   }, [portfolioQ.data]);
-  const realEquityPnl = useMemo(() => {
-    if (portfolioQ.data?.source !== "supabase") return 0;
-    return (portfolioQ.data.positions ?? []).reduce((acc, p) => acc + (Number(p.open_pl) || 0), 0);
+  // Open P&L is null when positions aren't marked (CT test data — /api/portfolio
+  // suppresses open_pl). Sum only the marked legs; if none are marked the P&L is
+  // unknown (null → "—"), never a fabricated R0.00.
+  const realEquityPnl = useMemo<{ value: number | null; marked: number }>(() => {
+    if (portfolioQ.data?.source !== "supabase") return { value: null, marked: 0 };
+    const marked = (portfolioQ.data.positions ?? []).filter((p) => p.open_pl != null);
+    if (marked.length === 0) return { value: null, marked: 0 };
+    return { value: marked.reduce((acc, p) => acc + Number(p.open_pl), 0), marked: marked.length };
   }, [portfolioQ.data]);
   const realInvestors = (portfolioQ.data?.accounts ?? []).length;
 
@@ -155,13 +160,17 @@ export default function EquitiesPage() {
               <KpiTile icon={<Layers className="h-3.5 w-3.5" />} label="Equity AUM" value={formatZAR(realEquityAum)} sub={`${(portfolioQ.data.positions ?? []).length} positions`} />
               <KpiTile
                 icon={<Activity className="h-3.5 w-3.5" />}
-                label="Day P&L"
-                value={formatZAR(realEquityPnl)}
-                sub={`MTM on ${(portfolioQ.data.positions ?? []).length} positions`}
-                tone={realEquityPnl >= 0 ? "positive" : "negative"}
+                label="Open P&L"
+                value={realEquityPnl.value != null ? formatZAR(realEquityPnl.value) : "—"}
+                sub={
+                  realEquityPnl.value != null
+                    ? `MTM on ${realEquityPnl.marked} positions`
+                    : "Marks unavailable (CT test data)"
+                }
+                tone={realEquityPnl.value == null ? "default" : realEquityPnl.value >= 0 ? "positive" : "negative"}
               />
               <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Investors" value={realInvestors.toString()} sub={`${(portfolioQ.data.accounts ?? []).length} accounts`} />
-              <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Pre-trade checks" value="LIVE" sub="IRESS halt / borrow / non-tradeable" />
+              <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Pre-trade checks" value="On submit" sub="IRESS halt / borrow / non-tradeable at order time" />
             </>
           ) : (
             <Panel title="Equity KPIs" endpoint="GET /api/portfolio" className="col-span-2 lg:col-span-4">

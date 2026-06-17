@@ -310,10 +310,10 @@ export const mockIressClient: IressClient = {
         Symbol: o.symbol,
         BuySell: o.side,
         Volume: o.filled,
-        Price: o.avgPx,
+        Price: (o.avgPx ?? 0),
         MiscFees: [
-          { Code: "STAMP", Amount: +(o.avgPx * o.filled * 0.0002).toFixed(2), Currency: "ZAR" },
-          { Code: "BROKERAGE", Amount: +(o.avgPx * o.filled * 0.005).toFixed(2), Currency: "ZAR" },
+          { Code: "STAMP", Amount: +((o.avgPx ?? 0) * o.filled * 0.0002).toFixed(2), Currency: "ZAR" },
+          { Code: "BROKERAGE", Amount: +((o.avgPx ?? 0) * o.filled * 0.005).toFixed(2), Currency: "ZAR" },
         ],
       }));
     return ok(rows);
@@ -331,8 +331,8 @@ export const mockIressClient: IressClient = {
         Type: o.side === "BUY" ? "BUY" : "SELL",
         Symbol: o.symbol,
         Quantity: o.filled,
-        Price: o.avgPx,
-        Amount: +(o.avgPx * o.filled * (o.side === "BUY" ? 1 : -1)).toFixed(2),
+        Price: (o.avgPx ?? 0),
+        Amount: +((o.avgPx ?? 0) * o.filled * (o.side === "BUY" ? 1 : -1)).toFixed(2),
         Currency: "ZAR",
       }));
     return ok(rows);

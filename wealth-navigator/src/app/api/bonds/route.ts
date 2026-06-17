@@ -40,8 +40,21 @@ function n(v: number | string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/** Like n(), but preserves a genuine null/non-finite as null so the UI shows
+ *  "—" instead of a fabricated 0 for un-priced analytics. */
+function nOrNull(v: number | string | null | undefined): number | null {
+  if (v == null) return null;
+  const parsed = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function centsToRands(v: number | string | null | undefined): number {
   return n(v) / 100;
+}
+
+function centsToRandsOrNull(v: number | string | null | undefined): number | null {
+  const r = nOrNull(v);
+  return r == null ? null : r / 100;
 }
 
 function mapRow(r: BondRow) {
@@ -50,15 +63,15 @@ function mapRow(r: BondRow) {
     code: r.bond_code,
     name: r.name,
     issuer: r.issuer,
-    coupon: n(r.coupon_pct),
+    coupon: nOrNull(r.coupon_pct),
     maturity: r.maturity_date ?? "—",
-    ytm: n(r.ytm_pct),
-    clean: n(r.clean_price),
-    dirty: n(r.dirty_price),
-    modDur: n(r.mod_duration),
-    dv01: centsToRands(r.dv01_cents),
-    convexity: n(r.convexity),
-    spread: n(r.spread_bp),
+    ytm: nOrNull(r.ytm_pct),
+    clean: nOrNull(r.clean_price),
+    dirty: nOrNull(r.dirty_price),
+    modDur: nOrNull(r.mod_duration),
+    dv01: centsToRandsOrNull(r.dv01_cents),
+    convexity: nOrNull(r.convexity),
+    spread: nOrNull(r.spread_bp),
     rating: r.rating ?? "—",
     liquidity: r.liquidity ?? "—",
     asOf: r.updated_at,
