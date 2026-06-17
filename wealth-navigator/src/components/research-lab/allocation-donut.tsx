@@ -35,7 +35,7 @@ export function AllocationDonut({ holdings, totals, title = "Basket allocation" 
 
   return (
     <div className="space-y-3">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</p>
+      <p className="text-caption">{title}</p>
       <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start">
         <div className="relative h-[180px] w-[180px] shrink-0">
           <ResponsiveContainer width="100%" height="100%">

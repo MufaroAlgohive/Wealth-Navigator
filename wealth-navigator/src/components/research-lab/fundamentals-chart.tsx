@@ -40,8 +40,8 @@ export function FundamentalsChart({ tickers, metrics }: FundamentalsChartProps) 
   if (!hasData) return null;
 
   return (
-    <div className="space-y-2 border-b border-border/60 pb-4">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+    <div className="space-y-2 border-b border-[hsl(var(--glass-border))] pb-5">
+      <p className="text-caption">
         Valuation &amp; momentum snapshot
       </p>
       <div className="h-[220px] w-full">
@@ -80,24 +80,22 @@ export function VerdictStrip({ tickers, metrics }: VerdictStripProps) {
   const verdictRow = metrics.find((m) => m.id === "verdict");
   if (!verdictRow) return null;
 
-  const tone = (v: string | null) => {
-    if (v === "BUY") return "bg-success/15 text-success border-success/30";
-    if (v === "SELL") return "bg-destructive/15 text-destructive border-destructive/30";
-    if (v === "HOLD") return "bg-warning/15 text-warning border-warning/30";
-    return "bg-muted/30 text-muted-foreground border-border";
-  };
-
   return (
     <div className="flex flex-wrap gap-2">
       {tickers.map((t) => {
         const v = verdictRow.values[t] ?? "—";
+        const cls =
+          v === "BUY"
+            ? "border-success/30 bg-success/10 text-success"
+            : v === "SELL"
+              ? "border-destructive/30 bg-destructive/10 text-destructive"
+              : v === "HOLD"
+                ? "border-warning/30 bg-warning/10 text-warning"
+                : "glass-inset border-0 text-muted-foreground";
         return (
-          <div
-            key={t}
-            className={`flex items-center gap-2 rounded-md border px-2.5 py-1.5 ${tone(v)}`}
-          >
-            <span className="font-mono text-xs font-semibold">{t}</span>
-            <span className="font-mono text-[10px] uppercase tracking-wider">{v}</span>
+          <div key={t} className={`flex items-center gap-2 rounded-xl border px-3 py-2 ${cls}`}>
+            <span className="font-mono text-sm font-semibold">{t}</span>
+            <span className="text-xs font-medium">{v}</span>
           </div>
         );
       })}

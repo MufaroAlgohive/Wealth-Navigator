@@ -36,9 +36,9 @@ export function FundamentalsMatrix({ metrics, tickers }: FundamentalsMatrixProps
   let lastGroup = "";
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-3 text-[10px]">
-        <span className="text-muted-foreground">Verdict scale</span>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-4 text-caption">
+        <span>Signal scale</span>
         <span className="inline-flex items-center gap-1.5">
           <span className="h-2 w-2 rounded-full bg-up" /> Good
         </span>
@@ -49,10 +49,10 @@ export function FundamentalsMatrix({ metrics, tickers }: FundamentalsMatrixProps
           <span className="h-2 w-2 rounded-full bg-down" /> Concern
         </span>
       </div>
-      <div className="overflow-x-auto scrollbar-thin">
+      <div className="glass-inset overflow-x-auto scrollbar-thin">
         <table className="w-full min-w-[640px] font-mono text-[10.5px]">
-          <thead className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-            <tr className="border-b border-border/70">
+          <thead className="text-caption">
+            <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)]">
               <th className="min-w-[200px] px-2.5 py-2 text-left">Metric</th>
               {columns.map((t) => (
                 <th key={t} className="px-2.5 py-2 text-right">
@@ -113,9 +113,8 @@ export function FundamentalsMatrix({ metrics, tickers }: FundamentalsMatrixProps
           </tbody>
         </table>
       </div>
-      <p className="text-[10px] text-muted-foreground">
-        Basket constituents shown by default. Use Add research to compare candidate stocks side-by-side — research
-        columns are session-only and reset when you leave this page.
+      <p className="text-caption">
+        Basket constituents by default. Add research columns to compare candidates — session-only.
       </p>
     </div>
   );

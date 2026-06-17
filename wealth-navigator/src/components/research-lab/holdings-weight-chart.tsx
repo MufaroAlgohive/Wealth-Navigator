@@ -18,7 +18,7 @@ export function HoldingsWeightChart({ holdings, title = "Weight in basket" }: Ho
 
   return (
     <div className="space-y-2">
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</p>
+      <p className="text-caption">{title}</p>
       <div className="w-full" style={{ height: Math.max(120, data.length * 32) }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} layout="vertical" margin={{ left: 0, right: 12, top: 4, bottom: 4 }}>
