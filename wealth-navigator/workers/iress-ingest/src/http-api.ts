@@ -802,6 +802,54 @@ export async function handleRequest(
     return;
   }
 
+  if (req.method === "GET" && path === "/history") {
+    // Daily price history for the Security page chart ranges (5D … All) via
+    // IRESS TimeSeriesGet2. 1D stays on the intraday tick path; this serves the
+    // longer windows. Read-only.
+    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+    if (!isLive) {
+      sendError(res, 503, "iress_mode_not_live", `Cannot fetch history in iressMode=${deps.env.iressMode}`);
+      return;
+    }
+    const sym = (url.searchParams.get("sym") ?? "").trim().toUpperCase().replace(/\.(JO|JSE)$/i, "");
+    if (!sym) {
+      sendError(res, 400, "bad_request", "sym query param required (e.g. ?sym=NPN)");
+      return;
+    }
+    const days = Math.min(3700, Math.max(5, Number(url.searchParams.get("days") ?? "365")));
+    const exchange = (url.searchParams.get("exchange") ?? "JSE").trim() || "JSE";
+    const dataSource = (url.searchParams.get("ds") ?? process.env.IRESS_TS_DATASOURCE ?? "JSED").trim() || "JSED";
+    const from = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    const to = new Date().toISOString().slice(0, 10);
+    const started = Date.now();
+    try {
+      const session = await deps.sessions.getSession();
+      const client = getIressClient("live");
+      const res2 = await client.timeSeriesGet2({
+        Header: { SessionKey: session.iressSessionKey, RequestID: newRequestID(`hist-${sym}`), Timeout: 30 },
+        Code: sym,
+        Exchange: exchange,
+        DataSource: dataSource,
+        From: from,
+        To: to,
+        Interval: "Daily",
+      });
+      send(res, 200, {
+        ok: res2.Header.ErrorNumber === 0,
+        sym,
+        exchange,
+        dataSource,
+        points: res2.DataRows, // [{ t: ms, v: close }]
+        count: res2.DataRows.length,
+        elapsedMs: Date.now() - started,
+      });
+    } catch (err) {
+      if (isIressSessionDeadError(err)) deps.sessions.invalidate();
+      send(res, 200, { ok: false, sym, points: [], error: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
+
   if (req.method === "GET" && path === "/orders/stream") {
     await streamOrders(req, res, deps, getLastQuoteSyncAt, url);
     return;

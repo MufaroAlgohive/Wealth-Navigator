@@ -29,6 +29,7 @@ function SecurityPageContent() {
   const equities = equitiesQ.data ?? [];
   const searchParams = useSearchParams();
   const [sym, setSym] = useState("NPN");
+  const [chartRange, setChartRange] = useState("1D");
 
   // Subscribe to the entire JSE universe on mount so a click on any
   // watchlist row in the panel is instant — no per-symbol BFF round-trip
@@ -108,16 +109,34 @@ function SecurityPageContent() {
           <PanelSkeleton rows={4} height="h-[400px]" className="col-span-12 lg:col-span-6" />
         ) : (
           <Panel
-            title={`${inst?.symbol ?? "—"} · Intraday`}
-            endpoint={realDataOnly ? "GET /api/quotes" : "PricingQuoteGet"}
+            title={`${inst?.symbol ?? "—"} · ${chartRange}`}
+            endpoint={realDataOnly ? (chartRange === "1D" ? "GET /api/intraday" : "GET /api/history") : "PricingQuoteGet"}
             dataSource={quoteSource}
             className="col-span-12 lg:col-span-6 h-[400px]"
-            right={<NumberCell sym={activeSym} fallback={realDataOnly ? 0 : seedLastFor(activeSym)} decimals={2} showChange />}
+            right={
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-0.5">
+                  {(["1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "All"] as const).map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => setChartRange(r)}
+                      className={cn(
+                        "rounded px-1.5 py-0.5 font-mono text-[10px] transition-colors",
+                        chartRange === r ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted/40",
+                      )}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+                <NumberCell sym={activeSym} fallback={realDataOnly ? 0 : seedLastFor(activeSym)} decimals={2} showChange />
+              </div>
+            }
           >
-            {realDataOnly && !hasLiveQuote ? (
-              <EmptyDataState message="No intraday series — quote feed has no ticks for this symbol yet." />
+            {realDataOnly && chartRange === "1D" && !hasLiveQuote ? (
+              <EmptyDataState message="No intraday series — quote feed has no ticks for this symbol yet. Try 1M / 1Y (daily history via IRESS)." />
             ) : (
-              <SecurityChart sym={activeSym} realDataOnly={realDataOnly} />
+              <SecurityChart sym={activeSym} realDataOnly={realDataOnly} range={chartRange} />
             )}
           </Panel>
         )}
@@ -380,45 +399,64 @@ interface L1Snapshot {
   currency: string | null; marketState: string | null; asOf: string;
 }
 
-function SecurityChart({ sym, realDataOnly }: { sym: string; realDataOnly: boolean }) {
-  // In real-data mode the chart pulls from `/api/intraday/[sym]` (DB-first
-  // read of `stock_intraday_c`) so the line series is sourced from the
-  // worker's actual upserts, not the noisy live-tick buffer. Audit #10.
-  const intradayQ = useQuery<{
-    points: Array<{ t: number; v: number }>;
-    prevClose: number | null;
-    source: string;
-  }>({
+function SecurityChart({ sym, realDataOnly, range = "1D" }: { sym: string; realDataOnly: boolean; range?: string }) {
+  const isIntraday = range === "1D";
+  // 1D = intraday ticks (/api/intraday → stock_intraday_c). 5D…All = daily
+  // history (/api/history → worker → IRESS TimeSeriesGet2).
+  const intradayQ = useQuery<{ points: Array<{ t: number; v: number }>; prevClose: number | null; source: string }>({
     queryKey: ["bff-intraday", sym],
     queryFn: async () => {
       const r = await fetch(`/api/intraday/${encodeURIComponent(sym)}`, { cache: "no-store" });
       if (!r.ok) throw new Error(`intraday ${r.status}`);
       return r.json();
     },
-    enabled: realDataOnly,
+    enabled: realDataOnly && isIntraday,
     refetchInterval: 15_000,
     ...queryOpts("live"),
+  });
+  const historyQ = useQuery<{ points: Array<{ t: number; v: number }>; source: string }>({
+    queryKey: ["bff-history", sym, range],
+    queryFn: async () => {
+      const r = await fetch(`/api/history/${encodeURIComponent(sym)}?range=${range}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`history ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly && !isIntraday,
+    ...queryOpts("reference"),
   });
   const fallback = realDataOnly ? 0 : (initialQuotes()[sym]?.last ?? seedLastFor(sym));
   const livePoints = useTickSeries(sym, fallback, 90);
   const points = realDataOnly
-    ? (intradayQ.data?.points ?? []).map((p) => p.v)
+    ? (isIntraday ? intradayQ.data?.points ?? [] : historyQ.data?.points ?? []).map((p) => p.v)
     : livePoints;
-  const prevClose = intradayQ.data?.prevClose ?? null;
+  const prevClose = isIntraday ? intradayQ.data?.prevClose ?? null : null;
+  const loading = realDataOnly && (isIntraday ? intradayQ.isLoading : historyQ.isLoading);
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">Loading {range}…</p>
+      </div>
+    );
+  }
   if (points.length < 2 || (realDataOnly && points.every((p) => p === 0))) {
-    return realDataOnly ? null : null;
+    return realDataOnly ? (
+      <div className="flex h-full items-center justify-center">
+        <p className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground">No {range} data for this symbol.</p>
+      </div>
+    ) : null;
   }
 
   const w = 800;
   const h = 360;
   const min = Math.min(...points);
   const max = Math.max(...points);
-  const range = max - min || 1;
+  const span = max - min || 1;
   const dx = w / (points.length - 1);
   const path = points
     .map((v, i) => {
       const x = i * dx;
-      const y = h - ((v - min) / range) * (h - 24) - 12;
+      const y = h - ((v - min) / span) * (h - 24) - 12;
       return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
@@ -442,8 +480,8 @@ function SecurityChart({ sym, realDataOnly }: { sym: string; realDataOnly: boole
         <line
           x1={0}
           x2={w}
-          y1={h - ((prevClose - min) / range) * (h - 24) - 12}
-          y2={h - ((prevClose - min) / range) * (h - 24) - 12}
+          y1={h - ((prevClose - min) / span) * (h - 24) - 12}
+          y2={h - ((prevClose - min) / span) * (h - 24) - 12}
           stroke="hsl(var(--muted-foreground))"
           strokeDasharray="3 3"
         />
