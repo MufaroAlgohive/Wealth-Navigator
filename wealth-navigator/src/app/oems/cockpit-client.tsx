@@ -366,7 +366,18 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     const totalCap = withData.reduce((a, s) => a + (s.market_cap ?? 0), 0);
     if (totalCap <= 0) return null;
     const capWtd = withData.reduce((a, s) => a + (s.change_percent ?? 0) * (s.market_cap ?? 0), 0) / totalCap;
-    return { changePct: capWtd, count: withData.length };
+    // Heatmap tiles: the biggest JSE names by market cap, shaded by day move
+    // — a real constituent heatmap (finviz-style) computed from the same
+    // securities_c universe, not a synthetic index.
+    const tiles = [...withData]
+      .sort((a, b) => (b.market_cap ?? 0) - (a.market_cap ?? 0))
+      .slice(0, 36)
+      .map((s) => ({
+        symbol: bareSymbol(s.symbol),
+        name: s.name ?? bareSymbol(s.symbol),
+        chg: s.change_percent ?? 0,
+      }));
+    return { changePct: capWtd, count: withData.length, tiles };
   })();
 
   // Top gainers + losers by change_percent, top ~8 combined (4 up / 4 down).
@@ -923,30 +934,55 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
           ) : alsiBffQ.isError || (alsiBffQ.data?.source === "entitlement-required") ? (
             <Panel
-              title="JSE Market · Cap-weighted proxy"
+              title="JSE Market · Heatmap"
               endpoint="GET /api/equities"
               dataSource={marketProxy ? "supabase" : "unconfigured"}
               className="col-span-12 lg:col-span-8 h-[320px]"
               right={
                 marketProxy ? (
-                  <span className={cn("font-mono text-sm font-semibold", marketProxy.changePct >= 0 ? "text-up" : "text-down")}>
-                    {marketProxy.changePct >= 0 ? "+" : ""}
-                    {marketProxy.changePct.toFixed(2)}%
+                  <span className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
+                    <span>cap-weighted</span>
+                    <span className={cn("text-sm font-semibold", marketProxy.changePct >= 0 ? "text-up" : "text-down")}>
+                      {marketProxy.changePct >= 0 ? "+" : ""}
+                      {marketProxy.changePct.toFixed(2)}%
+                    </span>
                   </span>
                 ) : undefined
               }
             >
               {marketProxy ? (
-                <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-                  <p className={cn("font-mono text-4xl font-semibold", marketProxy.changePct >= 0 ? "text-up" : "text-down")}>
-                    {marketProxy.changePct >= 0 ? "+" : ""}
-                    {marketProxy.changePct.toFixed(2)}%
-                  </p>
-                  <p className="text-xs text-muted-foreground">Cap-weighted move across {marketProxy.count} JSE constituents</p>
-                  <p className="max-w-md text-[10px] leading-relaxed text-muted-foreground/70">
-                    Real broad-market proxy computed from the live equity universe — NOT the official J203/ALSI
-                    (IRESS has no index feed on this account; the official index needs the IRESS index DataSource
-                    or a vendor).
+                <div className="flex h-full flex-col gap-1.5">
+                  <div className="grid flex-1 auto-rows-fr grid-cols-4 gap-1 overflow-hidden sm:grid-cols-6 lg:grid-cols-9">
+                    {marketProxy.tiles.map((t) => {
+                      // Shade red→green by day move; intensity saturates at ±4%.
+                      const intensity = Math.min(Math.abs(t.chg) / 4, 1);
+                      const alpha = 0.14 + intensity * 0.6;
+                      const bg =
+                        t.chg > 0
+                          ? `rgba(34,197,94,${alpha})`
+                          : t.chg < 0
+                            ? `rgba(239,68,68,${alpha})`
+                            : "rgba(120,120,130,0.18)";
+                      return (
+                        <div
+                          key={t.symbol}
+                          className="flex flex-col items-center justify-center rounded-sm px-1 py-1 text-center"
+                          style={{ backgroundColor: bg }}
+                          title={`${t.name} · ${formatPct(t.chg)}`}
+                        >
+                          <span className="font-mono text-[10px] font-semibold leading-tight text-foreground">{t.symbol}</span>
+                          <span className="font-mono text-[9px] leading-tight text-foreground/80">
+                            {t.chg >= 0 ? "+" : ""}
+                            {t.chg.toFixed(1)}%
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="shrink-0 text-[9.5px] leading-relaxed text-muted-foreground/70">
+                    Top {marketProxy.tiles.length} JSE names by market cap, shaded by day move — a real constituent
+                    heatmap from the live universe. The cap-weighted figure is a broad-market proxy, NOT the official
+                    J203/ALSI (IRESS has no index feed on this account).
                   </p>
                 </div>
               ) : (
