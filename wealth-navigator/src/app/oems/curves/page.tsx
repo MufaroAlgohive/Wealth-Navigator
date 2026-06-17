@@ -318,7 +318,8 @@ export default function CurvesPage() {
           }
         >
           {carry3m !== undefined || carry12m !== undefined ? (
-            <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="flex h-full flex-col gap-2">
+              <div className="grid grid-cols-2 gap-2 text-xs">
               {[
                 ["Carry (3M)", carry3m !== undefined ? `${carry3m >= 0 ? "+" : ""}${carry3m.toFixed(2)}%` : "—"],
                 ["Rolldown (3M)", rolldown3m !== undefined ? `${rolldown3m >= 0 ? "+" : ""}${rolldown3m.toFixed(2)}%` : "—"],
@@ -334,11 +335,17 @@ export default function CurvesPage() {
                   <p className="font-mono font-semibold">{v}</p>
                 </div>
               ))}
+              </div>
+              <p className="mt-auto text-[9.5px] leading-relaxed text-muted-foreground/70">
+                Convention: 5Y key vertex (interpolated). Carry = (y₅ − front-of-curve funding) × horizon;
+                rolldown = ModDur₅ × (y₅ − y₅₋ₕ); Total = carry + rolldown. Derived from the single fitted
+                ZAR_NSS curve (no history needed).
+              </p>
             </div>
           ) : (
             <EmptyDataState
-              message="No carry/rolldown metrics recorded."
-              hint="The worker's curve-derived metrics loop writes carry_3m/carry_12m/rolldown_3m/rolldown_12m to oems_curve_metric_c."
+              message="No carry/rolldown metrics recorded yet."
+              hint="Computed by the worker each curve cycle (carry/rolldown @ 5Y → oems_curve_metric_c). If this stays empty, apply migration 20260613000003_oems_curve_metric_c.sql on the institutional DB."
             />
           )}
         </Panel>

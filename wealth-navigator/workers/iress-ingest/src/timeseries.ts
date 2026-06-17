@@ -473,6 +473,76 @@ function bondTenorYears(code: string): number {
  * and SKIP if a snapshot for that date already exists — avoids duplicate tenor
  * rows while retaining daily history (bond data is EOD, so one curve/day).
  */
+/** Linear-interpolate the curve yield (%) at a target tenor in years, clamping
+ *  to the endpoints outside the fitted range. */
+function interpYieldPct(
+  pts: Array<{ tenorYears: number; yieldPct: number }>,
+  targetYears: number,
+): number | null {
+  const s = [...pts].filter((p) => p.tenorYears > 0).sort((a, b) => a.tenorYears - b.tenorYears);
+  if (s.length === 0) return null;
+  if (targetYears <= s[0]!.tenorYears) return s[0]!.yieldPct;
+  if (targetYears >= s[s.length - 1]!.tenorYears) return s[s.length - 1]!.yieldPct;
+  for (let i = 0; i < s.length - 1; i++) {
+    const a = s[i]!;
+    const b = s[i + 1]!;
+    if (targetYears >= a.tenorYears && targetYears <= b.tenorYears) {
+      const w = (targetYears - a.tenorYears) / (b.tenorYears - a.tenorYears);
+      return a.yieldPct + w * (b.yieldPct - a.yieldPct);
+    }
+  }
+  return null;
+}
+
+/** Modified duration of a par bond (annuity approximation D = (1−(1+y)^−T)/y). */
+function parBondModDuration(yieldPct: number, tenorYears: number): number {
+  const y = yieldPct / 100;
+  if (y <= 0) return tenorYears;
+  return (1 - Math.pow(1 + y, -tenorYears)) / y;
+}
+
+interface CurveMetricRow {
+  curve_id: string;
+  metric: string;
+  tenor_label: string;
+  value: number;
+  as_of: string;
+  source: string;
+}
+
+/**
+ * Carry + rolldown at the 5Y key vertex for 3M / 12M horizons, from a single
+ * fitted curve (no history needed). Standard rates-desk conventions:
+ *   carry%    = (y(5Y) − funding) × h        funding = front-of-curve yield
+ *   rolldown% = ModDur(5Y) × (y(5Y) − y(5Y−h))   price return as the bond rolls
+ * Returns [] when the 5Y vertex can't be interpolated.
+ */
+function computeCarryRolldown(
+  curveId: string,
+  pts: Array<{ tenorYears: number; yieldPct: number }>,
+  asOf: string,
+): CurveMetricRow[] {
+  const VERTEX = 5;
+  const sorted = [...pts].filter((p) => p.tenorYears > 0).sort((a, b) => a.tenorYears - b.tenorYears);
+  if (sorted.length < 2) return [];
+  const y5 = interpYieldPct(sorted, VERTEX);
+  if (y5 == null) return [];
+  const funding = sorted[0]!.yieldPct; // front-of-curve ≈ repo / overnight
+  const modDur = parBondModDuration(y5, VERTEX);
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const out: CurveMetricRow[] = [];
+  for (const { key, h } of [
+    { key: "3m", h: 0.25 },
+    { key: "12m", h: 1 },
+  ]) {
+    const yRoll = interpYieldPct(sorted, VERTEX - h);
+    if (yRoll == null) continue;
+    out.push({ curve_id: curveId, metric: `carry_${key}`, tenor_label: "5Y", value: r2((y5 - funding) * h), as_of: asOf, source: "iress-worker" });
+    out.push({ curve_id: curveId, metric: `rolldown_${key}`, tenor_label: "5Y", value: r2(modDur * (y5 - yRoll)), as_of: asOf, source: "iress-worker" });
+  }
+  return out;
+}
+
 async function syncCurveSnapshot(
   opts: { sessions: WorkerSessionManager; supabase: WorkerSupabase | null; env: WorkerEnv; isLive: boolean },
   curveId: string,
@@ -513,6 +583,26 @@ async function syncCurveSnapshot(
       JSON.stringify({ level: "info", event: "would_upsert_yield_curve_history_c", curve_id: curveId, tenors: tenors.length, asOf }),
     );
     return { tenors: tenors.length, entitlementRequired };
+  }
+
+  // Derived metrics: carry + rolldown @ 5Y for the nominal curve. Single-curve,
+  // so available immediately (unlike PCA, which needs several days of history).
+  // Idempotent on (curve_id, metric, tenor_label, as_of) and run before the
+  // curve-history idempotency check below so the metrics stay fresh each cycle.
+  if (curveId === "ZAR_NSS") {
+    const metricRows = computeCarryRolldown(curveId, tenors, asOf);
+    if (metricRows.length > 0) {
+      const { error: mErr } = await supabase
+        .from("oems_curve_metric_c")
+        .upsert(metricRows, { onConflict: "curve_id,metric,tenor_label,as_of" });
+      if (mErr) {
+        console.warn(`[iress-ingest] oems_curve_metric_c upsert(${curveId}) failed: ${mErr.message}`);
+      } else {
+        console.info(
+          JSON.stringify({ level: "info", event: "curve_metric_upserted", curve_id: curveId, count: metricRows.length, asOf }),
+        );
+      }
+    }
   }
 
   // Idempotent per data date: skip if a snapshot for this date already exists.
