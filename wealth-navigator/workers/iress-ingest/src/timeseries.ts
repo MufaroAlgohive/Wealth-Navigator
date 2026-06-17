@@ -475,7 +475,7 @@ function bondTenorYears(code: string): number {
  */
 /** Linear-interpolate the curve yield (%) at a target tenor in years, clamping
  *  to the endpoints outside the fitted range. */
-function interpYieldPct(
+export function interpYieldPct(
   pts: Array<{ tenorYears: number; yieldPct: number }>,
   targetYears: number,
 ): number | null {
@@ -495,7 +495,7 @@ function interpYieldPct(
 }
 
 /** Modified duration of a par bond (annuity approximation D = (1−(1+y)^−T)/y). */
-function parBondModDuration(yieldPct: number, tenorYears: number): number {
+export function parBondModDuration(yieldPct: number, tenorYears: number): number {
   const y = yieldPct / 100;
   if (y <= 0) return tenorYears;
   return (1 - Math.pow(1 + y, -tenorYears)) / y;
@@ -517,7 +517,7 @@ interface CurveMetricRow {
  *   rolldown% = ModDur(5Y) × (y(5Y) − y(5Y−h))   price return as the bond rolls
  * Returns [] when the 5Y vertex can't be interpolated.
  */
-function computeCarryRolldown(
+export function computeCarryRolldown(
   curveId: string,
   pts: Array<{ tenorYears: number; yieldPct: number }>,
   asOf: string,
