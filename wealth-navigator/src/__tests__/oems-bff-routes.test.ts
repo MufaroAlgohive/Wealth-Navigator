@@ -289,16 +289,36 @@ describe("GET /api/macro", () => {
 });
 
 describe("GET /api/news", () => {
-  it("returns empty list with source=unavailable when News_articles is empty", async () => {
+  it("returns unavailable when RSS yields nothing and News_articles is empty", async () => {
     process.env.USE_SUPABASE_QUOTES = "true";
     process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES = "true";
     installSupabaseStub({ News_articles: [] });
+    // Mock RSS fetch → empty feed (deterministic, no real network).
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response("<rss><channel></channel></rss>", { status: 200 }));
     const { GET } = await import("@/app/api/news/route");
     const res = await GET(new Request("http://localhost/api/news"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.source).toBe("unavailable");
     expect(body.items).toEqual([]);
+    fetchSpy.mockRestore();
+  });
+
+  it("merges live RSS items (source rss) even when the wire table is empty", async () => {
+    process.env.USE_SUPABASE_QUOTES = "true";
+    installSupabaseStub({ News_articles: [] });
+    const rss =
+      '<rss><channel><item><title>Rand firms vs dollar</title><link>https://moneyweb.co.za/a</link><pubDate>Tue, 16 Jun 2026 10:00:00 GMT</pubDate><description>desc</description></item></channel></rss>';
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(rss, { status: 200 }));
+    const { GET } = await import("@/app/api/news/route");
+    const res = await GET(new Request("http://localhost/api/news"));
+    const body = await res.json();
+    expect(body.source).toMatch(/rss/);
+    expect(body.items.length).toBeGreaterThan(0);
+    expect(body.items[0].headline).toMatch(/Rand firms/);
+    fetchSpy.mockRestore();
   });
 });
 

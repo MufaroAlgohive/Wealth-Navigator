@@ -269,6 +269,34 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const moversQ = useQuery({ queryKey: ["movers"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
   const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), enabled: !realDataOnly, ...queryOpts("reference") });
   const sensQ = useQuery({ queryKey: ["sens"], queryFn: () => data.sens(), enabled: !realDataOnly, ...queryOpts("reference") });
+  // Real-data news: live RSS (Moneyweb/BusinessTech) + Alliance wire via the BFF.
+  const newsBffQ = useQuery<{
+    items: Array<{ id: string; headline: string; ts: number; source: string; category: string; tickers: string[]; url: string | null }>;
+    source: string;
+    sourceLabel?: string;
+  }>({
+    queryKey: ["bff-news"],
+    queryFn: async () => {
+      const r = await fetch("/api/news?limit=12", { cache: "no-store" });
+      if (!r.ok) throw new Error(`news ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 120_000,
+    ...queryOpts("reference"),
+  });
+  // Real USD/ZAR from the FX BFF (Frankfurter / ECB) — IRESS has no FX feed.
+  const fxQ = useQuery<{ pair: string; rate: number | null; change: number | null; changePct: number | null; source: string; sourceLabel?: string }>({
+    queryKey: ["bff-fx-usdzar"],
+    queryFn: async () => {
+      const r = await fetch("/api/fx/USDZAR", { cache: "no-store" });
+      if (!r.ok) throw new Error(`fx ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 300_000,
+    ...queryOpts("reference"),
+  });
 
   // Tier 2 BFFs — DB-first when realDataOnly. Falls back to seed in
   // mock/dev (realDataOnly=false). The BFF returns `source` so the panel
@@ -507,9 +535,19 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <KpiTile
               icon={<TrendingUp className="h-3.5 w-3.5" />}
               label="USD/ZAR"
-              live={{ sym: "USDZAR", fallback: 0, decimals: 4, showChange: true }}
-              value=""
-              sub={<JibarOrUsdzarSub sym="USDZAR" primaryWorker={workerQ.data?.workers?.[0]} />}
+              value={fxQ.data?.rate != null ? fxQ.data.rate.toFixed(4) : "—"}
+              sub={
+                fxQ.data?.rate != null ? (
+                  <span>
+                    {(fxQ.data.changePct ?? 0) >= 0 ? "+" : ""}
+                    {(fxQ.data.changePct ?? 0).toFixed(2)}% · {fxQ.data.sourceLabel ?? "ECB"}
+                  </span>
+                ) : fxQ.isLoading ? (
+                  "Loading USD/ZAR…"
+                ) : (
+                  "FX source unavailable"
+                )
+              }
             />
           </>
         ) : (
@@ -1141,15 +1179,46 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       {/* Row 4: News flash strip + curve move decomposition */}
       <div className="grid grid-cols-12 gap-2.5">
         {realDataOnly ? (
-          <Panel title="News Flow · Last 60 min" endpoint="External vendor required" className="col-span-12 lg:col-span-8 h-[260px]">
-            {/* Yellow #15 — distinguish SENS subscription from wire
-                contracts. The two are different in scope, contract,
-                and pricing. */}
-            <EmptyDataState
-              message="News feed not configured."
-              hint="SENS requires the JSE SENS Web Feed subscription. Wires require Reuters / Bloomberg / Moneyweb contracts."
-              badgeLabel="blocked-vendor"
-            />
+          <Panel
+            title="News Flow · Latest"
+            endpoint="GET /api/news"
+            dataSource={(newsBffQ.data?.items?.length ?? 0) > 0 ? "supabase" : "unconfigured"}
+            className="col-span-12 lg:col-span-8 h-[260px]"
+            density="scroll"
+            right={<span className="font-mono text-[9.5px] text-muted-foreground">{newsBffQ.data?.sourceLabel ?? "RSS"}</span>}
+          >
+            {newsBffQ.isLoading ? (
+              <PanelSkeleton rows={5} />
+            ) : (newsBffQ.data?.items?.length ?? 0) === 0 ? (
+              <EmptyDataState
+                message="No news items right now."
+                hint="Live RSS (Moneyweb / BusinessTech) + Alliance wire. Official JSE SENS regulatory announcements still require the paid web feed."
+              />
+            ) : (
+              <ul className="divide-y divide-border/60">
+                {newsBffQ.data!.items.slice(0, 6).map((n) => (
+                  <li key={n.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-muted/30">
+                    <div className="flex-1 min-w-0">
+                      {n.url ? (
+                        <a href={n.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium leading-snug hover:underline">
+                          {n.headline}
+                        </a>
+                      ) : (
+                        <p className="text-xs font-medium leading-snug">{n.headline}</p>
+                      )}
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 font-mono text-[9.5px] text-muted-foreground">
+                        <span>{formatTime(n.ts)}</span>
+                        <span className="text-muted-foreground/50">·</span>
+                        <Pill tone="neutral" size="xs">{n.source}</Pill>
+                        {n.tickers.slice(0, 3).map((t) => (
+                          <span key={t} className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">{t}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Panel>
         ) : newsQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[260px]" className="col-span-12 lg:col-span-8" />
