@@ -234,6 +234,25 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // being flipped (audit #27).
   const liveQuotes = useLiveQuotes(MOVER_SYMBOLS);
 
+  // Heatmap exchange switch — JSE (securities_c) | US (Yahoo screener). Other
+  // regions need custom Yahoo screeners, so only these two are wired today.
+  const [heatmapMarket, setHeatmapMarket] = useState<"JSE" | "US">("JSE");
+  const globalMoversQ = useQuery({
+    queryKey: ["bff-global-movers", heatmapMarket],
+    queryFn: () =>
+      fetchJson<{
+        market: string;
+        source: "yahoo" | "unavailable";
+        sourceLabel: string;
+        tiles: Array<{ symbol: string; name: string; chg: number; cap: number }>;
+        gainers: Array<{ symbol: string; name: string; chg: number; price: number | null }>;
+        losers: Array<{ symbol: string; name: string; chg: number; price: number | null }>;
+        error?: string;
+      }>(`/api/global-movers?market=${heatmapMarket}`),
+    enabled: realDataOnly && heatmapMarket !== "JSE",
+    refetchInterval: 60_000,
+  });
+
   const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), enabled: !realDataOnly, ...queryOpts("live") });
   const indicesQ = useQuery({ queryKey: ["indices"], queryFn: () => data.indices(), enabled: !realDataOnly, ...queryOpts("reference") });
   const sectorsQ = useQuery({ queryKey: ["sectors"], queryFn: () => data.sectors(), enabled: !realDataOnly, ...queryOpts("reference") });
@@ -378,6 +397,30 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         chg: s.change_percent ?? 0,
       }));
     return { changePct: capWtd, count: withData.length, tiles };
+  })();
+
+  // Active heatmap, selected by the JSE | US exchange switch. JSE comes from
+  // the live securities_c universe; US from the Yahoo screener BFF. Both render
+  // through the same tile grid below.
+  const heatmap = (() => {
+    if (heatmapMarket === "JSE") {
+      return {
+        market: "JSE" as const,
+        tiles: marketProxy?.tiles ?? [],
+        status: marketProxy ? ("ok" as const) : ("empty" as const),
+        capWtd: marketProxy?.changePct ?? null,
+        sourceLabel: "securities_c",
+      };
+    }
+    const d = globalMoversQ.data;
+    const ok = d?.source === "yahoo" && (d?.tiles?.length ?? 0) > 0;
+    return {
+      market: "US" as const,
+      tiles: (d?.tiles ?? []).map((t) => ({ symbol: t.symbol, name: t.name, chg: t.chg })),
+      status: globalMoversQ.isLoading ? ("loading" as const) : ok ? ("ok" as const) : ("empty" as const),
+      capWtd: null,
+      sourceLabel: d?.sourceLabel ?? "Yahoo Finance",
+    };
   })();
 
   // Top gainers + losers by change_percent, top ~8 combined (4 up / 4 down).
@@ -934,26 +977,47 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
           ) : alsiBffQ.isError || (alsiBffQ.data?.source === "entitlement-required") ? (
             <Panel
-              title="JSE Market · Heatmap"
-              endpoint="GET /api/equities"
-              dataSource={marketProxy ? "supabase" : "unconfigured"}
+              title={`${heatmap.market} Market · Heatmap`}
+              endpoint={heatmap.market === "JSE" ? "GET /api/equities" : "GET /api/global-movers"}
+              dataSource={heatmap.status === "empty" ? "unconfigured" : "supabase"}
               className="col-span-12 lg:col-span-8 h-[320px]"
               right={
-                marketProxy ? (
-                  <span className="flex items-center gap-2 font-mono text-[10px] text-muted-foreground">
-                    <span>cap-weighted</span>
-                    <span className={cn("text-sm font-semibold", marketProxy.changePct >= 0 ? "text-up" : "text-down")}>
-                      {marketProxy.changePct >= 0 ? "+" : ""}
-                      {marketProxy.changePct.toFixed(2)}%
+                <div className="flex items-center gap-2">
+                  <div className="flex overflow-hidden rounded border border-border/60">
+                    {(["JSE", "US"] as const).map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setHeatmapMarket(m)}
+                        className={cn(
+                          "px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors",
+                          heatmapMarket === m ? "bg-primary/20 text-primary" : "text-muted-foreground hover:bg-muted/40",
+                        )}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                  {heatmap.market === "JSE" && heatmap.capWtd != null ? (
+                    <span className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+                      cap-wt
+                      <span className={cn("text-sm font-semibold", heatmap.capWtd >= 0 ? "text-up" : "text-down")}>
+                        {heatmap.capWtd >= 0 ? "+" : ""}
+                        {heatmap.capWtd.toFixed(2)}%
+                      </span>
                     </span>
-                  </span>
-                ) : undefined
+                  ) : (
+                    <span className="font-mono text-[10px] text-muted-foreground">most active</span>
+                  )}
+                </div>
               }
             >
-              {marketProxy ? (
+              {heatmap.status === "loading" ? (
+                <PanelSkeleton rows={6} />
+              ) : heatmap.status === "ok" ? (
                 <div className="flex h-full flex-col gap-1.5">
                   <div className="grid flex-1 auto-rows-fr grid-cols-4 gap-1 overflow-hidden sm:grid-cols-6 lg:grid-cols-9">
-                    {marketProxy.tiles.map((t) => {
+                    {heatmap.tiles.map((t) => {
                       // Shade red→green by day move; intensity saturates at ±4%.
                       const intensity = Math.min(Math.abs(t.chg) / 4, 1);
                       const alpha = 0.14 + intensity * 0.6;
@@ -980,17 +1044,28 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     })}
                   </div>
                   <p className="shrink-0 text-[9.5px] leading-relaxed text-muted-foreground/70">
-                    Top {marketProxy.tiles.length} JSE names by market cap, shaded by day move — a real constituent
-                    heatmap from the live universe. The cap-weighted figure is a broad-market proxy, NOT the official
-                    J203/ALSI (IRESS has no index feed on this account).
+                    {heatmap.market === "JSE" ? (
+                      <>
+                        Top {heatmap.tiles.length} JSE names by market cap, shaded by day move — a real constituent
+                        heatmap from the live universe. The cap-weighted figure is a broad-market proxy, NOT the
+                        official J203/ALSI (IRESS has no index feed on this account).
+                      </>
+                    ) : (
+                      <>
+                        Top {heatmap.tiles.length} most-active US names by market cap, shaded by day move. Source:{" "}
+                        {heatmap.sourceLabel} — unofficial public endpoints, best-effort.
+                      </>
+                    )}
                   </p>
                 </div>
               ) : (
                 <EmptyDataState
-                  title="Index feed not on prod-test"
+                  title={heatmap.market === "JSE" ? "Index feed not on prod-test" : "US market data unavailable"}
                   message={
-                    alsiBffQ.data?.message ??
-                    "TimeSeriesGet2 works; J203 returns no data on the prod-test (CT) feed. Needs the index DataSource enabled for DFM@MINT, or production."
+                    heatmap.market === "JSE"
+                      ? (alsiBffQ.data?.message ??
+                        "TimeSeriesGet2 works; J203 returns no data on the prod-test (CT) feed. Needs the index DataSource enabled for DFM@MINT, or production.")
+                      : "Yahoo Finance returned no data this cycle (cookie/crumb or rate limit). It retries automatically — switch back to JSE for the live constituent heatmap."
                   }
                 />
               )}
