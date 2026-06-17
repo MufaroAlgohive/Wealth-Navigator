@@ -1,7 +1,7 @@
 "use client";
 
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { SectorSlice } from "@/lib/research-lab/yield-basket";
+import type { SectorSlice } from "@/lib/research-lab/types";
 
 const PURPLE = "hsl(263 82% 68%)";
 const PURPLE_MUTED = "hsl(263 45% 45%)";

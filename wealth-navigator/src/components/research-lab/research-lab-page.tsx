@@ -1,38 +1,50 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import Link from "next/link";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowDownRight,
-  Plus,
-  UserCircle2,
-  Scale,
+  ChevronDown,
   ClipboardCheck,
+  ExternalLink,
+  FlaskConical,
   History,
+  RefreshCw,
+  Scale,
+  Search,
+  UserCircle2,
 } from "lucide-react";
 
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { KpiTile } from "@/components/oems/primitives/kpi-tile";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
-import { Button } from "@/components/ui/button";
+import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import { HoldingsTable } from "@/components/research-lab/holdings-table";
 import { FundamentalsMatrix } from "@/components/research-lab/fundamentals-matrix";
 import { SectorExposureChart } from "@/components/research-lab/sector-exposure-chart";
+import type { DataSourceKind } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 import { formatZARExact, formatPctAbs } from "@/lib/format";
-import {
-  YIELD_BASKET_META,
-  CURRENT_HOLDINGS,
-  PROPOSED_HOLDINGS,
-  FUNDAMENTAL_METRICS,
-  SECTOR_BEFORE,
-  SECTOR_AFTER,
-  CURRENT_TOTALS,
-  PROPOSED_TOTALS,
-  RESEARCH_TICKERS,
-  type ResearchRole,
-} from "@/lib/research-lab/yield-basket";
+import { queryOpts } from "@/lib/store/query-provider";
+import type {
+  ResearchLabListItem,
+  ResearchLabPayload,
+  ResearchRole,
+} from "@/lib/research-lab/types";
+
+const YIELD_BASKET_FALLBACK_ID = "640dcffb-dc23-4099-9772-0f72ed9688de";
 
 function DeltaKpi({
   label,
@@ -61,25 +73,153 @@ function DeltaKpi({
   );
 }
 
+function resolvePanelSource(payload: ResearchLabPayload | undefined): DataSourceKind {
+  if (!payload || payload.source !== "retail-supabase") return "unavailable";
+  if ((payload.iressOverlay ?? 0) > 0) return "hybrid";
+  return "supabase";
+}
+
 export function ResearchLabPage() {
   const [role, setRole] = useState<ResearchRole>("strategist");
-  const meta = YIELD_BASKET_META;
-  const cashPct = meta.cashTargetPct;
+  const [strategyId, setStrategyId] = useState<string>(YIELD_BASKET_FALLBACK_ID);
+  const [compareQ, setCompareQ] = useState("");
+  const [extraTickers, setExtraTickers] = useState<string[]>([]);
+
+  const listQ = useQuery<{ strategies: ResearchLabListItem[]; source: string }>({
+    queryKey: ["bff-research-lab-list"],
+    queryFn: async () => {
+      const r = await fetch("/api/research-lab", { cache: "no-store" });
+      if (!r.ok) throw new Error(`research-lab list ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+  });
+
+  const labQ = useQuery<ResearchLabPayload>({
+    queryKey: ["bff-research-lab", strategyId, extraTickers.join(",")],
+    queryFn: async () => {
+      const compare = extraTickers.length ? `?compare=${extraTickers.join(",")}` : "";
+      const r = await fetch(`/api/research-lab/${encodeURIComponent(strategyId)}${compare}`, {
+        cache: "no-store",
+      });
+      if (!r.ok) throw new Error(`research-lab ${r.status}`);
+      return r.json();
+    },
+    enabled: Boolean(strategyId),
+    refetchInterval: 60_000,
+    ...queryOpts("reference"),
+  });
+
+  const equitiesQ = useQuery<{ securities: Array<{ symbol: string; name: string | null }> }>({
+    queryKey: ["equities-universe"],
+    queryFn: async () => {
+      const r = await fetch("/api/equities", { cache: "no-store" });
+      if (!r.ok) throw new Error(`equities ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+  });
+
+  const strategies = listQ.data?.strategies ?? [];
+  const payload = labQ.data;
+  const panelSource = resolvePanelSource(payload);
+
+  const selectedName = strategies.find((s) => s.id === strategyId)?.name ?? payload?.strategy.name ?? "—";
+
+  const compareCandidates = useMemo(() => {
+    const q = compareQ.trim().toUpperCase();
+    if (q.length < 1) return [];
+    return (equitiesQ.data?.securities ?? [])
+      .map((s) => ({
+        ticker: s.symbol.replace(/\.JO$/i, ""),
+        name: s.name ?? s.symbol,
+      }))
+      .filter(
+        (s) =>
+          s.ticker.includes(q) ||
+          s.name.toUpperCase().includes(q),
+      )
+      .slice(0, 8);
+  }, [compareQ, equitiesQ.data?.securities]);
+
+  const matrixTickers = useMemo(() => {
+    const base = payload?.tickers ?? [];
+    return [...base, ...extraTickers.filter((t) => !base.includes(t))];
+  }, [payload?.tickers, extraTickers]);
+
+  if (listQ.isLoading) {
+    return (
+      <div className="space-y-3">
+        <PanelSkeleton rows={6} height="h-48" />
+        <PanelSkeleton rows={8} />
+      </div>
+    );
+  }
+
+  if (listQ.isError || strategies.length === 0) {
+    return (
+      <div className="space-y-3">
+        <header>
+          <h1 className="text-lg font-semibold tracking-tight">Research Lab</h1>
+          <p className="text-xs text-muted-foreground">Strategy research · composition · fundamentals</p>
+        </header>
+        <Panel title="Strategy catalogue" endpoint="strategies_c">
+          <EmptyDataState
+            message="No model portfolios available."
+            hint="Configure RETAIL_SUPABASE_URL and ensure strategies_c is populated."
+            badgeLabel="unconfigured"
+          />
+        </Panel>
+      </div>
+    );
+  }
+
+  const meta = payload?.strategy;
+  const current = payload?.current;
+  const proposed = payload?.proposed;
 
   return (
     <div className="space-y-3">
       {/* Hero */}
       <header className="space-y-3 rounded-lg border border-border bg-card/40 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="space-y-1">
+          <div className="min-w-0 flex-1 space-y-2">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">
               MINT OEMS · Strategy research hub
             </p>
-            <h1 className="text-xl font-semibold tracking-tight">{meta.name}</h1>
-            <p className="max-w-2xl text-sm text-muted-foreground">{meta.description}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <FlaskConical className="h-5 w-5 text-primary" />
+              <Select value={strategyId} onValueChange={setStrategyId}>
+                <SelectTrigger className="h-9 w-[min(100%,280px)] border-border bg-background font-semibold">
+                  <SelectValue placeholder="Select strategy">{selectedName}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {strategies.map((s) => (
+                    <SelectItem key={s.id} value={s.id} className="font-sans text-sm">
+                      <span className="font-medium">{s.name}</span>
+                      <span className="ml-2 font-mono text-[10px] text-muted-foreground">
+                        {s.holdingsCount} names · {formatZARExact(s.minInvestment)} min
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => labQ.refetch()}
+                aria-label="Refresh"
+              >
+                <RefreshCw className={cn("h-3.5 w-3.5", labQ.isFetching && "animate-spin")} />
+              </Button>
+            </div>
+            {meta?.description && (
+              <p className="max-w-2xl text-sm text-muted-foreground">{meta.description}</p>
+            )}
           </div>
-          <Pill tone="primary" size="sm" dot>
-            SEED · research prototype
+          <Pill tone={panelSource === "unavailable" ? "warning" : "primary"} size="sm" dot>
+            {panelSource === "hybrid" ? "SUPABASE + IRESS" : panelSource.toUpperCase()}
           </Pill>
         </div>
 
@@ -87,7 +227,7 @@ export function ResearchLabPage() {
           <span className="text-[10px] text-muted-foreground">Acting as</span>
           <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1 font-sans text-xs">
             <UserCircle2 className="h-3.5 w-3.5 text-primary" />
-            {meta.strategist} · {meta.strategistTitle}
+            {meta?.manager ?? "—"} · Portfolio Strategist
           </span>
           <div className="ml-auto flex rounded-md border border-border p-0.5">
             {(
@@ -113,173 +253,321 @@ export function ResearchLabPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-8">
-          <KpiTile label="Benchmark" value={meta.benchmark} />
-          <KpiTile label="Inception" value={meta.inception} />
-          <KpiTile label="State" value={meta.state} tone="positive" />
-          <KpiTile label="Basket min. price" value={formatZARExact(CURRENT_TOTALS.basketMin)} />
-          <KpiTile label="Constituents" value={CURRENT_HOLDINGS.length.toString()} />
-          <KpiTile label="Constituent value" value={formatZARExact(CURRENT_TOTALS.constituent)} />
-          <KpiTile
-            label="Cash"
-            value={formatZARExact(CURRENT_TOTALS.cash)}
-            sub={`${cashPct.toFixed(2)}%`}
-          />
-          <KpiTile label="As of" value={meta.asOf} />
-        </div>
+        {labQ.isLoading ? (
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-8">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="h-16 animate-pulse rounded-md bg-muted/40" />
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-8">
+            <KpiTile label="Benchmark" value={meta?.benchmark ?? "—"} />
+            <KpiTile label="Inception" value={meta?.inception ?? "—"} />
+            <KpiTile
+              label="State"
+              value={meta?.status ?? "—"}
+              tone={meta?.investorCount ? "positive" : "default"}
+            />
+            <KpiTile
+              label="Basket min. price"
+              value={current ? formatZARExact(current.totals.basketMin) : "—"}
+            />
+            <KpiTile label="Constituents" value={String(current?.holdings.length ?? 0)} />
+            <KpiTile
+              label="Constituent value"
+              value={current ? formatZARExact(current.totals.constituent) : "—"}
+            />
+            <KpiTile
+              label="Cash"
+              value={current ? formatZARExact(current.totals.cash) : "—"}
+              sub={current ? `${current.totals.cashPct.toFixed(2)}%` : undefined}
+            />
+            <KpiTile label="As of" value={meta?.asOf ?? "—"} />
+          </div>
+        )}
       </header>
 
-      {/* Composition tabs */}
-      <Tabs defaultValue="before" className="space-y-3">
-        <TabsList className="h-8 bg-muted/40">
-          <TabsTrigger value="before" className="font-mono text-[10px] uppercase">
-            Composition — Before
-          </TabsTrigger>
-          <TabsTrigger value="proposed" className="font-mono text-[10px] uppercase">
-            Composition — Proposed
-          </TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="before" className="mt-0 space-y-3">
-          <Panel
-            title="Current holdings"
-            subtitle={`As of ${meta.asOf}`}
-            endpoint="research_lab · before"
-            dataSource="seed"
-            density="dense"
-            right={<Pill tone="neutral" size="xs">Benchmark {meta.benchmark}</Pill>}
-          >
-            <HoldingsTable
-              rows={CURRENT_HOLDINGS}
-              constituentTotal={CURRENT_TOTALS.constituent}
-              cash={CURRENT_TOTALS.cash}
-              cashPct={cashPct}
-              basketMin={CURRENT_TOTALS.basketMin}
-            />
-          </Panel>
-        </TabsContent>
-
-        <TabsContent value="proposed" className="mt-0 space-y-3">
-          <Panel
-            title="Rebalance & changes"
-            subtitle="Every add, removal or share change opens an investment case"
-            endpoint="research_lab · proposed"
-            dataSource="seed"
-            density="dense"
-            right={
-              <Button size="sm" variant="outline" className="h-7 gap-1 font-mono text-[10px]">
-                <Plus className="h-3 w-3" />
-                Propose addition
-              </Button>
-            }
-          >
-            <HoldingsTable
-              rows={PROPOSED_HOLDINGS}
-              constituentTotal={PROPOSED_TOTALS.constituent}
-              cash={PROPOSED_TOTALS.cash}
-              cashPct={cashPct}
-              basketMin={PROPOSED_TOTALS.basketMin}
-              showRating
-              cashLabel={`Cash reserve (target ${cashPct.toFixed(1)}%)`}
-            />
-            <p className="border-t border-border/60 px-3.5 py-2 text-[10px] text-muted-foreground">
-              Whole-share quantities only. Cash reserve scales to maintain {cashPct.toFixed(1)}% of the basket.
-            </p>
-          </Panel>
-
-          <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
-            <DeltaKpi
-              label="Constituent value"
-              current={CURRENT_TOTALS.constituent}
-              proposed={PROPOSED_TOTALS.constituent}
-            />
-            <DeltaKpi
-              label="Basket minimum price"
-              current={CURRENT_TOTALS.basketMin}
-              proposed={PROPOSED_TOTALS.basketMin}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
-            <Panel title="Sector exposure — Before" dataSource="seed" density="comfortable">
-              <SectorExposureChart title="Before rebalance" data={SECTOR_BEFORE} />
-            </Panel>
-            <Panel title="Sector exposure — After" dataSource="seed" density="comfortable">
-              <SectorExposureChart title="After rebalance" data={SECTOR_AFTER} />
-            </Panel>
-          </div>
-        </TabsContent>
-      </Tabs>
-
-      {/* Fundamentals */}
-      <Panel
-        title="Fundamental metrics & verdict"
-        subtitle="Coverage"
-        endpoint="research_lab · fundamentals"
-        dataSource="seed"
-        right={
-          <div className="flex gap-1">
-            <Pill tone="success" size="xs">Good</Pill>
-            <Pill tone="warning" size="xs">Neutral</Pill>
-            <Pill tone="destructive" size="xs">Concern</Pill>
-          </div>
-        }
-      >
-        <FundamentalsMatrix metrics={FUNDAMENTAL_METRICS} tickers={RESEARCH_TICKERS} />
-      </Panel>
-
-      {/* Committee + audit */}
-      <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
-        <Panel
-          title="Investment committee · Approvals"
-          subtitle="Pending change requests"
-          endpoint="research_lab · approvals"
-          dataSource="seed"
-          right={
-            <Pill tone="neutral" size="xs">
-              <Scale className="mr-1 inline h-3 w-3" />0 pending
-            </Pill>
-          }
-        >
-          {role === "head" ? (
-            <EmptyDataState
-              message="No pending requests."
-              hint="Strategist actions on the basket will route here for approval."
-              badgeLabel="seed"
-            />
-          ) : (
-            <div className="space-y-2">
-              <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                <ClipboardCheck className="h-4 w-4 text-primary" />
-                Switch role to Head of Investments to approve.
-              </p>
-              <EmptyDataState
-                message="No pending requests."
-                hint="Strategist actions on the basket will route here for approval."
-                badgeLabel="seed"
-              />
-            </div>
-          )}
-        </Panel>
-
-        <Panel
-          title="Audit log"
-          subtitle="Strategy activity"
-          endpoint="research_lab · audit"
-          dataSource="seed"
-          right={<History className="h-3.5 w-3.5 text-muted-foreground" />}
-        >
+      {labQ.isError && (
+        <Panel title="Research data" dataSource="unavailable">
           <EmptyDataState
-            message="No activity yet."
-            hint="Submitted requests, approvals and declines will appear here."
-            badgeLabel="seed"
+            message="Failed to load strategy research payload."
+            hint={labQ.error instanceof Error ? labQ.error.message : "Retry refresh."}
+            badgeLabel="unavailable"
           />
         </Panel>
-      </div>
+      )}
+
+      {!labQ.isLoading && payload?.source === "unavailable" && (
+        <Panel title="Research data" dataSource="unavailable">
+          <EmptyDataState
+            message="Strategy research unavailable."
+            hint={payload.reason ?? "Check retail Supabase configuration."}
+            badgeLabel="unconfigured"
+          />
+        </Panel>
+      )}
+
+      {current && (
+        <>
+          <Tabs defaultValue="before" className="space-y-3">
+            <TabsList className="h-8 bg-muted/40">
+              <TabsTrigger value="before" className="font-mono text-[10px] uppercase">
+                Composition — Current
+              </TabsTrigger>
+              <TabsTrigger
+                value="proposed"
+                className="font-mono text-[10px] uppercase"
+                disabled={!proposed}
+              >
+                Composition — Proposed
+                {proposed && (
+                  <span className="ml-1.5 rounded bg-primary/20 px-1 font-mono text-[9px] text-primary">
+                    {proposed.holdings.filter((h) => h.pending).length} pending
+                  </span>
+                )}
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="before" className="mt-0 space-y-3">
+              <Panel
+                title="Current holdings"
+                subtitle={`As of ${meta?.asOf ?? "—"} · live marks`}
+                endpoint="strategies_c + securities_c"
+                dataSource={panelSource}
+                density="dense"
+                right={
+                  <div className="flex items-center gap-2">
+                    <Pill tone="neutral" size="xs">Benchmark {meta?.benchmark}</Pill>
+                    {payload?.iressOverlay ? (
+                      <Pill tone="success" size="xs">{payload.iressOverlay} IRESS marks</Pill>
+                    ) : null}
+                  </div>
+                }
+              >
+                {current.holdings.length === 0 ? (
+                  <EmptyDataState
+                    message="No published holdings for this strategy."
+                    hint="holdings JSON on strategies_c is empty."
+                    badgeLabel="unconfigured"
+                  />
+                ) : (
+                  <HoldingsTable
+                    rows={current.holdings}
+                    constituentTotal={current.totals.constituent}
+                    cash={current.totals.cash}
+                    cashPct={current.totals.cashPct}
+                    basketMin={current.totals.basketMin}
+                  />
+                )}
+              </Panel>
+
+              <Panel title="Sector exposure" dataSource={panelSource} density="comfortable">
+                {current.sectors.length > 0 ? (
+                  <SectorExposureChart title="Current allocation" data={current.sectors} />
+                ) : (
+                  <EmptyDataState message="No sector weights to display." badgeLabel="unconfigured" />
+                )}
+              </Panel>
+            </TabsContent>
+
+            <TabsContent value="proposed" className="mt-0 space-y-3">
+              {proposed ? (
+                <>
+                  <Panel
+                    title="Proposed composition"
+                    subtitle="Includes pending catalogue flags from strategies_c"
+                    endpoint="strategies_c · pending"
+                    dataSource={panelSource}
+                    density="dense"
+                  >
+                    <HoldingsTable
+                      rows={proposed.holdings}
+                      constituentTotal={proposed.totals.constituent}
+                      cash={proposed.totals.cash}
+                      cashPct={proposed.totals.cashPct}
+                      basketMin={proposed.totals.basketMin}
+                      showRating
+                      cashLabel={`Cash reserve (${proposed.totals.cashPct.toFixed(1)}%)`}
+                    />
+                  </Panel>
+
+                  <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+                    <DeltaKpi
+                      label="Constituent value"
+                      current={current.totals.constituent}
+                      proposed={proposed.totals.constituent}
+                    />
+                    <DeltaKpi
+                      label="Basket minimum price"
+                      current={current.totals.basketMin}
+                      proposed={proposed.totals.basketMin}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+                    <Panel title="Sector exposure — Current" dataSource={panelSource}>
+                      <SectorExposureChart title="Before" data={current.sectors} />
+                    </Panel>
+                    <Panel title="Sector exposure — Proposed" dataSource={panelSource}>
+                      <SectorExposureChart title="After pending names" data={proposed.sectors} />
+                    </Panel>
+                  </div>
+                </>
+              ) : (
+                <Panel title="Proposed changes" dataSource="code-gap">
+                  <EmptyDataState
+                    message="No pending changes on this strategy."
+                    hint="Mark a holding with pending: true in strategies_c, or use Compare below to research candidates."
+                    badgeLabel="unconfigured"
+                  />
+                </Panel>
+              )}
+            </TabsContent>
+          </Tabs>
+
+          {/* Compare / research */}
+          <Panel
+            title="Compare candidates"
+            subtitle="Add names from the JSE universe"
+            endpoint="securities_c"
+            dataSource="supabase"
+          >
+            <div className="space-y-3">
+              <div className="relative max-w-md">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="Search ticker or company…"
+                  value={compareQ}
+                  onChange={(e) => setCompareQ(e.target.value)}
+                  className="h-8 pl-8 font-mono text-xs"
+                />
+              </div>
+              {compareCandidates.length > 0 && (
+                <ul className="max-w-md divide-y divide-border rounded-md border border-border">
+                  {compareCandidates.map((c) => (
+                    <li key={c.ticker}>
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-muted/40"
+                        onClick={() => {
+                          if (!extraTickers.includes(c.ticker) && !matrixTickers.includes(c.ticker)) {
+                            setExtraTickers((prev) => [...prev, c.ticker]);
+                          }
+                          setCompareQ("");
+                        }}
+                      >
+                        <span>
+                          <span className="font-semibold text-primary">{c.ticker}</span>
+                          <span className="ml-2 text-muted-foreground">{c.name}</span>
+                        </span>
+                        <ChevronDown className="h-3 w-3 rotate-[-90deg] text-muted-foreground" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {extraTickers.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {extraTickers.map((t) => (
+                    <Pill key={t} tone="info" size="xs" className="cursor-pointer" onClick={() => setExtraTickers((p) => p.filter((x) => x !== t))}>
+                      {t} ×
+                    </Pill>
+                  ))}
+                </div>
+              )}
+              <p className="text-[10px] text-muted-foreground">
+                Comparison columns are session-only. Open any constituent in Security for full L1 + Yahoo stats.
+              </p>
+            </div>
+          </Panel>
+
+          {/* Fundamentals */}
+          <Panel
+            title="Fundamental metrics"
+            subtitle="Yahoo (securities_c) + model heuristics"
+            endpoint="securities_c"
+            dataSource={panelSource}
+            right={
+              <div className="flex gap-1">
+                <Pill tone="success" size="xs">Good</Pill>
+                <Pill tone="warning" size="xs">Neutral</Pill>
+                <Pill tone="destructive" size="xs">Concern</Pill>
+              </div>
+            }
+          >
+            <FundamentalsMatrix metrics={payload?.fundamentals ?? []} tickers={matrixTickers} />
+            {payload?.gaps.map((g) => (
+              <p key={g} className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                {g}
+              </p>
+            ))}
+            <div className="mt-2 flex flex-wrap gap-2">
+              {matrixTickers.map((t) => (
+                <Link
+                  key={t}
+                  href={`/oems/security?sym=${t}`}
+                  className="inline-flex items-center gap-1 font-mono text-[10px] text-primary hover:underline"
+                >
+                  {t} <ExternalLink className="h-3 w-3" />
+                </Link>
+              ))}
+            </div>
+          </Panel>
+
+          {/* Committee + audit */}
+          <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
+            <Panel
+              title="Investment committee · Approvals"
+              subtitle="Pending change requests"
+              endpoint="research_workflow"
+              dataSource="code-gap"
+              right={
+                <Pill tone="neutral" size="xs">
+                  <Scale className="mr-1 inline h-3 w-3" />0 pending
+                </Pill>
+              }
+            >
+              {role === "head" ? (
+                <EmptyDataState
+                  message="No pending requests."
+                  hint="Committee workflow tables not yet connected — strategist proposals will route here."
+                  badgeLabel="code-gap"
+                />
+              ) : (
+                <div className="space-y-2">
+                  <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <ClipboardCheck className="h-4 w-4 text-primary" />
+                    Switch role to Head of Investments to approve.
+                  </p>
+                  <EmptyDataState
+                    message="No pending requests."
+                    hint="Committee workflow not yet wired to Supabase."
+                    badgeLabel="code-gap"
+                  />
+                </div>
+              )}
+            </Panel>
+
+            <Panel
+              title="Audit log"
+              subtitle="Strategy activity"
+              endpoint="research_audit"
+              dataSource="code-gap"
+              right={<History className="h-3.5 w-3.5 text-muted-foreground" />}
+            >
+              <EmptyDataState
+                message="No activity yet."
+                hint="Submitted requests, approvals and declines will appear when the workflow BFF is live."
+                badgeLabel="code-gap"
+              />
+            </Panel>
+          </div>
+        </>
+      )}
 
       <footer className="text-center text-[10px] text-muted-foreground">
-        For institutional use only. Whole-share quantities; no fractional ownership. Strategy changes require
-        committee approval.
+        Prices: IRESS overlay where entitled, else Yahoo securities_c. Whole-share quantities from strategies_c.
+        Extended fundamentals and committee workflow require vendor / schema work.
       </footer>
     </div>
   );

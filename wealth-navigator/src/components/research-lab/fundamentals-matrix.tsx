@@ -5,7 +5,7 @@ import { Plus } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/oems/primitives/pill";
-import type { FundamentalMetric, MetricTone, Verdict } from "@/lib/research-lab/yield-basket";
+import type { FundamentalMetric, MetricTone, Verdict } from "@/lib/research-lab/types";
 
 function metricCellClass(tone?: MetricTone) {
   if (tone === "good") return "text-up";
@@ -92,15 +92,17 @@ export function FundamentalsMatrix({ metrics, tickers }: FundamentalsMatrixProps
                   {columns.map((t) => {
                     const raw = extraCols.includes(t) ? null : (m.values[t] ?? null);
                     const tone = m.tones?.[t];
+                    const display = m.unavailable ? "—" : raw;
                     return (
                       <td
                         key={t}
                         className={cn(
                           "px-2.5 py-1.5 text-right align-top tabular-nums",
-                          metricCellClass(tone),
+                          m.unavailable && "text-muted-foreground/50",
+                          !m.unavailable && metricCellClass(tone),
                         )}
                       >
-                        {m.id === "verdict" ? verdictPill(raw) : raw ?? "—"}
+                        {m.id === "verdict" ? verdictPill(display) : display ?? "—"}
                       </td>
                     );
                   })}

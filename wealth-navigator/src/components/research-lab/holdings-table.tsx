@@ -3,7 +3,7 @@
 import { cn } from "@/lib/cn";
 import { formatZARExact } from "@/lib/format";
 import { Pill } from "@/components/oems/primitives/pill";
-import type { HoldingRow, Verdict } from "@/lib/research-lab/yield-basket";
+import type { HoldingRow, Verdict } from "@/lib/research-lab/types";
 
 function verdictTone(v: Verdict) {
   if (v === "BUY") return "success" as const;
