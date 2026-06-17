@@ -377,10 +377,11 @@ function SecurityStatsGrid({ sym }: { sym: string }) {
         ))}
       </div>
       <p className="text-[9.5px] leading-relaxed text-muted-foreground/70">
-        Quote block (Previous Close → Avg. Volume): <span className="text-muted-foreground">IRESS PricingQuoteGet</span>
-        {s == null ? " — apply the quote_snapshot_c migration to populate" : ""}. Market Cap / Beta / PE / EPS /
-        Dividend: <span className="text-muted-foreground">Yahoo (securities_c)</span>. Earnings Date / Ex-Dividend /
-        1y Target Est: pending a fundamentals vendor (not on the IRESS V4 surface, not yet in securities_c).
+        Prev Close / Open / Bid / Ask / Day&apos;s Range / Volume: <span className="text-muted-foreground">IRESS PricingQuoteGet</span>
+        {s == null ? " (apply the quote_snapshot_c migration to populate)" : ""}. 52-Week Range / Avg. Volume:
+        IRESS daily history (worker fill pending). Market Cap / Beta / PE / EPS / Dividend:{" "}
+        <span className="text-muted-foreground">Yahoo (securities_c)</span>. Earnings Date / Ex-Dividend / 1y Target
+        Est: pending a fundamentals vendor (not on the IRESS V4 surface, not in securities_c).
       </p>
     </div>
   );
