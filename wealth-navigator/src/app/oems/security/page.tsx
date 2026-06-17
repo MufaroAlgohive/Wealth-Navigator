@@ -157,47 +157,44 @@ function SecurityPageContent() {
         )}
       </div>
 
-      {realDataOnly && (
+      {realDataOnly ? (
         <Panel
-          title="Quote · IRESS L1"
-          endpoint={`GET /api/quote-snapshot/${activeSym}`}
-          dataSource="supabase"
-          right={<span className="font-mono text-[10px]">IRESS PricingQuoteGet</span>}
+          title={`Key Statistics · ${inst?.name ?? activeSym}`}
+          endpoint="GET /api/quote-snapshot + /api/equities"
+          right={<span className="font-mono text-[10px]">{inst?.sector ?? inst?.isin ?? ""}</span>}
         >
-          <RealQuoteL1Grid sym={activeSym} />
+          <SecurityStatsGrid sym={activeSym} />
+        </Panel>
+      ) : (
+        <Panel
+          title="Reference · ISIN / RIC / Sector / Fundamentals"
+          endpoint={`GET /v1/securities/${inst?.isin ?? ""}`}
+          right={<span className="font-mono text-[10px]">{inst?.isin}</span>}
+        >
+          {equitiesQ.isLoading ? (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-busy="true" aria-live="polite">
+              {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].map((n) => (
+                <div key={`security-row-${n}`} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+                  <span className="shimmer block h-2 w-3/4 rounded" />
+                  <span className="shimmer mt-1.5 block h-3 w-1/2 rounded" />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <FundamentalsGrid
+              inst={{
+                ric: inst?.ric,
+                isin: inst?.isin,
+                exchange: inst?.exchange,
+                sector: inst?.sector,
+                currency: inst?.currency,
+                assetClass: inst?.assetClass,
+              }}
+              sym={activeSym}
+            />
+          )}
         </Panel>
       )}
-
-      <Panel
-        title="Reference · ISIN / RIC / Sector / Fundamentals"
-        endpoint={`GET /v1/securities/${inst?.isin ?? ""}`}
-        right={<span className="font-mono text-[10px]">{inst?.isin}</span>}
-      >
-        {equitiesQ.isLoading ? (
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-busy="true" aria-live="polite">
-            {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17].map((n) => (
-              <div key={`security-row-${n}`} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-                <span className="shimmer block h-2 w-3/4 rounded" />
-                <span className="shimmer mt-1.5 block h-3 w-1/2 rounded" />
-              </div>
-            ))}
-          </div>
-        ) : realDataOnly ? (
-          <RealFundamentalsGrid sym={activeSym} />
-        ) : (
-          <FundamentalsGrid
-            inst={{
-              ric: inst?.ric,
-              isin: inst?.isin,
-              exchange: inst?.exchange,
-              sector: inst?.sector,
-              currency: inst?.currency,
-              assetClass: inst?.assetClass,
-            }}
-            sym={activeSym}
-          />
-        )}
-      </Panel>
     </div>
   );
 }
@@ -284,85 +281,7 @@ interface EquityFundamentals {
   ytd_performance: number | null;
 }
 
-function RealFundamentalsGrid({ sym }: { sym: string }) {
-  const universeQ = useQuery<{ securities: EquityFundamentals[] }>({
-    queryKey: ["equities-universe"],
-    queryFn: async () => {
-      const r = await fetch("/api/equities", { cache: "no-store" });
-      if (!r.ok) throw new Error(`equities ${r.status}`);
-      return r.json();
-    },
-    ...queryOpts("reference"),
-  });
-
-  if (universeQ.isLoading) {
-    return (
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-busy="true" aria-live="polite">
-        {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-          <div key={`real-fund-${n}`} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-            <span className="shimmer block h-2 w-3/4 rounded" />
-            <span className="shimmer mt-1.5 block h-3 w-1/2 rounded" />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  const row = (universeQ.data?.securities ?? []).find(
-    (s) => s.symbol.replace(/\.JO$/i, "").toUpperCase() === sym.toUpperCase(),
-  );
-
-  if (!row) {
-    return (
-      <EmptyDataState
-        title="Security not in universe"
-        message={`No reference row for ${sym} in the retail equities universe (securities_c).`}
-      />
-    );
-  }
-
-  const fmt = (v: number | null | undefined, dp = 2) =>
-    v == null || !Number.isFinite(v) ? "—" : v.toFixed(dp);
-  const pe = row.pe ?? row.pe_ratio;
-  const fields: Array<{ k: string; v: string }> = [
-    { k: "ISIN", v: row.isin ?? "—" },
-    { k: "Sector", v: row.sector ?? "—" },
-    { k: "Industry", v: row.industry ?? "—" },
-    { k: "P/E", v: fmt(pe) },
-    { k: "EPS", v: fmt(row.eps) },
-    { k: "Div Yield", v: row.dividend_yield == null ? "—" : formatPct(row.dividend_yield) },
-    { k: "Beta", v: fmt(row.beta) },
-    { k: "Mkt Cap", v: row.market_cap == null ? "—" : formatZAR(row.market_cap) },
-    { k: "YTD", v: row.ytd_performance == null ? "—" : formatPct(row.ytd_performance) },
-  ];
-
-  return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-      {fields.map(({ k, v }) => (
-        <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-          <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
-          <p className="mt-0.5 font-mono text-xs font-semibold">{v}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/**
- * IRESS L1 quote snapshot — Prev Close / Open / Bid / Ask / Day's Range /
- * Volume / Last (+ 52-week range / avg volume when computed). Sourced from
- * `/api/quote-snapshot/[sym]` (institutional `quote_snapshot_c`, worker-fed
- * from PricingQuoteGet). This is the IRESS half of the Security page; the
- * analyst fundamentals below stay on Yahoo (not on the IRESS V4 surface).
- */
-interface L1Snapshot {
-  last: number | null; open: number | null; high: number | null; low: number | null;
-  bid: number | null; ask: number | null; prevClose: number | null; volume: number | null;
-  vwap: number | null; week52High: number | null; week52Low: number | null; avgVolume: number | null;
-  currency: string | null; marketState: string | null; asOf: string;
-}
-
-function RealQuoteL1Grid({ sym }: { sym: string }) {
+function SecurityStatsGrid({ sym }: { sym: string }) {
   const snapQ = useQuery<{ symbol: string; snapshot: L1Snapshot | null; source: string; message?: string }>({
     queryKey: ["quote-snapshot", sym],
     queryFn: async () => {
@@ -373,57 +292,92 @@ function RealQuoteL1Grid({ sym }: { sym: string }) {
     refetchInterval: 15_000,
     ...queryOpts("live"),
   });
+  const eqQ = useQuery<{ securities: EquityFundamentals[] }>({
+    queryKey: ["equities-universe"],
+    queryFn: async () => {
+      const r = await fetch("/api/equities", { cache: "no-store" });
+      if (!r.ok) throw new Error(`equities ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+  });
 
-  if (snapQ.isLoading) {
+  if (snapQ.isLoading || eqQ.isLoading) {
     return (
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6" aria-busy="true">
-        {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => (
-          <div key={`l1-${n}`} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-            <span className="shimmer block h-2 w-3/4 rounded" />
-            <span className="shimmer mt-1.5 block h-3 w-1/2 rounded" />
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-border/60 bg-border/40 lg:grid-cols-2" aria-busy="true">
+        {Array.from({ length: 16 }).map((_, n) => (
+          <div key={`stat-${n}`} className="bg-surface-1 px-3 py-2">
+            <span className="shimmer block h-3 w-2/3 rounded" />
           </div>
         ))}
       </div>
     );
   }
 
-  const s = snapQ.data?.snapshot;
-  if (!s) {
-    return (
-      <EmptyDataState
-        title="No IRESS L1 snapshot yet"
-        message={snapQ.data?.message ?? `No quote_snapshot_c row for ${sym} — the worker writes it once the symbol is in the quote watchlist.`}
-      />
-    );
-  }
+  const s = snapQ.data?.snapshot ?? null;
+  const eq = (eqQ.data?.securities ?? []).find(
+    (x) => x.symbol.replace(/\.JO$/i, "").toUpperCase() === sym.toUpperCase(),
+  );
 
-  const z = (v: number | null) => (v == null ? "—" : formatZAR(v));
-  const vol = (v: number | null) => (v == null ? "—" : v.toLocaleString("en-ZA"));
-  const range = (lo: number | null, hi: number | null) => (lo == null || hi == null ? "—" : `${formatZAR(lo)} – ${formatZAR(hi)}`);
+  const z = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : formatZAR(v));
+  const vol = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : Math.round(v).toLocaleString("en-ZA"));
+  const n2 = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? "—" : v.toFixed(2));
+  const range = (lo: number | null | undefined, hi: number | null | undefined) =>
+    lo == null || hi == null ? "—" : `${formatZAR(lo)} – ${formatZAR(hi)}`;
+
+  // Yahoo-style 16-field layout (Lonwabo's spec). Quote block = IRESS L1;
+  // valuation = Yahoo securities_c; the three date/estimate fields have no
+  // IRESS or securities_c source yet (shown "—").
   const fields: Array<{ k: string; v: string }> = [
-    { k: "Last", v: z(s.last) },
-    { k: "Prev Close", v: z(s.prevClose) },
-    { k: "Open", v: z(s.open) },
-    { k: "Bid", v: z(s.bid) },
-    { k: "Ask", v: z(s.ask) },
-    { k: "Day's Range", v: range(s.low, s.high) },
-    { k: "Volume", v: vol(s.volume) },
-    { k: "VWAP", v: z(s.vwap) },
-    { k: "52wk Range", v: range(s.week52Low, s.week52High) },
-    { k: "Avg Volume", v: vol(s.avgVolume) },
-    { k: "Market", v: s.marketState ?? "—" },
-    { k: "Currency", v: s.currency ?? "—" },
+    { k: "Previous Close", v: z(s?.prevClose) },
+    { k: "Open", v: z(s?.open) },
+    { k: "Bid", v: z(s?.bid) },
+    { k: "Ask", v: z(s?.ask) },
+    { k: "Day's Range", v: range(s?.low, s?.high) },
+    { k: "52 Week Range", v: range(s?.week52Low, s?.week52High) },
+    { k: "Volume", v: vol(s?.volume) },
+    { k: "Avg. Volume", v: vol(s?.avgVolume) },
+    { k: "Market Cap (intraday)", v: eq?.market_cap == null ? "—" : formatZAR(eq.market_cap) },
+    { k: "Beta (5Y Monthly)", v: n2(eq?.beta) },
+    { k: "PE Ratio (TTM)", v: n2(eq?.pe ?? eq?.pe_ratio) },
+    { k: "EPS (TTM)", v: n2(eq?.eps) },
+    { k: "Earnings Date (est.)", v: "—" },
+    { k: "Forward Dividend & Yield", v: eq?.dividend_yield == null ? "—" : formatPct(eq.dividend_yield) },
+    { k: "Ex-Dividend Date", v: "—" },
+    { k: "1y Target Est", v: "—" },
   ];
+
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-      {fields.map(({ k, v }) => (
-        <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-          <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
-          <p className="mt-0.5 font-mono text-xs font-semibold">{v}</p>
-        </div>
-      ))}
+    <div className="space-y-2">
+      <div className="grid grid-cols-1 gap-px overflow-hidden rounded-md border border-border/60 bg-border/40 sm:grid-cols-2">
+        {fields.map(({ k, v }) => (
+          <div key={k} className="flex items-center justify-between gap-3 bg-surface-1 px-3 py-2">
+            <span className="text-[11px] text-muted-foreground">{k}</span>
+            <span className="font-mono text-xs font-semibold tabular-nums">{v}</span>
+          </div>
+        ))}
+      </div>
+      <p className="text-[9.5px] leading-relaxed text-muted-foreground/70">
+        Quote block (Previous Close → Avg. Volume): <span className="text-muted-foreground">IRESS PricingQuoteGet</span>
+        {s == null ? " — apply the quote_snapshot_c migration to populate" : ""}. Market Cap / Beta / PE / EPS /
+        Dividend: <span className="text-muted-foreground">Yahoo (securities_c)</span>. Earnings Date / Ex-Dividend /
+        1y Target Est: pending a fundamentals vendor (not on the IRESS V4 surface, not yet in securities_c).
+      </p>
     </div>
   );
+}
+
+/**
+ * IRESS L1 quote snapshot shape — Prev Close / Open / Bid / Ask / Day's Range /
+ * Volume (+ 52-week range / avg volume) from `/api/quote-snapshot/[sym]`
+ * (institutional `quote_snapshot_c`, worker-fed from PricingQuoteGet). Consumed
+ * by SecurityStatsGrid (the combined Key-Statistics grid above).
+ */
+interface L1Snapshot {
+  last: number | null; open: number | null; high: number | null; low: number | null;
+  bid: number | null; ask: number | null; prevClose: number | null; volume: number | null;
+  vwap: number | null; week52High: number | null; week52Low: number | null; avgVolume: number | null;
+  currency: string | null; marketState: string | null; asOf: string;
 }
 
 function SecurityChart({ sym, realDataOnly }: { sym: string; realDataOnly: boolean }) {
