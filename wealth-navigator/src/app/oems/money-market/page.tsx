@@ -53,10 +53,27 @@ export default function MoneyMarketPage() {
     refetchInterval: 60_000,
     ...queryOpts("reference"),
   });
+  // SARB benchmarks (repo / prime / ZARONIA / Sabor) — real money-market rates.
+  // IRESS has no rates feed; JIBAR term fixings + the NCD/T-Bill instrument
+  // universe still need a vendor, so those tables stay honest empty states.
+  type SaRate = { label: string; value: number | null; asOf: string | null } | null;
+  const saRatesQ = useQuery<{ source: string; sourceLabel?: string; rates: Record<string, SaRate> }>({
+    queryKey: ["bff-sa-rates"],
+    queryFn: async () => {
+      const r = await fetch("/api/sa-rates", { cache: "no-store" });
+      if (!r.ok) throw new Error(`sa-rates ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 3_600_000,
+    ...queryOpts("reference"),
+  });
+  const sa = saRatesQ.data?.rates;
+  const fmtRate = (r: SaRate | undefined) => (r && r.value != null ? `${r.value.toFixed(2)}%` : "—");
+
   const instruments = mmQ.data?.instruments ?? [];
   const jibar = mmQ.data?.jibar ?? [];
   const hasData = instruments.length > 0 || jibar.length > 0;
-  const jibar3m = jibar.find((j) => j.tenor.toUpperCase() === "3M");
 
   if (!realDataOnly) {
     return (
@@ -84,15 +101,15 @@ export default function MoneyMarketPage() {
       </header>
 
       <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-5">
-        {mmQ.isLoading ? (
+        {mmQ.isLoading || saRatesQ.isLoading ? (
           [0, 1, 2, 3, 4].map((n) => <KpiTileSkeleton key={`mm-kpi-${n}`} />)
         ) : (
           <>
-            <KpiTile icon={<Banknote className="h-3.5 w-3.5" />} label="MM instruments" value={instruments.length.toString()} sub="eligible NCD/TB/FRN" />
-            <KpiTile icon={<TrendingUp className="h-3.5 w-3.5" />} label="JIBAR 3M" value={jibar3m ? `${jibar3m.rate.toFixed(2)}%` : "—"} sub={jibar3m ? new Date(jibar3m.rateDate).toISOString().slice(0, 10) : "no fixing"} />
-            <KpiTile icon={<TrendingUp className="h-3.5 w-3.5" />} label="JIBAR 6M" value={jibar.find((j) => j.tenor.toUpperCase() === "6M")?.rate.toFixed(2) ?? "—"} sub="latest fixing" />
-            <KpiTile icon={<TrendingUp className="h-3.5 w-3.5" />} label="JIBAR 12M" value={jibar.find((j) => j.tenor.toUpperCase() === "12M")?.rate.toFixed(2) ?? "—"} sub="latest fixing" />
-            <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="Credit limits" value={hasData ? "OK" : "—"} sub={hasData ? "all issuers within band" : "no instruments"} />
+            <KpiTile icon={<Banknote className="h-3.5 w-3.5" />} label="SARB Repo" value={fmtRate(sa?.repo)} sub={sa?.repo?.asOf ? sa.repo.asOf.slice(0, 10) : "SARB"} />
+            <KpiTile icon={<TrendingUp className="h-3.5 w-3.5" />} label="Prime" value={fmtRate(sa?.prime)} sub="SARB" />
+            <KpiTile icon={<TrendingUp className="h-3.5 w-3.5" />} label="ZARONIA" value={fmtRate(sa?.zaronia)} sub={sa?.zaronia?.asOf ? sa.zaronia.asOf.slice(0, 10) : "overnight · SARB"} />
+            <KpiTile icon={<TrendingUp className="h-3.5 w-3.5" />} label="Sabor" value={fmtRate(sa?.sabor)} sub="overnight · SARB" />
+            <KpiTile icon={<ShieldCheck className="h-3.5 w-3.5" />} label="MM instruments" value={instruments.length.toString()} sub="eligible NCD/TB/FRN" />
           </>
         )}
       </div>
@@ -104,9 +121,8 @@ export default function MoneyMarketPage() {
           dataSource="unconfigured"
         >
           <EmptyDataState
-            message="No MM instruments or JIBAR fixings ingested."
-            hint={mmQ.data?.message ?? "Money-market data requires the IRESS rate entitlement or a vendor contract (e.g. SARB daily feed)."}
-            badgeLabel="blocked-vendor"
+            message="Benchmark rates are live from SARB (above)."
+            hint="The JIBAR term-fixing curve (3M/6M/12M) and the NCD / T-Bill / FRN instrument universe still need a JSE or money-market vendor feed — SARB publishes the overnight benchmarks (repo, prime, ZARONIA, Sabor) but not the term fixings or instrument list."
           />
         </Panel>
       )}
