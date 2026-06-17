@@ -111,9 +111,13 @@ async function loadRetailStrategies(
       benchmark: s.benchmark_name ?? s.benchmark_symbol ?? "—",
       aum: aumR,
       dayPnl: a.day / 100,
-      pnlMtd: 0,
-      ytd: cost > 0 ? (ytdR / cost) * 100 : 0,
-      cashWeight: 0,
+      // MTD P&L + cash weight aren't computed from the retail aggregation —
+      // return null so the UI renders "—" rather than a fake R0.00 / 0.0%.
+      pnlMtd: null,
+      // YTD needs a cost basis; with no subscribed capital there's nothing to
+      // annualise, so null → "—" instead of an implied-flat 0.00%.
+      ytd: cost > 0 ? (ytdR / cost) * 100 : null,
+      cashWeight: null,
       nav: aumR,
       investorCount: a.users.size,
       holdingsCount: Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0,
@@ -185,9 +189,11 @@ function mapRow(r: StrategyRow) {
     benchmark: r.benchmark ?? payload.benchmark as string ?? "—",
     aum: centsToRands(r.aum_cents),
     dayPnl: centsToRands(r.pnl_today_cents),
-    pnlMtd: centsToRands(r.pnl_mtd_cents),
-    ytd: toNumber(r.pnl_ytd_pct),
-    cashWeight: toNumber(r.cash_weight_pct),
+    // Preserve a genuine "not provided" (null) as null so it shows "—";
+    // only a real 0 column value renders as R0.00 / 0.0%.
+    pnlMtd: r.pnl_mtd_cents == null ? null : centsToRands(r.pnl_mtd_cents),
+    ytd: r.pnl_ytd_pct == null ? null : toNumber(r.pnl_ytd_pct),
+    cashWeight: r.cash_weight_pct == null ? null : toNumber(r.cash_weight_pct),
     nav: centsToRands(r.nav_value_cents),
     investorCount: r.investor_count ?? 0,
     holdingsCount: r.holdings_count ?? 0,

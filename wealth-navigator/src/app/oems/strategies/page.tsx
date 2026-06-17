@@ -35,9 +35,9 @@ interface StrategyRow {
   benchmark: string | null;
   aum: number; // Rands
   dayPnl: number; // Rands
-  pnlMtd: number; // Rands
-  ytd: number; // percent
-  cashWeight: number; // percent
+  pnlMtd: number | null; // Rands — null when not computed (shows "—")
+  ytd: number | null; // percent — null when no cost basis (shows "—")
+  cashWeight: number | null; // percent — null when not computed (shows "—")
   nav: number; // Rands
   investorCount: number;
   holdingsCount: number;
@@ -213,7 +213,7 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
       </div>
       <div className="mt-2.5 grid grid-cols-4 gap-2 text-[10.5px]">
         <Stat label="AUM" value={s.aum > 0 ? formatZAR(s.aum) : "—"} />
-        <Stat label="YTD" value={formatPct(s.ytd)} positive={s.ytd >= 0} />
+        <Stat label="YTD" value={s.ytd != null ? formatPct(s.ytd) : "—"} positive={s.ytd != null ? s.ytd >= 0 : undefined} />
         <Stat label="Day P&L" value={s.dayPnl !== 0 ? formatZAR(s.dayPnl) : "—"} positive={s.dayPnl >= 0} />
         <Stat label="Investors" value={s.investorCount.toString()} />
       </div>
@@ -288,11 +288,19 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
         }
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <KpiSmall label="AUM" value={formatZAR(strategy.aum)} />
-          <KpiSmall label="YTD" value={formatPct(strategy.ytd)} negative={strategy.ytd < 0} />
-          <KpiSmall label="MTD P&L" value={formatZAR(strategy.pnlMtd)} negative={strategy.pnlMtd < 0} />
-          <KpiSmall label="NAV" value={formatZAR(strategy.nav)} />
-          <KpiSmall label="Cash" value={`${strategy.cashWeight.toFixed(1)}%`} />
+          <KpiSmall label="AUM" value={strategy.aum > 0 ? formatZAR(strategy.aum) : "—"} />
+          <KpiSmall
+            label="YTD"
+            value={strategy.ytd != null ? formatPct(strategy.ytd) : "—"}
+            negative={strategy.ytd != null && strategy.ytd < 0}
+          />
+          <KpiSmall
+            label="MTD P&L"
+            value={strategy.pnlMtd != null ? formatZAR(strategy.pnlMtd) : "—"}
+            negative={strategy.pnlMtd != null && strategy.pnlMtd < 0}
+          />
+          <KpiSmall label="NAV" value={strategy.nav > 0 ? formatZAR(strategy.nav) : "—"} />
+          <KpiSmall label="Cash" value={strategy.cashWeight != null ? `${strategy.cashWeight.toFixed(1)}%` : "—"} />
           <KpiSmall label="Holdings" value={strategy.holdingsCount.toString()} />
           <KpiSmall label="Investors" value={strategy.investorCount.toString()} />
           <KpiSmall label="Last rebal" value={strategy.lastRebalanced || "—"} />
@@ -315,8 +323,9 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
           <div className="mt-3 flex items-center gap-2 rounded-md border border-success/30 bg-success/5 p-2.5 text-[11.5px] text-success">
             <ShieldCheck className="h-3.5 w-3.5" />
             <span>
-              All pre-trade checks passed · {strategy.investorCount} investors · {strategy.holdingsCount} holdings
-              {strategy.kind === "money_market" ? " · issuer concentration OK" : " · HALTED/SUSPENDED check OK"}.
+              Rebalance-eligible — live with {strategy.investorCount} investors · {strategy.holdingsCount} holdings.
+              Pre-trade mandate &amp; {strategy.kind === "money_market" ? "issuer-concentration" : "halt/suspension"} checks
+              run against IRESS at rebalance time.
             </span>
           </div>
         )}
