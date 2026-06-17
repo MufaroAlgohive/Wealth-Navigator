@@ -71,6 +71,16 @@ export default function NewsPage() {
 
   const [tab, setTab] = useState<"all" | "sens" | "wire">("all");
   const [q, setQ] = useState("");
+  // Alliance wire items have no external URL (licensed full-text); clicking
+  // them expands the body in-app. RSS items link out instead.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   // /api/news returns the Alliance News wire from the retail News_articles feed,
   // tagged category "WIRE". SENS (category "SENS") needs a separate JSE SENS
@@ -157,14 +167,48 @@ export default function NewsPage() {
                     ))}
                     <span className="ml-auto font-mono text-[10px] text-muted-foreground">{formatTime(a.ts)}</span>
                   </div>
-                  <p
-                    className={cn(
+                  {(() => {
+                    const headlineClass = cn(
                       "mt-1 text-[13px] leading-snug",
                       a.severity === "high" || a.severity === "regulatory" ? "font-semibold" : "font-medium",
-                    )}
-                  >
-                    {a.headline}
-                  </p>
+                    );
+                    if (a.url) {
+                      // RSS / web article → open the source in a new tab.
+                      return (
+                        <a
+                          href={a.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={cn(headlineClass, "block hover:text-primary hover:underline")}
+                        >
+                          {a.headline} <span className="text-[10px] text-muted-foreground">↗</span>
+                        </a>
+                      );
+                    }
+                    if (a.body) {
+                      // Alliance wire (no external URL) → expand the body in-app.
+                      const isOpen = expanded.has(a.id);
+                      return (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => toggleExpanded(a.id)}
+                            className={cn(headlineClass, "block w-full text-left hover:text-primary")}
+                            aria-expanded={isOpen}
+                          >
+                            {a.headline}{" "}
+                            <span className="text-[10px] font-normal text-muted-foreground">{isOpen ? "▲ less" : "▾ read"}</span>
+                          </button>
+                          {isOpen ? (
+                            <p className="mt-1.5 whitespace-pre-line text-[11.5px] leading-relaxed text-muted-foreground">
+                              {a.body}
+                            </p>
+                          ) : null}
+                        </>
+                      );
+                    }
+                    return <p className={headlineClass}>{a.headline}</p>;
+                  })()}
                 </li>
               );
             })}

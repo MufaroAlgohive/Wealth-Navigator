@@ -192,14 +192,21 @@ export async function syncRetailPrices(opts: {
   // This powers the dashboard's IRESS-first price/change overlay across all 246
   // names (not just the 15s watchlist) and the Security L1 panel for any symbol.
   if (institutional && snapshotRows.length > 0) {
+    // De-dupe by (security_code, exchange): two securities_c symbols can map to
+    // the same bare IRESS code, and Postgres rejects an upsert batch that
+    // touches the same ON CONFLICT key twice ("cannot affect row a second
+    // time"). Keep the last occurrence per key.
+    const dedupedSnapshot = Array.from(
+      new Map(snapshotRows.map((r) => [`${r.security_code}|${r.exchange}`, r])).values(),
+    );
     const { error: snapErr } = await institutional
       .from("quote_snapshot_c")
-      .upsert(snapshotRows, { onConflict: "security_code,exchange" });
+      .upsert(dedupedSnapshot, { onConflict: "security_code,exchange" });
     if (snapErr) {
       console.warn(`[retail-ingest] quote_snapshot_c upsert failed: ${snapErr.message}`);
     } else {
       console.info(
-        JSON.stringify({ level: "info", event: "quote_snapshot_c_universe_upserted", count: snapshotRows.length }),
+        JSON.stringify({ level: "info", event: "quote_snapshot_c_universe_upserted", count: dedupedSnapshot.length }),
       );
     }
   }
