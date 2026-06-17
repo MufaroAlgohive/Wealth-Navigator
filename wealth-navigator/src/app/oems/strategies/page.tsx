@@ -17,28 +17,32 @@ import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 
 /**
- * Strategy aggregate row — the slim Supabase-backed shape.
- * Maps 1:1 to `oems_strategy_c` columns. The IPS portfolio
- * (`oems_position_c` / `oems_transaction_c`) holds the per-investor
- * holdings; this row is the *desk's* aggregate view.
+ * Strategy view-model — the shape `/api/strategies` actually returns.
+ *
+ * NOTE: this is the BFF's normalised view-model (already in Rands / percent,
+ * with `id` + `kind`), NOT the raw `oems_strategy_c` column shape. The BFF
+ * prefers the populated retail catalogue (`strategies_c` + per-strategy
+ * AUM/PnL from `client_strategy_returns_c`) and falls back to the
+ * institutional rollup; both are mapped to this single shape. Keep this in
+ * sync with `mapRow` / `loadRetailStrategies` in the route.
  */
 interface StrategyRow {
-  strategy_id: string;
+  id: string;
   name: string;
   status: "live" | "paper" | "halted";
-  asset_class: "equity" | "money_market" | "balanced" | "fixed_income";
+  kind: "equity" | "money_market" | "balanced" | "fixed_income";
   manager: string | null;
   benchmark: string | null;
-  aum_cents: number;
-  pnl_today_cents: number;
-  pnl_mtd_cents: number;
-  pnl_ytd_pct: number;
-  nav_value_cents: number;
-  investor_count: number;
-  holdings_count: number;
-  cash_weight_pct: number;
-  deployed_at: string | null;
-  last_rebalanced_at: string | null;
+  aum: number; // Rands
+  dayPnl: number; // Rands
+  pnlMtd: number; // Rands
+  ytd: number; // percent
+  cashWeight: number; // percent
+  nav: number; // Rands
+  investorCount: number;
+  holdingsCount: number;
+  lastRebalanced: string; // "YYYY-MM-DD" or "—" (already formatted by the BFF)
+  deployedAt: string | null;
 }
 
 interface StrategiesResponse {
@@ -50,6 +54,15 @@ interface StrategiesResponse {
   reason?: import("@/lib/bff-reasons").BffUnavailableReason;
   migration?: string;
   error?: string;
+}
+
+/** Asset-class label, defensive against a missing/unknown `kind`. */
+function kindLabel(kind: string | null | undefined): string {
+  return (kind ?? "equity").replace("_", " ").toUpperCase();
+}
+
+function kindTone(kind: string | null | undefined): "primary" | "warning" | "neutral" {
+  return kind === "equity" ? "primary" : kind === "money_market" ? "warning" : "neutral";
 }
 
 function StrategiesPageContent() {
@@ -68,11 +81,9 @@ function StrategiesPageContent() {
   const strategies = strategiesQ.data?.strategies ?? [];
   const focusId = useSearchParams().get("focus");
   const [selected, setSelected] = useState<string>(
-    (focusId && strategies.find((s) => s.strategy_id === focusId)?.strategy_id) ||
-      strategies[0]?.strategy_id ||
-      "",
+    (focusId && strategies.find((s) => s.id === focusId)?.id) || strategies[0]?.id || "",
   );
-  const active = strategies.find((s) => s.strategy_id === selected) ?? strategies[0];
+  const active = strategies.find((s) => s.id === selected) ?? strategies[0];
 
   if (!realDataOnly) {
     // Mock/legacy mode is not the production target; redirect to the
@@ -160,12 +171,7 @@ function StrategiesPageContent() {
         <div className="grid grid-cols-12 gap-3">
           <div className="col-span-12 lg:col-span-5 space-y-2">
             {strategies.map((s) => (
-              <StrategyCard
-                key={s.strategy_id}
-                s={s}
-                active={selected === s.strategy_id}
-                onSelect={() => setSelected(s.strategy_id)}
-              />
+              <StrategyCard key={s.id} s={s} active={selected === s.id} onSelect={() => setSelected(s.id)} />
             ))}
           </div>
 
@@ -185,7 +191,7 @@ export default function StrategiesPage() {
 }
 
 function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean; onSelect: () => void }) {
-  const rebal = s.status === "live" && s.investor_count > 0;
+  const rebal = s.status === "live" && s.investorCount > 0;
   return (
     <button
       onClick={onSelect}
@@ -201,15 +207,15 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
             {s.manager ?? "—"} {s.benchmark ? `· bench ${s.benchmark}` : ""}
           </p>
         </div>
-        <Pill tone={s.asset_class === "equity" ? "primary" : s.asset_class === "money_market" ? "warning" : "neutral"} size="xs">
-          {s.asset_class.replace("_", " ").toUpperCase()}
+        <Pill tone={kindTone(s.kind)} size="xs">
+          {kindLabel(s.kind)}
         </Pill>
       </div>
       <div className="mt-2.5 grid grid-cols-4 gap-2 text-[10.5px]">
-        <Stat label="AUM" value={s.aum_cents > 0 ? formatZAR(s.aum_cents / 100) : "—"} />
-        <Stat label="YTD" value={formatPct(s.pnl_ytd_pct / 100)} positive={s.pnl_ytd_pct >= 0} />
-        <Stat label="Day P&L" value={s.pnl_today_cents !== 0 ? formatZAR(s.pnl_today_cents / 100) : "—"} positive={s.pnl_today_cents >= 0} />
-        <Stat label="Investors" value={s.investor_count.toString()} />
+        <Stat label="AUM" value={s.aum > 0 ? formatZAR(s.aum) : "—"} />
+        <Stat label="YTD" value={formatPct(s.ytd)} positive={s.ytd >= 0} />
+        <Stat label="Day P&L" value={s.dayPnl !== 0 ? formatZAR(s.dayPnl) : "—"} positive={s.dayPnl >= 0} />
+        <Stat label="Investors" value={s.investorCount.toString()} />
       </div>
       <div className="mt-2.5 flex items-center justify-between border-t border-border/60 pt-2">
         <Pill
@@ -268,34 +274,28 @@ function Stat({ label, value, positive }: { label: string; value: string; positi
 }
 
 function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
-  const rebal = strategy.status === "live" && strategy.investor_count > 0;
+  const rebal = strategy.status === "live" && strategy.investorCount > 0;
   return (
     <div className="col-span-12 lg:col-span-7 space-y-3">
       <Panel
         title={`${strategy.name} · detail`}
-        endpoint={`oems_strategy_c[${strategy.strategy_id}]`}
+        endpoint={`oems_strategy_c[${strategy.id}]`}
         dataSource="supabase"
         right={
-          <Pill
-            tone={strategy.asset_class === "equity" ? "primary" : strategy.asset_class === "money_market" ? "warning" : "neutral"}
-            size="xs"
-          >
-            {strategy.asset_class.replace("_", " ").toUpperCase()}
+          <Pill tone={kindTone(strategy.kind)} size="xs">
+            {kindLabel(strategy.kind)}
           </Pill>
         }
       >
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <KpiSmall label="AUM" value={formatZAR(strategy.aum_cents / 100)} />
-          <KpiSmall label="YTD" value={formatPct(strategy.pnl_ytd_pct / 100)} negative={strategy.pnl_ytd_pct < 0} />
-          <KpiSmall label="MTD P&L" value={formatZAR(strategy.pnl_mtd_cents / 100)} negative={strategy.pnl_mtd_cents < 0} />
-          <KpiSmall label="NAV" value={formatZAR(strategy.nav_value_cents / 100)} />
-          <KpiSmall label="Cash" value={`${strategy.cash_weight_pct.toFixed(1)}%`} />
-          <KpiSmall label="Holdings" value={strategy.holdings_count.toString()} />
-          <KpiSmall label="Investors" value={strategy.investor_count.toString()} />
-          <KpiSmall
-            label="Last rebal"
-            value={strategy.last_rebalanced_at ? new Date(strategy.last_rebalanced_at).toISOString().slice(0, 10) : "—"}
-          />
+          <KpiSmall label="AUM" value={formatZAR(strategy.aum)} />
+          <KpiSmall label="YTD" value={formatPct(strategy.ytd)} negative={strategy.ytd < 0} />
+          <KpiSmall label="MTD P&L" value={formatZAR(strategy.pnlMtd)} negative={strategy.pnlMtd < 0} />
+          <KpiSmall label="NAV" value={formatZAR(strategy.nav)} />
+          <KpiSmall label="Cash" value={`${strategy.cashWeight.toFixed(1)}%`} />
+          <KpiSmall label="Holdings" value={strategy.holdingsCount.toString()} />
+          <KpiSmall label="Investors" value={strategy.investorCount.toString()} />
+          <KpiSmall label="Last rebal" value={strategy.lastRebalanced || "—"} />
         </div>
         {!rebal && (
           <div className="mt-3 flex items-center gap-2 rounded-md border border-warning/40 bg-warning/5 p-2.5 text-[11.5px] text-warning">
@@ -304,7 +304,7 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
               Rebalance disabled —{" "}
               {strategy.status === "halted"
                 ? "strategy halted by Risk"
-                : strategy.investor_count === 0
+                : strategy.investorCount === 0
                   ? "no underlying investors linked"
                   : "strategy not yet deployed"}
               .
@@ -315,8 +315,8 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
           <div className="mt-3 flex items-center gap-2 rounded-md border border-success/30 bg-success/5 p-2.5 text-[11.5px] text-success">
             <ShieldCheck className="h-3.5 w-3.5" />
             <span>
-              All pre-trade checks passed · {strategy.investor_count} investors · {strategy.holdings_count} holdings
-              {strategy.asset_class === "money_market" ? " · issuer concentration OK" : " · HALTED/SUSPENDED check OK"}.
+              All pre-trade checks passed · {strategy.investorCount} investors · {strategy.holdingsCount} holdings
+              {strategy.kind === "money_market" ? " · issuer concentration OK" : " · HALTED/SUSPENDED check OK"}.
             </span>
           </div>
         )}
@@ -328,7 +328,7 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
         dataSource="unconfigured"
         density="scroll"
         className="h-[420px]"
-        right={<span className="font-mono text-[10px]">{strategy.holdings_count} positions (from oems_position_c)</span>}
+        right={<span className="font-mono text-[10px]">{strategy.holdingsCount} positions (from oems_position_c)</span>}
       >
         <EmptyDataState
           message="Per-investor holdings not yet published for this strategy."
