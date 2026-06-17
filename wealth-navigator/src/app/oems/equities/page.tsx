@@ -43,11 +43,15 @@ interface UniverseSecurity {
   isin: string | null;
   ytd_performance: number | null;
   is_active: boolean | null;
+  /** "iress" when last+change were overlaid from live IRESS, else "yahoo". */
+  price_source?: "iress" | "yahoo";
 }
 
 interface EquitiesUniverseResponse {
   source: "retail-supabase" | "unavailable";
   count: number;
+  /** How many board rows had price/change overlaid from live IRESS. */
+  iressOverlay?: number;
   securities: UniverseSecurity[];
   sectors: { sector: string; count: number; avgChangePct: number; totalMarketCap: number }[];
   reason?: BffUnavailableReason;
@@ -422,45 +426,60 @@ function RealEquitiesTable({
     );
   }
 
+  const iressCount = response?.iressOverlay ?? rows.filter((r) => r.price_source === "iress").length;
   return (
-    <table className="w-full font-mono text-xs">
-      <thead>
-        <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
-          <th className="px-2.5 py-2 text-left">Sym</th>
-          <th className="px-2.5 py-2 text-left">Name</th>
-          <th className="px-2.5 py-2 text-left">Sector</th>
-          <th className="px-2.5 py-2 text-right">Last</th>
-          <th className="px-2.5 py-2 text-right">Chg %</th>
-        </tr>
-      </thead>
-      <tbody className="divide-y divide-border/60">
-        {rows.map((e) => {
-          const sym = bareSymbol(e.symbol);
-          // last_price is INTEGER CENTS → Rands.
-          const lastRands = e.last_price != null ? e.last_price / 100 : null;
-          const chg = Number(e.change_percent);
-          const hasChg = Number.isFinite(chg);
-          return (
-            <tr key={e.symbol} className="hover:bg-muted/30">
-              <td className="px-2.5 py-1.5 font-semibold">{sym}</td>
-              <td className="px-2.5 py-1.5 text-muted-foreground">{e.name ?? "—"}</td>
-              <td className="px-2.5 py-1.5 text-muted-foreground">{e.sector ?? "—"}</td>
-              <td className="px-2.5 py-1.5 text-right tabular-nums">
-                {lastRands != null ? formatZAR(lastRands) : <span className="text-muted-foreground">—</span>}
-              </td>
-              <td className="px-2.5 py-1.5 text-right tabular-nums">
-                {hasChg ? (
-                  <span className={cn("font-mono text-xs", chg > 0 ? "text-up" : chg < 0 ? "text-down" : "text-muted-foreground")}>
-                    {formatPct(chg)}
-                  </span>
-                ) : (
-                  <span className="text-muted-foreground">—</span>
-                )}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <>
+      <p className="mb-2 text-[10.5px] text-muted-foreground">
+        <span className="font-mono font-semibold text-up">{iressCount}</span> of{" "}
+        <span className="font-mono">{rows.length}</span> priced live from IRESS (last + day change);
+        the rest fall back to Yahoo. Fundamentals / market cap / sector are Yahoo (no IRESS source).
+      </p>
+      <table className="w-full font-mono text-xs">
+        <thead>
+          <tr className="text-[9.5px] uppercase tracking-wider text-muted-foreground">
+            <th className="px-2.5 py-2 text-left">Sym</th>
+            <th className="px-2.5 py-2 text-left">Name</th>
+            <th className="px-2.5 py-2 text-left">Sector</th>
+            <th className="px-2.5 py-2 text-right">Last</th>
+            <th className="px-2.5 py-2 text-right">Chg %</th>
+            <th className="px-2.5 py-2 text-center">Src</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border/60">
+          {rows.map((e) => {
+            const sym = bareSymbol(e.symbol);
+            // last_price is INTEGER CENTS → Rands.
+            const lastRands = e.last_price != null ? e.last_price / 100 : null;
+            const chg = Number(e.change_percent);
+            const hasChg = Number.isFinite(chg);
+            const onIress = e.price_source === "iress";
+            return (
+              <tr key={e.symbol} className="hover:bg-muted/30">
+                <td className="px-2.5 py-1.5 font-semibold">{sym}</td>
+                <td className="px-2.5 py-1.5 text-muted-foreground">{e.name ?? "—"}</td>
+                <td className="px-2.5 py-1.5 text-muted-foreground">{e.sector ?? "—"}</td>
+                <td className="px-2.5 py-1.5 text-right tabular-nums">
+                  {lastRands != null ? formatZAR(lastRands) : <span className="text-muted-foreground">—</span>}
+                </td>
+                <td className="px-2.5 py-1.5 text-right tabular-nums">
+                  {hasChg ? (
+                    <span className={cn("font-mono text-xs", chg > 0 ? "text-up" : chg < 0 ? "text-down" : "text-muted-foreground")}>
+                      {formatPct(chg)}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </td>
+                <td className="px-2.5 py-1.5 text-center">
+                  <Pill tone={onIress ? "success" : "neutral"} size="xs" title={onIress ? "Live IRESS last + change" : "Yahoo fallback (no IRESS snapshot for this name yet)"}>
+                    {onIress ? "IRESS" : "Yahoo"}
+                  </Pill>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </>
   );
 }
