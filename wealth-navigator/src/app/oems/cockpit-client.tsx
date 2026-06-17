@@ -357,6 +357,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const equitiesAvailable = equitiesData?.source === "retail-supabase";
   const clientBook = clientBookQ.data;
   const clientBookAvailable = clientBook?.source === "retail-supabase";
+  // Cap-weighted broad-market proxy from the JSE constituent universe (real data
+  // already loaded). IRESS has no official J203/ALSI index on this account, so
+  // we surface this clearly-labelled proxy rather than an empty index panel.
+  const marketProxy = (() => {
+    const secs = equitiesData?.securities ?? [];
+    const withData = secs.filter((s) => s.change_percent != null && (s.market_cap ?? 0) > 0);
+    const totalCap = withData.reduce((a, s) => a + (s.market_cap ?? 0), 0);
+    if (totalCap <= 0) return null;
+    const capWtd = withData.reduce((a, s) => a + (s.change_percent ?? 0) * (s.market_cap ?? 0), 0) / totalCap;
+    return { changePct: capWtd, count: withData.length };
+  })();
 
   // Top gainers + losers by change_percent, top ~8 combined (4 up / 4 down).
   // Positive change_percent = up (single sign convention, matches the ticker
@@ -912,18 +923,41 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
           ) : alsiBffQ.isError || (alsiBffQ.data?.source === "entitlement-required") ? (
             <Panel
-              title="JSE All Share · Intraday"
-              endpoint="GET /api/indices/J203"
-              dataSource={alsiBffQ.data?.source === "entitlement-required" ? "unconfigured" : "unavailable"}
+              title="JSE Market · Cap-weighted proxy"
+              endpoint="GET /api/equities"
+              dataSource={marketProxy ? "supabase" : "unconfigured"}
               className="col-span-12 lg:col-span-8 h-[320px]"
+              right={
+                marketProxy ? (
+                  <span className={cn("font-mono text-sm font-semibold", marketProxy.changePct >= 0 ? "text-up" : "text-down")}>
+                    {marketProxy.changePct >= 0 ? "+" : ""}
+                    {marketProxy.changePct.toFixed(2)}%
+                  </span>
+                ) : undefined
+              }
             >
-              <EmptyDataState
-                title={alsiBffQ.data?.source === "entitlement-required" ? "Index feed not on prod-test" : "ALSI data unavailable"}
-                message={
-                  alsiBffQ.data?.message ??
-                  "TimeSeriesGet2 works; J203 returns no data on the prod-test (CT) feed. Needs the index DataSource enabled for DFM@MINT, or production."
-                }
-              />
+              {marketProxy ? (
+                <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+                  <p className={cn("font-mono text-4xl font-semibold", marketProxy.changePct >= 0 ? "text-up" : "text-down")}>
+                    {marketProxy.changePct >= 0 ? "+" : ""}
+                    {marketProxy.changePct.toFixed(2)}%
+                  </p>
+                  <p className="text-xs text-muted-foreground">Cap-weighted move across {marketProxy.count} JSE constituents</p>
+                  <p className="max-w-md text-[10px] leading-relaxed text-muted-foreground/70">
+                    Real broad-market proxy computed from the live equity universe — NOT the official J203/ALSI
+                    (IRESS has no index feed on this account; the official index needs the IRESS index DataSource
+                    or a vendor).
+                  </p>
+                </div>
+              ) : (
+                <EmptyDataState
+                  title="Index feed not on prod-test"
+                  message={
+                    alsiBffQ.data?.message ??
+                    "TimeSeriesGet2 works; J203 returns no data on the prod-test (CT) feed. Needs the index DataSource enabled for DFM@MINT, or production."
+                  }
+                />
+              )}
             </Panel>
           ) : alsiBffQ.data && alsiBffQ.data.points.length > 0 ? (
             <Panel
