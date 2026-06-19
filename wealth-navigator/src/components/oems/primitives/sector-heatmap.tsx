@@ -43,6 +43,7 @@ export function SectorHeatmap({ data, dataSource, className }: SectorHeatmapProp
       endpoint="PricingQuoteGet (sector indices)"
       dataSource={dataSource}
       subtitle={`${data.length} sectors`}
+      density="scroll"
       className={className}
     >
       <ul role="list" className="divide-y divide-border/40">

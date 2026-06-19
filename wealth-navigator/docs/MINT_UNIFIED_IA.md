@@ -24,9 +24,9 @@ The existing persona store becomes the role lens that gates navigation. `admin` 
 ## Unified navigation (one sidebar, grouped by bank function, role-gated)
 Shared entities appear **once**; the desk/retail split disappears into function.
 
-1. **Overview** — Cockpit (`/oems`) · house overview, role-tailored *(all)*
+1. **Overview** — role-aware landing (`PERSONA_HOME`): desk→Cockpit (`/oems`), WM→My Book (`/wm`), strategist→Strategist Desk (`/strategist`), business→House View (`/business`), funeral→Cover Overview (`/fc/overview`) *(all)*
 2. **Markets** — Securities (`/oems/equities`) · Fixed Income · Money Market · Curves · Macro
-3. **Strategies** — Strategies (`/admin/strategies`, catalogue+builder) · Mandates (`/oems/strategies`, desk/rebalance) · Factsheets (`/admin/factsheets`) · Return Insights (`/admin/dashboard`)
+3. **Strategies** — Strategies (`/strategies`, **Mandates | Builder** tabs; Builder = strategist/admin) · Factsheets (`/admin/factsheets`) · Return Insights (`/admin/dashboard`)
 4. **Clients & Investors** — Clients (`/admin/clients`) · Investors (`/admin/investors`) · Client View Studio (`/admin/studio`)
 5. **Orders & Cash** — Order Book (`/admin/order-book`) · Blotter (`/oems/blotter`) · EFT Payments (`/admin/eft`) · Reconciliation (`/fc/overview`)
 6. **Intelligence & Comms** — News & SENS (`/oems/news`) · Research Lab (`/oems/research-lab`) · Mint Mornings (`/admin/mint-mornings`) · Emailers (`/admin/emailers`)
@@ -38,4 +38,5 @@ Drill-downs (e.g. `/oems/security`) are reached *from* their list, not the top n
 - **One shell** `PlatformShell` (top bar + ticker + the unified `PlatformNav` + main) replaces both `OEMSShell` and `AdminShell`. Both `oems/layout` and `admin/layout` render it; each keeps only its extra providers (admin → `AdminProvider` RBAC; desk → command palette is in the shell).
 - **One nav config** `src/lib/platform/nav.ts` (sections → items, each tagged with the roles that see it). `PlatformNav` filters by `usePersona()`; `admin` sees all. Active state = longest-matching href so `/oems` ≠ `/oems/blotter`.
 - Persona switcher (already in the top bar) is the role selector. Pages themselves are unchanged; only the chrome unifies.
-- **Next:** fold the persona "home" pages (`/wm`, `/strategist`, `/business`) into role-tailored Cockpit variants; merge `/oems/strategies` (mandate) + `/admin/strategies` (builder) into one Strategies page with desk/retail tabs.
+- **Done:** the persona "home" pages (`/wm`, `/strategist`, `/business`, `/fc/overview`) are now folded into the sidebar via the role-aware Overview item (`PERSONA_HOME` / `overviewItem`), matching the top-bar switcher's landing. The two strategy pages are merged into one `/strategies` page (`StrategiesMonitor` = Mandates, `StrategyBuilder` = Builder); `/oems/strategies` and `/admin/strategies` redirect in (preserving `?focus=`).
+- **Next:** align the top-bar persona-switcher home map (`PERSONA_LABEL.home`) to share `PERSONA_HOME` as the single source of truth (admin currently lands on `/compliance` there vs `/oems` in the sidebar). Retire the orphaned `side-nav.tsx` + `use-side-nav-badges.ts` once confirmed unreferenced.

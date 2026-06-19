@@ -10,7 +10,7 @@ import { cn } from "@/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { usePersona } from "@/lib/store/session-provider";
-import { PLATFORM_NAV, visibleFor, activeHref, type NavItem } from "@/lib/platform/nav";
+import { PLATFORM_NAV, visibleFor, activeHref, overviewItem, type NavItem } from "@/lib/platform/nav";
 
 /**
  * The one platform sidebar — shared by the desk AND the admin surfaces, grouped
@@ -25,13 +25,14 @@ export function PlatformNav() {
 
   const active = activeHref(pathname);
 
-  const sections = React.useMemo(
-    () =>
-      PLATFORM_NAV.map((s) => ({ ...s, items: s.items.filter((i) => visibleFor(persona, i)) })).filter(
-        (s) => s.items.length > 0,
-      ),
-    [persona],
-  );
+  const sections = React.useMemo(() => {
+    const overview = { title: "Overview", items: [overviewItem(persona)] };
+    const rest = PLATFORM_NAV.map((s) => ({
+      ...s,
+      items: s.items.filter((i) => visibleFor(persona, i)),
+    })).filter((s) => s.items.length > 0);
+    return [overview, ...rest];
+  }, [persona]);
 
   const showCc = sections.some((s) => s.items.some((i) => i.badge === "cc"));
   React.useEffect(() => {

@@ -32,11 +32,28 @@ const WM: Persona = "wealth_manager";
 const BIZ: Persona = "business";
 const OPS: Persona = "funeral_cover";
 
+/**
+ * Per-role landing for the "Overview" nav item — folds the persona home pages
+ * (desk Cockpit, WM book, strategist desk, business house-view, funeral-cover
+ * overview) into the one sidebar so the Overview link matches where the top-bar
+ * persona switcher lands. Keep in sync with PERSONA_LABEL.home in top-bar.tsx.
+ */
+export const PERSONA_HOME: Record<Persona, { label: string; href: string }> = {
+  oems:           { label: "Cockpit",         href: "/oems" },
+  admin:          { label: "Cockpit",         href: "/oems" },
+  strategist:     { label: "Strategist Desk", href: "/strategist" },
+  wealth_manager: { label: "My Book",         href: "/wm" },
+  business:       { label: "House View",      href: "/business" },
+  funeral_cover:  { label: "Cover Overview",  href: "/fc/overview" },
+};
+
+/** The role-aware "Overview" item rendered at the top of the sidebar. */
+export function overviewItem(persona: Persona): NavItem {
+  const home = PERSONA_HOME[persona];
+  return { label: home.label, href: home.href, icon: LayoutDashboard };
+}
+
 export const PLATFORM_NAV: NavSection[] = [
-  {
-    title: "Overview",
-    items: [{ label: "Cockpit", href: "/oems", icon: LayoutDashboard }],
-  },
   {
     title: "Markets",
     items: [
@@ -101,14 +118,17 @@ export function visibleFor(persona: Persona, item: NavItem): boolean {
   return item.roles.includes(persona);
 }
 
-/** Longest-matching href so `/oems` doesn't light up on `/oems/blotter`. */
+/** Longest-matching href so `/oems` doesn't light up on `/oems/blotter`. Considers
+ *  the per-role Overview homes too, so /wm, /strategist, etc. light the Overview item. */
 export function activeHref(pathname: string): string | null {
   let best: string | null = null;
-  for (const section of PLATFORM_NAV) {
-    for (const item of section.items) {
-      if (pathname === item.href || pathname.startsWith(`${item.href}/`)) {
-        if (!best || item.href.length > best.length) best = item.href;
-      }
+  const candidates = [
+    ...Object.values(PERSONA_HOME).map((h) => h.href),
+    ...PLATFORM_NAV.flatMap((s) => s.items.map((i) => i.href)),
+  ];
+  for (const href of candidates) {
+    if (pathname === href || pathname.startsWith(`${href}/`)) {
+      if (!best || href.length > best.length) best = href;
     }
   }
   return best;
