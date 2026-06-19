@@ -36,7 +36,7 @@ const DEFAULT_ITEMS: TickerItem[] = [
   { k: "J200",     label: "TOP40",    decimals: 0,  base: 80115.40, prev: 79727.30 },
   { k: "USDZAR",   label: "USDZAR",   decimals: 4,  base: 18.452,   prev: 18.494 },
   { k: "EURZAR",   label: "EURZAR",   decimals: 4,  base: 19.881,   prev: 19.860 },
-  { k: "GBPJPY",   label: "GBPJPY",   decimals: 2,  base: 198.42,   prev: 198.10 },
+  { k: "GBPZAR",   label: "GBPZAR",   decimals: 4,  base: 23.452,   prev: 23.408 },
   { k: "Gold",     label: "GOLD",     decimals: 0,  base: 2682.40,  prev: 2664.10 },
   { k: "Brent",    label: "BRENT",    decimals: 2,  base: 78.12,    prev: 78.57 },
   { k: "R2030",    label: "R2030",    decimals: 3,  suffix: "%", base: 10.42, prev: 10.38 },
@@ -111,8 +111,13 @@ function TickerChipMaybe({
 
 function TickerChip({ item, feedKind }: { item: TickerItem; feedKind: TickFeedKind }) {
   const t = useTick(item.k);
+  // Fall back to the seed's `base` when no live tick has arrived (t.ts === 0)
+  // so the displayed value AND the change derive from the same number. Without
+  // this, an un-seeded symbol (e.g. GBPJPY, never in the local sim) showed its
+  // base value but computed change from t.last = 0 → a bogus −100.00%.
+  const displayLast = t.ts > 0 ? t.last : item.base;
   const change =
-    feedKind === "supabase" ? t.change : t.last - item.prev;
+    feedKind === "supabase" ? t.change : displayLast - item.prev;
   const changePct =
     feedKind === "supabase"
       ? t.changePct
@@ -121,7 +126,6 @@ function TickerChip({ item, feedKind }: { item: TickerItem; feedKind: TickFeedKi
         : 0;
   const isUp = change > 0;
   const isDown = change < 0;
-  const displayLast = t.ts > 0 ? t.last : item.base;
 
   return (
     <span className="flex shrink-0 items-center gap-1.5">

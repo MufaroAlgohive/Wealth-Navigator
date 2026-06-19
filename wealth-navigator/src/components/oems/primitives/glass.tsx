@@ -51,7 +51,12 @@ export function GlassSection({
         </div>
         {right && <div className="shrink-0">{right}</div>}
       </header>
-      <div className={cn(!noPadding && "p-5")}>{children}</div>
+      {/* Body is a flex column that fills the section. Consumers that give the
+          section a fixed height (e.g. `flex h-[300px] flex-col`) rely on this so
+          their `flex-1` children — chart wrappers (recharts `height="100%"`) and
+          `GlassScrollBody` — resolve a real height instead of collapsing to 0.
+          For auto-height (block) sections the flex props are inert. */}
+      <div className={cn("flex min-h-0 flex-1 flex-col", !noPadding && "p-5")}>{children}</div>
     </section>
   );
 }

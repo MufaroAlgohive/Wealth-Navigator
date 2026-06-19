@@ -137,8 +137,8 @@ function SecurityPageContent() {
               </div>
             }
           >
-            <div className="p-4">
-              <div className="glass-inset h-[336px] overflow-hidden p-2">
+            <div className="flex min-h-0 flex-1 flex-col p-4">
+              <div className="glass-inset min-h-0 flex-1 overflow-hidden p-2">
                 {realDataOnly && chartRange === "1D" && !hasLiveQuote ? (
                   <EmptyDataState message="No intraday series — quote feed has no ticks for this symbol yet. Try 1M / 1Y (daily history via IRESS)." />
                 ) : (

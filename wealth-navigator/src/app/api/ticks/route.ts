@@ -11,7 +11,7 @@ import {
 } from "@/lib/iress/live-queries";
 
 const SEED_KEYS = [
-  "J203", "J200", "USDZAR", "EURZAR", "GBPJPY",
+  "J203", "J200", "USDZAR", "EURZAR", "GBPZAR",
   "Gold", "Brent", "Platinum",
   "R2030", "R2035", "R2040",
   "JIBAR_3M", "JIBAR_6M", "JIBAR_12M",

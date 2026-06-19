@@ -22,6 +22,7 @@ import {
   usePersona, useSetPersona, useUser, useResetSession, PERSONA_USERS,
   type Persona,
 } from "@/lib/store/session-provider";
+import { PERSONA_HOME } from "@/lib/platform/nav";
 import { isJseOpen } from "@/lib/sa-holidays";
 import { cn } from "@/lib/cn";
 import { ConnectionPill } from "@/components/oems/primitives/connection-pill";
@@ -29,13 +30,17 @@ import { ProvenanceStrip } from "@/components/oems/shell/provenance-strip";
 import { notifyAuthChange } from "@/lib/auth/store";
 import { useCommandPalette } from "@/components/oems/command-palette";
 
-const PERSONA_LABEL: Record<Persona, { label: string; home: string; icon: React.ElementType }> = {
-  oems:           { label: "OEMS · Trading Desk",     home: "/oems",          icon: Activity },
-  strategist:     { label: "Strategist",             home: "/strategist",    icon: LineChart },
-  wealth_manager: { label: "Wealth Manager",         home: "/wm",            icon: Briefcase },
-  admin:          { label: "Admin / Compliance",     home: "/compliance",    icon: Shield },
-  business:       { label: "Business",               home: "/business",      icon: Building2 },
-  funeral_cover:  { label: "Funeral Cover",          home: "/fc/overview",   icon: HeartPulse },
+// Label + icon for each persona in the switcher. The landing route comes from
+// the shared `PERSONA_HOME` map (nav.ts) — the single source of truth the
+// sidebar Overview item also uses — so the switcher and the sidebar never
+// disagree on where a persona "home" is.
+const PERSONA_LABEL: Record<Persona, { label: string; icon: React.ElementType }> = {
+  oems:           { label: "OEMS · Trading Desk", icon: Activity },
+  strategist:     { label: "Strategist",          icon: LineChart },
+  wealth_manager: { label: "Wealth Manager",      icon: Briefcase },
+  admin:          { label: "Admin / Compliance",  icon: Shield },
+  business:       { label: "Business",            icon: Building2 },
+  funeral_cover:  { label: "Funeral Cover",       icon: HeartPulse },
 };
 
 export function TopBar() {
@@ -145,7 +150,7 @@ export function TopBar() {
                   key={p}
                   onSelect={() => {
                     setPersona(p);
-                    router.push(P.home as Route);
+                    router.push(PERSONA_HOME[p].href as Route);
                   }}
                   className={cn(p === persona && "bg-accent")}
                 >

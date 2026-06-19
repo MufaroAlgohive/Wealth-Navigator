@@ -334,36 +334,20 @@ function startLocalSim() {
 }
 
 export function TickStreamProvider({ children }: { children: React.ReactNode }) {
-  const esRef = useRef<EventSource | null>(null);
-
   useEffect(() => {
     // Supabase quotes: BFF poll + Realtime only — skip seed SSE/random walk.
     if (isSupabaseQuotesMode()) return;
 
-    let cancelled = false;
-    try {
-      const es = new EventSource("/api/ticks");
-      esRef.current = es;
-      es.onmessage = (e) => {
-        try {
-          const ticks: Array<{ sym: string; last: number }> = JSON.parse(e.data);
-          setQuoteFeedKind("stream");
-          for (const t of ticks) setTick(t.sym, { last: t.last }, "stream");
-        } catch { /* ignore */ }
-      };
-      es.onerror = () => {
-        es.close();
-        esRef.current = null;
-        if (!cancelled) startLocalSim();
-      };
-    } catch {
-      startLocalSim();
-    }
+    // Mock/seed mode: drive the ticker from the local simulator only.
+    //
+    // We used to ALSO open an SSE to `/api/ticks` here, but it was redundant —
+    // the local sim already feeds the same symbols, so the two double-pushed —
+    // and the long-lived SSE kept the page from ever reaching network-idle,
+    // which blocks screenshot/automation tooling (and held an idle connection
+    // open for no benefit). The real-data path (above) is unaffected. When a
+    // true streaming feed lands it'll be a WebSocket to the IRESS edge proxy,
+    // wired in its own branch — not this mock SSE.
     startLocalSim();
-    return () => {
-      cancelled = true;
-      esRef.current?.close();
-    };
   }, []);
 
   return <>{children}</>;
