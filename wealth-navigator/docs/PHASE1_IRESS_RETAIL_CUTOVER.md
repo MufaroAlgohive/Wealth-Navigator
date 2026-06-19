@@ -74,6 +74,12 @@ Watch the `retail_ingest_complete` event in logs: check `covered/requested` rati
 
 ## 6. Remaining gap (tracked, not in this phase)
 - `change_percent` — ✅ done in worker (this phase).
-- `market_cap` / `pe_ratio` / dividends — keep thin Yahoo until Iress **fundamentals** entitlement (`SecurityGet`/company data).
-- `ytd_performance` + `stock_returns_c` + `pbc_screen_results` — keep thin Yahoo/returns job until **`TimeSeriesGet2`** entitlement (Charles, `DFM@Mint`; blocked as of 2026-06-13).
-- Optional enhancement: populate retail `stock_intraday_c.{1d_pct,1d_abs}` from `prevClose`.
+- `market_cap` / `pe_ratio` / dividends / `ytd_performance` — ✅ **thin Yahoo bridge built**: `GET /api/cron/yahoo-fundamentals` (CRON_SECRET- or admin-gated; default SHADOW, `YAHOO_FUNDAMENTALS_WRITE=1` to write). Writes **only** these gap fields to RETAIL `securities_c` — never `last_price`/`change_percent` (Iress owns those). Add a Vercel cron (e.g. `"0 5 * * *"`) once validated. Delete it when Iress `SecurityGet` fundamentals + `TimeSeriesGet2` entitlements land (Charles, `DFM@Mint`; blocked as of 2026-06-13).
+- `stock_returns_c` + `pbc_screen_results` — still need `TimeSeriesGet2` (returns/volume history); keep the existing returns job until that entitlement.
+- Optional enhancement: populate retail `stock_intraday_c.{1d_pct,1d_abs}` from `prevClose` (change% is scale-free; 1d_abs needs the cents anchor).
+
+## 7. Yahoo decommission sequence (once the above is live)
+1. Confirm Iress retail-ingest is live (price/intraday/change% on mfxng, `price_source='iress'`).
+2. Enable the thin Yahoo cron (`YAHOO_FUNDAMENTALS_WRITE=1` + Vercel cron) for the 4–5 gap fields only.
+3. Delete the legacy `MyMintAdmin` `syncAllSecuritiesFromYahoo` daily job + `/api/security-performance` Yahoo charts + WN `/api/global-movers` (decide keep/drop).
+4. When entitlements land: build the Iress fundamentals/returns ingest, then remove `/api/cron/yahoo-fundamentals` entirely → **Yahoo fully disconnected.**

@@ -158,6 +158,15 @@ export function TopBar() {
               );
             })}
             <DropdownMenuSeparator />
+            <DropdownMenuLabel>Other surfaces</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => router.push("/admin")}>
+              <Landmark className="h-3.5 w-3.5 text-muted-foreground" />
+              <div className="flex-1">
+                <p className="text-xs">Mint Admin · Retail CRM</p>
+                <p className="text-[10px] text-muted-foreground">Clients, strategies, EFT, compliance</p>
+              </div>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => router.push("/settings")}>
               <Settings className="h-3.5 w-3.5 text-muted-foreground" /> Settings
             </DropdownMenuItem>

@@ -37,18 +37,15 @@ Status legend: ☐ not started · ◐ in progress · ☑ done & parity-verified.
 
 ## C. Page parity — MAIN
 
-### ☐ Clients — `/admin/clients` (legacy `index.html`, 10.9k lines — LARGE)
-Tables: `profiles`, `sumsub_reviews`/KYC, documents, `stock_holdings_c`, `transactions`.
-- ☐ Client roster list (avatar, name, uid, signed-in-today badge) + real-time search + bank filter dropdown + status pills + online count badge
-- ☐ Expanded detail: company header, info detail cards (label:value)
-- ☐ Tabs: Profile · KYC · Documents · Holdings · Activity (with notification dots, loading states)
-- ☐ KYC: status badges + pulse animation (verified/pending/rejected); SumSub review
-- ☐ Certificate viewer modal (image/PDF/iframe) + Accept/Reject/Download/Re-evaluate
-- ☐ Child documents modal (table + per-row actions)
-- ☐ Password-confirmation modal; unsaved-changes warning; strategy password gate
-- ☐ Holdings: collapsible per-strategy cards (logo, price, change%, pending badge); cost-basis (expected_fill vs avg_fill) logic
-- ☐ Activity timeline (events, timestamps, credit/debit amounts)
-- ☐ States: loading/empty/error; ZA currency formatting
+### ☑ Clients — `/admin/clients` (legacy `index.html`, 10.9k) — **DONE 2026-06-19 (reads; KYC review deferred)**
+Ported endpoint: `/api/admin/clients` (GET list + detail). Tables: `profiles`, `user_onboarding`, `required_actions`, `stock_holdings_c`, `securities_c`, `transactions`.
+- ☑ Roster list (avatar initials, name, mint/email, KYC status badge, TEST tag) + search
+- ☑ Detail header + tabs: Profile · KYC · Holdings · Activity
+- ☑ Profile: contact/ID/currency/computershare/address/joined fields
+- ☑ KYC: kyc_status, SumSub answer/status, bank, employment/income, agreement; Approve/Reject buttons
+- ☑ Holdings: table (symbol, strategy, qty, value, P&L) w/ cost-basis (Expected_fill vs avg_fill) logic
+- ☑ Activity: transaction list (credit/debit, status)
+- DEFERRED (SumSub/storage bucket): KYC review accept/reject + certificate viewer + document operations → POST 501. Documents tab + signed-in-today/online presence + per-strategy collapsible holdings cards = refinement pass.
 
 ### ☑ Client View Studio — `/admin/studio` (legacy `studio.html`, 653) — **UI+READS DONE 2026-06-19; impersonation deferred**
 Ported endpoint: `/api/admin/studio` (GET config/clients/portfolio). Admin-only.
@@ -97,22 +94,12 @@ Ported endpoint: `/api/admin/investors/data` (read aggregation; test accounts ex
 
 ## D2. Page parity — INVESTMENTS (Order Book)
 
-### ☐ Order Book — `/admin/order-book` (legacy `orderbook.html`, 8.4k lines — LARGE/complex)
-Tables: `stock_holdings_c`+`profiles`, `orderbook_fills`/snapshots, `rebalance_batches`, `orderbook_pins`, buffer ledger, approvals.
-- ☐ Tabs: Active Orderbooks · Closed Books · Pending Rebalances · Strate BIR
-- ☐ Live holdings table (14 cols: Client Email, Line, Instrument, Ticker, Side, Qty, Avg Fill, Expected Fill, Live Price, Order Type, Settlement Acct, Broker Ref, Client PnL, MINT PnL); Live Price hidden by default
-- ☐ Live/UAT toggle (test accounts: `profiles.is_test`, `wallets.status='test'`); UAT disables capture
-- ☐ Search; sortable columns; pending-row (yellow) styling
-- ☐ Export CSV (`/api/orderbook/send-csv`) w/ masking + buffer/fee math
-- ☐ Daily 15:30 snapshot timer + auto-capture (`action=capture-snapshot`); 30s refresh
-- ☐ Pin/unpin books (`orderbook_pins`); Active/Closed sort; cleanup mode (mass delete/move-to-closed)
-- ☐ Price-update modal (`/api/orderbook/update-price`, batch option, >5% approval flow → `submit-approval`)
-- ☐ Fill/settle modal (`settle-holding`: actual fill, settlement date, ref)
-- ☐ Investor detail panel: PnL breakdown, summary cards, txn history
-- ☐ Reverse investor (`reverse-investor`) + buffer recalc
-- ☐ Strate BIR: H1/B1/B2/B3/T1 preview, view modes (Simple/Accurate/Individual), pipe-delimited export
-- ☐ MINT PnL maps (gain/buffer-used/shortfall) precomputed; Client PnL = (Expected−Avg)×Qty
-- ☐ `page_access='orderbook'`; approver emails for sign-off; cleanup/reverse admin-gated
+### ☑ Order Book — `/admin/order-book` (legacy `orderbook.html`, 8.4k) — **UI+READS+CSV DONE 2026-06-19; settlement writes deferred**
+Ported endpoint: `/api/admin/orderbook` (GET ledger). Tables: `stock_holdings_c`+`profiles`+`securities_c`.
+- ☑ Tabs: Active Orderbook · Closed Books; Live/UAT toggle (`profiles.is_test`); search; shown Client/MINT P&L totals
+- ☑ Holdings ledger (Client, Instrument, Ticker, Side, Qty, Avg Fill, Expected Fill, Live Price, Strategy, Client P&L, MINT P&L)
+- ☑ Export CSV client-side (quote-escaped); cost-basis (Expected_fill vs avg_fill) + Client P&L (live−expected)×qty + MINT P&L (expected−avg)×qty
+- DEFERRED (data/settlement phase, POST 501): price-update + fill/settle, reverse investor, 15:30 snapshot capture, Strate BIR (H1/B1/B2/B3/T1) export, pins/cleanup, approval sign-off. Pending-Rebalances tab + investor detail panel = refinement pass.
 
 ## E. Page parity — BANKING
 
@@ -136,19 +123,19 @@ Ported endpoint: `/api/admin/mint-mornings` (GET status). Tables: `mint_mornings
 - ☑ Send history table (mint_mornings_log, last 30)
 - DEFERRED (email bucket): `preview` (digest HTML render) + send/force/test (Resend dispatch) → POST returns 501 + notice.
 
-### ☐ Emailers & Triggers — `/admin/emailers` (legacy `emailers.html`, 545)
-Tables: `email_webhook_triggers`, `email_logs`. Endpoints: `/api/webhooks` (CRUD), `/api/email-logs`.
-- ☐ Webhook URL card + Copy
-- ☐ Triggers table (Name+meta, Table, Event badge, Email Type, Enabled toggle, Edit/Delete)
-- ☐ Trigger modal (name, table, event, email_type, user_id_field, condition_field/value, description, enabled)
-- ☐ Send Logs tab (Time, Type, Recipient, Subject, Source, Status + expandable error) + type filter + refresh
-- ☐ Super-admin nav check
+### ☑ Emailers & Triggers — `/admin/emailers` (legacy `emailers.html`, 545) — **DONE 2026-06-19**
+Ported endpoints: `/api/admin/webhooks` (CRUD), `/api/admin/email-logs`. Tables: `email_webhook_triggers`, `email_logs`.
+- ☑ Webhook URL card + Copy
+- ☑ Triggers table (Name+meta, Table, Event badge, Email Type, Enabled Switch, Edit/Delete)
+- ☑ Trigger modal (name, table, event, email_type, user_id_field, condition_field/value, description, enabled)
+- ☑ Send Logs tab (Time, Type, Recipient, Subject, Source, Status + expandable error) + type filter + refresh
+- ☑ Receiver `/api/webhooks/supabase` now wired (Welcome/Wallet-Funded/Trade-Confirmation) — see backend bucket.
 
 ## G. Page parity — SYSTEM
 
-### ☐ Settings — `/admin/settings` (legacy `settings.html`, 361)
-- ☐ Studio link (admin-only), Appearance (Light/EN-ZA placeholders), Admin Account (email), Team link (admin), App Settings link (admin), Security/Notifications placeholders, Sign Out
-- ☐ Role-gated rows via RBAC context; `page_access='settings'`
+### ☑ Settings — `/admin/settings` (legacy `settings.html`, 361) — **DONE 2026-06-19 (first real page)**
+- ☑ Account (email, role, approver tier), Appearance (theme/EN-ZA placeholders), admin-only links (Studio, App Settings, Team), sign-out note
+- ☑ Role-gated rows via `useAdmin()` RBAC context
 
 ### ☑ App Settings — `/admin/app-settings` (legacy `app-settings.html`, 266) — admin-only — **DONE 2026-06-19**
 Ported endpoint: `GET/POST /api/admin/app-settings` (was `/api/team?action=app-settings-get/save&key=fees`). Table: `app_settings` (RETAIL). GET = any member; POST = admin only + whitelist/coerce 7 keys + upsert on_conflict=key + best-effort `admin_team_audit` write.
@@ -179,11 +166,12 @@ Ported endpoint: `/api/admin/cyber-compliance?action=…`. Tables: `cc_uptime_lo
 - ☑ Sidebar 60s `badge-count` poll wired in `admin-shell`.
 - DEFERRED (backend bucket): `run-policy-checks-live`, `run-health-check`, `run-migration`, and high/critical incident **alert email** — honest notices.
 
-## H. Auth pages (map to WN auth)
-- ☐ Sign In — `/login` (email/pw, prefill `?email=`, reason banners, team-membership check → else sign out)
-- ☐ Sign Up (invite) — `/signup` (token/hash session, full name + password×2 ≥8, `complete-signup` activate, redirect to login)
-- ☐ Forgot Password — `/login/forgot` (`@mymint.co.za` only, neutral success)
-- ☐ Reset Password — `/reset-password` (recovery session, password×2, redirect)
+## H. Auth pages (map to WN auth) — **DONE 2026-06-19**
+- ☑ Sign In — `/login` (existing WN page; admin-team gating enforced by the `(admin)` layout: not-member → `/login?reason=not-a-member`). Reason-banner display on `/login` = optional polish.
+- ☑ Sign Up (invite) — `/signup` (invite session via `/auth/callback`, full name + password×2 ≥8, `POST /api/admin/complete-signup` activates `admin_team`, redirect to login). Public route.
+- ☑ Forgot Password — `/login/forgot` (existing WN page; redirect now points at `/reset-password`).
+- ☑ Reset Password — `/reset-password` (recovery session, password×2, `updateUser`, redirect). Public route.
+- Note: `/signup` + `/reset-password` added to `src/middleware.ts` PUBLIC_PREFIXES; they show an "invalid/expired link" state when no session is present.
 
 ---
 

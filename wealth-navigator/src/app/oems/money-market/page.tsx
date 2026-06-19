@@ -276,7 +276,7 @@ export default function MoneyMarketPage() {
         </p>
         <p className="mt-2 text-muted-foreground">
           →{" "}
-          <a href="/oems/strategies" className="text-primary hover:underline">
+          <a href="/strategies" className="text-primary hover:underline">
             See Strategies page
           </a>{" "}
           for MM mandates.

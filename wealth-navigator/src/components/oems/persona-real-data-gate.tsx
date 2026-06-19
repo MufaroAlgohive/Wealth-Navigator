@@ -3,8 +3,7 @@
 import { PersonaHeader } from "@/components/oems/primitives/persona-header";
 import { GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
-import { OEMSShell } from "@/components/oems/shell/oems-shell";
-import { CommandPaletteProvider } from "@/components/oems/command-palette";
+import { PlatformShell } from "@/components/platform/platform-shell";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import type { ComponentProps } from "react";
 
@@ -29,19 +28,17 @@ export function PersonaRealDataGate({
   const realDataOnly = isRealDataOnlyClient();
 
   return (
-    <CommandPaletteProvider>
-      <OEMSShell>
-        <PageCanvas>
-          <PersonaHeader persona={persona} description={description} />
-          {realDataOnly ? (
-            <GlassSection title="Not configured" endpoint={endpoint}>
-              <EmptyDataState message={message} />
-            </GlassSection>
-          ) : (
-            children
-          )}
-        </PageCanvas>
-      </OEMSShell>
-    </CommandPaletteProvider>
+    <PlatformShell>
+      <PageCanvas>
+        <PersonaHeader persona={persona} description={description} />
+        {realDataOnly ? (
+          <GlassSection title="Not configured" endpoint={endpoint}>
+            <EmptyDataState message={message} />
+          </GlassSection>
+        ) : (
+          children
+        )}
+      </PageCanvas>
+    </PlatformShell>
   );
 }

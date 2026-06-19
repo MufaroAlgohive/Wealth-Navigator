@@ -10,10 +10,14 @@ import { updateSupabaseSession } from "@/lib/supabase/middleware";
 
 const PUBLIC_PREFIXES = [
   "/login",
+  "/signup",
+  "/reset-password",
   "/auth",
   "/api/auth",
   "/api/health",
   "/api/ticks",
+  "/api/webhooks",
+  "/api/cron",
 ];
 
 function isPublic(pathname: string): boolean {
@@ -49,7 +53,12 @@ export async function middleware(req: NextRequest) {
     return supabaseResponse;
   }
 
-  if (!authed) {
+  // Dev-only design-preview escape hatch (double-gated): with ADMIN_PREVIEW=1 in
+  // a NON-production build, render pages without a session so the merged UI can
+  // be reviewed/signed-off before auth + data are wired. Never active in prod.
+  const previewMode = process.env.NODE_ENV !== "production" && process.env.ADMIN_PREVIEW === "1";
+
+  if (!authed && !previewMode) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.search = `?next=${encodeURIComponent(pathname + search)}`;

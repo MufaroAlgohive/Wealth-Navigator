@@ -36,7 +36,7 @@ const NAV: { title: string; items: NavItem[] }[] = [
     items: [
       { to: "/oems",             label: "Overview" },
       { to: "/oems/blotter",     label: "Blotter" },
-      { to: "/oems/strategies",  label: "Strategies" },
+      { to: "/strategies",       label: "Strategies" },
     ],
   },
   {
@@ -226,7 +226,7 @@ function PaletteResults({ onSelect }: { onSelect: () => void }) {
         </Pill>
       ),
       onSelect: () => {
-        router.push(`/oems/strategies?focus=${encodeURIComponent(s.id)}` as Route);
+        router.push(`/strategies?tab=mandates&focus=${encodeURIComponent(s.id)}` as Route);
         onSelect();
       },
     }));

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext, isAdminRole } from "@/lib/admin/rbac";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { sendEmail, buildInviteHtml } from "@/lib/admin/email";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
@@ -18,8 +19,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
-const DEFER_EMAIL = "Invite email + auth account are deferred (backend port pending).";
-
 async function guard() {
   const auth = await getAdminContext();
   if (auth.status === "no-session") return { db: null, ctx: null, error: NextResponse.json({ ok: false, error: "no-session" }, { status: 401 }) };
@@ -32,6 +31,31 @@ async function guard() {
     db = null;
   }
   return { db, ctx: auth.ctx, error: null as null };
+}
+
+async function sendInvite(
+  db: SupabaseClient,
+  req: Request,
+  email: string,
+  role: string,
+): Promise<{ emailSent: boolean; signupLink: string | null; emailReason: string | null }> {
+  const origin = new URL(req.url).origin;
+  const redirectTo = `${origin}/auth/callback?next=/signup`;
+  let link: string | null = null;
+  try {
+    const { data, error } = await db.auth.admin.generateLink({ type: "invite", email, options: { redirectTo } });
+    if (error) throw error;
+    link = (data as { properties?: { action_link?: string } } | null)?.properties?.action_link ?? null;
+  } catch (e) {
+    return { emailSent: false, signupLink: null, emailReason: `Could not generate invite link: ${(e as Error).message}` };
+  }
+  if (!link) return { emailSent: false, signupLink: null, emailReason: "No invite link generated" };
+  try {
+    await sendEmail({ to: email, subject: "You're invited to the Mint Admin team", html: buildInviteHtml({ link, role }), emailType: "admin_invite", source: "team-invite" });
+    return { emailSent: true, signupLink: link, emailReason: null };
+  } catch (e) {
+    return { emailSent: false, signupLink: link, emailReason: (e as Error).message };
+  }
 }
 
 async function writeAudit(
@@ -113,19 +137,23 @@ export async function POST(req: Request) {
     if (!email.endsWith("@mymint.co.za")) {
       return NextResponse.json({ ok: false, error: "Only @mymint.co.za email addresses can be invited." }, { status: 400 });
     }
-    if (db) {
-      const { error } = await db
-        .from("admin_team")
-        .upsert({ email, full_name, role, page_access, status: "pending" }, { onConflict: "email" });
-      if (error) return NextResponse.json({ ok: false, error: error.message });
-      await writeAudit(db, { action: "invite", target_email: email, actor_email: ctx!.email, details: { role, page_access, email_sent: false } });
-    }
-    // Auth invite + Resend email are deferred to the backend port.
-    return NextResponse.json({ ok: true, emailSent: false, signupLink: null, emailReason: DEFER_EMAIL });
+    if (!db) return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
+    const { error } = await db
+      .from("admin_team")
+      .upsert({ email, full_name, role, page_access, status: "pending" }, { onConflict: "email" });
+    if (error) return NextResponse.json({ ok: false, error: error.message });
+    const invite = await sendInvite(db, req, email, role);
+    await writeAudit(db, { action: "invite", target_email: email, actor_email: ctx!.email, details: { role, page_access, email_sent: invite.emailSent } });
+    return NextResponse.json({ ok: true, ...invite });
   }
 
   if (action === "resend") {
-    return NextResponse.json({ ok: true, emailSent: false, signupLink: null, emailReason: DEFER_EMAIL });
+    const id = String(body.id || "");
+    if (!id || !db) return NextResponse.json({ ok: false, error: "Missing id or DB" }, { status: 400 });
+    const { data: m } = await db.from("admin_team").select("email, role").eq("id", id).maybeSingle();
+    if (!m?.email) return NextResponse.json({ ok: false, error: "Member not found" }, { status: 404 });
+    const invite = await sendInvite(db, req, m.email as string, (m.role as string) || "staff");
+    return NextResponse.json({ ok: true, ...invite });
   }
 
   if (action === "update-permissions") {
@@ -152,13 +180,22 @@ export async function POST(req: Request) {
     if (!new_email.endsWith("@mymint.co.za")) {
       return NextResponse.json({ ok: false, error: "Must be a @mymint.co.za address." }, { status: 400 });
     }
-    if (db) {
-      const { error } = await db.from("admin_team").update({ email: new_email }).eq("id", id);
-      if (error) return NextResponse.json({ ok: false, error: error.message });
-      await writeAudit(db, { action: "update", target_member_id: id, actor_email: ctx!.email, details: { email_changed_to: new_email } });
+    if (!db) return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
+    // Change the Supabase auth account email too, so they can sign in with it.
+    let authUpdated = false;
+    const { data: member } = await db.from("admin_team").select("user_id").eq("id", id).maybeSingle();
+    if (member?.user_id) {
+      try {
+        const { error: authErr } = await db.auth.admin.updateUserById(member.user_id as string, { email: new_email });
+        if (!authErr) authUpdated = true;
+      } catch {
+        /* auth-admin unavailable */
+      }
     }
-    // Supabase auth-account email change is deferred (auth-admin = backend bucket).
-    return NextResponse.json({ ok: true, authUpdated: false });
+    const { error } = await db.from("admin_team").update({ email: new_email }).eq("id", id);
+    if (error) return NextResponse.json({ ok: false, error: error.message });
+    await writeAudit(db, { action: "update", target_member_id: id, actor_email: ctx!.email, details: { email_changed_to: new_email, auth_updated: authUpdated } });
+    return NextResponse.json({ ok: true, authUpdated });
   }
 
   if (action === "resolve-approval") {
