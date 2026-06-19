@@ -1,0 +1,55 @@
+(index):64 cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation
+(anonymous) @ (index):64
+dashboard.html:1604 [DBG] UNCAUGHT ERROR
+  message: Uncaught SyntaxError: Identifier 'pendingBatches' has already been declared
+  source:  https://my-mint-admin.vercel.app/dashboard.html
+  line:    9292:23
+  error:   SyntaxError: Identifier 'pendingBatches' has already been declared
+window.onerror @ dashboard.html:1604
+dashboard.html:1605 [DBG] breadcrumbs: []
+window.onerror @ dashboard.html:1605
+dashboard.html:9292 Uncaught SyntaxError: Identifier 'pendingBatches' has already been declared
+dashboard.html:1604 [DBG] UNCAUGHT ERROR
+  message: Uncaught TypeError: window.ovToggleStratDrop is not a function
+  source:  https://my-mint-admin.vercel.app/dashboard.html
+  line:    792:386
+  error:   TypeError: window.ovToggleStratDrop is not a function
+    at HTMLButtonElement.onclick (dashboard.html:792:386)
+window.onerror @ dashboard.html:1604
+dashboard.html:1605 [DBG] breadcrumbs: []
+window.onerror @ dashboard.html:1605
+dashboard.html:792 Uncaught TypeError: window.ovToggleStratDrop is not a function
+    at HTMLButtonElement.onclick (dashboard.html:792:386)
+dashboard.html:1604 [DBG] UNCAUGHT ERROR
+  message: Uncaught TypeError: window.ovToggleStratDrop is not a function
+  source:  https://my-mint-admin.vercel.app/dashboard.html
+  line:    792:386
+  error:   TypeError: window.ovToggleStratDrop is not a function
+    at HTMLButtonElement.onclick (dashboard.html:792:386)
+window.onerror @ dashboard.html:1604
+dashboard.html:1605 [DBG] breadcrumbs: []
+window.onerror @ dashboard.html:1605
+dashboard.html:792 Uncaught TypeError: window.ovToggleStratDrop is not a function
+    at HTMLButtonElement.onclick (dashboard.html:792:386)
+dashboard.html:1604 [DBG] UNCAUGHT ERROR
+  message: Uncaught TypeError: window.ovToggleStratDrop is not a function
+  source:  https://my-mint-admin.vercel.app/dashboard.html
+  line:    792:386
+  error:   TypeError: window.ovToggleStratDrop is not a function
+    at HTMLButtonElement.onclick (dashboard.html:792:386)
+window.onerror @ dashboard.html:1604
+dashboard.html:1605 [DBG] breadcrumbs: []
+window.onerror @ dashboard.html:1605
+dashboard.html:792 Uncaught TypeError: window.ovToggleStratDrop is not a function
+    at HTMLButtonElement.onclick (dashboard.html:792:386)
+dashboard.html:1604 [DBG] UNCAUGHT ERROR
+  message: Uncaught TypeError: window.ovToggleStratDrop is not a function
+  source:  https://my-mint-admin.vercel.app/dashboard.html
+  line:    792:386
+  error:   TypeError: window.ovToggleStratDrop is not a function
+    at HTMLButtonElement.onclick (dashboard.html:792:386)
+window.onerror @ dashboard.html:1604
+dashboard.html:1605 [DBG] breadcrumbs: []
+window.onerror @ dashboard.html:1605
+dashboard.html:792 Uncaught TypeError: window.ovToggleStratDrop is not a function
+    at HTMLButtonElement.onclick (dashboard.html:792:386)

@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="180" height="180">
+  <!-- Background with subtle gradient -->
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="100%" stop-color="#f1f5f9" />
+    </linearGradient>
+    <linearGradient id="wallet-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5c3bcf" />
+      <stop offset="100%" stop-color="#31005e" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#31005e" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+  
+  <!-- Wallet Body -->
+  <g filter="url(#shadow)">
+    <!-- Back flap -->
+    <path d="M 30 70 C 30 55, 45 45, 60 45 L 170 45 C 185 45, 190 55, 190 70 L 190 130 C 190 145, 185 155, 170 155 L 60 155 C 45 155, 30 145, 30 130 Z" fill="#4a2fb6" />
+    
+    <!-- Cash / Cards -->
+    <rect x="45" y="35" width="100" height="40" rx="6" fill="#10b981" />
+    <circle cx="95" cy="55" r="10" fill="#ffffff" opacity="0.4"/>
+    <rect x="55" y="25" width="80" height="40" rx="6" fill="#ddc357" opacity="0.9"/>
+    
+    <!-- Front flap -->
+    <path d="M 30 80 C 30 65, 45 55, 60 55 L 140 55 C 155 55, 160 65, 160 80 L 160 130 C 160 145, 155 155, 140 155 L 60 155 C 45 155, 30 145, 30 130 Z" fill="url(#wallet-grad)" />
+    
+    <!-- Wallet Strap -->
+    <rect x="130" y="85" width="50" height="40" rx="8" fill="#ddc357" />
+    <circle cx="160" cy="105" r="6" fill="#ffffff" />
+    
+    <!-- Design Details -->
+    <rect x="50" y="125" width="40" height="8" rx="4" fill="#ffffff" opacity="0.3"/>
+    <rect x="50" y="105" width="60" height="8" rx="4" fill="#ffffff" opacity="0.3"/>
+  </g>
+</svg>

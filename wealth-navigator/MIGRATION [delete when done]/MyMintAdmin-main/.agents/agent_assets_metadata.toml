@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "VArYh8qDoEQalI3_h6QsL"
+uri = "file://public/App_jsx.zip"
+type = "unspecified"
+title = "App.jsx (magic link fix — replace src/App.jsx in Mint repo)"

@@ -1,0 +1,3 @@
+- [Mint Mornings integration](mint-mornings.md) — ported from mint-development repo; CommonJS, fetch-based, no SDK deps; scheduler fires 05:00 UTC (07:00 SAST)
+- [Email patterns](email-patterns.md) — trade confirmation + EFT emails use inline table-based HTML; no CID attachments; Resend via plain fetch not SDK
+- [Server architecture](server-arch.md) — pure Node.js HTTP server (no Express); all API in api/ as CommonJS modules; frontend in public/; auth via Supabase JWT bearer token checked on every protected route

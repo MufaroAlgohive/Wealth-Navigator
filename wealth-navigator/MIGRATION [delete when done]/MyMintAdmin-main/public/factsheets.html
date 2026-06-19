@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mint — Factsheets</title>
+  <style>html{opacity:0}</style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root{
+      --bg-0:#f6f7fb;
+      --bg-1:#eef0f7;
+      --bg-2:#e6e9f3;
+      --surface:rgba(255,255,255,0.85);
+      --surface-2:rgba(255,255,255,0.95);
+      --border:rgba(15,23,42,0.10);
+      --border-strong:rgba(15,23,42,0.18);
+      --text:#0f172a;
+      --text-dim:#475569;
+      --text-mute:#64748b;
+      --violet:#8b5cf6;
+      --violet-2:#a78bfa;
+      --indigo:#6366f1;
+      --emerald:#10d9a0;
+      --rose:#ff5d7a;
+      --amber:#f5b544;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0}
+    body{
+      font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;
+      background:var(--bg-0);
+      color:var(--text);
+      min-height:100vh;
+      overflow-x:hidden;
+      -webkit-font-smoothing:antialiased;
+      letter-spacing:-0.011em;
+    }
+    /* Animated aurora — light mode, very subtle */
+    .aurora{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+    .aurora::before,.aurora::after{
+      content:"";position:absolute;width:900px;height:900px;border-radius:50%;
+      filter:blur(120px);opacity:0.22;
+      animation:drift 22s ease-in-out infinite alternate;
+    }
+    .aurora::before{top:-300px;left:-200px;background:radial-gradient(circle,#c4b5fd 0%,transparent 60%)}
+    .aurora::after{bottom:-300px;right:-200px;background:radial-gradient(circle,#93c5fd 0%,transparent 60%);animation-delay:-11s}
+    .aurora .blob3{
+      position:absolute;top:30%;left:40%;width:600px;height:600px;border-radius:50%;
+      background:radial-gradient(circle,#a5f3fc 0%,transparent 60%);
+      filter:blur(140px);opacity:0.18;
+      animation:drift 30s ease-in-out infinite alternate;
+    }
+    @keyframes drift{0%{transform:translate(0,0) scale(1)}100%{transform:translate(80px,60px) scale(1.15)}}
+    /* Grid noise overlay */
+    body::before{
+      content:"";position:fixed;inset:0;z-index:1;pointer-events:none;
+      background-image:linear-gradient(rgba(15,23,42,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(15,23,42,0.04) 1px,transparent 1px);
+      background-size:56px 56px;
+      mask-image:radial-gradient(ellipse at center,black 30%,transparent 80%);
+    }
+
+    /* Sidebar */
+    .sidebar{
+      position:fixed;left:0;top:0;width:240px;height:100vh;z-index:50;
+      background:linear-gradient(180deg,rgba(255,255,255,0.85),rgba(248,250,252,0.85));
+      backdrop-filter:blur(24px) saturate(180%);
+      -webkit-backdrop-filter:blur(24px) saturate(180%);
+      border-right:1px solid var(--border);
+      display:flex;flex-direction:column;
+    }
+    .sidebar-header{
+      padding:22px 20px 18px;display:flex;align-items:center;gap:12px;
+      border-bottom:1px solid var(--border);cursor:pointer;position:relative;user-select:none;
+    }
+    .sidebar-logo{width:38px;height:38px;border-radius:11px;display:flex;align-items:center;justify-content:center;flex-shrink:0;overflow:hidden}
+    .sidebar-brand{display:flex;flex-direction:column;flex:1;min-width:0}
+    .sidebar-brand-name{font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:700;letter-spacing:-0.02em;color:var(--text)}
+    .sidebar-brand-sub{font-size:10px;color:var(--text-mute);letter-spacing:0.12em;text-transform:uppercase;margin-top:2px}
+    .sidebar-nav{flex:1;display:flex;flex-direction:column;padding:0 14px;overflow-y:auto}
+    .sidebar-section-label{font-size:10px;font-weight:600;color:var(--text-mute);letter-spacing:0.14em;text-transform:uppercase;padding:16px 10px 6px}
+    .nav-icon{
+      display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px;
+      cursor:pointer;transition:all .2s ease;text-decoration:none;
+      color:var(--text-dim);font-size:13px;font-weight:500;position:relative;
+    }
+    .nav-icon svg{width:17px;height:17px;fill:currentColor;opacity:0.7;transition:all .2s;flex-shrink:0}
+    .nav-icon:hover{background:rgba(139,92,246,0.08);color:var(--text)}
+    .nav-icon:hover svg{opacity:1;color:#a78bfa}
+    .nav-icon.active{
+      background:linear-gradient(90deg,rgba(139,92,246,0.18),rgba(99,102,241,0.06));
+      color:#4c1d95;font-weight:600;
+      box-shadow:inset 0 0 0 1px rgba(139,92,246,0.25);
+    }
+    .nav-icon.active::before{
+      content:"";position:absolute;left:-14px;top:50%;transform:translateY(-50%);
+      width:3px;height:18px;border-radius:3px;
+      background:linear-gradient(180deg,#a78bfa,#6366f1);
+      box-shadow:0 0 12px rgba(139,92,246,0.7);
+    }
+    .nav-icon.active svg{opacity:1}
+    .sidebar-footer{margin-top:auto;padding:14px;border-top:1px solid var(--border)}
+    .sidebar-user{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:10px;margin-bottom:4px}
+    .sidebar-avatar{
+      width:34px;height:34px;border-radius:50%;
+      background:linear-gradient(135deg,#a78bfa,#6366f1);
+      display:flex;align-items:center;justify-content:center;
+      font-weight:700;font-size:13px;color:#fff;
+      box-shadow:0 4px 14px -4px rgba(139,92,246,0.6);flex-shrink:0;
+    }
+    .sidebar-user-info{flex:1;min-width:0}
+    .sidebar-user-name{font-size:12.5px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .sidebar-user-role{font-size:11px;color:var(--text-mute)}
+    .sidebar-signout{
+      display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px;cursor:pointer;
+      color:#fb7185;font-size:13px;font-weight:500;transition:background .15s;border:none;background:transparent;width:100%;text-align:left;
+    }
+    .sidebar-signout:hover{background:rgba(251,113,133,0.08)}
+    .sidebar-signout svg{width:17px;height:17px;fill:currentColor;flex-shrink:0}
+
+    /* Mint Hub dropdown */
+    .mint-hub-dd{
+      display:none;position:absolute;top:calc(100% + 6px);left:8px;right:8px;
+      background:rgba(255,255,255,0.98);border-radius:12px;
+      box-shadow:0 8px 32px rgba(0,0,0,0.12),0 0 0 1px rgba(139,92,246,0.12);
+      z-index:9999;overflow:hidden;backdrop-filter:blur(20px);
+    }
+
+    /* Main */
+    .main{margin-left:240px;min-height:100vh;position:relative;z-index:2}
+    .topbar{
+      position:sticky;top:0;z-index:30;
+      background:rgba(255,255,255,0.7);
+      backdrop-filter:blur(20px) saturate(180%);
+      -webkit-backdrop-filter:blur(20px) saturate(180%);
+      border-bottom:1px solid var(--border);
+      padding:0 32px;height:72px;
+      display:flex;align-items:center;justify-content:space-between;
+    }
+    .crumb{font-size:13px;color:var(--text-dim);font-weight:500}
+    .crumb b{color:var(--text);font-weight:600}
+    .topbar-pill{
+      display:flex;align-items:center;gap:8px;
+      padding:7px 14px;border-radius:999px;
+      background:var(--surface);border:1px solid var(--border);
+      font-size:12px;color:var(--text-dim);
+    }
+    .live-dot{width:7px;height:7px;border-radius:50%;background:#10d9a0;
+      box-shadow:0 0 0 0 rgba(16,217,160,0.7);animation:pulse 2s infinite}
+    @keyframes pulse{
+      0%{box-shadow:0 0 0 0 rgba(16,217,160,0.6)}
+      70%{box-shadow:0 0 0 12px rgba(16,217,160,0)}
+      100%{box-shadow:0 0 0 0 rgba(16,217,160,0)}
+    }
+
+    .page{padding:32px}
+
+    .page-head h1{
+      font-family:'Space Grotesk',sans-serif;
+      font-size:34px;font-weight:700;letter-spacing:-0.025em;
+      background:linear-gradient(180deg,#0f172a 30%,#4c1d95 100%);
+      -webkit-background-clip:text;background-clip:text;color:transparent;
+      margin:0;
+    }
+    .page-head p{margin-top:6px;color:var(--text-dim);font-size:14px}
+
+    /* Overview band */
+    .overview{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:22px 0 6px}
+    .ov-card{
+      position:relative;border-radius:18px;padding:1px;
+      background:linear-gradient(140deg,rgba(139,92,246,0.28),rgba(15,23,42,0.05) 60%,rgba(99,102,241,0.22));
+    }
+    .ov-card-inner{
+      border-radius:17px;padding:16px 18px;
+      background:linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,252,0.92));
+      backdrop-filter:blur(12px);
+      display:flex;flex-direction:column;gap:6px;min-height:96px;
+    }
+    .ov-icon{
+      width:32px;height:32px;border-radius:10px;
+      display:flex;align-items:center;justify-content:center;
+      background:linear-gradient(135deg,rgba(139,92,246,0.18),rgba(99,102,241,0.10));
+      color:#6d28d9;
+    }
+    .ov-icon svg{width:16px;height:16px}
+    .ov-lbl{font-size:10.5px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-mute)}
+    .ov-val{font-family:'Space Grotesk',sans-serif;font-size:24px;font-weight:700;letter-spacing:-0.02em;color:var(--text)}
+    .ov-delta{font-size:11px;font-weight:600;color:#10b981}
+    .ov-delta.neg{color:#fb7185}
+
+    /* Spotlight featured card */
+    .spotlight{
+      position:relative;border-radius:24px;padding:1px;margin:22px 0 8px;
+      background:linear-gradient(140deg,rgba(139,92,246,0.45),rgba(99,102,241,0.18) 50%,rgba(6,182,212,0.35));
+    }
+    .spotlight-inner{
+      position:relative;overflow:hidden;
+      border-radius:23px;padding:26px;
+      background:
+        radial-gradient(120% 80% at 100% 0%,rgba(139,92,246,0.16),transparent 55%),
+        radial-gradient(80% 60% at 0% 100%,rgba(6,182,212,0.10),transparent 55%),
+        linear-gradient(180deg,rgba(255,255,255,0.96),rgba(248,250,252,0.97));
+      display:grid;grid-template-columns:1.05fr 1fr;gap:28px;align-items:center;
+    }
+    .spotlight-tag{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:5px 11px;border-radius:999px;
+      background:linear-gradient(90deg,rgba(245,181,68,0.22),rgba(245,158,11,0.06));
+      border:1px solid rgba(245,181,68,0.35);
+      color:#b45309;font-size:10.5px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;
+    }
+    .spotlight h2{
+      font-family:'Space Grotesk',sans-serif;font-size:28px;font-weight:700;
+      letter-spacing:-0.025em;margin:12px 0 6px;
+      background:linear-gradient(180deg,#0f172a,#4c1d95);
+      -webkit-background-clip:text;background-clip:text;color:transparent;
+    }
+    .spotlight-meta{font-size:13px;color:var(--text-dim);margin-bottom:14px}
+    .spotlight-cta{
+      display:inline-flex;align-items:center;gap:8px;margin-top:18px;
+      padding:10px 16px;border-radius:12px;cursor:pointer;border:none;
+      background:linear-gradient(90deg,#8b5cf6,#6366f1);color:#fff;
+      font-size:13px;font-weight:600;letter-spacing:-0.005em;font-family:inherit;
+      box-shadow:0 10px 28px -10px rgba(139,92,246,0.6);
+      transition:transform .15s ease,box-shadow .25s;
+    }
+    .spotlight-cta:hover{transform:translateY(-2px);box-shadow:0 16px 36px -12px rgba(139,92,246,0.7)}
+    .spotlight-chart{
+      height:200px;border-radius:18px;padding:10px;
+      background:linear-gradient(180deg,rgba(139,92,246,0.06),transparent);
+      border:1px solid var(--border);
+    }
+    .spotlight-chart svg{width:100%;height:100%}
+
+    /* Toolbar */
+    .toolbar{
+      display:flex;align-items:center;justify-content:space-between;
+      gap:14px;margin:28px 0 10px;flex-wrap:wrap;
+    }
+    .filter-tabs{display:flex;gap:6px;background:var(--surface);border:1px solid var(--border);padding:4px;border-radius:14px}
+    .filter-tab{
+      padding:7px 14px;border-radius:10px;font-size:12px;font-weight:600;
+      color:var(--text-dim);background:transparent;border:none;cursor:pointer;
+      transition:all .15s;font-family:inherit;
+    }
+    .filter-tab:hover{color:var(--text)}
+    .filter-tab.active{
+      background:linear-gradient(180deg,#fff,#f1f5f9);
+      color:#4c1d95;
+      box-shadow:0 1px 0 rgba(15,23,42,0.04),inset 0 0 0 1px rgba(139,92,246,0.18);
+    }
+    .toolbar .right{display:flex;align-items:center;gap:10px}
+    .search-box{
+      display:flex;align-items:center;gap:8px;
+      padding:8px 12px;border-radius:12px;
+      background:var(--surface);border:1px solid var(--border);
+      color:var(--text-dim);font-size:12.5px;min-width:220px;
+    }
+    .search-box input{
+      border:none;outline:none;background:transparent;flex:1;
+      color:var(--text);font-size:13px;font-family:inherit;
+    }
+    .search-box svg{width:14px;height:14px;flex-shrink:0}
+
+    /* Section labels */
+    .section-label{
+      display:flex;align-items:center;gap:12px;margin:28px 0 14px;
+      font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;
+    }
+    .section-label .badge{
+      padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700;
+      background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border);
+    }
+    .section-label .line{flex:1;height:1px;background:linear-gradient(90deg,var(--border),transparent)}
+    .section-label.live{color:#34d399}
+    .section-label.staged{color:var(--violet-2)}
+    .section-label.draft{color:#94a3b8}
+
+    /* Strategy grid */
+    .strategy-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:20px}
+
+    /* Card top */
+    .s-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
+
+    /* Clean white card - no gradient border, no top band */
+    .s-card{
+      position:relative;border-radius:18px;
+      background:#fff;
+      border:1px solid rgba(15,23,42,0.08);
+      box-shadow:0 1px 4px rgba(15,23,42,0.05),0 4px 16px rgba(15,23,42,0.03);
+      transition:transform .3s cubic-bezier(.2,.8,.2,1),box-shadow .3s;
+      cursor:pointer;opacity:0;transform:translateY(10px);
+      animation:rise .5s cubic-bezier(.2,.8,.2,1) forwards;
+      overflow:hidden;
+    }
+    @keyframes rise{to{opacity:1;transform:none}}
+    .s-card:hover{transform:translateY(-4px);box-shadow:0 12px 36px rgba(15,23,42,0.12),0 0 0 1px rgba(15,23,42,0.07);}
+    .s-card-inner{padding:20px;}
+    .s-icon{
+      width:42px;height:42px;border-radius:13px;
+      display:flex;align-items:center;justify-content:center;
+      font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;color:#fff;
+      box-shadow:0 4px 12px rgba(0,0,0,0.15);
+      flex-shrink:0;
+    }
+    .s-name{font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:600;letter-spacing:-0.01em;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:175px;}
+    .s-meta{font-size:11.5px;color:#64748b;margin-top:2px;}
+
+    /* Description */
+    .s-desc{font-size:12.5px;color:#475569;line-height:1.55;margin-top:10px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+
+    /* Asset logos row */
+    .s-logos-row{display:flex;align-items:center;margin-top:12px;}
+    .s-logo{width:24px;height:24px;border-radius:50%;border:2px solid #fff;object-fit:cover;margin-left:-7px;background:#f1f5f9;flex-shrink:0;}
+    .s-logo:first-child{margin-left:0;}
+    .s-logo-fb{width:24px;height:24px;border-radius:50%;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#7c3aed;background:#ede9fe;margin-left:-7px;flex-shrink:0;}
+    .s-logo-fb:first-child{margin-left:0;}
+
+    /* YTD chip */
+    .s-ytd-chip{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-radius:10px;background:#f8fafc;border:1px solid rgba(15,23,42,0.07);margin-top:8px;}
+    .s-ytd-chip .ytd-lbl{font-size:9.5px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.12em;}
+    .s-ytd-chip .ytd-val{font-family:'Space Grotesk',sans-serif;font-size:15px;font-weight:700;letter-spacing:-0.02em;}
+    .s-ytd-chip .ytd-val.pos{color:#059669;}
+    .s-ytd-chip .ytd-val.neg{color:#e11d48;}
+    .s-ytd-chip .ytd-val.na{color:#94a3b8;}
+
+    /* Stats row */
+    .s-stats-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-top:13px;padding-top:11px;border-top:1px solid rgba(15,23,42,0.07);font-size:12px;color:#64748b;}
+    .s-stats-row .sdot{color:#cbd5e1;font-size:13px;}
+    .s-stats-row .sinv{color:#059669;font-weight:600;}
+    .s-stats-row .sfeat{color:#d97706;font-weight:600;}
+
+    /* Spark container */
+    .spark-wrap{height:80px;width:100%;margin-top:14px;}
+
+    /* Pills */
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:999px;font-size:10.5px;font-weight:600;border:1px solid transparent}
+    .pill-low{background:rgba(16,217,160,0.12);color:#34d399;border-color:rgba(16,217,160,0.25)}
+    .pill-medium{background:rgba(245,181,68,0.12);color:#fbbf24;border-color:rgba(245,181,68,0.25)}
+    .pill-high{background:rgba(255,93,122,0.12);color:#fb7185;border-color:rgba(255,93,122,0.25)}
+    .pill-pub{background:rgba(16,217,160,0.10);color:#34d399;border-color:rgba(16,217,160,0.22)}
+    .pill-feat{background:linear-gradient(90deg,rgba(245,181,68,0.18),rgba(245,158,11,0.05));color:#fbbf24;border-color:rgba(245,181,68,0.3)}
+    .pill-status-active{background:rgba(139,92,246,0.14);color:#c4b5fd;border-color:rgba(139,92,246,0.3)}
+    .pill-status-draft{background:rgba(15,23,42,0.04);color:var(--text-dim);border-color:var(--border)}
+
+    /* Detail view */
+    .detail{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+
+    .glass-card{
+      position:relative;border-radius:24px;padding:1px;
+      background:linear-gradient(140deg,rgba(139,92,246,0.30),rgba(15,23,42,0.05) 40%,rgba(99,102,241,0.25));
+    }
+    .glass-card-inner{
+      border-radius:23px;padding:26px;
+      background:
+        radial-gradient(120% 80% at 0% 0%,rgba(139,92,246,0.06),transparent 60%),
+        linear-gradient(180deg,rgba(255,255,255,0.95),rgba(248,250,252,0.98));
+      backdrop-filter:blur(14px);
+    }
+    .hero-title{
+      font-family:'Space Grotesk',sans-serif;font-size:30px;font-weight:700;letter-spacing:-0.025em;
+      background:linear-gradient(180deg,#0f172a,#4c1d95);
+      -webkit-background-clip:text;background-clip:text;color:transparent;
+    }
+    .kpi-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:20px}
+    .kpi{border-radius:16px;padding:14px;background:rgba(15,23,42,0.025);border:1px solid var(--border);transition:all .25s}
+    .kpi:hover{background:rgba(15,23,42,0.05);border-color:var(--border-strong);transform:translateY(-2px)}
+    .kpi .lbl{font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.1em;font-weight:600}
+    .kpi .val{font-family:'Space Grotesk',sans-serif;font-size:22px;font-weight:700;margin-top:6px;letter-spacing:-0.02em}
+    .kpi.violet{background:linear-gradient(180deg,rgba(139,92,246,0.18),rgba(139,92,246,0.04));border-color:rgba(139,92,246,0.3)}
+    .kpi.violet .lbl{color:#6d28d9}
+    .kpi.violet .val{color:#4c1d95}
+
+    /* Chart */
+    .chart-wrap{
+      margin-top:20px;height:180px;border-radius:18px;overflow:hidden;
+      background:linear-gradient(180deg,rgba(139,92,246,0.06),transparent);
+      border:1px solid var(--border);padding:8px;position:relative;
+    }
+    .chart-wrap svg{width:100%;height:100%}
+
+    /* Holdings */
+    .holding-row{display:flex;align-items:center;gap:14px;padding:12px;border-radius:14px;transition:background .15s}
+    .holding-row:hover{background:rgba(15,23,42,0.04)}
+    .h-logo{
+      width:38px;height:38px;border-radius:11px;
+      background:linear-gradient(135deg,rgba(139,92,246,0.22),rgba(99,102,241,0.12));
+      border:1px solid var(--border);
+      display:flex;align-items:center;justify-content:center;
+      font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:12px;color:#5b21b6;flex-shrink:0;
+    }
+    .h-bar{height:6px;border-radius:999px;background:rgba(15,23,42,0.08);overflow:hidden;margin-top:6px}
+    .h-bar-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#a78bfa,#6366f1);transition:width 1s cubic-bezier(.2,.8,.2,1)}
+
+    /* Ticker cards */
+    .ticker-card{
+      flex-shrink:0;width:200px;padding:14px;border-radius:16px;
+      background:linear-gradient(180deg,rgba(255,255,255,0.95),rgba(248,250,252,0.85));
+      border:1px solid var(--border);transition:all .25s;
+    }
+    .ticker-card:hover{transform:translateY(-3px);border-color:rgba(139,92,246,0.4);box-shadow:0 12px 30px -15px rgba(139,92,246,0.5)}
+
+    /* Marquee */
+    .marquee-scroll{overflow-x:auto;scroll-behavior:smooth;padding-bottom:8px}
+    .marquee-scroll::-webkit-scrollbar{height:5px}
+    .marquee-scroll::-webkit-scrollbar-thumb{background:rgba(15,23,42,0.15);border-radius:999px}
+
+    /* Calendar */
+    .cal-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}
+    .cal-cell{border-radius:13px;padding:12px 8px;text-align:center;background:rgba(15,23,42,0.03);border:1px solid var(--border);transition:all .2s}
+    .cal-cell:hover{transform:scale(1.05)}
+    .cal-cell .m{font-size:10.5px;color:var(--text-mute);font-weight:600;text-transform:uppercase;letter-spacing:0.08em}
+    .cal-cell .v{font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:700;margin-top:6px}
+    .cal-pos{background:linear-gradient(180deg,rgba(16,217,160,0.18),rgba(16,217,160,0.04));border-color:rgba(16,217,160,0.3)}
+    .cal-pos .v{color:#34d399}
+    .cal-neg{background:linear-gradient(180deg,rgba(255,93,122,0.18),rgba(255,93,122,0.04));border-color:rgba(255,93,122,0.3)}
+    .cal-neg .v{color:#fb7185}
+
+    .year-btn{
+      padding:5px 12px;border-radius:999px;font-size:11px;font-weight:600;
+      background:transparent;border:1px solid var(--border);color:var(--text-dim);
+      cursor:pointer;transition:all .15s;font-family:inherit;
+    }
+    .year-btn:hover{border-color:var(--border-strong);color:var(--text)}
+    .year-btn.active{
+      background:linear-gradient(90deg,#8b5cf6,#6366f1);color:#fff;
+      border-color:transparent;box-shadow:0 6px 18px -6px rgba(139,92,246,0.7);
+    }
+
+    /* Back button */
+    .back-btn{
+      display:inline-flex;align-items:center;gap:7px;
+      padding:8px 14px;border-radius:10px;
+      background:var(--surface);border:1px solid var(--border);
+      color:var(--text-dim);font-size:12.5px;font-weight:600;cursor:pointer;
+      transition:all .15s;font-family:inherit;
+    }
+    .back-btn:hover{background:var(--surface-2);border-color:var(--border-strong);color:var(--text)}
+    .back-btn svg{width:14px;height:14px}
+
+    .fade-in{animation:fadeIn .5s ease both}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .hidden{display:none !important}
+  </style>
+<script src="/js/cc-badge.js" defer></script>
+</head>
+<body>
+  <div class="aurora"><div class="blob3"></div></div>
+
+  <aside class="sidebar">
+    <div class="sidebar-header" onclick="mintHubDropdownToggle(event)">
+      <div class="sidebar-logo">
+        <img src="/icon.png" alt="Mint logo" style="width:36px;height:36px;border-radius:9px;" />
+      </div>
+      <div class="sidebar-brand">
+        <span class="sidebar-brand-name">Mint</span>
+        <span class="sidebar-brand-sub">Mint Hub</span>
+      </div>
+      <svg id="mintHubChevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="rgba(100,116,139,0.6)" stroke-width="2.5" stroke-linecap="round" style="flex-shrink:0;transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"/></svg>
+      <div id="mintHubDropdown" class="mint-hub-dd" onclick="event.stopPropagation()">
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:#f5f3ff;border-bottom:1px solid rgba(139,92,246,0.1);">
+          <img src="/icon.png" style="width:26px;height:26px;border-radius:7px;flex-shrink:0;" />
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:12px;font-weight:700;color:#0f172a;line-height:1.3;">Mint Hub</div>
+            <div style="font-size:10px;color:#7c3aed;font-weight:500;">Admin Portal · Active</div>
+          </div>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <div onclick="mintAppLaunch()" style="display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;" onmouseover="this.style.background='#f5f3ff'" onmouseout="this.style.background=''">
+          <div style="width:26px;height:26px;border-radius:7px;background:#f0fdf4;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <img src="/icon.png" style="width:18px;height:18px;border-radius:4px;" />
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:11px;font-weight:600;color:#0f172a;line-height:1.3;">Mint App</div>
+            <div style="font-size:10px;color:#059669;font-weight:500;">Investor-facing portal</div>
+          </div>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      <div onclick="window.open('https://mint-mailers.vercel.app/','_blank')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;border-top:1px solid #f1f5f9;" onmouseover="this.style.background='#f5f3ff'" onmouseout="this.style.background=''">
+        <div style="width:26px;height:26px;border-radius:7px;background:#fef3c7;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+          <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#d97706;"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8l8 5 8-5v10zm-8-7L4 6h16l-8 5z"/></svg>
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:11px;font-weight:600;color:#0f172a;line-height:1.3;">Mint Mailers</div>
+          <div style="font-size:10px;color:#d97706;font-weight:500;">Email campaign platform</div>
+        </div>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+      </div>
+      </div>
+    </div>
+    <script>
+    function mintHubDropdownToggle(e){
+      e.stopPropagation();
+      const dd=document.getElementById('mintHubDropdown');
+      const ch=document.getElementById('mintHubChevron');
+      const open=dd.style.display==='block';
+      dd.style.display=open?'none':'block';
+      ch.style.transform=open?'':'rotate(180deg)';
+    }
+    document.addEventListener('click',()=>{
+      const dd=document.getElementById('mintHubDropdown');
+      const ch=document.getElementById('mintHubChevron');
+      if(dd){dd.style.display='none';ch.style.transform='';}
+    });
+    function mintAppLaunch(){window.open('https://app.mint.co','_blank')}
+    </script>
+
+    <div style="padding:12px 14px 4px;">
+      <style>
+        #viewSwitcherDropdown{display:grid;grid-template-rows:0fr;transition:grid-template-rows 0.2s ease}
+        #viewSwitcherDropdown.vs-open{grid-template-rows:1fr}
+        #viewSwitcherDropdown>div{overflow:hidden}
+      </style>
+      <button id="viewSwitcherBtn" onclick="viewSwitcherToggle(event)"
+        style="display:flex;align-items:center;gap:10px;width:100%;padding:9px 11px;border-radius:10px;background:linear-gradient(90deg,rgba(139,92,246,0.2),rgba(99,102,241,0.05));border:1px solid rgba(139,92,246,0.25);cursor:pointer;color:#4c1d95;font-size:13px;font-weight:600;font-family:inherit;text-align:left;">
+        <svg viewBox="0 0 24 24" style="width:17px;height:17px;fill:currentColor;flex-shrink:0;"><path d="M3 3h7v7H3zm0 11h7v7H3zm11-11h7v7h-7zm0 11h7v7h-7z"/></svg>
+        <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Investments</span>
+        <svg id="viewSwitcherChevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="width:12px;height:12px;flex-shrink:0;transition:transform 0.2s;opacity:0.5;"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div id="viewSwitcherDropdown">
+        <div>
+          <div style="padding:4px 0 2px 10px;">
+            <div style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;background:rgba(139,92,246,0.08);">
+              <svg viewBox="0 0 24 24" style="width:16px;height:16px;fill:#a78bfa;flex-shrink:0;"><path d="M3 3h7v7H3zm0 11h7v7H3zm11-11h7v7h-7zm0 11h7v7h-7z"/></svg>
+              <span style="flex:1;font-size:12px;font-weight:600;color:#4c1d95;">Investments</span>
+              <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><polyline points="2,6 5,9 10,3" stroke="#a78bfa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script>
+    function viewSwitcherToggle(e){
+      e.stopPropagation();
+      const dd=document.getElementById('viewSwitcherDropdown');
+      const ch=document.getElementById('viewSwitcherChevron');
+      const open=dd.classList.contains('vs-open');
+      dd.classList.toggle('vs-open',!open);
+      ch.style.transform=open?'':'rotate(180deg)';
+    }
+    document.addEventListener('click',()=>{
+      const dd=document.getElementById('viewSwitcherDropdown');
+      const ch=document.getElementById('viewSwitcherChevron');
+      if(dd){dd.classList.remove('vs-open');ch.style.transform='';}
+    });
+    </script>
+
+    <nav class="sidebar-nav">
+      <div class="sidebar-section-label">Main</div>
+      <a href="/index.html" class="nav-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+        Clients
+      </a>
+              <a class="nav-icon" href="/studio.html"><svg viewBox="0 0 24 24"><path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>Client View Studio</a>
+        <div class="sidebar-section-label">Investments</div>
+      <a href="/dashboard.html" class="nav-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+        Dashboard
+      </a>
+      <a href="/factsheets.html" class="nav-icon active">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+        Factsheets
+      </a>
+      <a href="/investors.html" class="nav-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z"/></svg>
+        Investors
+      </a>
+      <a href="/orderbook.html" class="nav-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 3c1.93 0 3.5 1.57 3.5 3.5S13.93 13 12 13s-3.5-1.57-3.5-3.5S10.07 6 12 6zm7 13H5v-.23c0-.62.28-1.2.76-1.58C7.47 15.82 9.64 15 12 15s4.53.82 6.24 2.19c.48.38.76.97.76 1.58V19z"/></svg>
+        Order Book
+      </a>
+      <div class="sidebar-section-label">Banking</div>
+      <a href="/eft.html" class="nav-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.11 0-2 .89-2 2v12c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"/></svg>
+        EFT Payments
+      </a>
+      <div class="sidebar-section-label">System</div>
+      <a href="/settings.html" class="nav-icon">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.62l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.62l2.03 1.58c-.05.32-.07.64-.07.94s.02.62.07.94l-2.03 1.58c-.18.14-.23.41-.12.62l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.62l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+        Settings
+      </a>
+      <a class="nav-icon" href="/cyber-compliance.html" id="ccNavLink" style="position:relative;"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 4l5 2.18V11c0 3.5-2.33 6.79-5 7.93-2.67-1.14-5-4.43-5-7.93V7.18L12 5z"/></svg>Cyber Compliance<span id="ccBadge" style="display:none;position:absolute;top:5px;right:6px;width:8px;height:8px;background:#ff3b30;border-radius:50%;border:2px solid #fff;"></span></a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="sidebar-user">
+        <div class="sidebar-avatar" id="sidebarInitial">A</div>
+        <div class="sidebar-user-info">
+          <div class="sidebar-user-name" id="sidebarEmail">Loading…</div>
+          <div class="sidebar-user-role">Administrator</div>
+        </div>
+      </div>
+      <button class="sidebar-signout" onclick="signOut()">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5-5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+        Sign out
+      </button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div style="display:flex;align-items:center;gap:14px">
+        <button id="backBtn" class="back-btn hidden" onclick="showList()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          All Strategies
+        </button>
+        <span class="crumb">Investments / <b id="crumbTitle">Factsheets</b></span>
+      </div>
+      <div class="topbar-pill">
+        <span class="live-dot"></span>
+        Markets open · JSE
+      </div>
+    </div>
+
+    <div class="page">
+      <!-- LIST VIEW -->
+      <div id="listView">
+        <div class="page-head fade-in">
+          <h1>Factsheets</h1>
+          <p>Premium portfolio strategies — select one to view its full factsheet.</p>
+        </div>
+
+        <div id="overviewBand"></div>
+        <div id="spotlightSlot"></div>
+
+        <div class="toolbar">
+          <div class="filter-tabs" id="filterTabs">
+            <button class="filter-tab active" data-filter="all">All</button>
+            <button class="filter-tab" data-filter="live">Live</button>
+            <button class="filter-tab" data-filter="staged">Staged</button>
+            <button class="filter-tab" data-filter="draft">Draft</button>
+          </div>
+          <div class="right">
+            <div class="search-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+              <input id="searchInput" placeholder="Search strategies…" />
+            </div>
+          </div>
+        </div>
+
+        <div id="strategyContainer">
+          <div style="display:flex;align-items:center;justify-content:center;padding:80px 0;">
+            <div style="text-align:center;">
+              <div style="width:36px;height:36px;border:2px solid #8b5cf6;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 12px;"></div>
+              <p style="color:var(--text-mute);font-size:13px;">Loading strategies…</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- DETAIL VIEW -->
+      <div id="detailView" class="hidden detail"></div>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script>
+    const SUPABASE_URL = 'https://mfxnghmuccevsxwcetej.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1meG5naG11Y2NldnN4d2NldGVqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg4NTI1ODAsImV4cCI6MjA4NDQyODU4MH0.lktfglzBMaHd79hLFDRH1HHSwsEwZ56Tv6e287kQiFg';
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    /* ── Helpers ── */
+    const $ = id => document.getElementById(id);
+    const fmtPct  = (v, sign=true) => v==null ? '—' : `${sign && v>0?'+':''}${Number(v).toFixed(2)}%`;
+    const fmtMoney = v => v==null ? '—' : `R ${Number(v).toLocaleString('en-ZA',{minimumFractionDigits:0,maximumFractionDigits:0})}`;
+    const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    const normalizeSymbol = sym => typeof sym === 'string' ? sym.trim().split('.')[0].toUpperCase() : sym;
+
+    const formatCurrency = (v, cur='ZAR') => {
+      if (v==null) return null;
+      const n = Number(v);
+      if (Number.isNaN(n)) return null;
+      try { return new Intl.NumberFormat('en-ZA',{style:'currency',currency:cur,minimumFractionDigits:2,maximumFractionDigits:2}).format(n); }
+      catch { return `R ${n.toFixed(2)}`; }
+    };
+
+    const iconPalettes = [
+      ['#a78bfa','#6366f1'],['#10b981','#06b6d4'],['#f59e0b','#ef4444'],
+      ['#3b82f6','#8b5cf6'],['#ec4899','#f59e0b'],['#06b6d4','#3b82f6'],
+      ['#8b5cf6','#ec4899'],['#64748b','#94a3b8'],
+    ];
+    const iconColors = name => iconPalettes[((name||'').charCodeAt(0)||0) % iconPalettes.length];
+
+    const riskPillCls = r => {
+      const m = {low:'pill-low',medium:'pill-medium',high:'pill-high'};
+      return m[(r||'').toLowerCase()] || 'pill-low';
+    };
+
+    /* ── SVG helpers ── */
+    const sparkSVG = (data) => {
+      if (!data || data.length < 2) return '';
+      const w=300, h=60, p=4;
+      const min=Math.min(...data), max=Math.max(...data), range=max-min||1;
+      const pts = data.map((v,i)=>[p+(i/(data.length-1))*(w-p*2), h-p-((v-min)/range)*(h-p*2)]);
+      const path = pts.map((pt,i)=>(i===0?`M ${pt[0]} ${pt[1]}`:`L ${pt[0]} ${pt[1]}`)).join(' ');
+      const area = `${path} L ${pts[pts.length-1][0]} ${h} L ${pts[0][0]} ${h} Z`;
+      const isUp = data[data.length-1] >= data[0];
+      const stroke = isUp ? '#34d399' : '#fb7185';
+      const gid = 'sg'+Math.random().toString(36).slice(2,8);
+      return `<svg width="100%" height="100%" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${stroke}" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>
+        </linearGradient></defs>
+        <path d="${area}" fill="url(#${gid})"/>
+        <path d="${path}" stroke="${stroke}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+    };
+
+    const bigChartSVG = (data) => {
+      if (!data || data.length < 2) return '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-mute);font-size:12px;">No chart data</div>';
+      const w=820, h=170, pl=10, pr=10, pt=15, pb=15;
+      const min=Math.min(...data), max=Math.max(...data), range=max-min||1;
+      const pts = data.map((v,i)=>[pl+(i/(data.length-1))*(w-pl-pr), (h-pb)-((v-min)/range)*(h-pt-pb)]);
+      let path = `M ${pts[0][0]} ${pts[0][1]}`;
+      for(let i=1;i<pts.length;i++){
+        const p0=pts[i-1],p1=pts[i], cx=(p0[0]+p1[0])/2;
+        path+=` Q ${cx} ${p0[1]} ${cx} ${(p0[1]+p1[1])/2} T ${p1[0]} ${p1[1]}`;
+      }
+      const area=`${path} L ${pts[pts.length-1][0]} ${h-pb} L ${pts[0][0]} ${h-pb} Z`;
+      const last=pts[pts.length-1];
+      const isUp=data[data.length-1]>=data[0];
+      const stroke=isUp?'#34d399':'#fb7185';
+      const glow=isUp?'rgba(52,211,153,0.5)':'rgba(251,113,133,0.5)';
+      return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="bigG" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="${stroke}" stop-opacity="0.35"/>
+            <stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>
+          </linearGradient>
+          <filter id="glow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <path d="${area}" fill="url(#bigG)"/>
+        <path d="${path}" stroke="${stroke}" stroke-width="2.5" fill="none" stroke-linecap="round" filter="url(#glow)"/>
+        <circle cx="${last[0]}" cy="${last[1]}" r="5" fill="${stroke}"/>
+        <circle cx="${last[0]}" cy="${last[1]}" r="10" fill="${glow}" opacity="0.5">
+          <animate attributeName="r" values="6;14;6" dur="2s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.6;0;0.6" dur="2s" repeatCount="indefinite"/>
+        </circle>
+      </svg>`;
+    };
+
+    const expandSpark = (arr, n) => {
+      const out=[];
+      for(let i=0;i<n;i++){
+        const t=(i/(n-1))*(arr.length-1);
+        const lo=Math.floor(t),hi=Math.min(arr.length-1,lo+1);
+        out.push(arr[lo]*(1-(t-lo))+arr[hi]*(t-lo));
+      }
+      return out;
+    };
+
+    /* ── State ── */
+    let _allStrategies = [];
+    let _ytdMap = {};
+    let _sparkMap = {};
+    let _investorCounts = {};
+    let _logoMap = {};
+    let _priceMap = {}; /* symbol → price in Rand (for min investment calculation) */
+    let _filter = 'all';
+    let _query = '';
+
+    const escHtml = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+    /* Min investment: sum(shares × last_price) — mirrors dashboard's calculateMinInvestmentFromHoldings */
+    function calcMinInv(holdings) {
+      if (!holdings || !holdings.length) return null;
+      let total = 0, matched = 0;
+      for (const h of holdings) {
+        const sym = (h.ticker || h.symbol || '').toString();
+        const price = _priceMap[sym] ?? _priceMap[sym.replace('.JO','')] ?? null;
+        if (price != null && price > 0) {
+          const shares = Number(h.shares || h.quantity || 1);
+          total += shares * price;
+          matched++;
+        }
+      }
+      return matched > 0 ? total : null;
+    }
+
+    /* ── Overview band ── */
+    function renderOverview() {
+      const live = _allStrategies.filter(s=>s.status==='active');
+      const totalInv = _allStrategies.reduce((a,s)=>a+(_investorCounts[s.id]||0),0);
+      const avgYtd = live.length > 0
+        ? live.reduce((a,s)=>a+(Number(_ytdMap[s.id])||0),0) / live.length
+        : 0;
+      const best = _allStrategies.reduce((a,s)=>{
+        const y=Number(_ytdMap[s.id])||0, ay=Number(_ytdMap[a.id])||0;
+        return y > ay ? s : a;
+      }, _allStrategies[0] || {id:'',short_name:'—'});
+
+      const items = [
+        { lbl:'Strategies Live', val:live.length, delta:'+'+live.length+' total',
+          icon:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l3-3 4 4 5-5 6 6"/><path d="M14 8h7v7"/></svg>` },
+        { lbl:'Total Investors', val:totalInv, delta:'across all strategies',
+          icon:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3"/><path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M2 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M16 15h2a4 4 0 0 1 4 4v2"/></svg>` },
+        { lbl:'Avg YTD Return', val:fmtPct(avgYtd), delta:avgYtd>=0?'beating benchmark':'below benchmark', neg:avgYtd<0,
+          icon:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20"/><path d="M5 9l7-7 7 7"/></svg>` },
+        { lbl:'Top Performer', val:best.short_name||best.name||'—', delta:fmtPct(Number(_ytdMap[best.id])||0)+' YTD', neg:(Number(_ytdMap[best.id])||0)<0,
+          icon:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3 7h7l-5.5 4.5L18 21l-6-4-6 4 1.5-7.5L2 9h7z"/></svg>` },
+      ];
+
+      $('overviewBand').innerHTML = `
+        <div class="overview">
+          ${items.map((it,i)=>`
+            <div class="ov-card" style="opacity:0;transform:translateY(10px);animation:rise .5s cubic-bezier(.2,.8,.2,1) ${i*80}ms forwards">
+              <div class="ov-card-inner">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <div class="ov-lbl">${it.lbl}</div>
+                  <div class="ov-icon">${it.icon}</div>
+                </div>
+                <div class="ov-val">${it.val}</div>
+                <div class="ov-delta${it.neg?' neg':''}">${it.delta}</div>
+              </div>
+            </div>`).join('')}
+        </div>`;
+    }
+
+    /* ── Spotlight ── */
+    function renderSpotlight() {
+      const feat = _allStrategies.find(s=>s.is_featured && s.status==='active') || _allStrategies.find(s=>s.status==='active');
+      if (!feat) { $('spotlightSlot').innerHTML=''; return; }
+      const [c0,c1] = iconColors(feat.name);
+      const ytdRaw = Number(_ytdMap[feat.id])||0;
+      const isUp = ytdRaw >= 0;
+      const spark = _sparkMap[feat.id];
+      const expanded = spark && spark.length>=2 ? expandSpark(spark,60) : null;
+
+      $('spotlightSlot').innerHTML = `
+        <div class="spotlight fade-in">
+          <div class="spotlight-inner">
+            <div>
+              <span class="spotlight-tag">★ Featured strategy</span>
+              <h2>${feat.name}</h2>
+              <div class="spotlight-meta">${feat.sector||'Multi-asset'} · ${(feat.risk_level||'balanced')[0].toUpperCase()+(feat.risk_level||'balanced').slice(1)} risk · ${Array.isArray(feat.holdings)?feat.holdings.length:0} holdings</div>
+              <p style="font-size:13.5px;color:var(--text-dim);line-height:1.6;margin:0;max-width:46ch">${feat.description||''}</p>
+              <div style="display:flex;align-items:baseline;gap:14px;margin-top:18px">
+                <div>
+                  <div style="font-size:10.5px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-mute)">YTD</div>
+                  <div class="s-return-big ${isUp?'pos':'neg'}" style="font-size:34px">${fmtPct(ytdRaw)}</div>
+                </div>
+              </div>
+              <button class="spotlight-cta" onclick="openDetail('${feat.id}','${feat.name.replace(/'/g,"\\'")}')">
+                View full factsheet
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="width:14px;height:14px"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
+              </button>
+            </div>
+            <div class="spotlight-chart">${expanded ? bigChartSVG(expanded) : '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-mute);font-size:12px;">No data yet</div>'}</div>
+          </div>
+        </div>`;
+    }
+
+    /* ── Card builder ── */
+    function buildCard(s, idx) {
+      const [c0,c1] = iconColors(s.name);
+      const initials = (s.short_name||s.name||'S').slice(0,2).toUpperCase();
+      const ytdRaw = _ytdMap[s.id] != null ? Number(_ytdMap[s.id]) : null;
+      const isUp = ytdRaw == null ? true : ytdRaw >= 0;
+      const sparkData = _sparkMap[s.id];
+      const inv = _investorCounts[s.id]||0;
+      const holdings = Array.isArray(s.holdings) ? s.holdings : [];
+
+      /* Asset logos */
+      const logoItems = holdings.slice(0, 8).map(h => {
+        const ticker = (h.ticker || h.symbol || h || '').toString();
+        const logoUrl = _logoMap[ticker] || null;
+        const initH = ticker.replace('.JO','').slice(0, 2).toUpperCase() || '?';
+        if (logoUrl) return `<img class="s-logo" src="${logoUrl}" alt="${initH}" onerror="this.outerHTML='<div class=\\'s-logo-fb\\'>${initH}</div>'">`;
+        return `<div class="s-logo-fb">${initH}</div>`;
+      }).slice(0, 5);
+      const logosHtml = logoItems.length > 0 ? `<div class="s-logos-row">${logoItems.join('')}</div>` : '';
+
+      /* Sparkline */
+      const sparkHtml = sparkData && sparkData.length >= 2
+        ? sparkSVG(sparkData)
+        : `<div style="display:flex;align-items:center;justify-content:center;height:100%;"><div style="height:2px;width:55%;background:#e2e8f0;border-radius:2px;"></div></div>`;
+
+      /* YTD chip value */
+      const ytdClass = ytdRaw == null ? 'na' : (isUp ? 'pos' : 'neg');
+      const ytdStr = ytdRaw == null ? '—' : `${ytdRaw > 0 ? '+' : ''}${ytdRaw.toFixed(2)}%`;
+
+      /* Min investment */
+      const minInv = calcMinInv(holdings);
+      const minInvStr = minInv != null
+        ? 'R ' + minInv.toLocaleString('en-ZA', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+        : '—';
+
+      /* Stats row */
+      const statParts = [`<span>${holdings.length} holding${holdings.length!==1?'s':''}</span>`];
+      if (inv > 0) statParts.push(`<span class="sdot">·</span><span class="sinv">${inv} investor${inv!==1?'s':''}</span>`);
+      statParts.push(`<span class="sdot">·</span><span>${s.is_public ? 'Public' : 'Private'}</span>`);
+      if (s.is_featured) statParts.push(`<span class="sdot">·</span><span class="sfeat">★ Featured</span>`);
+
+      return `
+        <div class="s-card" style="animation-delay:${idx*60}ms" onclick="openDetail('${s.id}','${(s.name||'').replace(/'/g,"\\'")}')">
+          <div class="s-card-inner">
+            <div class="s-card-top">
+              <div style="display:flex;gap:12px;align-items:center;min-width:0;flex:1;">
+                <div class="s-icon" style="background:linear-gradient(135deg,${c0},${c1})">${initials}</div>
+                <div style="min-width:0;">
+                  <div class="s-name">${escHtml(s.name||'Untitled')}</div>
+                  <div class="s-meta">${escHtml(s.short_name||'')}${s.sector?' · '+escHtml(s.sector):''}</div>
+                </div>
+              </div>
+              <span class="pill ${riskPillCls(s.risk_level)}" style="flex-shrink:0;">${s.risk_level||'N/A'}</span>
+            </div>
+            ${s.description ? `<div class="s-desc">${escHtml(s.description)}</div>` : ''}
+            ${logosHtml}
+            <div class="spark-wrap">${sparkHtml}</div>
+            <div class="s-ytd-chip">
+              <span class="ytd-lbl">MIN. INVESTMENT</span>
+              <span class="ytd-val" style="font-size:13px;color:${minInv != null ? '#334155' : '#94a3b8'};">${minInvStr}</span>
+            </div>
+            <div class="s-ytd-chip" style="margin-top:4px;">
+              <span class="ytd-lbl">YTD RETURN</span>
+              <span class="ytd-val ${ytdClass}">${ytdStr}</span>
+            </div>
+            <div class="s-stats-row">${statParts.join('')}</div>
+          </div>
+        </div>`;
+    }
+
+    /* ── Render list ── */
+    function renderList() {
+      renderOverview();
+      renderSpotlight();
+
+      const q = _query.trim().toLowerCase();
+      const matches = s => !q || (s.name||'').toLowerCase().includes(q) || (s.short_name||'').toLowerCase().includes(q) || (s.sector||'').toLowerCase().includes(q);
+
+      const live   = _allStrategies.filter(s=> s.status==='active' && (_investorCounts[s.id]||0) > 0 && matches(s));
+      const staged = _allStrategies.filter(s=> s.status==='active' && (_investorCounts[s.id]||0)===0 && matches(s));
+      const draft  = _allStrategies.filter(s=> s.status!=='active' && matches(s));
+
+      const sections = [];
+      if (_filter==='all'||_filter==='live')   sections.push(['Live · With Investors', live,   'live']);
+      if (_filter==='all'||_filter==='staged') sections.push(['Live · No Investors Yet',staged,'staged']);
+      if (_filter==='all'||_filter==='draft')  sections.push(['Inactive / Draft',       draft,  'draft']);
+
+      const root = $('strategyContainer');
+      let html = '';
+      let totalIdx = 0;
+
+      sections.forEach(([title,items,cls])=>{
+        if(!items.length) return;
+        html += `
+          <div class="section-label ${cls}">${title}<span class="badge">${items.length}</span><div class="line"></div></div>
+          <div class="strategy-grid">${items.map(s=>buildCard(s,totalIdx++)).join('')}</div>`;
+      });
+
+      root.innerHTML = html || `<div style="padding:60px 20px;text-align:center;color:var(--text-mute);font-size:14px">No strategies match your search.</div>`;
+    }
+
+    /* ── Filter tabs + search ── */
+    document.addEventListener('click', e=>{
+      const t = e.target.closest('.filter-tab');
+      if(!t) return;
+      document.querySelectorAll('.filter-tab').forEach(b=>b.classList.remove('active'));
+      t.classList.add('active');
+      _filter = t.dataset.filter;
+      renderList();
+    });
+    document.addEventListener('input', e=>{
+      if(e.target && e.target.id==='searchInput'){
+        _query = e.target.value;
+        renderList();
+      }
+    });
+
+    /* ── Show/hide views ── */
+    function showList() {
+      $('listView').classList.remove('hidden');
+      $('detailView').classList.add('hidden');
+      $('backBtn').classList.add('hidden');
+      $('crumbTitle').textContent = 'Factsheets';
+      history.replaceState(null,'','/factsheets.html');
+      window.scrollTo({top:0,behavior:'smooth'});
+    }
+
+    /* ── Detail view ── */
+    async function openDetail(strategyId, strategyName) {
+      $('listView').classList.add('hidden');
+      $('detailView').classList.remove('hidden');
+      $('backBtn').classList.remove('hidden');
+      $('crumbTitle').textContent = strategyName || 'Factsheet';
+      history.replaceState(null,'',`/factsheets.html?id=${strategyId}`);
+      window.scrollTo({top:0,behavior:'smooth'});
+
+      $('detailView').innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:center;padding:80px 0;">
+          <div style="text-align:center;">
+            <div style="width:36px;height:36px;border:2px solid #8b5cf6;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 12px;"></div>
+            <p style="color:var(--text-mute);font-size:13px;">Loading factsheet…</p>
+          </div>
+        </div>`;
+
+      const { data: strategy, error } = await supabaseClient
+        .from('strategies_c')
+        .select('id, slug, name, short_name, description, risk_level, sector, tags, base_currency, icon_url, holdings, min_investment, is_public, is_featured, status, created_at')
+        .eq('id', strategyId)
+        .maybeSingle();
+
+      if (error || !strategy) {
+        $('detailView').innerHTML = '<div style="text-align:center;padding:80px 0;color:var(--text-mute);">Strategy not found.</div>';
+        return;
+      }
+
+      $('crumbTitle').textContent = strategy.name || 'Factsheet';
+
+      const [c0,c1] = iconColors(strategy.name);
+      const initials = (strategy.short_name||strategy.name||'S').slice(0,2).toUpperCase();
+      const holdings = Array.isArray(strategy.holdings) ? strategy.holdings : [];
+
+      /* Securities */
+      let securitiesMap = new Map();
+      if (holdings.length > 0) {
+        const symbols = holdings.map(h=>h.ticker||h.symbol||h);
+        const allSyms = [...new Set([...symbols,...symbols.map(normalizeSymbol)])];
+        const { data: secs } = await supabaseClient.from('securities_c').select('id,symbol,name,logo_url').in('symbol',allSyms);
+        if (secs) {
+          const secIds = secs.map(s=>s.id).filter(Boolean);
+          let retMap = {};
+          if (secIds.length>0) {
+            const { data: rets } = await supabaseClient.from('stock_returns_c')
+              .select('security_id,current_price,1d_pct').in('security_id',secIds)
+              .order('as_of_date',{ascending:false});
+            (rets||[]).forEach(r=>{ if(!retMap[r.security_id]) retMap[r.security_id]=r; });
+          }
+          secs.forEach(s=>{
+            const r = retMap[s.id]||{};
+            const m = {...s, last_price:r.current_price!=null?Number(r.current_price):null, change_percent:r['1d_pct']??null};
+            securitiesMap.set(s.symbol,m);
+            const norm=normalizeSymbol(s.symbol);
+            if(norm!==s.symbol) securitiesMap.set(norm,m);
+          });
+        }
+      }
+
+      /* Intraday prices — latest current_price (cents) per symbol, direct symbol match */
+      const intradayBySymbol = {};
+      if (holdings.length > 0) {
+        const symbols = [...new Set(holdings.map(h => h.ticker || h.symbol || h).filter(Boolean))];
+        if (symbols.length > 0) {
+          const { data: intradayRows } = await supabaseClient
+            .from('stock_intraday_c')
+            .select('symbol,current_price,timestamp')
+            .in('symbol', symbols)
+            .order('timestamp', { ascending: false });
+          (intradayRows || []).forEach(r => {
+            if (r.symbol && intradayBySymbol[r.symbol] == null) {
+              intradayBySymbol[r.symbol] = Number(r.current_price);
+            }
+          });
+        }
+      }
+
+      /* Returns */
+      const { data: retRows } = await supabaseClient
+        .from('strategies_returns_c')
+        .select('strategy_id,ytd_pct,basket_value,as_of_date')
+        .eq('strategy_id',strategyId)
+        .order('as_of_date',{ascending:true});
+
+      const latestRet = retRows && retRows.length>0 ? retRows[retRows.length-1] : null;
+      const ytdVal = latestRet?.ytd_pct != null ? Number(latestRet.ytd_pct) : null;
+      const isUp = ytdVal == null ? true : ytdVal >= 0;
+
+      /* Chart data from basket_value */
+      const chartData = (retRows||[]).map(r=>Number(r.basket_value)).filter(v=>!Number.isNaN(v)&&v!=null);
+      const sparkForDetail = chartData.length>=2 ? expandSpark(chartData,60) : null;
+
+      /* Holdings with metrics */
+      const totalWeight = holdings.reduce((s,h)=>s+(Number(h.weight)||0),0);
+      const holdingsWithMetrics = holdings.map(h=>{
+        const sym = h.ticker||h.symbol||h;
+        const sec = securitiesMap.get(sym)||securitiesMap.get(normalizeSymbol(sym));
+        const rawW = Number(h.weight)||0;
+        const weightPct = totalWeight>0?(rawW/totalWeight)*100:rawW;
+        const price = sec?.last_price ? Number(sec.last_price) : 0;
+        const shares = Number(h.shares||h.quantity||1);
+        return {
+          sym, name:h.name||sec?.name||sym,
+          weight:rawW, weightPct,
+          logoUrl:sec?.logo_url||null,
+          change:sec?.change_percent!=null?Number(sec.change_percent):null,
+          mv:shares*price,
+        };
+      });
+
+      /* Min investment — sum(shares × intraday current_price cents) ÷ 100 × 1.08 */
+      let totalCents = 0, hasIntraday = false;
+      holdings.forEach(h => {
+        const sym = h.ticker || h.symbol || h;
+        const shares = Number(h.shares || h.quantity || 1);
+        const priceCents = intradayBySymbol[sym] ?? null;
+        if (priceCents != null) { totalCents += shares * priceCents; hasIntraday = true; }
+      });
+      let minInv, cashAmt;
+      if (hasIntraday && totalCents > 0) {
+        const equitiesR = totalCents / 100;
+        cashAmt = null;
+        minInv = equitiesR;
+      } else {
+        minInv = strategy.min_investment ? strategy.min_investment / 100 : null;
+        cashAmt = minInv ? minInv * 0.08 : null;
+      }
+      holdingsWithMetrics.push({sym:'CASH',name:cashAmt?`Cash (${formatCurrency(cashAmt,strategy.base_currency||'ZAR')})`: 'Cash',weight:8,weightPct:8,logoUrl:null,change:null,mv:cashAmt||0});
+
+      /* Calendar returns from basket_value */
+      const calendarData = {};
+      if (retRows && retRows.length>1) {
+        const monthlyLast = {};
+        retRows.forEach(r=>{
+          if(r.basket_value==null||!r.as_of_date) return;
+          const ym=r.as_of_date.slice(0,7);
+          monthlyLast[ym]=Number(r.basket_value);
+        });
+        const sortedM = Object.keys(monthlyLast).sort();
+        const createdYm = strategy.created_at?strategy.created_at.slice(0,7):null;
+        for(let i=1;i<sortedM.length;i++){
+          const ym=sortedM[i], prevYm=sortedM[i-1];
+          if(createdYm&&(ym<createdYm||prevYm<createdYm)) continue;
+          const [year,month]=ym.split('-');
+          const end=monthlyLast[ym], start=monthlyLast[prevYm];
+          if(start&&start!==0){
+            if(!calendarData[year]) calendarData[year]={};
+            calendarData[year][month]=(end/start)-1;
+          }
+        }
+      }
+      const calYears = Object.keys(calendarData).sort();
+      let currentCalYear = calYears.length>0?calYears[calYears.length-1]:new Date().getFullYear().toString();
+
+      const calCell=(m,v)=>{
+        if(v==null) return `<div class="cal-cell"><div class="m">${m}</div><div class="v" style="color:var(--text-mute)">—</div></div>`;
+        const cls=v>=0?'cal-pos':'cal-neg';
+        return `<div class="cal-cell ${cls}"><div class="m">${m}</div><div class="v">${v>=0?'+':''}${(v*100).toFixed(2)}%</div></div>`;
+      };
+      const renderCal = yr=>`<div class="cal-grid">${monthNames.map((m,i)=>calCell(m,(calendarData[yr]||{})[String(i+1).padStart(2,'0')])).join('')}</div>`;
+
+      /* Ticker cards */
+      const nonCash = holdingsWithMetrics.filter(h=>h.sym!=='CASH');
+      const tickerCards = nonCash.map(h=>`
+        <div class="ticker-card">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div class="h-logo" style="background:linear-gradient(135deg,rgba(139,92,246,0.2),rgba(99,102,241,0.1));color:#5b21b6">${h.logoUrl?`<img src="${h.logoUrl}" style="width:24px;height:24px;object-fit:contain;border-radius:4px;">`:h.sym.slice(0,2)}</div>
+            <div style="min-width:0">
+              <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13px">${h.sym}</div>
+              <div style="font-size:10.5px;color:var(--text-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px">${h.name}</div>
+            </div>
+          </div>
+          <div style="margin-top:12px">
+            ${h.change!=null?`<div style="font-family:'Space Grotesk',sans-serif;font-size:16px;font-weight:700;color:${h.change>=0?'#34d399':'#fb7185'}">${h.change>=0?'+':''}${h.change.toFixed(2)}%</div>`:`<div style="font-size:13px;color:var(--text-mute)">—</div>`}
+            <div style="font-size:11px;color:var(--text-dim);margin-top:3px">${h.weightPct.toFixed(2)}% weight</div>
+          </div>
+        </div>`).join('');
+
+      $('detailView').innerHTML = `
+        <!-- Hero card -->
+        <div class="glass-card fade-in">
+          <div class="glass-card-inner">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap">
+              <div style="display:flex;gap:16px;align-items:center;min-width:0">
+                <div class="s-icon" style="width:54px;height:54px;border-radius:16px;font-size:18px;background:linear-gradient(135deg,${c0},${c1})">${initials}</div>
+                <div>
+                  <h1 class="hero-title">${strategy.name}</h1>
+                  <p style="margin:4px 0 0;color:var(--text-dim);font-size:13.5px">${(strategy.risk_level||'balanced')[0].toUpperCase()+(strategy.risk_level||'balanced').slice(1)} risk · ${strategy.sector||'Multi-asset'} · ${strategy.base_currency||'ZAR'}</p>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0">
+                <span class="pill ${riskPillCls(strategy.risk_level)}">${strategy.risk_level||'N/A'}</span>
+                <span class="pill pill-status-${strategy.status==='active'?'active':'draft'}">${strategy.status||'draft'}</span>
+                ${strategy.is_public?`<span class="pill pill-pub">Public</span>`:''}
+                ${strategy.is_featured?`<span class="pill pill-feat">★ Featured</span>`:''}
+              </div>
+            </div>
+
+            <div class="chart-wrap">${sparkForDetail?bigChartSVG(sparkForDetail):'<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-mute);font-size:12px;">No performance data available</div>'}</div>
+
+            <div style="display:flex;align-items:center;gap:8px;margin-top:14px;flex-wrap:wrap">
+              ${['YTD','3M','6M','1Y','ALL'].map((t,i)=>`<button class="year-btn${i===0?' active':''}" style="pointer-events:none">${t}</button>`).join('')}
+            </div>
+
+            <div class="kpi-grid">
+              <div class="kpi"><div class="lbl">Holdings</div><div class="val">${holdings.length}</div></div>
+              <div class="kpi violet"><div class="lbl">Min. Investment</div><div class="val">${minInv?fmtMoney(minInv):'—'}</div></div>
+              <div class="kpi"><div class="lbl">YTD Return</div><div class="val" style="color:${isUp?'#34d399':'#fb7185'}">${fmtPct(ytdVal)}</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Daily change -->
+        ${nonCash.length>0?`
+        <div class="glass-card fade-in">
+          <div class="glass-card-inner">
+            <div style="display:flex;align-items:center;justify-content:space-between">
+              <h2 style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:600;margin:0">Daily Change</h2>
+              <div style="font-size:11.5px;color:var(--text-mute)">Live data</div>
+            </div>
+            <div class="marquee-scroll" style="margin-top:16px;display:flex;gap:12px">${tickerCards}</div>
+          </div>
+        </div>`:''}
+
+        <!-- Description -->
+        <div class="glass-card fade-in">
+          <div class="glass-card-inner">
+            <h2 style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:600;margin:0 0 12px">Strategy Description</h2>
+            <p style="margin:0;color:var(--text-dim);font-size:13.5px;line-height:1.7">${strategy.description||'No description available.'}</p>
+            ${strategy.tags&&strategy.tags.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">${(strategy.tags||[]).map(t=>`<span style="padding:3px 10px;border-radius:999px;background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.15);font-size:11px;font-weight:600;color:#6d28d9">${t}</span>`).join('')}</div>`:''}
+          </div>
+        </div>
+
+        <!-- Holdings -->
+        ${holdingsWithMetrics.length>0?`
+        <div class="glass-card fade-in">
+          <div class="glass-card-inner">
+            <h2 style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:600;margin:0 0 4px">Portfolio Holdings</h2>
+            <p style="font-size:11.5px;color:var(--text-mute);margin:0 0 14px">${holdingsWithMetrics.length} assets including cash</p>
+            <div style="display:flex;flex-direction:column;gap:4px">
+              ${holdingsWithMetrics.map(h=>`
+                <div class="holding-row">
+                  <div class="h-logo">${h.logoUrl?`<img src="${h.logoUrl}" style="width:24px;height:24px;object-fit:contain;border-radius:4px;">`:h.sym.slice(0,2)}</div>
+                  <div style="flex:1;min-width:0">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+                      <div style="min-width:0">
+                        <div style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13.5px">${h.sym}</div>
+                        <div style="font-size:11px;color:var(--text-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px">${h.name}</div>
+                      </div>
+                      <div style="text-align:right;flex-shrink:0">
+                        <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:13.5px">${h.weightPct.toFixed(2)}%</div>
+                        ${h.change!=null?`<div style="font-size:11px;font-weight:600;color:${h.change>=0?'#34d399':'#fb7185'}">${h.change>=0?'+':''}${h.change.toFixed(2)}%</div>`:''}
+                      </div>
+                    </div>
+                    <div class="h-bar"><div class="h-bar-fill" style="width:0%" data-w="${Math.min(h.weightPct*1.5,100)}"></div></div>
+                  </div>
+                </div>`).join('')}
+            </div>
+          </div>
+        </div>`:''}
+
+        <!-- Calendar returns -->
+        ${calYears.length>0?`
+        <div class="glass-card fade-in">
+          <div class="glass-card-inner">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+              <h2 style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:600;margin:0">Calendar Returns</h2>
+              <div style="display:flex;gap:6px" id="yearTabs">
+                ${calYears.map(y=>`<button class="year-btn${y===currentCalYear?' active':''}" data-yr="${y}">${y}</button>`).join('')}
+              </div>
+            </div>
+            <div id="calGrid">${renderCal(currentCalYear)}</div>
+          </div>
+        </div>`:''}
+
+        <!-- Fees -->
+        <div class="glass-card fade-in">
+          <div class="glass-card-inner">
+            <h2 style="font-family:'Space Grotesk',sans-serif;font-size:17px;font-weight:600;margin:0 0 14px">Fees &amp; Disclaimers</h2>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              ${[['Management fee','0.00% p.a.'],['Performance fee','20% of profits'],['Min. holding period','None'],['Settlement','T+2']].map(([l,v])=>`
+                <div style="padding:12px 14px;border-radius:13px;background:rgba(139,92,246,0.03);border:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+                  <span style="font-size:12px;color:var(--text-dim)">${l}</span>
+                  <span style="font-family:'Space Grotesk',sans-serif;font-weight:600;font-size:13px;color:var(--text)">${v}</span>
+                </div>`).join('')}
+            </div>
+            <p style="margin-top:14px;font-size:11px;color:var(--text-mute);line-height:1.6">Past performance does not guarantee future results. All data is shown for informational purposes only and does not constitute financial advice. Investments may go up or down in value.</p>
+          </div>
+        </div>`;
+
+      /* Animate h-bar-fill after render */
+      requestAnimationFrame(()=>{
+        document.querySelectorAll('.h-bar-fill').forEach(b=>{ b.style.width=b.dataset.w+'%'; });
+      });
+
+      /* Year tabs */
+      document.querySelectorAll('#yearTabs .year-btn').forEach(btn=>{
+        btn.onclick=()=>{
+          document.querySelectorAll('#yearTabs .year-btn').forEach(b=>b.classList.remove('active'));
+          btn.classList.add('active');
+          $('calGrid').innerHTML=renderCal(btn.dataset.yr);
+        };
+      });
+    }
+
+    /* ── Auth + load ── */
+    async function signOut() {
+      await supabaseClient.auth.signOut();
+      window.location.href = '/';
+    }
+
+    (async () => {
+      const { data:{ session } } = await supabaseClient.auth.getSession();
+      if (!session) { window.location.href = '/'; return; }
+
+      const email = session.user?.email||'';
+      const el = $('sidebarEmail');
+      if(el) el.textContent = email;
+      const av = $('sidebarInitial');
+      if(av) av.textContent = email[0]?.toUpperCase()||'A';
+      document.documentElement.style.opacity='1';
+
+      /* Fetch strategies + investor counts */
+      const [{ data: strategies, error }, { data: holdingRows }] = await Promise.all([
+        supabaseClient.from('strategies_c')
+          .select('id,name,short_name,description,risk_level,sector,status,is_public,is_featured,holdings')
+          .order('name'),
+        supabaseClient.from('stock_holdings_c')
+          .select('strategy_id,user_id').eq('is_active',true).eq('trade_side','BUY'),
+      ]);
+
+      if (error || !strategies) {
+        $('strategyContainer').innerHTML='<div style="text-align:center;padding:60px 0;color:var(--text-mute);font-size:14px;">No strategies available.</div>';
+        return;
+      }
+
+      /* Investor counts */
+      const invSets = {};
+      (holdingRows||[]).forEach(r=>{
+        if(!r.strategy_id) return;
+        if(!invSets[r.strategy_id]) invSets[r.strategy_id]=new Set();
+        invSets[r.strategy_id].add(r.user_id);
+      });
+      strategies.forEach(s=>{ _investorCounts[s.id]=invSets[s.id]?invSets[s.id].size:0; });
+
+      /* YTD + spark data */
+      try {
+        const ids = strategies.map(s=>s.id).filter(Boolean);
+        /* Step 1: get the latest as_of_date to avoid 1000-row default limit cutting off newest rows */
+        const { data: dateRow } = await supabaseClient
+          .from('strategies_returns_c')
+          .select('as_of_date')
+          .order('as_of_date',{ascending:false})
+          .limit(1)
+          .maybeSingle();
+        const latestDate = dateRow?.as_of_date;
+        /* Step 2: fetch YTD for that single date only — exactly 1 row per strategy */
+        const latestYtd={};
+        if (latestDate) {
+          const { data: ytdRows } = await supabaseClient
+            .from('strategies_returns_c')
+            .select('strategy_id,ytd_pct')
+            .in('strategy_id',ids)
+            .eq('as_of_date',latestDate);
+          (ytdRows||[]).forEach(r=>{ latestYtd[r.strategy_id]=r.ytd_pct; });
+        }
+        _ytdMap=latestYtd;
+        /* Step 3: fetch last 90 days of basket_value for sparklines (well within row limit) */
+        const sparks={};
+        const d90=new Date(); d90.setDate(d90.getDate()-90);
+        const d90str=d90.toISOString().slice(0,10);
+        const { data: sparkRows } = await supabaseClient
+          .from('strategies_returns_c')
+          .select('strategy_id,basket_value,as_of_date')
+          .in('strategy_id',ids)
+          .gte('as_of_date',d90str)
+          .order('as_of_date',{ascending:true});
+        (sparkRows||[]).forEach(r=>{
+          if(!sparks[r.strategy_id]) sparks[r.strategy_id]=[];
+          if(r.basket_value!=null) sparks[r.strategy_id].push(Number(r.basket_value));
+        });
+        _sparkMap=sparks;
+      } catch(_){}
+
+      _allStrategies = strategies;
+
+      /* Fetch holding logos for all strategies */
+      try {
+        const allTickers = [...new Set(
+          strategies.flatMap(s => (Array.isArray(s.holdings) ? s.holdings : [])
+            .map(h => (h.ticker || h.symbol || h || '').toString())
+            .filter(t => t.length > 0))
+        )];
+        if (allTickers.length > 0) {
+          const { data: logSecs } = await supabaseClient
+            .from('securities_c').select('id,symbol,logo_url').in('symbol', allTickers);
+          if (logSecs) {
+            logSecs.forEach(s => { if (s.logo_url) _logoMap[s.symbol] = s.logo_url; });
+            /* Fetch latest intraday prices for min investment from stock_intraday_c */
+            const secIds = logSecs.map(s => s.id).filter(Boolean);
+            const idToSym = {};
+            logSecs.forEach(s => { idToSym[s.id] = s.symbol; });
+            if (secIds.length > 0) {
+              const { data: intraday } = await supabaseClient
+                .from('stock_intraday_c').select('security_id,current_price')
+                .in('security_id', secIds)
+                .order('timestamp',{ascending:false});
+              const seen = new Set();
+              (intraday || []).forEach(r => {
+                if (seen.has(r.security_id)) return;
+                seen.add(r.security_id);
+                const sym = idToSym[r.security_id];
+                if (sym && r.current_price != null) {
+                  const priceRand = Number(r.current_price) / 100;
+                  _priceMap[sym] = priceRand;
+                  const bare = sym.replace('.JO','');
+                  if (bare !== sym) _priceMap[bare] = priceRand;
+                }
+              });
+            }
+          }
+        }
+      } catch(_){}
+
+      renderList();
+
+      /* Deep-link to detail if ?id= */
+      const params = new URLSearchParams(window.location.search);
+      const id = params.get('id');
+      if (id) {
+        const s = strategies.find(x=>x.id===id);
+        if(s) openDetail(id, s.name);
+      }
+    })();
+  </script>
+<script>window.PAGE_ACCESS_KEY = "factsheets";</script>
+<script src="/js/access-guard.js"></script>
+</body>
+</html>

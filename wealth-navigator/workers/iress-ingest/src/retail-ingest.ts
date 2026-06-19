@@ -177,6 +177,17 @@ export async function syncRetailPrices(opts: {
         continue;
       }
       const update: Record<string, unknown> = { last_price: choice.cents };
+      // Yahoo parity: derive `change_percent` from the IRESS quote so the CRM's
+      // change column stays correct without Yahoo. `last` and `prevClose` are
+      // both in rands here, so the ratio is scale-free — independent of the
+      // cents-scale anchoring applied to `last_price` (see scale.ts). Only the
+      // ratio is written; `change_price` (cents) is intentionally left to the
+      // existing feed until the cents scale per symbol is verified.
+      const prevCloseRands = quoteRow?.prevClose ?? 0;
+      if (prevCloseRands > 0 && lastRands > 0) {
+        update["change_percent"] =
+          Math.round(((lastRands - prevCloseRands) / prevCloseRands) * 10000) / 100;
+      }
       if (setSourceCol) update["price_source"] = "iress";
       const { error: secErr } = await retail.from("securities_c").update(update).eq("id", sec.id);
       if (secErr) {

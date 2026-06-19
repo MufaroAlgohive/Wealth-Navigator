@@ -33,7 +33,7 @@ const PERSONA_LABEL: Record<Persona, { label: string; home: string; icon: React.
   oems:           { label: "OEMS · Trading Desk",     home: "/oems",          icon: Activity },
   strategist:     { label: "Strategist",             home: "/strategist",    icon: LineChart },
   wealth_manager: { label: "Wealth Manager",         home: "/wm",            icon: Briefcase },
-  admin:          { label: "Admin / Compliance",     home: "/admin",         icon: Shield },
+  admin:          { label: "Admin / Compliance",     home: "/compliance",    icon: Shield },
   business:       { label: "Business",               home: "/business",      icon: Building2 },
   funeral_cover:  { label: "Funeral Cover",          home: "/fc/overview",   icon: HeartPulse },
 };

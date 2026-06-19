@@ -1,0 +1,9 @@
+node_modules/
+package-lock.json
+attached_assets/*.zip
+attached_assets/*.tar.gz
+attached_assets/*.tar
+*.log
+.env
+.vercel
+.commitmsg.tmp

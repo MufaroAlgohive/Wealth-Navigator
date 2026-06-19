@@ -1,0 +1,115 @@
+Emailer Codebase Status Report: Incomplete & Pending Items
+This document highlights all components, API routes, database schemas, and features in the new Emailer system that are currently incomplete, missing, or require attention before the code is fully production-ready.
+
+1. Missing Serverless (Vercel) API Endpoints
+While server.js contains Express-like HTTP handlers for all backend endpoints to support local development, the serverless configurations under the 
+api/
+ directory have critical gaps. When deployed to a serverless platform (like Vercel), these missing endpoints will return 404 Not Found errors:
+
+Missing Route / Endpoint	Description	Affected Feature	Current Status in api/
+/api/emailers/test-send	Receives template HTML and sends a test email to a @mymint.co.za address via Resend.	"Test Send" modal in the Visual Template Editor.	Missing. There is no api/emailers/test-send.js serverless function.
+/system/orderbook/send-trade-confirmation	Resolves holdings/profiles and coordinates sending trade confirmations to investors.	Triggering trade confirmation emails (both single assets and rebalance batches).	Missing. There is no serverless routing or handler for /system/orderbook/send-trade-confirmation under the api/ tree.
+/api/upload-wallet-payments	Receives a CSV file of wallet payments and updates user balances and records transactions.	Batch uploading wallet payments from the dashboard.	Missing. There is no serverless function for upload-wallet-payments.js.
+Rationale & Impact
+Resend Execution Failure: The "Resend email trigger" button inside the Executions log (found in 
+Orderbook.tsx
+) calls /api/emailers/resend-execution. This handler in turn calls ${baseUrl}/system/orderbook/send-trade-confirmation (found in 
+resend-execution.js
+). In a serverless deploy, this fetch will fail with a 404, rendering the resend feature inoperable.
+2. Missing Database SQL Migrations
+The codebase references two new tables in Supabase that are crucial for the emailer system to load, save, and log email operations. However, no SQL files or schema migrations for these tables exist in the 
+sql/
+ directory.
+
+Table 1: email_templates
+Used by the builder UI to save draft/active versions of dynamic email templates.
+
+Referenced in: 
+templates.js
+, 
+server.js
+, and 
+mock.ts
+.
+Missing Schema Definition:
+sql
+
+CREATE TABLE email_templates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  version TEXT DEFAULT 'v1.0',
+  status TEXT DEFAULT 'draft', -- 'draft', 'active', 'archived'
+  html TEXT DEFAULT '',
+  blocks JSONB DEFAULT '[]'::jsonb,
+  trigger_event TEXT, -- 'order_executed', 'user_signup', 'loan_approved', etc.
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+Table 2: investor_trade_confirmations
+Used to log outgoing trade confirmation messages and prevent duplicate email dispatch.
+
+Referenced in: 
+executions.js
+, 
+_orderbook.js
+, and 
+server.js
+.
+Missing Schema Definition:
+sql
+
+CREATE TABLE investor_trade_confirmations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id), -- Or profiles(id)
+  holding_id UUID REFERENCES stock_holdings_c(id), -- Null for rebalance batches
+  rebalance_batch_id UUID, -- Null for single asset trades
+  reference_number TEXT NOT NULL UNIQUE, -- e.g. BND-XXXXXX
+  recipient_email TEXT NOT NULL,
+  status TEXT DEFAULT 'pending', -- 'pending', 'sent', 'failed'
+  resend_id TEXT, -- ID returned by Resend API
+  executed_price_cents NUMERIC,
+  quantity_filled NUMERIC,
+  strategy_name_at_execution TEXT,
+  sent_payload JSONB DEFAULT '{}'::jsonb,
+  error_log TEXT,
+  sent_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+3. Frontend & Visual Builder Constraints
+The frontend React app inside 
+Emailers app/
+ has several UI/UX and functional limits that are hardcoded or mock-reliant:
+
+A. Brittle Client-side Database Updates
+In 
+mock.ts
+, emailTemplatesService.update attempts to write directly to Supabase via the client SDK:
+typescript
+
+await supabase.from('email_templates').update(patch).eq('id', id);
+If Row Level Security (RLS) is enabled on the email_templates table in Supabase, this update will fail on the client side unless custom RLS policies are set up to allow admin writes. The application should instead route all template changes through the /api/emailers/templates endpoint.
+B. Rigid Block Elements & Variables mapping
+Hardcoded Block Elements: The visual builder compiler (compileBlocksToHtml in 
+CommunicationsHub.tsx
+) only recognizes four fixed block kinds (header, promo, table, and footer). Custom block formatting, font styling, color customization, or layout settings are not supported in the UI.
+Mock Variable Replacement: The preview tab replaces placeholders ({{first_name}}, {{strategy_name}}, etc.) with static mock values (Marcus, Covered Call, etc.) defined in renderWithData (line 757). There is no user interface to link or test alternative client data payloads.
+C. Restricted Test Emails
+The frontend restricts "Test Send" emails to domains ending in @mymint.co.za (line 189). While this prevents misuse in production, it prevents local developers from sending test templates to their personal email accounts during development unless they manually bypass the validation checks.
+4. Fragile Build & Navigation Sync Scripts
+To integrate the built React app into the core dashboard pages, a custom script 
+update_emailers.js
+ is used.
+
+Manual String and Regex Injection: The script injects the "Emailers" view option into the drop-down switchers of other HTML files (e.g. dashboard.html, investors.html, etc.) by executing string matches:
+javascript
+
+const searchStr = `<svg width="11" height="11" viewBox="0 0 12 12" fill="none">...`
+If the HTML layout of the navigation headers on the other dashboard pages is updated or formatted differently, this build script will fail to inject the switcher or break the HTML layout of the pages.
+Summary Checklist to Production-Ready Status
+ Create serverless function for api/emailers/test-send.js.
+ Create serverless function for api/orderbook/send-trade-confirmation.js.
+ Create serverless function for api/upload-wallet-payments.js.
+ Save the database schemas for email_templates and investor_trade_confirmations as SQL files in /sql.
+ Replace direct client-side Supabase updates in the React app with secure API fetches.
+ Add a development configuration override to allow test emails to be sent to external domains on local builds.

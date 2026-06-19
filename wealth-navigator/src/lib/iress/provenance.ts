@@ -63,7 +63,7 @@ export const DATA_SURFACES: DataSurface[] = [
   // ── Persona placeholders ─────────────────────────────────────────
   { surface: "Strategist persona", route: "/strategist", component: "(persona)", currentSource: "seed / placeholder", canBeLive: false, v4Method: "—", status: "SEED" },
   { surface: "Wealth manager persona", route: "/wm", component: "(persona)", currentSource: "seed / placeholder", canBeLive: false, v4Method: "—", status: "SEED" },
-  { surface: "Admin persona", route: "/admin", component: "(persona)", currentSource: "seed / placeholder", canBeLive: false, v4Method: "—", status: "SEED" },
+  { surface: "Admin / Compliance persona", route: "/compliance", component: "(persona)", currentSource: "seed / placeholder", canBeLive: false, v4Method: "—", status: "SEED" },
   { surface: "Business persona", route: "/business", component: "(persona)", currentSource: "seed / placeholder", canBeLive: false, v4Method: "—", status: "SEED" },
   { surface: "Funeral cover persona", route: "/fc", component: "(persona)", currentSource: "seed / placeholder", canBeLive: false, v4Method: "—", status: "SEED" },
 ];

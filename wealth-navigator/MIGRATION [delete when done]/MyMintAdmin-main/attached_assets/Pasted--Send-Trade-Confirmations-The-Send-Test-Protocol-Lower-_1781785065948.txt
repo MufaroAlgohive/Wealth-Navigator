@@ -1,0 +1,42 @@
+
+Send Trade Confirmations:
+The "Send Test" Protocol: Lower-level staff cannot send live confirmations. They are forced to click Send Test to Approver. This generates the exact email payload with real client data and routes it exclusively to the Approver Admin for review.
+Once reviewed, the Approver unlocks the live send. (Def users bypass this).
+Edit Average Fill Price:
+Lower-level staff inputting a Broker Fill Price will trigger a Pending Approval. The Master Approver must verify against the broker statement before it commits to the ledger. (Def users bypass this).
+Refund Investor: Can click Reverse/Refund to eject an investor and return funds to their wallet.
+UAT Safe Export: When the environment is UAT, exporting the Order Book CSV will forcibly inject a massive TEST DATA - NOT FOR REAL LIFE USE label to prevent data leaks.
+Dashboard (dashboard.html)
+AUM & Financial Privacy (view_financials): If denied, all sensitive financial data (Total AUM, Total Investors, Wallet Balances) will be blurred or replaced with "—", while keeping the rest of the dashboard functional.
+Rebalancing Approvals (Highest Sensitivity):
+Lower-level staff can run rebalance simulations. Clicking Commit creates a Pending Rebalance Proposal.
+The Master Approver receives a breakdown of the exact capital to be liquidated/bought. Only the Master (or Def) can execute the rebalance.
+Strategy Status: Changing a strategy from Private to Public requires Master Approval.
+Sync Fundamentals: Can trigger external market data updates.
+EFT & Wallet (eft.html)
+Approve / Reject Deposits: Granular control over authorising incoming client EFTs.
+Add Manual Funds: Granular control over arbitrarily crediting a client's wallet.
+Clients (index.html), Strategies (strategies.html), Factsheets (factsheets.html)
+Permissions explicitly split out into manage_kyc, edit_profiles, manage_strategies, and upload_factsheets.
+4. Team Page Transformation (The Control Center)
+The team.html page will be overhauled from a simple checkbox list into a Security Control Center.
+Staff Roster & Tiers: Visibly badges users as Def, Master Approver, or Lower Approver.
+The Matrix Editor: A collapsible accordion UI. Clicking "Order Book" expands to reveal all the granular toggles (Tabs, Edit Fill Price, etc.).
+The Approvals Inbox: A dedicated tab inside the Team page where Master/Def users can view and authorize every pending Fill Price, Rebalance Proposal, and EFT request in one place, bypassing the need to hunt through emails.
+5. The Phased Rollout Strategy (Zero Downtime / Zero Breakage)
+To guarantee that the platform does not crash during this migration (and that frontend files like access-guard.js continue working flawlessly), we will execute in 4 strict phases:
+Phase 1: Database Setup (The Invisible Phase)
+Add the new permissions (JSONB) and approver_tier columns to admin_team.
+Save the Lost Admins: Run a script to copy lulamasw and vonschaefferk from the redundant admin_profiles table into admin_team so they don't lose access.
+Migrate the existing arrays of your 9 staff members into the JSON structure so nobody loses current functionality.
+Do not delete the old array column yet.
+Phase 2: The Backend Adapter (The Safety Net)
+Upgrade api/_team.js to rely on the JSON object for security checks.
+Implement the Adapter Pattern: Before _team.js sends data to the frontend, it translates the complex JSON back into the simple array format. This ensures the frontend navigation UI (access-guard.js) doesn't crash.
+Phase 3: Frontend UI Swap
+Rewrite team.html to support the new Accordion UI and read/write the JSON object natively.
+Build the Approvals Inbox UI.
+Phase 4: Cleanup
+Safely delete the admin_profiles table.
+Drop the old page_access array from admin_team and lock down Row Level Security to USING (false) (Service Role only).
+ 
