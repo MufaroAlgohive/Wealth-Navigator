@@ -10,16 +10,25 @@ import { cn } from "@/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { usePersona } from "@/lib/store/session-provider";
+import { useAuth } from "@/lib/auth/store";
 import { PLATFORM_NAV, visibleFor, activeHref, overviewItem, type NavItem } from "@/lib/platform/nav";
 
 /**
  * The one platform sidebar — shared by the desk AND the admin surfaces, grouped
- * by bank function, gated by the current role (persona). Replaces the separate
- * OEMS SideNav + Admin sidebar so the app is one product, not two.
+ * by bank function. Replaces the separate OEMS SideNav + Admin sidebar so the
+ * app is one product, not two.
+ *
+ * Visibility (stopgap until the auth/RBAC phase wires per-user `page_access`):
+ *  • A real signed-in user sees the FULL nav — the demo persona selector must
+ *    not hide sections from actual staff.
+ *  • Only the no-session dev/design preview falls back to persona gating, so the
+ *    top-bar persona switcher can still demo each role's surface.
+ * Per-role page-access gating replaces the `showAll` shortcut once RBAC lands.
  */
 export function PlatformNav() {
   const pathname = usePathname() ?? "";
   const persona = usePersona();
+  const { isAuthenticated } = useAuth();
   const [collapsed, setCollapsed] = React.useState(false);
   const [ccCount, setCcCount] = React.useState(0);
 
@@ -29,10 +38,10 @@ export function PlatformNav() {
     const overview = { title: "Overview", items: [overviewItem(persona)] };
     const rest = PLATFORM_NAV.map((s) => ({
       ...s,
-      items: s.items.filter((i) => visibleFor(persona, i)),
+      items: s.items.filter((i) => isAuthenticated || visibleFor(persona, i)),
     })).filter((s) => s.items.length > 0);
     return [overview, ...rest];
-  }, [persona]);
+  }, [persona, isAuthenticated]);
 
   const showCc = sections.some((s) => s.items.some((i) => i.badge === "cc"));
   React.useEffect(() => {
