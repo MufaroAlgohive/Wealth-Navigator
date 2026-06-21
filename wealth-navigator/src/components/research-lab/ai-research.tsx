@@ -26,9 +26,11 @@ import {
   Bot,
   CheckCircle2,
   ChevronDown,
+  Clock,
   Database,
   ExternalLink,
   KeyRound,
+  Minus,
   Newspaper,
   RefreshCw,
   Search,
@@ -159,6 +161,54 @@ function CacheIndicator({ data }: { data: AiResearchResponse }) {
       <span className="text-xs text-muted-foreground">
         {data.cacheReason ?? "First research pass for this security — stored for reuse."}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Step-by-step research trace — shows the analyst exactly what the pipeline did:
+ * which sources it gathered, what it found, and what is missing or deferred
+ * (online web research, Iress financials). No black box.
+ */
+type TraceStep = AiResearchResponse["trace"][number];
+
+const STEP_STYLE: Record<
+  TraceStep["status"],
+  { Icon: typeof CheckCircle2; cls: string }
+> = {
+  ok: { Icon: CheckCircle2, cls: "text-emerald-500" },
+  empty: { Icon: Minus, cls: "text-muted-foreground/60" },
+  skipped: { Icon: Minus, cls: "text-muted-foreground/50" },
+  deferred: { Icon: Clock, cls: "text-amber-500" },
+  error: { Icon: AlertTriangle, cls: "text-destructive" },
+};
+
+function ResearchTrace({ steps }: { steps: TraceStep[] }) {
+  if (!steps.length) return null;
+  return (
+    <div className="glass-inset px-4 py-3">
+      <p className="mb-1 flex items-center gap-1.5 text-caption font-medium uppercase tracking-wide text-muted-foreground">
+        <Bot className="h-3.5 w-3.5" /> How this was produced
+      </p>
+      <ol className="divide-y divide-[hsl(var(--glass-border))]/40">
+        {steps.map((s, i) => {
+          const { Icon, cls } = STEP_STYLE[s.status];
+          return (
+            <li key={i} className="flex items-start gap-2.5 py-1.5">
+              <Icon className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", cls)} />
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="text-sm font-medium">{s.label}</span>
+                  {s.source && (
+                    <span className="font-mono text-[10px] text-muted-foreground">{s.source}</span>
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">{s.detail}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }
@@ -423,6 +473,9 @@ export function AiResearch() {
                 </Pill>
               )}
             </div>
+
+            {/* Step-by-step trace — what the pipeline gathered + what's deferred. */}
+            <ResearchTrace steps={data.trace} />
 
             {/* Not-configured notice (deferred bucket) */}
             {!data.configured && (

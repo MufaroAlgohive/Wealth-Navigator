@@ -32,14 +32,16 @@ import {
   type GatheredEvidence,
   type ResearchSignal,
   type ResearchSource,
+  type ResearchStep,
+  type WebResearchOutcome,
 } from "@/lib/research-ai/provider";
 import {
   assessMateriality,
   computeSignal,
   getCachedResearch,
-  isResearchStoreConfigured,
   putCachedResearch,
 } from "@/lib/research-ai/cache";
+import { runWebSearch } from "@/lib/research-ai/websearch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -76,6 +78,8 @@ interface NewsRow {
 
 interface GatherResult {
   name: string | null;
+  /** Whether a securities_c row matched the ticker. */
+  matched: boolean;
   gathered: GatheredEvidence;
   sources: ResearchSource[];
   /** Publish timestamps of the news items used — drives the materiality signal. */
@@ -90,6 +94,7 @@ interface GatherResult {
 async function gather(symbol: string): Promise<GatherResult> {
   const empty: GatherResult = {
     name: null,
+    matched: false,
     gathered: { fundamentals: null, priceSummary: null, newsCount: 0 },
     sources: [],
     newsTimestamps: [],
@@ -160,6 +165,7 @@ async function gather(symbol: string): Promise<GatherResult> {
 
     return {
       name,
+      matched: Boolean(row),
       gathered: { fundamentals, priceSummary, newsCount },
       sources,
       newsTimestamps,
@@ -167,6 +173,55 @@ async function gather(symbol: string): Promise<GatherResult> {
   } catch {
     return empty;
   }
+}
+
+/**
+ * Build the data-gathering portion of the step-by-step trace from the gather
+ * result — what was found, what was empty, and what is deferred. Honest: it
+ * shows the user exactly which sources ran and which are not wired yet.
+ */
+function dataSteps(matched: boolean, g: GatheredEvidence): ResearchStep[] {
+  const fundCount = g.fundamentals
+    ? Object.values(g.fundamentals).filter((v) => v !== null && v !== undefined).length
+    : 0;
+  const px = g.priceSummary;
+  return [
+    matched
+      ? { label: "Resolve security", status: "ok", detail: "Matched a row in securities_c", source: "securities_c" }
+      : { label: "Resolve security", status: "empty", detail: "No securities_c row matched this ticker", source: "securities_c" },
+    g.fundamentals
+      ? { label: "Fundamentals", status: "ok", detail: `${fundCount} field(s): sector, P/E, EPS, dividend yield, beta, market cap, YTD`, source: "securities_c (Yahoo-sourced)" }
+      : { label: "Fundamentals", status: "empty", detail: "No fundamentals on file", source: "securities_c" },
+    px && px.last !== null
+      ? { label: "Price", status: "ok", detail: `Last ${px.last}${px.changePct != null ? ` (${px.changePct >= 0 ? "+" : ""}${px.changePct.toFixed(2)}%)` : ""}`, source: "securities_c" }
+      : { label: "Price", status: "empty", detail: "No price on file", source: "securities_c" },
+    g.newsCount > 0
+      ? { label: "Company news", status: "ok", detail: `${g.newsCount} ticker-tagged article(s)`, source: "News_articles" }
+      : { label: "Company news", status: "empty", detail: "No ticker-tagged news matched (current wire feed is general, not per-company)", source: "News_articles" },
+  ];
+}
+
+/** Deep financials are part of the deferred Iress data cutover — always shown. */
+const FINANCIALS_STEP: ResearchStep = {
+  label: "Financial statements",
+  status: "deferred",
+  detail: "Revenue / balance sheet / cash flow arrive with the Iress data cutover",
+  source: "Iress (data phase)",
+};
+
+/** The online/web-research trace step, derived from the live search outcome. */
+function webStepFrom(o: WebResearchOutcome): ResearchStep {
+  return {
+    label: "Online / web research",
+    status: o.status,
+    detail: o.detail,
+    source: o.provider ?? undefined,
+  };
+}
+
+/** The online/web-research step when web search did not run this request. */
+function webSkipped(detail: string): ResearchStep {
+  return { label: "Online / web research", status: "skipped", detail };
 }
 
 /** Build the missing-symbol / error envelope with the cache fields set. */
@@ -188,6 +243,7 @@ function deferred(
     cacheReason: null,
     outlook: null,
     sources: [],
+    trace: [],
     disclaimer: RESEARCH_DISCLAIMER,
     ...fields,
   };
@@ -211,11 +267,12 @@ export async function GET(req: Request) {
   }
 
   const symbol = symbolRaw.toUpperCase();
-  const { name, gathered, sources, newsTimestamps } = await gather(symbol);
+  const { name, matched, gathered, sources, newsTimestamps } = await gather(symbol);
+  const steps = dataSteps(matched, gathered);
 
   // 2) Not configured → honest deferred response (200) with gathered evidence.
   if (!isResearchAiConfigured()) {
-    const { provider } = getResearchAiProvider();
+    const { provider, model } = getResearchAiProvider();
     const envVar = provider === "claude" ? "ANTHROPIC_API_KEY" : "MINIMAX_API_KEY";
     return Response.json(
       deferred({
@@ -224,15 +281,21 @@ export async function GET(req: Request) {
         name,
         gathered,
         cacheStatus: "uncached",
+        trace: [
+          ...steps,
+          webSkipped("Skipped — AI provider not configured"),
+          FINANCIALS_STEP,
+          { label: "Synthesis", status: "skipped", detail: `Skipped — set ${envVar} to enable`, source: `${provider} · ${model}` },
+        ],
         error: `AI research provider not configured — set ${envVar} (provider: ${provider}). Returning gathered evidence only.`,
       }),
     );
   }
 
-  // 3) CACHE CHECK — compute fresh materiality signal, look up stored answer.
+  // 3) CACHE CHECK — compute fresh materiality signal, look up the stored answer
+  // (durable institutional-DB tier first, hot in-process tier as the bridge).
   const freshSignal: ResearchSignal = computeSignal(gathered, newsTimestamps);
-  const storeConfigured = isResearchStoreConfigured();
-  const cached = storeConfigured ? await getCachedResearch(symbol) : null;
+  const cached = await getCachedResearch(symbol);
   const decision = cached ? assessMateriality(freshSignal, cached, forceRefresh) : null;
 
   if (cached && decision?.reuse) {
@@ -256,41 +319,53 @@ export async function GET(req: Request) {
       gathered,
       outlook: cached.outlook,
       sources: cached.sources.length ? cached.sources : sources,
+      trace: [
+        ...steps,
+        webSkipped("Skipped — reused cached answer (0 tokens)"),
+        FINANCIALS_STEP,
+        { label: "Synthesis", status: "skipped", detail: "Skipped — reused the cached answer (0 tokens)", source: cached.model ?? undefined },
+        { label: "Cache", status: "ok", detail: decision.reason, source: "research cache" },
+      ],
       disclaimer: RESEARCH_DISCLAIMER,
     } satisfies AiResearchResponse);
   }
 
-  // Regenerate via the model.
+  // Regenerate via the model — run a live web-research step FIRST so the model
+  // reasons over recent online context, then synthesize. Web search runs only
+  // here (never on a cache hit), so a reused answer incurs no search spend.
+  const web = await runWebSearch(symbol, name);
+  const allSources: ResearchSource[] = [
+    ...sources,
+    ...web.results.map((r) => ({ title: r.title, url: r.url })),
+  ];
+
   try {
-    const { outlook, provider, model } = await synthesizeOutlook(symbol, name, gathered);
+    const { outlook, provider, model } = await synthesizeOutlook(symbol, name, gathered, web.results);
     const generatedAt = new Date().toISOString();
 
-    // Persist (best-effort). The write returns false when the store is
-    // unavailable OR the ai_research_cache_c table is not provisioned yet — in
-    // that case we report "uncached" honestly rather than implying the answer
-    // was stored for reuse. Only a row that actually lands counts as "miss"
-    // (first answer for this symbol) or "refreshed" (replaced a stale one).
-    const persisted = storeConfigured
-      ? await putCachedResearch(symbol, {
-          name,
-          provider,
-          model,
-          generatedAt,
-          outlook,
-          sources,
-          gathered,
-          signal: freshSignal,
-        })
-      : false;
+    // Cache the fresh answer. It is ALWAYS kept in a hot in-process tier (so it
+    // is immediately reusable on this instance); `durable` is true only when the
+    // shared institutional-DB row also landed (ai_research_cache_c provisioned),
+    // which is what makes reuse global across users/instances. Since the answer
+    // is always cached at least in-process, this is "miss"/"refreshed".
+    const durable = await putCachedResearch(symbol, {
+      name,
+      provider,
+      model,
+      generatedAt,
+      outlook,
+      sources: allSources,
+      gathered,
+      signal: freshSignal,
+    });
 
-    const cacheStatus: CacheStatus = persisted ? (cached ? "refreshed" : "miss") : "uncached";
-    const cacheReason: string | null = persisted
-      ? decision
-        ? decision.reason
-        : forceRefresh
-          ? "Manual refresh"
-          : null
-      : null;
+    const cacheStatus: CacheStatus = cached ? "refreshed" : "miss";
+    const baseReason = decision ? decision.reason : forceRefresh ? "Manual refresh" : null;
+    const cacheReason: string | null = durable
+      ? baseReason
+      : baseReason
+        ? `${baseReason} · cached in-memory on this instance (provision ai_research_cache_c for shared, persistent reuse)`
+        : "Cached in-memory on this server instance — provision ai_research_cache_c for shared, persistent reuse";
 
     return Response.json({
       ok: true,
@@ -305,7 +380,19 @@ export async function GET(req: Request) {
       cacheReason,
       gathered,
       outlook,
-      sources,
+      sources: allSources,
+      trace: [
+        ...steps,
+        webStepFrom(web),
+        FINANCIALS_STEP,
+        { label: "Synthesis", status: "ok", detail: "Outlook generated from the gathered evidence", source: `${provider} · ${model}` },
+        {
+          label: "Cache",
+          status: "ok",
+          detail: durable ? "Stored in the shared research cache" : "Stored in-memory (this server instance)",
+          source: durable ? "institutional DB" : "in-memory",
+        },
+      ],
       disclaimer: RESEARCH_DISCLAIMER,
     } satisfies AiResearchResponse);
   } catch (err) {
@@ -325,7 +412,18 @@ export async function GET(req: Request) {
       cacheReason: null,
       gathered,
       outlook: null,
-      sources,
+      sources: allSources,
+      trace: [
+        ...steps,
+        webStepFrom(web),
+        FINANCIALS_STEP,
+        {
+          label: "Synthesis",
+          status: "error",
+          detail: err instanceof Error ? err.message : "synthesis failed",
+          source: `${provider} · ${model}`,
+        },
+      ],
       disclaimer: RESEARCH_DISCLAIMER,
       error: err instanceof Error ? err.message : "AI research synthesis failed",
     } satisfies AiResearchResponse);

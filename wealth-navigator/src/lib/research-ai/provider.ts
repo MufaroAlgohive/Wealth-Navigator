@@ -22,6 +22,7 @@ import type {
   OutlookHorizon,
   ResearchAiProvider,
   ResearchOutlook,
+  WebResult,
 } from "@/lib/research-ai/types";
 
 // Re-export the shared contract so the frontend can import it from the provider lib.
@@ -36,6 +37,11 @@ export type {
   ResearchOutlook,
   ResearchSignal,
   ResearchSource,
+  ResearchStep,
+  ResearchStepStatus,
+  WebResearchOutcome,
+  WebResult,
+  WebSearchStatus,
 } from "@/lib/research-ai/types";
 
 export const RESEARCH_DISCLAIMER =
@@ -157,13 +163,15 @@ export function buildPrompt(
   symbol: string,
   name: string | null,
   gathered: GatheredEvidence,
+  webResults: WebResult[] = [],
 ): { system: string; prompt: string } {
   const system =
     "You are a calibrated, conservative equity analyst writing internal research. " +
-    "Reason ONLY over the evidence provided in the user message — never invent data, prices, " +
-    "earnings, or events that are not present. When the evidence is thin or absent, say so and " +
-    "lower your confidence accordingly; prefer a 'neutral' call over a fabricated conviction. " +
-    "Return ONLY a single JSON object — no prose, no markdown, no code fences.";
+    "Reason ONLY over the evidence provided in the user message — fundamentals, price, and the " +
+    "WEB RESEARCH snippets — and never invent data, prices, earnings, or events that are not present. " +
+    "Prefer recent web findings for current developments, but treat snippets as soft signal and do " +
+    "not over-read them. When evidence is thin or absent, say so and lower your confidence; prefer a " +
+    "'neutral' call over a fabricated conviction. Return ONLY a single JSON object — no prose, no markdown, no code fences.";
 
   const fundamentalsText = gathered.fundamentals
     ? JSON.stringify(gathered.fundamentals, null, 2)
@@ -171,6 +179,11 @@ export function buildPrompt(
   const priceText = gathered.priceSummary
     ? `last=${gathered.priceSummary.last ?? "n/a"}, dayChangePct=${gathered.priceSummary.changePct ?? "n/a"}`
     : "No price summary available.";
+  const webText = webResults.length
+    ? webResults
+        .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}\nsource: ${r.url}`)
+        .join("\n\n")
+    : "No web research available.";
 
   const prompt = [
     `Subject security: ${symbol}${name ? ` (${name})` : ""}.`,
@@ -184,6 +197,9 @@ export function buildPrompt(
     `=== NEWS EVIDENCE ===`,
     `${gathered.newsCount} recent news item(s) reference this security. ` +
       "Treat headlines as soft signal only; do not assume content beyond what is implied.",
+    "",
+    "=== WEB RESEARCH (recent, online; may be noisy — weigh credibility) ===",
+    webText,
     "",
     "=== TASK ===",
     "Produce a calibrated outlook. Return STRICT JSON exactly matching this schema (no extra keys):",
@@ -373,6 +389,7 @@ export async function synthesizeOutlook(
   symbol: string,
   name: string | null,
   gathered: GatheredEvidence,
+  webResults: WebResult[] = [],
 ): Promise<{ outlook: ResearchOutlook; provider: ResearchAiProvider; model: string }> {
   const cfg = resolveProviderConfig();
   if (!cfg.apiKey) {
@@ -384,7 +401,7 @@ export async function synthesizeOutlook(
   }
 
   const apiKey = cfg.apiKey; // narrowed to string by the guard above
-  const { system, prompt } = buildPrompt(symbol, name, gathered);
+  const { system, prompt } = buildPrompt(symbol, name, gathered, webResults);
   const call = (p: string) =>
     callModel({
       base: cfg.base,

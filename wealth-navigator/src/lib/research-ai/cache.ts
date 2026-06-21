@@ -47,6 +47,14 @@ import type {
 
 const TABLE = "ai_research_cache_c";
 
+/**
+ * Hot in-process cache tier. Works immediately and bridges the gap before the
+ * durable `ai_research_cache_c` table is provisioned. Per server instance and
+ * cleared on restart — the DB tier is what makes reuse global across users and
+ * serverless instances. Reads prefer the DB tier when it has the row.
+ */
+const memStore = new Map<string, CachedResearch>();
+
 /** Env-tunable materiality thresholds (guarded parse, sane defaults). */
 function priceDeltaPct(): number {
   const raw = Number(process.env.RESEARCH_AI_PRICE_DELTA_PCT);
@@ -253,34 +261,45 @@ function rowToCached(row: CacheRow): CachedResearch | null {
  * store is unavailable / table missing / row malformed (graceful "uncached").
  */
 export async function getCachedResearch(symbol: string): Promise<CachedResearch | null> {
-  if (!isResearchStoreConfigured()) return null;
-  try {
-    const supabase = createInstitutionalServiceRoleClient();
-    const { data, error } = await supabase
-      .from(TABLE)
-      .select("symbol,name,provider,model,generated_at,outlook,sources,gathered,signal")
-      .eq("symbol", symbol)
-      .limit(1)
-      .maybeSingle();
-    if (error || !data) return null;
-    return rowToCached(data as CacheRow);
-  } catch {
-    return null;
+  // Durable tier (shared/global) first — the institutional DB.
+  if (isResearchStoreConfigured()) {
+    try {
+      const supabase = createInstitutionalServiceRoleClient();
+      const { data, error } = await supabase
+        .from(TABLE)
+        .select("symbol,name,provider,model,generated_at,outlook,sources,gathered,signal")
+        .eq("symbol", symbol)
+        .limit(1)
+        .maybeSingle();
+      if (!error && data) {
+        const row = rowToCached(data as CacheRow);
+        if (row) return row;
+      }
+      // DB error (e.g. table not provisioned) or no row → fall through to memory.
+    } catch {
+      /* fall through to the in-process tier */
+    }
   }
+  // Hot in-process tier — immediate, this server instance; the bridge until the
+  // durable table exists.
+  return memStore.get(symbol) ?? null;
 }
 
 /**
- * Upsert a fresh answer for a symbol. Returns true ONLY when the row actually
- * persisted. Best-effort and never throws: if the store is down OR the
- * `ai_research_cache_c` table is not provisioned yet, the Supabase upsert
- * returns an error object (it does not throw) — we surface that as `false` so
- * the route reports cacheStatus "uncached" honestly instead of implying the
- * answer was stored for reuse.
+ * Cache a fresh answer. ALWAYS kept in the hot in-process tier (immediate, this
+ * instance), so the answer is reusable right away. Also upserted to the durable
+ * institutional DB when configured; the boolean return is the DURABLE flag —
+ * true only when that shared write actually landed (table exists). The route
+ * uses it to tell the user whether the cache is shared/persistent or in-memory
+ * only. Never throws.
  */
 export async function putCachedResearch(
   symbol: string,
   payload: PutResearchPayload,
 ): Promise<boolean> {
+  // In-process tier — always succeeds, so the answer is immediately reusable.
+  memStore.set(symbol, { symbol, ...payload });
+
   if (!isResearchStoreConfigured()) return false;
   try {
     const supabase = createInstitutionalServiceRoleClient();

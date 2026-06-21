@@ -47,6 +47,41 @@ export interface ResearchSource {
 }
 
 /**
+ * One step in the research pipeline, surfaced so the user can see — step by
+ * step — exactly what the system did: which data it gathered, what it found,
+ * and what is missing or deferred (no black box).
+ *   ok       did the step and got data
+ *   empty    did the step but found nothing (e.g. no ticker-tagged news)
+ *   skipped  not run this request (e.g. synthesis skipped on a cache hit)
+ *   deferred capability not wired yet (e.g. web search, Iress financials)
+ *   error    the step failed
+ */
+export type ResearchStepStatus = "ok" | "empty" | "skipped" | "deferred" | "error";
+export interface ResearchStep {
+  label: string;
+  status: ResearchStepStatus;
+  detail: string;
+  /** Where the data came from / would come from — e.g. "securities_c", "MiniMax-M3". */
+  source?: string;
+}
+
+/** A single web-search result fed to the model as recent online context. */
+export interface WebResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+export type WebSearchStatus = "ok" | "empty" | "deferred" | "error";
+export interface WebResearchOutcome {
+  status: WebSearchStatus;
+  provider: "tavily" | "brave" | null;
+  query: string | null;
+  results: WebResult[];
+  /** Human detail for the step-by-step trace. */
+  detail: string;
+}
+
+/**
  * Cache outcome for a request:
  *  - "hit"       reused a stored answer, nothing material changed (NO model call, 0 tokens)
  *  - "refreshed" a stored answer existed but was stale/changed → regenerated
@@ -88,6 +123,8 @@ export interface AiResearchResponse {
   /** null when not configured / model unavailable / error. */
   outlook: ResearchOutlook | null;
   sources: ResearchSource[];
+  /** Step-by-step trace of the pipeline (resolve → gather → web → synthesize → cache). */
+  trace: ResearchStep[];
   disclaimer: string;
   error?: string;
 }
