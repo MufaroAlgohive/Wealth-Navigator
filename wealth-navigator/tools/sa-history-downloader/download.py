@@ -55,6 +55,14 @@ try:
 except ImportError:
     sys.exit("Missing dependency: pip install -r requirements.txt  (need: pandas)")
 
+# Windows consoles default to cp1252 and choke on non-ASCII; force UTF-8 so log
+# lines (and any odd symbol) never crash the run.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+
 # ----------------------------------------------------------------------------
 # Config
 # ----------------------------------------------------------------------------
@@ -137,7 +145,7 @@ def fetch_equity_universe(session: requests.Session) -> list[str]:
         )
         r.raise_for_status()
         syms = sorted({bare(row["symbol"]) for row in r.json() if row.get("symbol")})
-        print(f"  ✓ securities_c universe: {len(syms)} symbols")
+        print(f"  [ok] securities_c universe: {len(syms)} symbols")
         return syms or FALLBACK_EQUITIES
     except Exception as e:  # noqa: BLE001
         print(f"  ! securities_c read failed ({e}); using bundled fallback.")
@@ -260,7 +268,7 @@ def download_symbol(session: requests.Session, ysym: str, out_dir: Path,
         if df1h is not None:
             df4h = resample_4h(df1h)
             write_series(df4h, out_dir, category, label, "4h", write_csv=write_csv,
-                         currency=df1h.attrs.get("currency"), source="yahoo(1h→4h)", manifest=manifest)
+                         currency=df1h.attrs.get("currency"), source="yahoo(1h->4h)", manifest=manifest)
             if not df4h.empty:
                 written += 1
     return written
@@ -290,7 +298,7 @@ def main() -> int:
     manifest: dict = {}
     session = requests.Session()
 
-    print(f"SA history downloader → {out_dir}")
+    print(f"SA history downloader -> {out_dir}")
     print(f"  timeframes: {timeframes}  | format: parquet{'+csv' if write_csv else ''}")
 
     # Universe
