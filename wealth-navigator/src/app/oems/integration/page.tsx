@@ -229,8 +229,9 @@ export default function IntegrationPage() {
             <GlassSection
               title="Worker health"
               subtitle="Railway worker · integration_worker_health"
+              db="institutional"
               endpoint="GET /api/worker-health"
-              dataSource="supabase"
+              dataSource="worker"
               className="col-span-12 flex h-[420px] flex-col lg:col-span-8"
               noPadding
             >
@@ -304,8 +305,9 @@ export default function IntegrationPage() {
           <GlassSection
             title="Worker health"
             subtitle="Endpoint health · last 30 min"
-            endpoint="GET /api/iress/health"
-            dataSource={iressConfig.mode === "live" ? "hybrid" : "seed"}
+            db="institutional"
+            endpoint="GET /api/worker-health"
+            dataSource="worker"
             className="col-span-12 flex h-[420px] flex-col lg:col-span-8"
             noPadding
           >
@@ -353,14 +355,9 @@ export default function IntegrationPage() {
 
         <GlassSection
           title="Latency · IRESS calls"
-          endpoint={realDataOnly ? "DERIVED · worker recent_events[*].elapsedMs" : "INTERNAL · mock window"}
-          dataSource={
-            !realDataOnly
-              ? "mock"
-              : (primaryWorker?.recent_events ?? []).some((e) => typeof e.data?.elapsedMs === "number")
-                ? "worker"
-                : "unconfigured"
-          }
+          db="institutional"
+          endpoint="GET /api/worker-health"
+          dataSource="worker"
           className="col-span-12 h-[420px] lg:col-span-4"
         >
           <div className="glass-inset h-[calc(100%-0.5rem)] p-2">
@@ -423,8 +420,9 @@ export default function IntegrationPage() {
             <GlassSection
               title="Environment checklist"
               subtitle="Order mirror · oems_order_audit"
-              endpoint="OrderPadGetByAccount → worker poll"
-              dataSource={primaryWorker?.account_configured ? "supabase" : "unconfigured"}
+              db="institutional"
+              endpoint="GET /api/worker-health"
+              dataSource="worker"
               className="col-span-12 h-[240px] lg:col-span-6"
             >
               {!primaryWorker ? (
@@ -471,8 +469,9 @@ export default function IntegrationPage() {
             <GlassSection
               title="Environment checklist"
               subtitle="Quote ingest · stock_intraday_c"
-              endpoint="PricingQuoteGet → worker poll"
-              dataSource="supabase"
+              db="institutional"
+              endpoint="GET /api/worker-health"
+              dataSource="worker"
               className="col-span-12 h-[240px] lg:col-span-6"
             >
               <ul className="space-y-2 text-[12px] text-muted-foreground">
@@ -507,7 +506,9 @@ export default function IntegrationPage() {
         <GlassSection
           title="IRESS status"
           subtitle="Production service health"
-          endpoint="DERIVED · worker recent_events"
+          db="institutional"
+          endpoint="GET /api/worker-health"
+          dataSource="worker"
           className="col-span-12 flex h-[260px] flex-col lg:col-span-6"
           noPadding
         >
@@ -518,7 +519,9 @@ export default function IntegrationPage() {
 
         <GlassSection
           title="Method coverage · V4 (this adapter)"
-          endpoint="traced to iress-v4-docs/11-mint-oems"
+          db="institutional"
+          endpoint="GET /api/worker-health"
+          dataSource="worker"
           className="col-span-12 flex h-[260px] flex-col lg:col-span-6"
           noPadding
         >
@@ -627,8 +630,9 @@ function WorkerDiagnosticEventsPanel({
   return (
     <GlassSection
       title="Worker diagnostic events"
-      endpoint="metadata.recent_events on integration_worker_health"
-      dataSource="supabase"
+      db="institutional"
+      endpoint="GET /api/worker-health"
+      dataSource="worker"
       right={
         <div className="flex items-center gap-1.5">
           {counts.error > 0 && (

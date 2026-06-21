@@ -70,6 +70,8 @@ export default function FuneralCoverOverview() {
           <GlassSection
             title="Daily reconciliation"
             endpoint="GET IPS /IPSTransactionGetByAccount5?status=PENDING_BOOKING"
+            db="retail"
+            dataSource="iress"
             right={<Pill tone="warning" size="xs">{pendingReconCount} legs</Pill>}
             className="col-span-12 lg:col-span-7"
             noPadding
@@ -133,6 +135,8 @@ export default function FuneralCoverOverview() {
           <GlassSection
             title="Cash positions"
             endpoint="GET IPS /IPSAccountGetAll1"
+            db="retail"
+            dataSource="iress"
             right={<Pill tone="info" size="xs">{cashPositions.length} accounts</Pill>}
             className="col-span-12 lg:col-span-5"
             noPadding
@@ -172,6 +176,8 @@ export default function FuneralCoverOverview() {
         <GlassSection
           title="Recon exceptions"
           endpoint="GET /v1/finance/recon/exceptions?status=open"
+          db="retail"
+          dataSource="supabase"
           right={<Pill tone="destructive" size="xs">{reconExceptions.length} open</Pill>}
           noPadding
         >

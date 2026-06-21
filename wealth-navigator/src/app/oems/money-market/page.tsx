@@ -92,7 +92,9 @@ export default function MoneyMarketPage() {
         </header>
         <GlassSection
           title="Money market universe"
-          endpoint="oems_strategy_c (kind=money_market) + money_market_instrument_c + jibar_fixing_c"
+          endpoint="GET /api/money-market"
+          db="institutional"
+          dataSource="mock"
         >
           <EmptyDataState
             message="Mock mode disables the money-market module."
@@ -144,7 +146,7 @@ export default function MoneyMarketPage() {
       </div>
 
       {!hasData && !mmQ.isLoading && (
-        <GlassSection title="Money market universe" endpoint="GET /api/money-market" dataSource="unconfigured">
+        <GlassSection title="Money market universe" endpoint="GET /api/money-market" db="institutional" dataSource="blocked-external">
           <EmptyDataState
             message="Benchmark rates are live from SARB (above)."
             hint="The JIBAR term-fixing curve (3M/6M/12M) and the NCD / T-Bill / FRN instrument universe still need a JSE or money-market vendor feed — SARB publishes the overnight benchmarks (repo, prime, ZARONIA, Sabor) but not the term fixings or instrument list."
@@ -156,8 +158,9 @@ export default function MoneyMarketPage() {
         <div className="grid grid-cols-12 gap-3">
           <GlassSection
             title="JIBAR fixings"
-            endpoint="jibar_fixing_c"
-            dataSource="supabase"
+            endpoint="GET /api/money-market"
+            db="institutional"
+            dataSource="blocked-external"
             className="col-span-12 lg:col-span-4"
             noPadding
           >
@@ -195,8 +198,9 @@ export default function MoneyMarketPage() {
 
           <GlassSection
             title="Eligible money-market instruments"
-            endpoint="money_market_instrument_c"
-            dataSource="supabase"
+            endpoint="GET /api/money-market"
+            db="institutional"
+            dataSource="blocked-external"
             className="col-span-12 lg:col-span-8"
             noPadding
             right={

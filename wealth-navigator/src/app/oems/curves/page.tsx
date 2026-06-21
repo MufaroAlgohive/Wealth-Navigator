@@ -104,7 +104,7 @@ export default function CurvesPage() {
             </p>
           </div>
         </header>
-        <GlassSection title="ZAR yield curves" endpoint="oems_strategy_c → yield_curve_history_c">
+        <GlassSection title="ZAR yield curves" endpoint="GET /api/curves/{code}" db="institutional" dataSource="mock">
           <EmptyDataState
             message="Mock mode disables the curves module."
             hint="Switch to real-data mode and ensure the worker has written yield_curve_history_c rows for ZAR_NSS."
@@ -211,7 +211,8 @@ export default function CurvesPage() {
           <GlassSection
             title="Combined · govi · NSS · real · breakeven"
             endpoint="GET /api/curves/{code}"
-            dataSource="unconfigured"
+            db="institutional"
+            dataSource="blocked-external"
             className="col-span-12 flex h-[380px] flex-col lg:col-span-8"
           >
             {/* Yellow #16 — shared EntitlementRequired primitive. The
@@ -227,7 +228,8 @@ export default function CurvesPage() {
           <GlassSection
             title="Combined · govi · NSS · real · breakeven"
             endpoint="GET /api/curves/{code}"
-            dataSource={goviQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+            db="institutional"
+            dataSource="iress"
             className="col-span-12 flex h-[380px] flex-col lg:col-span-8"
             noPadding
           >
@@ -262,7 +264,8 @@ export default function CurvesPage() {
         <GlassSection
           title="PCA · today's curve move"
           endpoint="GET /api/curves/ZAR_NSS/metrics"
-          dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+          db="institutional"
+          dataSource="iress"
           className="col-span-12 flex h-[380px] flex-col lg:col-span-4"
           right={<span className="font-mono text-[10px] text-muted-foreground">3-factors + residual</span>}
         >
@@ -306,7 +309,8 @@ export default function CurvesPage() {
         <GlassSection
           title="ZAR-OIS spread · 3M · 12M"
           endpoint="GET /api/curves/ZAR_NSS/metrics?metric=ois_spread_*"
-          dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+          db="institutional"
+          dataSource="iress"
           className="col-span-12 h-[300px] lg:col-span-6"
         >
           {ois3m !== undefined || ois12m !== undefined ? (
@@ -336,7 +340,8 @@ export default function CurvesPage() {
         <GlassSection
           title="Carry & rolldown · key 5Y vertex"
           endpoint="GET /api/curves/ZAR_NSS/metrics?metric=carry_*"
-          dataSource={metricsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+          db="institutional"
+          dataSource="iress"
           className="col-span-12 h-[300px] lg:col-span-6"
           right={
             carry3m !== undefined && rolldown3m !== undefined ? (

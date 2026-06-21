@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { GlassSection } from "@/components/oems/primitives/glass";
+import type { DbName } from "@/components/oems/primitives/data-source-badge";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Pill } from "@/components/oems/primitives/pill";
 import {
@@ -65,6 +66,7 @@ export function CockpitNewsFlow({
   title = "News Flow",
   endpoint,
   dataSource,
+  db,
   sourceLabel,
   emptyMessage,
   emptyHint,
@@ -74,7 +76,8 @@ export function CockpitNewsFlow({
   items: NewsFlowItem[];
   title?: string;
   endpoint: string;
-  dataSource: "supabase" | "seed" | "unconfigured" | "unavailable";
+  dataSource: "supabase" | "seed" | "unconfigured" | "unavailable" | "external";
+  db?: DbName;
   sourceLabel?: string;
   emptyMessage?: string;
   emptyHint?: string;
@@ -95,6 +98,7 @@ export function CockpitNewsFlow({
         title={title}
         endpoint={endpoint}
         dataSource={dataSource}
+        db={db}
         noPadding
         className={cn("flex h-[260px] flex-col min-h-0", className)}
         right={

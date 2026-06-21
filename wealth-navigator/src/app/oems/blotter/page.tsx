@@ -77,7 +77,6 @@ export default function BlotterPage() {
     onError: () => toast.error("Cancel-all failed"),
   });
 
-  const dataEndpoint = realDataOnly ? "GET /api/orders · oems_order_audit" : "OrderPadGetByAccount";
   const dataSourceLabel = realDataOnly ? "oems_order_audit" : "mock · OrderPadGetByAccount";
 
   return (
@@ -175,8 +174,9 @@ export default function BlotterPage() {
 
       <GlassSection
         title={`Orders · ${filtered.length}`}
-        endpoint={dataEndpoint}
-        dataSource={realDataOnly ? "supabase" : "seed"}
+        db="institutional"
+        endpoint="GET /api/orders"
+        dataSource="supabase"
         noPadding
         className="flex min-h-0 flex-col h-[calc(100vh-380px)]"
       >

@@ -462,7 +462,7 @@ export function ResearchLabPage() {
       </header>
 
       {labQ.isError && (
-        <GlassSection title="Research data" dataSource="unavailable">
+        <GlassSection title="Research data" db="retail" dataSource="unavailable">
           <EmptyDataState
             message="Failed to load strategy research payload."
             hint={labQ.error instanceof Error ? labQ.error.message : "Retry refresh."}
@@ -472,7 +472,7 @@ export function ResearchLabPage() {
       )}
 
       {!labQ.isLoading && payload?.source === "unavailable" && (
-        <GlassSection title="Research data" dataSource="unavailable">
+        <GlassSection title="Research data" db="retail" dataSource="unavailable">
           <EmptyDataState
             message="Strategy research unavailable."
             hint={payload.reason ?? "Check retail Supabase configuration."}
@@ -525,7 +525,7 @@ export function ResearchLabPage() {
             {/* ── Composition tab ───────────────────────────────────────── */}
             <TabsContent value="composition" className="mt-0 space-y-4">
               {current.holdings.length === 0 ? (
-                <GlassSection title="Holdings" dataSource={panelSource}>
+                <GlassSection title="Holdings" db="retail" dataSource={panelSource}>
                   <EmptyDataState
                     message="No published holdings for this strategy."
                     hint="holdings JSON on strategies_c is empty."
@@ -536,7 +536,8 @@ export function ResearchLabPage() {
                 <GlassSection
                   title="Basket composition"
                   subtitle={`${meta?.asOf ?? "—"} · live marks · edit the proposed basket, then submit for approval`}
-                  endpoint="strategies_c + securities_c"
+                  endpoint="GET /api/research-lab (strategies_c + securities_c)"
+                  db="retail"
                   dataSource={panelSource}
                   right={
                     <div className="flex flex-wrap items-center gap-2">
@@ -606,6 +607,7 @@ export function ResearchLabPage() {
                   title="Session proposals"
                   subtitle="Strategist workflow · not yet persisted"
                   endpoint="research_workflow"
+                  db="retail"
                   dataSource="code-gap"
                   right={
                     <Button
@@ -637,6 +639,7 @@ export function ResearchLabPage() {
               title="Committee approvals"
               subtitle="Pending change requests"
               endpoint="research_workflow"
+              db="retail"
               dataSource="code-gap"
               right={
                 <GlassBadge>
@@ -685,6 +688,7 @@ export function ResearchLabPage() {
               title="Audit log"
               subtitle="Strategy activity"
               endpoint="research_audit"
+              db="retail"
               dataSource="code-gap"
               right={<History className="h-4 w-4 text-muted-foreground" />}
             >
@@ -725,6 +729,7 @@ export function ResearchLabPage() {
                 title="Research shortlist"
                 subtitle="Notes + buy/sell rating per security — desk-wide wish list"
                 endpoint="security_research"
+                db="retail"
                 dataSource="code-gap"
                 right={
                   <GlassBadge>
@@ -739,7 +744,8 @@ export function ResearchLabPage() {
               <GlassSection
                 title="Fundamentals"
                 subtitle="Basket constituents, then research candidates below the line"
-                endpoint="securities_c"
+                endpoint="GET /api/research-lab (securities_c)"
+                db="retail"
                 dataSource={panelSource}
               >
                 <div className="space-y-4">

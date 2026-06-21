@@ -112,7 +112,8 @@ function SecurityPageContent() {
           <GlassSection
             title={`${inst?.symbol ?? "—"} · ${chartRange}`}
             endpoint={realDataOnly ? (chartRange === "1D" ? "GET /api/intraday" : "GET /api/history") : "PricingQuoteGet"}
-            dataSource={realDataOnly ? quoteSource : undefined}
+            db={realDataOnly && chartRange === "1D" ? "retail" : undefined}
+            dataSource={realDataOnly ? "iress" : undefined}
             className="col-span-12 flex h-[400px] min-h-0 flex-col lg:col-span-6"
             noPadding
             right={
@@ -191,6 +192,8 @@ function SecurityPageContent() {
         <GlassSection
           title={`Key Statistics · ${inst?.name ?? activeSym}`}
           endpoint="GET /api/quote-snapshot + /api/equities"
+          db="institutional"
+          dataSource="supabase"
           right={<span className="text-caption font-mono">{inst?.sector ?? inst?.isin ?? ""}</span>}
         >
           <SecurityStatsGrid sym={activeSym} />
@@ -199,6 +202,8 @@ function SecurityPageContent() {
         <GlassSection
           title="Reference · ISIN / RIC / Sector / Fundamentals"
           endpoint={`GET /v1/securities/${inst?.isin ?? ""}`}
+          db="retail"
+          dataSource="mock"
           right={<span className="text-caption font-mono">{inst?.isin}</span>}
         >
           {equitiesQ.isLoading ? (

@@ -68,6 +68,8 @@ export default function WMPage() {
           <GlassSection
             title="My Client Book · Top 5 by AUM"
             endpoint="GET /v1/clients?wealthManagerId=wm1"
+            db="retail"
+            dataSource="supabase"
             right={<span className="font-mono text-[10px]">{myClients.length} total</span>}
             className="col-span-12 lg:col-span-7"
             noPadding
@@ -105,6 +107,8 @@ export default function WMPage() {
           <GlassSection
             title="Pending suitability reviews"
             endpoint="GET /v1/suitability/queue?assignee=wm1"
+            db="retail"
+            dataSource="supabase"
             right={<Pill tone="warning" size="xs">{suitabilityQueue.length} pending</Pill>}
             className="col-span-12 lg:col-span-5"
             noPadding
@@ -131,6 +135,8 @@ export default function WMPage() {
         <GlassSection
           title="Client activity today"
           endpoint="GET /v1/clients/activity?assignee=wm1&date=2026-06-06"
+          db="retail"
+          dataSource="supabase"
           right={<Pill tone="info" size="xs">TODAY</Pill>}
           noPadding
         >

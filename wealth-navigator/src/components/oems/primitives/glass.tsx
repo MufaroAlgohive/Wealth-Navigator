@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { cn } from "@/lib/cn";
-import type { DataSourceKind } from "@/components/oems/primitives/data-source-badge";
+import type { DataSourceKind, DbName } from "@/components/oems/primitives/data-source-badge";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
 /** Full-page ambient wrapper for OEMS pages */
@@ -18,6 +18,8 @@ interface GlassSectionProps extends React.HTMLAttributes<HTMLElement> {
   subtitle?: string;
   endpoint?: string;
   dataSource?: DataSourceKind;
+  /** Which Supabase DB the data lives in — renders an mfxng/nnwz chip by the source pill. */
+  db?: DbName;
   right?: React.ReactNode;
   noPadding?: boolean;
 }
@@ -27,6 +29,7 @@ export function GlassSection({
   subtitle,
   endpoint,
   dataSource,
+  db,
   right,
   noPadding,
   className,
@@ -39,7 +42,7 @@ export function GlassSection({
         <div className="min-w-0 space-y-0.5">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-section">{title}</h2>
-            {dataSource && <DataSourceBadge source={dataSource} />}
+            {(dataSource || db) && <DataSourceBadge source={dataSource ?? "supabase"} db={db} />}
           </div>
           {(subtitle || endpoint) && (
             <p className="text-caption truncate">

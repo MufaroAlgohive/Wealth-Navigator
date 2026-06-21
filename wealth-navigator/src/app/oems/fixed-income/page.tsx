@@ -72,7 +72,6 @@ export default function FixedIncomePage() {
     ...queryOpts("reference"),
   });
   const bonds = bondsQ.data?.bonds ?? [];
-  const source = bondsQ.data?.source ?? "unavailable";
 
   const [selected, setSelected] = useState<string>("");
   const effectiveSelected = selected || bonds[0]?.isin || "";
@@ -129,7 +128,8 @@ export default function FixedIncomePage() {
         <GlassSection
           title="Bond screener"
           endpoint="GET /api/bonds"
-          dataSource={source === "supabase" ? "supabase" : "unconfigured"}
+          db="institutional"
+          dataSource="blocked-vendor"
         >
           <EmptyDataState
             message="No bonds ingested yet."
@@ -142,7 +142,8 @@ export default function FixedIncomePage() {
           <GlassSection
             title="Bond screener"
             endpoint="GET /api/bonds"
-            dataSource="supabase"
+            db="institutional"
+            dataSource="iress"
             className="col-span-12 flex h-[420px] flex-col lg:col-span-7"
             noPadding
             right={
@@ -220,8 +221,9 @@ export default function FixedIncomePage() {
             <div className="col-span-12 space-y-3 lg:col-span-5">
               <GlassSection
                 title={`${bond.name} · ${bond.isin}`}
-                endpoint={`bonds_c[${bond.isin}]`}
-                dataSource="supabase"
+                endpoint="GET /api/bonds"
+                db="institutional"
+                dataSource="iress"
               >
                 <div className="grid grid-cols-3 gap-2">
                   {[
@@ -254,7 +256,8 @@ export default function FixedIncomePage() {
         <GlassSection
           title="ZAR govi · today vs 1D / 1W / 1M"
           endpoint="GET /api/curves/ZAR_GOVI"
-          dataSource="unconfigured"
+          db="institutional"
+          dataSource="blocked-external"
           className="col-span-12 flex h-[300px] flex-col lg:col-span-7"
         >
           <EntitlementRequired
@@ -267,8 +270,9 @@ export default function FixedIncomePage() {
         {bond && (
           <GlassSection
             title="P&L sensitivity · ±100bp"
-            endpoint="INTERNAL · DV01 + convexity"
-            dataSource="code-gap"
+            endpoint="GET /api/bonds"
+            db="institutional"
+            dataSource="iress"
             className="col-span-12 flex h-[300px] flex-col lg:col-span-5"
             noPadding
           >

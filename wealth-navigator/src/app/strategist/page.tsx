@@ -67,6 +67,8 @@ export default function StrategistPage() {
           <GlassSection
             title="Strategies under my mandate"
             endpoint="GET /v1/strategies?managerId=st1"
+            db="retail"
+            dataSource="supabase"
             right={<span className="font-mono text-[10px]">{myStrategies.length} strategies</span>}
             className="col-span-12 lg:col-span-7"
             noPadding
@@ -115,6 +117,8 @@ export default function StrategistPage() {
           <GlassSection
             title="Mandate templates"
             endpoint="GET /v1/mandates/templates"
+            db="retail"
+            dataSource="supabase"
             right={<Pill tone="info" size="xs">{mandateTemplates.length} kits</Pill>}
             className="col-span-12 lg:col-span-5"
             noPadding
@@ -152,6 +156,8 @@ export default function StrategistPage() {
         <GlassSection
           title={`Performance attribution · YTD · ${headline?.name ?? ""}`}
           endpoint="INTERNAL · Brinson-Fachler decomp"
+          db="retail"
+          dataSource="supabase"
           right={<span className="font-mono text-[10px]">net of fees · ZAR</span>}
           className="flex h-[300px] flex-col"
           noPadding

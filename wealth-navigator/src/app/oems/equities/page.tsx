@@ -15,6 +15,7 @@ import { useIress } from "@/lib/iress/provider";
 import { canRebalance } from "@/lib/iress/strategy";
 import { seedLastFor } from "@/lib/iress/seed";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
+import { mapSource } from "@/lib/data-source";
 import { formatPct, formatZAR, formatNumber } from "@/lib/format";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { useTick } from "@/lib/store/tick-stream-provider";
@@ -219,7 +220,7 @@ export default function EquitiesPage() {
               <GlassKpi label="Pre-trade checks" value="On submit" sub="IRESS halt / borrow / non-tradeable at order time" accent="primary" />
             </>
           ) : (
-            <GlassSection title="Equity KPIs" endpoint="GET /api/portfolio" className="col-span-2 lg:col-span-4">
+            <GlassSection title="Equity KPIs" endpoint="GET /api/portfolio" db="institutional" dataSource="supabase" className="col-span-2 lg:col-span-4">
               <EmptyDataState
                 reason={portfolioQ.data?.reason ?? "supabase_query_failed"}
                 migration={portfolioQ.data?.migration}
@@ -264,6 +265,8 @@ export default function EquitiesPage() {
                   key={s.id}
                   title={s.name}
                   endpoint="GET /v1/positions?strategy={id}"
+                  db="retail"
+                  dataSource="mock"
                   right={
                     <Pill tone={s.status === "live" ? "success" : "neutral"} size="xs" dot>
                       {s.status}
@@ -300,20 +303,20 @@ export default function EquitiesPage() {
         equitiesUniverseQ.isLoading ? (
           <PanelSkeleton rows={6} height="h-[260px]" className="glass-panel" />
         ) : equitiesAvailable && topMovers.length > 0 ? (
-          <GlassSection title="Top Movers · JSE" endpoint="GET /api/equities" dataSource="supabase" className="flex h-[260px] flex-col" noPadding>
+          <GlassSection title="Top Movers · JSE" endpoint="GET /api/equities" db="retail" dataSource={mapSource(equitiesUniverseQ.data?.source, "hybrid")} className="flex h-[260px] flex-col" noPadding>
             <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 scrollbar-thin">
               <RealMoversList movers={topMovers} />
             </div>
           </GlassSection>
         ) : (
-          <GlassSection title="Top Movers · JSE" endpoint="GET /api/equities" dataSource="unavailable" className="h-[260px]">
+          <GlassSection title="Top Movers · JSE" endpoint="GET /api/equities" db="retail" dataSource="unavailable" className="h-[260px]">
             <EmptyDataState message="Equities board unavailable — retail securities feed returned no rows." />
           </GlassSection>
         )
       ) : equitiesQ.isLoading ? (
         <PanelSkeleton rows={6} height="h-[260px]" className="glass-panel" />
       ) : (
-        <GlassSection title="Top Movers · JSE" endpoint="GET /v1/securities/quotes?exchange=JSE" dataSource="mock" className="flex h-[260px] flex-col" noPadding>
+        <GlassSection title="Top Movers · JSE" endpoint="GET /v1/securities/quotes?exchange=JSE" db="retail" dataSource="mock" className="flex h-[260px] flex-col" noPadding>
           <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5 scrollbar-thin">
             <MockMoversList equities={equities} />
           </div>
@@ -323,7 +326,8 @@ export default function EquitiesPage() {
       <GlassSection
         title={realDataOnly ? `Securities universe · ${filteredUniverse.length} names` : "Securities universe · JSE"}
         endpoint={realDataOnly ? "GET /api/equities" : "GET /v1/securities/quotes?exchange=JSE"}
-        dataSource={realDataOnly ? "supabase" : "mock"}
+        db="retail"
+        dataSource={realDataOnly ? mapSource(equitiesUniverseQ.data?.source, "hybrid") : "mock"}
         right={
           <div className="flex items-center gap-2">
             <div className="relative">

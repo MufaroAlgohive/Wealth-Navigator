@@ -78,6 +78,8 @@ export default function BusinessPage() {
           <GlassSection
             title="House view performance"
             endpoint="GET /v1/strategies?salesView=true"
+            db="retail"
+            dataSource="supabase"
             right={<Pill tone="info" size="xs">SALES</Pill>}
             className="col-span-12 lg:col-span-7"
             noPadding
@@ -114,6 +116,8 @@ export default function BusinessPage() {
           <GlassSection
             title="Pipeline"
             endpoint="GET /v1/crm/deals?stage=open"
+            db="retail"
+            dataSource="supabase"
             right={<Pill tone="primary" size="xs">{deals.length} deals</Pill>}
             className="col-span-12 lg:col-span-5"
             noPadding
@@ -142,6 +146,8 @@ export default function BusinessPage() {
         <GlassSection
           title="Compliance flags"
           endpoint="GET /v1/compliance/flags?scope=business"
+          db="retail"
+          dataSource="supabase"
           right={<Pill tone="warning" size="xs">{COMPLIANCE_FLAGS.length} open</Pill>}
           noPadding
         >

@@ -300,8 +300,9 @@ export function AiResearch() {
     <GlassSection
       title="AI Research"
       subtitle="LLM-assisted outlook per security — grounded in real fundamentals + news, cached to save tokens"
-      endpoint="/api/research-ai"
-      dataSource="code-gap"
+      endpoint="GET /api/research-ai"
+      db="retail"
+      dataSource="hybrid"
       right={
         <GlassBadge tone="primary">
           <Sparkles className="h-3 w-3" />

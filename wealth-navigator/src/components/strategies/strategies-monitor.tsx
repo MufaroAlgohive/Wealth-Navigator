@@ -152,7 +152,7 @@ export function StrategiesMonitor() {
     return (
       <div className="space-y-5 pb-8">
         <StrategiesHero strategies={[]} />
-        <GlassSection title="Strategy mandates" endpoint="oems_strategy_c" dataSource="unconfigured">
+        <GlassSection title="Strategy mandates" db="retail" dataSource="supabase" endpoint="GET /api/strategies">
           <EmptyDataState
             message="Mock mode disables the strategies module."
             hint="Switch to real-data mode and ensure the worker has written oems_strategy_c rows."
@@ -195,8 +195,9 @@ export function StrategiesMonitor() {
       ) : strategies.length === 0 ? (
         <GlassSection
           title="Strategy mandates"
+          db="retail"
           endpoint="GET /api/strategies"
-          dataSource={strategiesQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+          dataSource="supabase"
         >
           <EmptyDataState
             reason={strategiesQ.data?.reason ?? "supabase_query_failed"}
@@ -320,7 +321,8 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
     <div className="col-span-12 space-y-3 self-start lg:sticky lg:top-4 lg:col-span-7">
       <GlassSection
         title={`${strategy.name} · detail`}
-        endpoint={`oems_strategy_c[${strategy.id}]`}
+        db="retail"
+        endpoint="GET /api/strategies"
         dataSource="supabase"
         right={
           <Pill tone={kindTone(strategy.kind)} size="xs">
@@ -374,8 +376,9 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
 
       <GlassSection
         title="Holdings · target vs actual"
-        endpoint="oems_position_c ?strategy_id = {id}"
-        dataSource="unconfigured"
+        db="retail"
+        endpoint="GET /api/strategies"
+        dataSource="supabase"
         className="h-[420px]"
         right={<span className="font-mono text-[10px]">{strategy.holdingsCount} positions (from oems_position_c)</span>}
       >

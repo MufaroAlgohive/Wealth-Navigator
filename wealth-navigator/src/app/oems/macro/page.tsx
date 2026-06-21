@@ -99,7 +99,6 @@ export default function MacroPage() {
   const releases = macroQ.data?.releases ?? [];
   const isLoading = macroQ.isLoading || saRatesQ.isLoading;
   const hasData = indicators.length > 0 || releases.length > 0;
-  const indicatorSource = macroQ.data?.indicators?.length ? "supabase" : "live";
 
   if (!realDataOnly) {
     return (
@@ -108,7 +107,7 @@ export default function MacroPage() {
           <h1 className="text-display">Macro</h1>
           <p className="text-caption mt-1">SARB · StatsSA · G10 series · indicator surprise · upcoming releases</p>
         </header>
-        <GlassSection title="Macro indicators" endpoint="macro_indicator_c + macro_release_c" dataSource="mock">
+        <GlassSection title="Macro indicators" endpoint="GET /api/macro" db="institutional" dataSource="mock">
           <EmptyDataState
             message="Mock mode disables the macro module."
             hint="Switch to real-data mode and ensure the worker has written macro_indicator_c + macro_release_c rows."
@@ -129,8 +128,9 @@ export default function MacroPage() {
       <GlassSection
         title="Macro indicators"
         subtitle="SARB repo · prime · inflation · FX"
-        endpoint="GET /api/sa-rates"
-        dataSource={indicators.length > 0 ? indicatorSource : "unconfigured"}
+        endpoint="GET /api/macro"
+        db="institutional"
+        dataSource="supabase"
       >
         {isLoading ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-4">
@@ -216,7 +216,8 @@ export default function MacroPage() {
       {hasData && releases.length > 0 && (
         <GlassSection
           title="Upcoming releases · 14 days"
-          endpoint="macro_release_c"
+          endpoint="GET /api/macro"
+          db="institutional"
           dataSource="supabase"
           right={<span className="font-mono text-[10px] text-muted-foreground">{releases.length} scheduled</span>}
           noPadding

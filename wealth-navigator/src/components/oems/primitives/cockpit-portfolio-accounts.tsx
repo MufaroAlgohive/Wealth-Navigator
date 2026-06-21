@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { GlassSection } from "@/components/oems/primitives/glass";
+import type { DbName } from "@/components/oems/primitives/data-source-badge";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Pill } from "@/components/oems/primitives/pill";
 import { cn } from "@/lib/cn";
@@ -50,6 +51,7 @@ export function CockpitPortfolioAccounts({
   horizon,
   onHorizonChange,
   dataSource,
+  db,
   endpoint,
   emptyTitle,
   emptyMessage,
@@ -62,6 +64,7 @@ export function CockpitPortfolioAccounts({
   horizon?: AccountsHorizon;
   onHorizonChange?: (h: AccountsHorizon) => void;
   dataSource: "supabase" | "seed" | "unconfigured" | "unavailable";
+  db?: DbName;
   endpoint: string;
   emptyTitle?: string;
   emptyMessage?: string;
@@ -95,6 +98,7 @@ export function CockpitPortfolioAccounts({
       title="Portfolio Accounts"
       endpoint={endpoint}
       dataSource={dataSource}
+      db={db}
       noPadding
       className={cn("flex h-[340px] flex-col min-h-0", className)}
       right={

@@ -42,6 +42,7 @@ import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
 import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
 import { usePortfolio } from "@/lib/hooks/use-portfolio";
 import { isRealDataOnlyClient, FEED_NOT_CONFIGURED } from "@/lib/data-policy";
+import { mapSource } from "@/lib/data-source";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 
 /**
@@ -735,7 +736,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <DataSourceBadge source={cockpitDataSource} />
+            <DataSourceBadge source={cockpitDataSource} db="retail" />
             <span className="glass-inset inline-flex px-3 py-1.5 text-caption font-mono">
               Range · 1D
             </span>
@@ -920,7 +921,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="Sector Allocation"
               endpoint="GET /api/equities"
-              dataSource="supabase"
+              db="retail"
+              dataSource={mapSource(equitiesData?.source, "hybrid")}
               noPadding
               className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
               right={
@@ -943,6 +945,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="Sector Heatmap"
               endpoint="GET /api/equities"
+              db="retail"
               dataSource="unavailable"
               className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
             >
@@ -963,6 +966,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           <GlassSection
             title="Sector Allocation"
             endpoint="PricingQuoteGet (sector indices)"
+            db="retail"
             dataSource="seed"
             noPadding
             className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
@@ -981,6 +985,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="ZAR Sovereign Curve · NSS"
               endpoint="GET /api/curves/ZAR_NSS"
+              db="institutional"
               dataSource={curveBffQ.data?.source === "entitlement-required" ? "unconfigured" : "unavailable"}
               className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
             >
@@ -996,7 +1001,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="ZAR Sovereign Curve · NSS"
               endpoint="GET /api/curves/ZAR_NSS"
-              dataSource="supabase"
+              db="institutional"
+              dataSource="iress"
               className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
               right={(() => {
                 // Show the benchmark nearest 10y. The basket tenors (R2035 ~8.7y,
@@ -1038,6 +1044,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="ZAR Sovereign Curve · NSS"
               endpoint="GET /api/curves/ZAR_NSS"
+              db="institutional"
               dataSource="unconfigured"
               className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
             >
@@ -1050,6 +1057,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           <GlassSection
             title="ZAR Sovereign Curve · NSS"
             endpoint="GET /v1/yieldcurve/zar?model=nss"
+            db="institutional"
+            dataSource="seed"
             className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
             right={
               <span className="font-mono">
@@ -1089,7 +1098,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="Top Movers · US"
               endpoint="GET /api/global-movers"
-              dataSource={globalMoversQ.data?.source === "yahoo" ? "supabase" : "unconfigured"}
+              dataSource={globalMoversQ.data?.source === "yahoo" ? "yahoo" : "unconfigured"}
               noPadding
               className="col-span-12 lg:col-span-3 flex h-[300px] flex-col min-h-0"
               right={<span className="text-caption font-mono">Yahoo</span>}
@@ -1142,7 +1151,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="Top Movers · JSE"
               endpoint="GET /api/equities"
-              dataSource="supabase"
+              db="retail"
+              dataSource={mapSource(equitiesData?.source, "hybrid")}
               noPadding
               className="col-span-12 lg:col-span-3 flex h-[300px] flex-col min-h-0"
               right={
@@ -1185,6 +1195,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="Top Movers · JSE"
               endpoint="GET /api/equities"
+              db="retail"
               dataSource="unavailable"
               className="col-span-12 lg:col-span-3 flex h-[300px] flex-col min-h-0"
             >
@@ -1197,6 +1208,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           <GlassSection
             title="Top Movers · JSE"
             endpoint="PricingQuoteGet"
+            db="retail"
             dataSource={liveQuotes.dataSource}
             noPadding
             className="col-span-12 lg:col-span-3 flex h-[300px] flex-col min-h-0"
@@ -1234,7 +1246,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title={`${heatmap.market} Market · Heatmap`}
               endpoint={heatmap.market === "JSE" ? "GET /api/equities" : "GET /api/global-movers"}
-              dataSource={heatmap.status === "empty" ? "unconfigured" : "supabase"}
+              db="retail"
+              dataSource={
+                heatmap.status === "empty"
+                  ? "unconfigured"
+                  : heatmap.market === "JSE"
+                    ? mapSource(equitiesData?.source, "hybrid")
+                    : mapSource(globalMoversQ.data?.source, "yahoo")
+              }
               className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
               right={
                 <div className="flex items-center gap-2">
@@ -1329,7 +1348,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="JSE All Share · Intraday"
               endpoint="GET /api/indices/J203"
-              dataSource="supabase"
+              db="institutional"
+              dataSource="blocked-external"
               className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
               right={(() => {
                 const pts = alsiBffQ.data.points;
@@ -1384,7 +1404,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="JSE All Share · Intraday"
               endpoint="GET /api/indices/J203"
-              dataSource="unconfigured"
+              db="institutional"
+              dataSource="blocked-external"
               className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
             >
               <EmptyDataState message="ALSI intraday not yet populated — worker has not synced a J203 series." />
@@ -1396,6 +1417,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           <GlassSection
             title="JSE All Share · Intraday"
             endpoint="WS /v1/indices/J203/stream"
+            db="institutional"
+            dataSource="seed"
             className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
             right={
               alsi ? (
@@ -1435,7 +1458,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         )}
 
         {realDataOnly ? (
-          <GlassSection title="SENS · Live" endpoint="External vendor required" className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0">
+          <GlassSection title="SENS · Live" endpoint="External vendor required" db="retail" dataSource="unconfigured" className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0">
             <EmptyDataState message="SENS feed not configured." />
           </GlassSection>
         ) : sensQ.isLoading ? (
@@ -1444,6 +1467,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           <GlassSection
             title="SENS · Live"
             endpoint="WS /v1/news/sens/stream"
+            db="retail"
+            dataSource="seed"
             noPadding
             className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
             right={
@@ -1467,6 +1492,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           <GlassSection
             title={`Open Orders · ${openOrders.length}`}
             endpoint="Order audit table · oems_order_audit"
+            db="institutional"
             dataSource={realDataOnly ? "supabase" : "seed"}
             noPadding
             className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"
@@ -1579,7 +1605,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           <GlassSection
             title="Macro Pulse"
             endpoint="GET /api/sa-rates"
-            dataSource={saRatesQ.data?.source === "sarb" ? "supabase" : "unconfigured"}
+            dataSource={saRatesQ.data?.source === "sarb" ? "external" : "unconfigured"}
             noPadding
             className="col-span-12 lg:col-span-4 flex h-[340px] flex-col min-h-0"
             right={<span className="text-caption font-mono">{saRatesQ.data?.sourceLabel ?? "SARB"}</span>}
@@ -1615,6 +1641,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           <GlassSection
             title="Macro Pulse"
             endpoint="GET /v1/macro/series"
+            dataSource="seed"
             noPadding
             className="col-span-12 lg:col-span-4 flex h-[340px] flex-col min-h-0"
             right={
@@ -1662,7 +1689,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               items={realNewsFlow}
               title="News Flow"
               endpoint="GET /api/news"
-              dataSource={realNewsFlow.length > 0 ? "supabase" : "unconfigured"}
+              db="retail"
+              dataSource={realNewsFlow.length > 0 ? "external" : "unconfigured"}
               sourceLabel={newsBffQ.data?.sourceLabel ?? "RSS + Alliance"}
               emptyMessage="No news items right now."
               emptyHint="Live RSS (Moneyweb / BusinessTech) + Alliance wire. Official JSE SENS regulatory announcements still require the paid web feed."
@@ -1676,6 +1704,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             items={mockNewsFlow}
             title="News Flow"
             endpoint="WS /v1/news/stream + SENS"
+            db="retail"
             dataSource="seed"
             className="col-span-12 lg:col-span-8"
           />
@@ -1684,12 +1713,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         <GlassSection
           title="Curve Move · PCA"
           endpoint="GET /api/curves/ZAR_NSS/metrics"
+          db="institutional"
           dataSource={
             curveMetricsSource === "supabase" || curveMetricsSource === "live"
-              ? "supabase"
-              : curveMetricsSource === "unconfigured"
-                ? "unconfigured"
-                : "unconfigured"
+              ? "iress"
+              : "unconfigured"
           }
           className="col-span-12 lg:col-span-4 flex h-[260px] flex-col min-h-0"
           right={<span className="text-caption font-mono">today vs 1D</span>}
@@ -1749,6 +1777,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           rows={realDataOnly ? realAccountRows : mockAccountRows}
           horizon={accountsHorizon}
           onHorizonChange={setAccountsHorizon}
+          db="retail"
           dataSource={realDataOnly ? (clientBookAvailable ? "supabase" : "unconfigured") : "seed"}
           endpoint={realDataOnly ? "GET /api/client-book" : "Investors view (seed)"}
           // Mock mode shows strategies as investor stand-ins; tag each row
@@ -1804,6 +1833,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="Portfolio · IPS Accounts"
               endpoint="GET /api/portfolio"
+              db="institutional"
               dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
               noPadding
               className="col-span-12 lg:col-span-4 flex h-[340px] flex-col min-h-0"
@@ -1851,6 +1881,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassSection
               title="Portfolio · Positions"
               endpoint="GET /api/portfolio"
+              db="institutional"
               dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
               noPadding
               className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"

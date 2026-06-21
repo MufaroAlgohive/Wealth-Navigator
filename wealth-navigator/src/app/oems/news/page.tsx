@@ -61,7 +61,7 @@ export default function NewsPage() {
           <h1 className="text-lg font-semibold tracking-tight">News & SENS</h1>
           <p className="text-xs text-muted-foreground">Reuters · Bloomberg · Moneyweb · Dow Jones · SENS regulatory tape</p>
         </header>
-        <GlassSection title="News tape" endpoint="news_item_c">
+        <GlassSection title="News tape" db="retail" dataSource="external" endpoint="GET /api/news">
           <EmptyDataState
             message="Mock mode disables the news module."
             hint="Switch to real-data mode and ensure the worker has written news_item_c rows."
@@ -129,8 +129,9 @@ export default function NewsPage() {
 
       <GlassSection
         title={`News tape · ${filtered.length} items`}
+        db="retail"
+        dataSource="external"
         endpoint="GET /api/news"
-        dataSource={newsQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
         noPadding
         className="flex h-[calc(100vh-220px)] min-h-0 flex-col"
       >
