@@ -163,8 +163,15 @@ export function buildPrompt(
   symbol: string,
   name: string | null,
   gathered: GatheredEvidence,
-  webResults: WebResult[] = [],
+  extra: {
+    webResults?: WebResult[];
+    financials?: Record<string, unknown> | null;
+    news?: Array<{ title: string; publishedAt?: string | null }>;
+  } = {},
 ): { system: string; prompt: string } {
+  const webResults = extra.webResults ?? [];
+  const financials = extra.financials ?? null;
+  const news = extra.news ?? [];
   const system =
     "You are a calibrated, conservative equity analyst writing internal research. " +
     "Reason ONLY over the evidence provided in the user message — fundamentals, price, and the " +
@@ -184,6 +191,13 @@ export function buildPrompt(
         .map((r, i) => `[${i + 1}] ${r.title}\n${r.snippet}\nsource: ${r.url}`)
         .join("\n\n")
     : "No web research available.";
+  const financialsText =
+    financials && Object.keys(financials).length
+      ? JSON.stringify(financials, null, 2)
+      : "No financial statements available.";
+  const newsText = news.length
+    ? news.map((n, i) => `[${i + 1}] ${n.title}${n.publishedAt ? ` (${n.publishedAt.slice(0, 10)})` : ""}`).join("\n")
+    : "No recent company news retrieved.";
 
   const prompt = [
     `Subject security: ${symbol}${name ? ` (${name})` : ""}.`,
@@ -191,12 +205,14 @@ export function buildPrompt(
     "=== FUNDAMENTALS (real, from internal securities table; may be partial) ===",
     fundamentalsText,
     "",
+    "=== FINANCIAL STATEMENTS & RATIOS (real, from Yahoo; may be partial) ===",
+    financialsText,
+    "",
     "=== PRICE SUMMARY (real) ===",
     priceText,
     "",
-    `=== NEWS EVIDENCE ===`,
-    `${gathered.newsCount} recent news item(s) reference this security. ` +
-      "Treat headlines as soft signal only; do not assume content beyond what is implied.",
+    "=== RECENT COMPANY NEWS (headlines; soft signal — don't over-read) ===",
+    newsText,
     "",
     "=== WEB RESEARCH (recent, online; may be noisy — weigh credibility) ===",
     webText,
@@ -389,7 +405,11 @@ export async function synthesizeOutlook(
   symbol: string,
   name: string | null,
   gathered: GatheredEvidence,
-  webResults: WebResult[] = [],
+  extra: {
+    webResults?: WebResult[];
+    financials?: Record<string, unknown> | null;
+    news?: Array<{ title: string; publishedAt?: string | null }>;
+  } = {},
 ): Promise<{ outlook: ResearchOutlook; provider: ResearchAiProvider; model: string }> {
   const cfg = resolveProviderConfig();
   if (!cfg.apiKey) {
@@ -401,7 +421,7 @@ export async function synthesizeOutlook(
   }
 
   const apiKey = cfg.apiKey; // narrowed to string by the guard above
-  const { system, prompt } = buildPrompt(symbol, name, gathered, webResults);
+  const { system, prompt } = buildPrompt(symbol, name, gathered, extra);
   const call = (p: string) =>
     callModel({
       base: cfg.base,

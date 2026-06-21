@@ -42,6 +42,12 @@ import {
   putCachedResearch,
 } from "@/lib/research-ai/cache";
 import { runWebSearch } from "@/lib/research-ai/websearch";
+import {
+  fetchYahooFinancials,
+  fetchYahooNews,
+  type YahooFinancialsResult,
+  type YahooNewsResult,
+} from "@/lib/research-ai/yahoo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -195,33 +201,23 @@ function dataSteps(matched: boolean, g: GatheredEvidence): ResearchStep[] {
     px && px.last !== null
       ? { label: "Price", status: "ok", detail: `Last ${px.last}${px.changePct != null ? ` (${px.changePct >= 0 ? "+" : ""}${px.changePct.toFixed(2)}%)` : ""}`, source: "securities_c" }
       : { label: "Price", status: "empty", detail: "No price on file", source: "securities_c" },
-    g.newsCount > 0
-      ? { label: "Company news", status: "ok", detail: `${g.newsCount} ticker-tagged article(s)`, source: "News_articles" }
-      : { label: "Company news", status: "empty", detail: "No ticker-tagged news matched (current wire feed is general, not per-company)", source: "News_articles" },
   ];
 }
 
-/** Deep financials are part of the deferred Iress data cutover — always shown. */
-const FINANCIALS_STEP: ResearchStep = {
-  label: "Financial statements",
-  status: "deferred",
-  detail: "Revenue / balance sheet / cash flow arrive with the Iress data cutover",
-  source: "Iress (data phase)",
-};
-
-/** The online/web-research trace step, derived from the live search outcome. */
-function webStepFrom(o: WebResearchOutcome): ResearchStep {
-  return {
-    label: "Online / web research",
-    status: o.status,
-    detail: o.detail,
-    source: o.provider ?? undefined,
-  };
+// The richer steps (company news, financial statements, web research) run only
+// on regeneration — these helpers turn each live outcome into a trace step, and
+// a "skipped" variant covers the cache-hit / not-configured paths.
+function newsStep(r: YahooNewsResult): ResearchStep {
+  return { label: "Company news", status: r.status, detail: r.detail, source: "Yahoo Finance" };
 }
-
-/** The online/web-research step when web search did not run this request. */
-function webSkipped(detail: string): ResearchStep {
-  return { label: "Online / web research", status: "skipped", detail };
+function financialsStep(r: YahooFinancialsResult): ResearchStep {
+  return { label: "Financial statements", status: r.status, detail: r.detail, source: "Yahoo Finance" };
+}
+function webStepFrom(o: WebResearchOutcome): ResearchStep {
+  return { label: "Online / web research", status: o.status, detail: o.detail, source: o.provider ?? undefined };
+}
+function stepSkipped(label: string, detail: string): ResearchStep {
+  return { label, status: "skipped", detail };
 }
 
 /** Build the missing-symbol / error envelope with the cache fields set. */
@@ -283,8 +279,9 @@ export async function GET(req: Request) {
         cacheStatus: "uncached",
         trace: [
           ...steps,
-          webSkipped("Skipped — AI provider not configured"),
-          FINANCIALS_STEP,
+          stepSkipped("Company news", "Skipped — AI provider not configured"),
+          stepSkipped("Financial statements", "Skipped — AI provider not configured"),
+          stepSkipped("Online / web research", "Skipped — AI provider not configured"),
           { label: "Synthesis", status: "skipped", detail: `Skipped — set ${envVar} to enable`, source: `${provider} · ${model}` },
         ],
         error: `AI research provider not configured — set ${envVar} (provider: ${provider}). Returning gathered evidence only.`,
@@ -321,8 +318,9 @@ export async function GET(req: Request) {
       sources: cached.sources.length ? cached.sources : sources,
       trace: [
         ...steps,
-        webSkipped("Skipped — reused cached answer (0 tokens)"),
-        FINANCIALS_STEP,
+        stepSkipped("Company news", "Skipped — reused cached answer"),
+        stepSkipped("Financial statements", "Skipped — reused cached answer"),
+        stepSkipped("Online / web research", "Skipped — reused cached answer (0 tokens)"),
         { label: "Synthesis", status: "skipped", detail: "Skipped — reused the cached answer (0 tokens)", source: cached.model ?? undefined },
         { label: "Cache", status: "ok", detail: decision.reason, source: "research cache" },
       ],
@@ -330,17 +328,29 @@ export async function GET(req: Request) {
     } satisfies AiResearchResponse);
   }
 
-  // Regenerate via the model — run a live web-research step FIRST so the model
-  // reasons over recent online context, then synthesize. Web search runs only
-  // here (never on a cache hit), so a reused answer incurs no search spend.
-  const web = await runWebSearch(symbol, name);
+  // Regenerate via the model. Run the three live enrichment sources in PARALLEL
+  // (all free): Tavily web research, Yahoo financial statements, Yahoo company
+  // news. These run ONLY here (never on a cache hit), so a reused answer incurs
+  // no external calls. Then synthesize over the enriched evidence.
+  const yahooSymbol = `${bareCode(symbol)}.JO`;
+  const [web, fin, ynews] = await Promise.all([
+    runWebSearch(symbol, name),
+    fetchYahooFinancials(yahooSymbol),
+    fetchYahooNews(name ?? symbol),
+  ]);
+  const enrichedGathered: GatheredEvidence = { ...gathered, newsCount: ynews.items.length };
   const allSources: ResearchSource[] = [
     ...sources,
+    ...ynews.items.map((n) => ({ title: n.title, url: n.url })),
     ...web.results.map((r) => ({ title: r.title, url: r.url })),
   ];
 
   try {
-    const { outlook, provider, model } = await synthesizeOutlook(symbol, name, gathered, web.results);
+    const { outlook, provider, model } = await synthesizeOutlook(symbol, name, enrichedGathered, {
+      webResults: web.results,
+      financials: fin.financials,
+      news: ynews.items.map((n) => ({ title: n.title, publishedAt: n.publishedAt })),
+    });
     const generatedAt = new Date().toISOString();
 
     // Cache the fresh answer. It is ALWAYS kept in a hot in-process tier (so it
@@ -355,7 +365,7 @@ export async function GET(req: Request) {
       generatedAt,
       outlook,
       sources: allSources,
-      gathered,
+      gathered: enrichedGathered,
       signal: freshSignal,
     });
 
@@ -378,13 +388,14 @@ export async function GET(req: Request) {
       cacheStatus,
       cached: false,
       cacheReason,
-      gathered,
+      gathered: enrichedGathered,
       outlook,
       sources: allSources,
       trace: [
         ...steps,
+        newsStep(ynews),
+        financialsStep(fin),
         webStepFrom(web),
-        FINANCIALS_STEP,
         { label: "Synthesis", status: "ok", detail: "Outlook generated from the gathered evidence", source: `${provider} · ${model}` },
         {
           label: "Cache",
@@ -410,13 +421,14 @@ export async function GET(req: Request) {
       cacheStatus: "uncached",
       cached: false,
       cacheReason: null,
-      gathered,
+      gathered: enrichedGathered,
       outlook: null,
       sources: allSources,
       trace: [
         ...steps,
+        newsStep(ynews),
+        financialsStep(fin),
         webStepFrom(web),
-        FINANCIALS_STEP,
         {
           label: "Synthesis",
           status: "error",
