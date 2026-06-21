@@ -59,6 +59,18 @@ interface RawModule {
 const num = (m: unknown): number | null =>
   m && typeof m === "object" && typeof (m as RawModule).raw === "number" ? (m as RawModule).raw! : null;
 
+/**
+ * Yahoo computes JSE (.JO) price RATIOS off the cents-denominated price, so
+ * forwardPE / priceToBook come back ~100x inflated (e.g. P/B 928 instead of
+ * ~9.3, forward P/E 2,340 instead of ~23). When a ratio exceeds a plausible
+ * ceiling, treat it as the cents artifact and divide by 100; otherwise leave it.
+ * Per-share Rand metrics and absolute totals are unaffected.
+ */
+function deCents(v: number | null, plausibleMax: number): number | null {
+  if (v == null) return null;
+  return v > plausibleMax ? Math.round((v / 100) * 100) / 100 : v;
+}
+
 /** Strip null/undefined entries so the prompt only carries real figures. */
 function compact(o: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -116,9 +128,8 @@ export async function fetchYahooFinancials(yahooSymbol: string): Promise<YahooFi
       // per-share prices and are left as-is.)
       targetMeanPriceRands: ((v) => (v != null ? Math.round((v / 100) * 100) / 100 : null))(num(fd.targetMeanPrice)),
       numberOfAnalystOpinions: num(fd.numberOfAnalystOpinions),
-      trailingEps: num(ks.trailingEps),
-      forwardPE: num(ks.forwardPE),
-      priceToBook: num(ks.priceToBook),
+      forwardPE: deCents(num(ks.forwardPE), 150),
+      priceToBook: deCents(num(ks.priceToBook), 50),
       enterpriseValue: num(ks.enterpriseValue),
       netIncome: num(inc.netIncome),
       grossProfit: num(inc.grossProfit),
@@ -152,8 +163,16 @@ export async function fetchYahooNews(query: string): Promise<YahooNewsResult> {
   const session = await getSession();
   const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
   if (session) headers.cookie = session.cookie;
+  // Yahoo news search matches the core brand, not the full legal name — the long
+  // form ("Capitec Bank Holdings Limited") returns nothing, "Capitec Bank" hits.
+  const cleaned =
+    query
+      .replace(/\b(Limited|Ltd\.?|Holdings|Group|PLC|Inc\.?|Corporation|Corp\.?|Company|N\.?V\.?|SA)\b/gi, "")
+      .replace(/[-–—]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim() || query;
   try {
-    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&newsCount=10&quotesCount=0&enableFuzzyQuery=false`;
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(cleaned)}&newsCount=10&quotesCount=0&enableFuzzyQuery=false`;
     const r = await fetch(url, { headers, cache: "no-store" });
     if (!r.ok) return { status: "error", detail: `Yahoo news ${r.status}`, items: [] };
     const j = (await r.json()) as {
