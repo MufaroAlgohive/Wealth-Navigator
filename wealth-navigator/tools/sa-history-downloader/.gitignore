@@ -1,0 +1,5 @@
+# Downloaded market data + secrets — never commit.
+data/
+.env
+__pycache__/
+*.pyc

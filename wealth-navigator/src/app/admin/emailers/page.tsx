@@ -12,6 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/cn";
+import { EmailerCampaigns } from "@/components/admin/emailer-campaigns";
 
 interface Trigger {
   id: string;
@@ -93,7 +94,7 @@ const thClass = "px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-
 const tdClass = "px-3 py-2.5 align-middle text-xs text-foreground";
 
 export default function EmailersPage() {
-  const [tab, setTab] = React.useState("triggers");
+  const [tab, setTab] = React.useState("campaigns");
   const [origin, setOrigin] = React.useState("");
 
   const [triggers, setTriggers] = React.useState<Trigger[] | null>(null);
@@ -243,9 +244,15 @@ export default function EmailersPage() {
     <div className="mx-auto max-w-5xl">
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
+          <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
           <TabsTrigger value="triggers">Webhook Triggers</TabsTrigger>
           <TabsTrigger value="logs">Send Logs</TabsTrigger>
         </TabsList>
+
+        {/* ── CAMPAIGNS (Marketing) ── */}
+        <TabsContent value="campaigns">
+          <EmailerCampaigns />
+        </TabsContent>
 
         {/* ── TRIGGERS ── */}
         <TabsContent value="triggers" className="space-y-4">

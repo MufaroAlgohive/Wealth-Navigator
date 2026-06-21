@@ -11,7 +11,7 @@ import { cn } from "@/lib/cn";
 
 type Kyc = "verified" | "pending" | "rejected";
 interface ClientRow { id: string; name: string; email: string | null; mint_number: string | null; is_test: boolean | null; kyc: Kyc; bank_linked: boolean; }
-interface Holding { symbol: string; name: string; qty: number; valueCents: number; pnlCents: number; strategy: string | null; }
+interface Holding { symbol: string; name: string; qty: number; valueCents: number; pnlCents: number; strategy: string | null; purchaseValueCents?: number | null; }
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status: string | null; transaction_date: string | null; }
 interface Detail {
   profile: Record<string, unknown> | null;
@@ -34,6 +34,10 @@ export default function ClientsPage() {
   const [detail, setDetail] = React.useState<Detail | null>(null);
   const [tab, setTab] = React.useState("profile");
   const [sumsub, setSumsub] = React.useState<string | null>(null);
+  // Lonwabo: land on "Invested" (KYC-ready) clients by default; toggle to all
+  // (incl. home users). "Invested" keys off KYC-verified for now; once the data
+  // phase exposes a holdings/invested flag this should switch to "has holdings".
+  const [view, setView] = React.useState<"invested" | "all">("invested");
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => setClients(d.ok ? d.clients || [] : [])).catch(() => setClients([]));
@@ -62,7 +66,9 @@ export default function ClientsPage() {
     setSumsub(`SumSub: ${data?.review?.reviewResult?.reviewAnswer || data?.reviewStatus || "unknown"}`);
   };
 
-  const filtered = (clients ?? []).filter((c) => !search.trim() || `${c.name} ${c.email} ${c.mint_number}`.toLowerCase().includes(search.toLowerCase()));
+  const filtered = (clients ?? [])
+    .filter((c) => view === "all" || c.kyc === "verified")
+    .filter((c) => !search.trim() || `${c.name} ${c.email} ${c.mint_number}`.toLowerCase().includes(search.toLowerCase()));
   const sel = clients?.find((c) => c.id === selId) || null;
   const p = detail?.profile ?? {};
   const ob = detail?.onboarding ?? {};
@@ -72,6 +78,17 @@ export default function ClientsPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
         {/* Roster */}
         <div className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-2 flex gap-0.5 rounded-lg bg-muted p-0.5 text-xs">
+            {([["invested", "Invested"], ["all", "All clients"]] as const).map(([v, label]) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={cn("flex-1 rounded px-2 py-1 font-medium transition-colors", view === v ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground")}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div className="relative mb-3">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search clients…" className="h-8 pl-8" />
@@ -117,6 +134,7 @@ export default function ClientsPage() {
                       <Row label="ID number" value={str(p.id_number)} /><Row label="Currency" value={str(p.preferred_currency)} />
                       <Row label="MINT number" value={str(p.mint_number)} /><Row label="Computershare" value={str(p.computershare_number)} />
                       <Row label="Address" value={str(p.address)} /><Row label="Joined" value={p.created_at ? new Date(String(p.created_at)).toLocaleDateString("en-ZA") : "—"} />
+                      <Row label="Managing parent" value={str(p.managing_parent ?? p.guardian_name ?? p.parent_name)} /><Row label="Relationship" value={str(p.parent_relationship ?? p.relationship)} />
                     </dl>
                   </TabsContent>
 
@@ -139,14 +157,15 @@ export default function ClientsPage() {
                   <TabsContent value="holdings">
                     <div className="overflow-x-auto rounded-xl border border-border">
                       <table className="w-full border-collapse">
-                        <thead><tr className="border-b border-border">{["Symbol", "Strategy", "Qty", "Value", "P&L"].map((h) => <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{h}</th>)}</tr></thead>
+                        <thead><tr className="border-b border-border">{["Instrument", "Strategy", "Qty", "Purchase Value", "Market Value", "Total P&L"].map((h) => <th key={h} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{h}</th>)}</tr></thead>
                         <tbody>
-                          {detail.holdings.length === 0 ? <tr><td colSpan={5} className="px-3 py-8 text-center text-xs text-muted-foreground">No holdings.</td></tr>
+                          {detail.holdings.length === 0 ? <tr><td colSpan={6} className="px-3 py-8 text-center text-xs text-muted-foreground">No holdings.</td></tr>
                             : detail.holdings.map((h, i) => (
                               <tr key={`${h.symbol}-${i}`} className="border-b border-border/40 last:border-b-0">
-                                <td className="px-3 py-2 text-[12px] font-semibold text-foreground">{h.symbol}</td>
+                                <td className="px-3 py-2 text-[12px]"><span className="font-semibold text-foreground">{h.symbol}</span>{h.name ? <span className="ml-2 text-[11px] text-muted-foreground">{h.name}</span> : null}</td>
                                 <td className="px-3 py-2 text-[12px] text-muted-foreground">{h.strategy || "—"}</td>
                                 <td className="px-3 py-2 text-[12px] text-foreground">{h.qty}</td>
+                                <td className="px-3 py-2 text-[12px] text-foreground">{h.purchaseValueCents != null ? R(h.purchaseValueCents) : "—"}</td>
                                 <td className="px-3 py-2 text-[12px] text-foreground">{R(h.valueCents)}</td>
                                 <td className={cn("px-3 py-2 text-[12px]", pnlCls(h.pnlCents))}>{R(h.pnlCents)}</td>
                               </tr>

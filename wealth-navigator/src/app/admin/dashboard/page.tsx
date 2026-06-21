@@ -80,10 +80,10 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Featured */}
+        {/* Featured — driven by the strategy `is_featured` flag (set in the admin edit-strategy modal). */}
         <div className="rounded-2xl border border-border bg-card p-5">
           <h2 className="mb-3 text-sm font-bold text-foreground">Featured strategies</h2>
-          {featured.length === 0 ? <p className="py-10 text-center text-xs text-muted-foreground">None featured.</p> : (
+          {featured.length === 0 ? <p className="py-10 text-center text-xs text-muted-foreground">No featured strategies yet. Toggle “feature this strategy” in the edit-strategy modal.</p> : (
             <div className="space-y-2">
               {featured.map((f) => (
                 <Link key={f.id} href={`/admin/factsheets?id=${f.id}` as Route} className="flex items-center justify-between rounded-xl border border-border px-3 py-2.5 hover:border-primary/40">
@@ -94,6 +94,52 @@ export default function DashboardPage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Strategy returns — legacy Dashboard.html view: per-strategy day / month / 6-month
+          returns + live value. Period pct + live-value columns wire in the data phase (the
+          worker writes 1d_pct / 1m_pct / 6m_pct / basket_value into strategies_returns_c); until then
+          unwritten cells render "—" with an honest empty state. */}
+      <div className="rounded-2xl border border-border bg-card p-5">
+        <h2 className="mb-4 text-sm font-bold text-foreground">Strategy returns</h2>
+        {strategyReturns.length === 0 ? (
+          <p className="py-10 text-center text-xs text-muted-foreground">
+            {loading ? "Loading strategy returns…" : "No strategy returns yet. Period returns populate once the returns worker runs."}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <th className="px-2 py-2 text-left">Strategy</th>
+                  <th className="px-2 py-2 text-right">Day</th>
+                  <th className="px-2 py-2 text-right">Month</th>
+                  <th className="px-2 py-2 text-right">6 Month</th>
+                  <th className="px-2 py-2 text-right">Basket value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {strategyReturns.map((r, i) => {
+                  const day = num(r["1d_pct"]);
+                  const month = num(r["1m_pct"]);
+                  const sixMonth = num(r["6m_pct"]);
+                  const basketValue = num(r.basket_value);
+                  return (
+                    <tr key={String(r.strategy_id ?? i)} className="border-b border-border/50 last:border-0">
+                      <td className="px-2 py-2 text-left font-medium text-foreground">{String(r.name ?? "—")}</td>
+                      <td className={cn("px-2 py-2 text-right tabular-nums font-semibold", pctCls(day))}>{pctStr(day)}</td>
+                      <td className={cn("px-2 py-2 text-right tabular-nums font-semibold", pctCls(month))}>{pctStr(month)}</td>
+                      <td className={cn("px-2 py-2 text-right tabular-nums font-semibold", pctCls(sixMonth))}>{pctStr(sixMonth)}</td>
+                      <td className="px-2 py-2 text-right tabular-nums text-foreground">
+                        {basketValue == null ? "—" : basketValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* Return Insights */}

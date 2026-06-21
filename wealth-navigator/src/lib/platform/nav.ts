@@ -65,6 +65,17 @@ export const PLATFORM_NAV: NavSection[] = [
     ],
   },
   {
+    // Lonwabo: Order Book should sit higher / be more reachable —
+    // "Orders & Cash" moved directly under "Markets" (above "Strategies").
+    title: "Orders & Cash",
+    items: [
+      { label: "Order Book", href: "/admin/order-book", icon: BookOpen, roles: [DESK, OPS] },
+      { label: "Blotter", href: "/oems/blotter", icon: ClipboardList, roles: [DESK] },
+      { label: "EFT Payments", href: "/admin/eft", icon: Banknote, roles: [OPS] },
+      { label: "Reconciliation", href: "/fc/overview", icon: Landmark, roles: [OPS] },
+    ],
+  },
+  {
     title: "Strategies",
     items: [
       { label: "Strategies", href: "/strategies", icon: Layers, roles: [DESK, STRAT, WM] },
@@ -78,15 +89,6 @@ export const PLATFORM_NAV: NavSection[] = [
       { label: "Clients", href: "/admin/clients", icon: Users, roles: [WM, OPS] },
       { label: "Investors", href: "/admin/investors", icon: TrendingUp, roles: [WM, BIZ] },
       { label: "Client View Studio", href: "/admin/studio", icon: MonitorSmartphone, roles: [WM] },
-    ],
-  },
-  {
-    title: "Orders & Cash",
-    items: [
-      { label: "Order Book", href: "/admin/order-book", icon: BookOpen, roles: [DESK, OPS] },
-      { label: "Blotter", href: "/oems/blotter", icon: ClipboardList, roles: [DESK] },
-      { label: "EFT Payments", href: "/admin/eft", icon: Banknote, roles: [OPS] },
-      { label: "Reconciliation", href: "/fc/overview", icon: Landmark, roles: [OPS] },
     ],
   },
   {

@@ -7,8 +7,8 @@ import {
   Tooltip, XAxis, YAxis, Cell, ReferenceLine,
 } from "recharts";
 import {
-  Layers, Activity, Lock, AlertTriangle, Banknote, TrendingUp, Globe2,
-  Newspaper, ArrowUpRight, ArrowDownRight,
+  Layers, Activity, Lock, AlertTriangle, Banknote, TrendingUp,
+  ArrowUpRight, ArrowDownRight,
 } from "lucide-react";
 
 import {
@@ -20,14 +20,16 @@ import { NumberCell } from "@/components/oems/primitives/number-cell";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Sparkline } from "@/components/oems/primitives/sparkline";
-import { SectorHeatmap } from "@/components/oems/primitives/sector-heatmap";
+import { SectorTreemap } from "@/components/oems/primitives/sector-treemap";
+import { CockpitNewsFlow, type NewsFlowItem } from "@/components/oems/primitives/cockpit-news-flow";
+import { CockpitPortfolioAccounts, type PortfolioAccountRow, type AccountsHorizon } from "@/components/oems/primitives/cockpit-portfolio-accounts";
 import { PanelSkeleton, KpiTileSkeleton, PanelErrorShell } from "@/components/oems/primitives/panel-skeleton";
 import { Badge } from "@/components/ui/badge";
 // Tabs/TabsList/TabsTrigger were removed with the non-functional range
 // tabs (Yellow #27). They will be re-introduced when the BFF honors
 // `?range=5D` after the TimeSeriesGet2 entitlement is flipped.
 import { useIress } from "@/lib/iress/provider";
-import { formatPct, formatTime, formatZAR, formatBps, formatPctAbs } from "@/lib/format";
+import { formatPct, formatTime, formatZAR } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -332,6 +334,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // Heatmap exchange switch — JSE (securities_c) | US (Yahoo screener). Other
   // regions need custom Yahoo screeners, so only these two are wired today.
   const [heatmapMarket, setHeatmapMarket] = useState<"JSE" | "US">("JSE");
+  // Portfolio Accounts horizon — investor-snippet performance window.
+  // Defaults to YTD per Lonwabo (1D / MTD / YTD).
+  const [accountsHorizon, setAccountsHorizon] = useState<AccountsHorizon>("YTD");
   const globalMoversQ = useQuery({
     queryKey: ["bff-global-movers", heatmapMarket],
     queryFn: () =>
@@ -561,6 +566,110 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const openOrders = orders.filter((o) => o.state === "WORKING" || o.state === "PARTIAL");
   const rejected = orders.filter((o) => o.state === "REJECTED").length;
 
+  // News Flow (mock) — merge the seed newswire + SENS feed into one
+  // source-tagged list, newest first. The newswire entries become
+  // wire="ALLIANCE"; the SENS entries (and any newswire item whose source is
+  // literally "SENS") become wire="SENS" so the source toggle and the SENS
+  // regulatory pill work off a single field.
+  const mockNewsFlow = useMemo<NewsFlowItem[]>(() => {
+    const fromNews: NewsFlowItem[] = news.map((n) => ({
+      id: `news-${n.id}`,
+      headline: n.headline,
+      ts: n.ts,
+      source: n.source,
+      wire: n.source === "SENS" ? "SENS" : "ALLIANCE",
+      category: n.category,
+      tickers: n.tickers,
+      regulatory: n.source === "SENS",
+    }));
+    const fromSens: NewsFlowItem[] = sens.map((s) => ({
+      id: `sens-${s.id}`,
+      headline: s.headline,
+      ts: s.ts,
+      source: s.issuer,
+      wire: "SENS",
+      category: s.category,
+      tickers: [s.ticker],
+      regulatory: s.severity === "regulatory",
+    }));
+    return [...fromNews, ...fromSens].sort((a, b) => b.ts - a.ts);
+  }, [news, sens]);
+
+  // News Flow (real-data) — from the `/api/news` BFF. The BFF already merges
+  // live RSS (Moneyweb / BusinessTech) + the Alliance wire; SENS regulatory
+  // announcements still need the paid feed, so any item whose source reads
+  // "SENS" is tagged accordingly and everything else is the Alliance wire.
+  const realNewsFlow = useMemo<NewsFlowItem[]>(() => {
+    return (newsBffQ.data?.items ?? []).map((n) => {
+      const isSens = /sens/i.test(n.source);
+      return {
+        id: n.id,
+        headline: n.headline,
+        ts: n.ts,
+        source: n.source,
+        wire: isSens ? "SENS" : "ALLIANCE",
+        category: n.category,
+        tickers: n.tickers,
+        url: n.url,
+        regulatory: isSens,
+      };
+    });
+  }, [newsBffQ.data]);
+
+  // Portfolio Accounts (mock investor snippet) — each strategy stands in for an
+  // "account" with its holdings value (AUM) and a performance figure for the
+  // selected horizon. 1D ← dayPnl as % of AUM; YTD ← strategy.ytd; MTD has no
+  // seed field yet → null ("—"). The genuine per-investor list (≈3,000
+  // investors with their own holdings + returns) wires in the data phase.
+  const mockAccountRows = useMemo<PortfolioAccountRow[]>(() => {
+    return strategies.map((s) => {
+      const perf =
+        accountsHorizon === "YTD"
+          ? s.ytd
+          : accountsHorizon === "1D"
+            ? s.aum > 0
+              ? (s.dayPnl / s.aum) * 100
+              : null
+            : null; // MTD — no month-to-date field on the seed yet
+      return {
+        name: s.name,
+        sublabel: `${s.manager} · ${s.investorCount} investors`,
+        holdings: s.aum,
+        perf,
+      };
+    });
+  }, [strategies, accountsHorizon]);
+
+  // Real-data Portfolio Accounts. The per-investor list (≈3,000 investors with
+  // their own holdings + returns) is a genuine data-phase wire-up — the
+  // client-book BFF only exposes book-level aggregates today, so we render a
+  // SINGLE honest aggregate "book" row from the already-live client-book feed
+  // (AUM, investor / holding counts, and a real performance figure for the
+  // selected horizon) rather than an empty panel. 1D ← dayPnl as % of AUM;
+  // YTD ← ytdPnl as % of AUM; MTD has no month-to-date field yet → null ("—").
+  const realAccountRows = useMemo<PortfolioAccountRow[]>(() => {
+    if (!clientBookAvailable || !clientBook) return [];
+    const aum = clientBook.aum;
+    const perf =
+      accountsHorizon === "YTD"
+        ? aum > 0
+          ? (clientBook.ytdPnl / aum) * 100
+          : null
+        : accountsHorizon === "1D"
+          ? aum > 0
+            ? (clientBook.dayPnl / aum) * 100
+            : null
+          : null; // MTD — no month-to-date field on the client book yet
+    return [
+      {
+        name: "All investors",
+        sublabel: `${clientBook.investors.toLocaleString()} investors · ${clientBook.holdings.toLocaleString()} holdings`,
+        holdings: aum,
+        perf,
+      },
+    ];
+  }, [clientBook, clientBookAvailable, accountsHorizon]);
+
   const intraday = useMemo(() => {
     const base = indices.find((i) => i.code === "J203")?.last ?? 87412;
     return INTRADAY_LABELS.map((label, i) => {
@@ -657,14 +766,21 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   : "Retail client book unavailable"
               }
             />
+            {/*
+              Day P&L — platform-wide, aggregated across ALL strategies for
+              our clients (Lonwabo's tile definition). In real-data mode this
+              is the client-book day P&L (the book IS the all-strategy
+              aggregate); the sub-label calls out the scope, then the as-of
+              timestamp. Honest "—" when the client book is unavailable.
+            */}
             <CockpitKpi
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Day P&L"
               value={clientBookAvailable ? formatZAR(clientBook!.dayPnl) : "—"}
               sub={
                 clientBookAvailable
-                  ? `as of ${clientBook!.asOf ?? "—"}`
-                  : "Retail client book unavailable"
+                  ? `across all strategies · as of ${clientBook!.asOf ?? "—"}`
+                  : "Across all strategies — client book unavailable"
               }
               accent={
                 clientBookAvailable
@@ -744,11 +860,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               value={formatZAR(totalAum)}
               sub={`${strategies.length} strategies · ${liveStrats} live`}
             />
+            {/*
+              Day P&L — platform-wide, summed across ALL strategies
+              (`livePnl` = Σ strategy.dayPnl). The sub-line states the scope
+              plus the aggregate day return so the tile clearly reads as
+              all-strategy, not a single book.
+            */}
             <CockpitKpi
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Day P&L"
               value={formatZAR(livePnl)}
-              sub={formatPct((livePnl / (totalAum || 1)) * 100, 3)}
+              sub={`across all ${strategies.length} strategies · ${formatPct((livePnl / (totalAum || 1)) * 100, 3)}`}
               accent={livePnl >= 0 ? "positive" : "negative"}
             />
             <CockpitKpi
@@ -796,56 +918,24 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             // Heatmap computed from JSE constituents (securities_c), not the
             // official J2xx index families — these need TimeSeriesGet2.
             <GlassSection
-              title="Sector Heatmap"
+              title="Sector Allocation"
               endpoint="GET /api/equities"
               dataSource="supabase"
               noPadding
               className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
               right={
-                <span className="text-caption font-mono">computed from JSE constituents (not official J2xx indices)</span>
+                <span className="text-caption font-mono">size = market cap · colour = day move</span>
               }
             >
-              <GlassScrollBody>
-              <ul role="list" className="divide-y divide-[hsl(var(--glass-border))]/60">
-                {[...(equitiesData?.sectors ?? [])]
-                  .sort((a, b) => b.avgChangePct - a.avgChangePct)
-                  .map((s) => {
-                    const up = s.avgChangePct > 0;
-                    const down = s.avgChangePct < 0;
-                    const tone = up ? "text-up" : down ? "text-down" : "text-muted-foreground";
-                    return (
-                      <li
-                        key={s.sector}
-                        className="group flex items-center gap-3 px-3 py-1.5 transition-colors hover:bg-muted/30"
-                        title={`${s.sector} · ${formatPct(s.avgChangePct)} · ${s.count} constituents`}
-                      >
-                        <span
-                          aria-hidden
-                          className={cn(
-                            "h-1.5 w-1.5 shrink-0 rounded-full",
-                            up ? "bg-up" : down ? "bg-down" : "bg-muted-foreground/50",
-                          )}
-                        />
-                        <span className="flex-1 truncate text-sm font-medium text-foreground/90">
-                          {s.sector}
-                        </span>
-                        <span
-                          className={cn(
-                            "w-16 shrink-0 text-right font-mono text-xs font-semibold tabular-nums",
-                            tone,
-                          )}
-                        >
-                          {formatPct(s.avgChangePct)}
-                        </span>
-                        <span className="w-14 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-                          {s.count}
-                          <span className="ml-1 text-muted-foreground/60">cnt</span>
-                        </span>
-                      </li>
-                    );
-                  })}
-              </ul>
-              </GlassScrollBody>
+              <div className="min-h-0 flex-1 p-3">
+                <SectorTreemap
+                  data={(equitiesData?.sectors ?? []).map((s) => ({
+                    name: s.sector,
+                    weight: s.totalMarketCap || s.count || 1,
+                    change: s.avgChangePct,
+                  }))}
+                />
+              </div>
             </GlassSection>
           ) : (
             // `/api/equities` unavailable — keep the institutional
@@ -868,13 +958,20 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         ) : sectorsQ.isLoading ? (
           <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
         ) : sectorsQ.isError ? (
-          <PanelErrorShell title="Sector Heatmap" className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0" />
+          <PanelErrorShell title="Sector Allocation" className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0" />
         ) : (
-          <SectorHeatmap
-            data={sectors}
+          <GlassSection
+            title="Sector Allocation"
+            endpoint="PricingQuoteGet (sector indices)"
             dataSource="seed"
+            noPadding
             className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
-          />
+            right={<span className="text-caption font-mono">size = weight · colour = day move</span>}
+          >
+            <div className="min-h-0 flex-1 p-3">
+              <SectorTreemap data={sectors.map((s) => ({ name: s.sector, weight: s.weight, change: s.change }))} />
+            </div>
+          </GlassSection>
         )}
 
         {realDataOnly ? (
@@ -1550,83 +1647,38 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
       {/* Row 4: News flash strip + curve move decomposition */}
       <div className="grid grid-cols-12 gap-3">
+        {/*
+          News Flow — sourced from BOTH the Alliance newswire and JSE SENS,
+          with an All / Alliance / SENS source toggle and click-to-expand
+          popups (Dialog) showing the full item. The mock path merges the seed
+          newswire + SENS feeds; the real-data path reads the `/api/news` BFF
+          (live RSS + Alliance wire; paid SENS feed wires in the data phase).
+        */}
         {realDataOnly ? (
-          <GlassSection
-            title="News Flow · Latest"
-            endpoint="GET /api/news"
-            dataSource={(newsBffQ.data?.items?.length ?? 0) > 0 ? "supabase" : "unconfigured"}
-            noPadding
-            className="col-span-12 lg:col-span-8 flex h-[260px] flex-col min-h-0"
-            right={<span className="text-caption font-mono">{newsBffQ.data?.sourceLabel ?? "RSS"}</span>}
-          >
-            {newsBffQ.isLoading ? (
-              <div className="p-5"><PanelSkeleton rows={5} /></div>
-            ) : (newsBffQ.data?.items?.length ?? 0) === 0 ? (
-              <div className="p-5">
-              <EmptyDataState
-                message="No news items right now."
-                hint="Live RSS (Moneyweb / BusinessTech) + Alliance wire. Official JSE SENS regulatory announcements still require the paid web feed."
-              />
-              </div>
-            ) : (
-              <GlassScrollBody>
-              <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
-                {newsBffQ.data!.items.slice(0, 6).map((n) => (
-                  <li key={n.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-muted/30">
-                    <div className="flex-1 min-w-0">
-                      {n.url ? (
-                        <a href={n.url} target="_blank" rel="noopener noreferrer" className="text-xs font-medium leading-snug hover:underline">
-                          {n.headline}
-                        </a>
-                      ) : (
-                        <p className="text-xs font-medium leading-snug">{n.headline}</p>
-                      )}
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 font-mono text-[9.5px] text-muted-foreground">
-                        <span>{formatTime(n.ts)}</span>
-                        <span className="text-muted-foreground/50">·</span>
-                        <Pill tone="neutral" size="xs">{n.source}</Pill>
-                        {n.tickers.slice(0, 3).map((t) => (
-                          <span key={t} className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">{t}</span>
-                        ))}
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              </GlassScrollBody>
-            )}
-          </GlassSection>
-        ) : newsQ.isLoading ? (
+          newsBffQ.isLoading ? (
+            <PanelSkeleton rows={5} height="h-[260px]" className="col-span-12 lg:col-span-8" />
+          ) : (
+            <CockpitNewsFlow
+              items={realNewsFlow}
+              title="News Flow"
+              endpoint="GET /api/news"
+              dataSource={realNewsFlow.length > 0 ? "supabase" : "unconfigured"}
+              sourceLabel={newsBffQ.data?.sourceLabel ?? "RSS + Alliance"}
+              emptyMessage="No news items right now."
+              emptyHint="Live RSS (Moneyweb / BusinessTech) + Alliance wire. Official JSE SENS regulatory announcements still require the paid web feed."
+              className="col-span-12 lg:col-span-8"
+            />
+          )
+        ) : newsQ.isLoading || sensQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[260px]" className="col-span-12 lg:col-span-8" />
         ) : (
-          <GlassSection
-            title="News Flow · Last 60 min"
-            endpoint="WS /v1/news/stream"
-            noPadding
-            className="col-span-12 lg:col-span-8 flex h-[260px] flex-col min-h-0"
-          >
-            <GlassScrollBody>
-            <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
-              {news.slice(0, 5).map((n) => (
-                <li key={n.id} className="flex items-start gap-3 px-3 py-2.5 hover:bg-muted/30">
-                  {n.priority === "high" && <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-destructive" />}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium leading-snug">{n.headline}</p>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 font-mono text-[9.5px] text-muted-foreground">
-                      <span>{formatTime(n.ts)}</span>
-                      <span className="text-muted-foreground/50">·</span>
-                      <Pill tone="neutral" size="xs">{n.source}</Pill>
-                      <Pill tone="neutral" size="xs">{n.category}</Pill>
-                      {n.tickers.map((t) => (
-                        <span key={t} className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">{t}</span>
-                      ))}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            </GlassScrollBody>
-          </GlassSection>
+          <CockpitNewsFlow
+            items={mockNewsFlow}
+            title="News Flow"
+            endpoint="WS /v1/news/stream + SENS"
+            dataSource="seed"
+            className="col-span-12 lg:col-span-8"
+          />
         )}
 
         <GlassSection
@@ -1684,14 +1736,73 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         </GlassSection>
       </div>
 
-      {/* Row 4: Portfolio (IPS) — accounts + positions, only on real-data */}
+      {/* Row 5: Portfolio Accounts — investor snippet (name + holdings +
+          performance) with a 1D / MTD / YTD horizon toggle defaulting to YTD.
+          Mock mode derives rows from the strategy seed (one row per strategy);
+          real-data mode renders a single aggregate "book" row from the live
+          client-book feed (AUM + investor/holding counts + real horizon
+          performance) and falls back to an honest empty state when that feed
+          is unconfigured. The per-investor ≈3,000-row breakdown is a
+          data-phase wire-up — we never fabricate investor numbers. */}
+      <div className="grid grid-cols-12 gap-3">
+        <CockpitPortfolioAccounts
+          rows={realDataOnly ? realAccountRows : mockAccountRows}
+          horizon={accountsHorizon}
+          onHorizonChange={setAccountsHorizon}
+          dataSource={realDataOnly ? (clientBookAvailable ? "supabase" : "unconfigured") : "seed"}
+          endpoint={realDataOnly ? "GET /api/client-book" : "Investors view (seed)"}
+          // Mock mode shows strategies as investor stand-ins; tag each row
+          // "strategy" so the list isn't mistaken for the real per-investor
+          // book. Real-data mode shows one genuine "All investors" aggregate
+          // row from the live client book.
+          rowTag={realDataOnly ? undefined : "strategy"}
+          note={
+            realDataOnly
+              ? clientBookAvailable && clientBook
+                ? `Book-level aggregate. Per-investor breakdown (≈${clientBook.investors.toLocaleString()} investors) wires in the data phase.`
+                : undefined
+              : "Showing strategies as stand-ins — per-investor list wires in the data phase."
+          }
+          emptyMessage={
+            realDataOnly
+              ? "Per-investor holdings + returns wire in the data phase from the client book (≈3,000 investors). The aggregate AUM / Day P&L tiles above are already live."
+              : undefined
+          }
+          className="col-span-12 lg:col-span-6"
+        />
+        <div className="col-span-12 lg:col-span-6 glass-panel flex flex-col justify-center gap-2 p-6">
+          <p className="text-caption">Full Investors View</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            The snippet beside this lists investors with their holdings value
+            and performance over the selected horizon (1D / MTD / YTD, default
+            YTD). The complete per-investor breakdown opens in the Clients
+            workspace.
+          </p>
+          <Link
+            href="/admin/clients"
+            className="mt-1 inline-flex w-fit items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+          >
+            Open Investors
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </Link>
+          {/* MTD performance is deferred — neither the strategy seed nor the
+              client-book aggregate carries a month-to-date figure today;
+              month-to-date wires with the period-returns worker in the data
+              phase. */}
+          <p className="mt-1 font-mono text-[10.5px] text-muted-foreground/70">
+            MTD column shows &quot;—&quot; until the period-returns worker lands.
+          </p>
+        </div>
+      </div>
+
+      {/* Row 6: Portfolio (IPS) — accounts + positions, only on real-data */}
       {realDataOnly && (
         <div className="grid grid-cols-12 gap-3">
           {portfolioQ.isLoading ? (
             <PanelSkeleton rows={5} height="h-[340px]" className="col-span-12 lg:col-span-4" />
           ) : (
             <GlassSection
-              title="Portfolio · Accounts"
+              title="Portfolio · IPS Accounts"
               endpoint="GET /api/portfolio"
               dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
               noPadding

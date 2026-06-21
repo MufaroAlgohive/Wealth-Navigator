@@ -101,7 +101,7 @@ export async function GET(req: Request) {
       const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) : costCents / 100;
       const valueCents = qty * Math.round(liveRands * 100);
       const investedCents = qty * costCents;
-      return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };
+      return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };
     }).sort((a, b) => b.valueCents - a.valueCents);
 
     return NextResponse.json({

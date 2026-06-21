@@ -208,7 +208,10 @@ export function StrategiesMonitor() {
           />
         </GlassSection>
       ) : (
-        <div className="grid grid-cols-12 gap-3">
+        /* Lonwabo: list column scrolls; detail column is pinned (position:sticky in
+           StrategyDetail). `items-start` lets the sticky child stick rather than
+           stretch to the row height of the (taller) list column. */
+        <div className="grid grid-cols-12 items-start gap-3">
           <div className="col-span-12 space-y-2 lg:col-span-5">
             {strategies.map((s) => (
               <StrategyCard key={s.id} s={s} active={selected === s.id} onSelect={() => setSelected(s.id)} />
@@ -311,7 +314,10 @@ function Stat({ label, value, positive }: { label: string; value: string; positi
 function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
   const rebal = strategy.status === "live" && strategy.investorCount > 0;
   return (
-    <div className="col-span-12 space-y-3 lg:col-span-7">
+    /* Sticky on lg+ so the detail panel stays in view while the strategy list
+       column scrolls (Lonwabo). top-4 clears the page padding; on mobile the
+       columns stack so sticky is disabled to avoid an awkward pin. */
+    <div className="col-span-12 space-y-3 self-start lg:sticky lg:top-4 lg:col-span-7">
       <GlassSection
         title={`${strategy.name} · detail`}
         endpoint={`oems_strategy_c[${strategy.id}]`}

@@ -9,9 +9,11 @@ import {
   ExternalLink,
   FlaskConical,
   History,
+  NotebookPen,
   RefreshCw,
   Scale,
   Search,
+  Send,
   UserCircle2,
 } from "lucide-react";
 
@@ -36,13 +38,18 @@ import {
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { HoldingsTable } from "@/components/research-lab/holdings-table";
+import { RemovableHoldingsTable } from "@/components/research-lab/removable-holdings-table";
 import { FundamentalsMatrix } from "@/components/research-lab/fundamentals-matrix";
-import { SectorExposureChart, SectorCompareCharts } from "@/components/research-lab/sector-exposure-chart";
-import { AllocationDonut } from "@/components/research-lab/allocation-donut";
-import { HoldingsWeightChart } from "@/components/research-lab/holdings-weight-chart";
-import { CashInvestedBar } from "@/components/research-lab/cash-invested-bar";
+import { BasketSummaryBar } from "@/components/research-lab/basket-summary-bar";
+import { BasketCompare } from "@/components/research-lab/basket-compare";
+import { AiResearch } from "@/components/research-lab/ai-research";
+import {
+  ResearchWishlist,
+  SecurityResearchDialog,
+  hasResearch,
+  type SecurityResearch,
+} from "@/components/research-lab/security-research";
 import { FundamentalsChart, VerdictStrip } from "@/components/research-lab/fundamentals-chart";
-import { DeltaComparisonChart } from "@/components/research-lab/delta-comparison-chart";
 import {
   ProposalWorkflowDialog,
   type ProposalWorkflowOpen,
@@ -79,7 +86,13 @@ export function ResearchLabPage() {
   const [sessionProposals, setSessionProposals] = useState<Record<string, SessionProposal[]>>({});
   const [workflowOpen, setWorkflowOpen] = useState(false);
   const [workflowInitial, setWorkflowInitial] = useState<ProposalWorkflowOpen | null>(null);
-  const [activeTab, setActiveTab] = useState<"before" | "proposed">("before");
+  const [activeTab, setActiveTab] = useState<"composition" | "fundamentals" | "ai">("composition");
+
+  // Item 7 — per-security research, keyed by ticker. Session state only; a
+  // desk-wide `security_research` table is the data phase.
+  const [securityResearch, setSecurityResearch] = useState<Record<string, SecurityResearch>>({});
+  const [researchOpen, setResearchOpen] = useState(false);
+  const [researchTarget, setResearchTarget] = useState<{ ticker: string; name: string } | null>(null);
 
   const listQ = useQuery<{ strategies: ResearchLabListItem[]; source: string }>({
     queryKey: ["bff-research-lab-list"],
@@ -133,6 +146,22 @@ export function ResearchLabPage() {
 
   const proposalsForStrategy = sessionProposals[strategyId] ?? [];
   const submittedProposals = proposalsForStrategy.filter((p) => p.status === "submitted");
+  const draftProposals = proposalsForStrategy.filter((p) => p.status === "draft");
+
+  const researchedTickers = useMemo(
+    () =>
+      new Set(
+        Object.values(securityResearch)
+          .filter(hasResearch)
+          .map((r) => r.ticker),
+      ),
+    [securityResearch],
+  );
+  const ratingFor = useCallback(
+    (ticker: string) => securityResearch[ticker]?.rating ?? null,
+    [securityResearch],
+  );
+  const researchList = useMemo(() => Object.values(securityResearch), [securityResearch]);
 
   const openWorkflow = useCallback((initial: ProposalWorkflowOpen) => {
     setWorkflowInitial(initial);
@@ -145,7 +174,7 @@ export function ResearchLabPage() {
         ...prev,
         [strategyId]: [...(prev[strategyId] ?? []), proposal],
       }));
-      setActiveTab("proposed");
+      setActiveTab("composition");
     },
     [strategyId],
   );
@@ -159,6 +188,87 @@ export function ResearchLabPage() {
     },
     [strategyId],
   );
+
+  // Item 3 — remove a single constituent (one-by-one). Creates a draft remove
+  // proposal for the full position; the proposed basket recomputes live. Toggle
+  // off if the same removal is already queued.
+  const removeOneConstituent = useCallback(
+    (row: { ticker: string; name: string; shares: number }) => {
+      setSessionProposals((prev) => {
+        const list = prev[strategyId] ?? [];
+        const existingIdx = list.findIndex(
+          (p) => p.action === "remove" && p.ticker === row.ticker,
+        );
+        if (existingIdx >= 0) {
+          return { ...prev, [strategyId]: list.filter((_, i) => i !== existingIdx) };
+        }
+        const proposal: SessionProposal = {
+          id: crypto.randomUUID(),
+          action: "remove",
+          ticker: row.ticker,
+          name: row.name,
+          shares: row.shares,
+          thesis: "Removed from basket via composition editor.",
+          saleTrigger: "Pending committee review.",
+          status: "draft",
+          createdAt: new Date().toISOString(),
+        };
+        return { ...prev, [strategyId]: [...list, proposal] };
+      });
+    },
+    [strategyId],
+  );
+
+  // Item 3 (extended) — inline-edit the share count of an existing constituent
+  // ("move this to 22 shares"). Encodes the new TOTAL as one delta proposal from
+  // the published base, replacing any prior add/remove for that ticker so the
+  // session list stays one-proposal-per-edit; the proposed basket recomputes live.
+  const setConstituentShares = useCallback(
+    (row: { ticker: string; name: string }, target: number) => {
+      const baseShares = labQ.data?.current?.holdings.find((h) => h.ticker === row.ticker)?.shares ?? 0;
+      const t = Math.max(0, Math.round(target));
+      setSessionProposals((prev) => {
+        const list = (prev[strategyId] ?? []).filter((p) => p.ticker !== row.ticker);
+        if (t === baseShares) return { ...prev, [strategyId]: list };
+        const delta = t - baseShares;
+        const proposal: SessionProposal = {
+          id: crypto.randomUUID(),
+          action: delta > 0 ? "add" : "remove",
+          ticker: row.ticker,
+          name: row.name,
+          shares: Math.abs(delta),
+          thesis: `Adjusted to ${t} shares via composition editor.`,
+          saleTrigger: delta < 0 ? "Trim pending committee review." : "Add pending committee review.",
+          status: "draft",
+          createdAt: new Date().toISOString(),
+        };
+        return { ...prev, [strategyId]: [...list, proposal] };
+      });
+    },
+    [strategyId, labQ.data],
+  );
+
+  // Item 8 — promote every draft proposal to "submitted", routing the proposed
+  // basket into the committee approval queue. Persistence ties into the
+  // /compliance Approvals queue in the data phase.
+  const submitForApproval = useCallback(() => {
+    setSessionProposals((prev) => ({
+      ...prev,
+      [strategyId]: (prev[strategyId] ?? []).map((p) =>
+        p.status === "draft" ? { ...p, status: "submitted" as const } : p,
+      ),
+    }));
+  }, [strategyId]);
+
+  // Item 7 — research dialog open / save.
+  const openResearch = useCallback((ticker: string, name: string) => {
+    setResearchTarget({ ticker, name });
+    setResearchOpen(true);
+  }, []);
+
+  const saveResearch = useCallback((research: SecurityResearch) => {
+    setSecurityResearch((prev) => ({ ...prev, [research.ticker]: research }));
+  }, []);
 
   const strategies = listQ.data?.strategies ?? [];
   const payload = labQ.data;
@@ -239,7 +349,14 @@ export function ResearchLabPage() {
         }
       : dbProposed;
 
-  const hasProposedView = Boolean(proposed);
+  // The proposed side always renders so the side-by-side comparison is present
+  // even before any edit — it simply mirrors the current basket until the
+  // analyst adds/removes a constituent, at which point it recomputes live.
+  const proposedSide = proposed ?? current ?? {
+    holdings: [],
+    totals: { constituent: 0, cash: 0, cashPct: 0, basketMin: 0 },
+    sectors: [],
+  };
 
   return (
     <ResearchLabCanvas>
@@ -248,9 +365,10 @@ export function ResearchLabPage() {
         <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
         <div className="relative flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1 space-y-4">
+            {/* Item 1 — brand label capitalised: "MINT" not "mint". */}
             <GlassBadge tone="primary">
               <FlaskConical className="h-3.5 w-3.5" />
-              Strategy research hub
+              MINT Research Lab
             </GlassBadge>
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-display">{selectedName}</h1>
@@ -365,62 +483,96 @@ export function ResearchLabPage() {
 
       {current && (
         <>
-          <CashInvestedBar totals={current.totals} />
+          {/* Item 2 — sticky resulting-basket-weight summary. Reflects the
+              proposed basket (live recompute) so the running totals stay
+              visible while the holdings lists scroll. */}
+          <BasketSummaryBar
+            totals={proposedSide.totals}
+            constituentCount={proposedSide.holdings.length}
+            pendingCount={proposalsForStrategy.length}
+          />
 
-          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "before" | "proposed")} className="space-y-4">
+          <Tabs
+            value={activeTab}
+            onValueChange={(v) => setActiveTab(v as "composition" | "fundamentals" | "ai")}
+            className="space-y-4"
+          >
             <TabsList className="glass-inset h-auto gap-1 p-1">
               <TabsTrigger
-                value="before"
+                value="composition"
                 className="rounded-lg px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-[0_2px_12px_hsl(var(--primary)/0.35)]"
               >
-                Current composition
+                Composition
               </TabsTrigger>
+              {/* Item 6 — Fundamentals is its own tab so the user doesn't scroll
+                  through everything; research candidates are divided from the
+                  basket constituents by a line inside it. */}
               <TabsTrigger
-                value="proposed"
-                className="rounded-lg px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground disabled:opacity-40"
-                disabled={!hasProposedView}
+                value="fundamentals"
+                className="rounded-lg px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
               >
-                Proposed
-                {hasProposedView && (
-                  <span className="ml-2 rounded-full bg-warning/20 px-2 py-0.5 text-xs text-warning">
-                    {proposalsForStrategy.length > 0
-                      ? proposalsForStrategy.length
-                      : proposed?.holdings.filter((h) => h.pending).length}
-                  </span>
-                )}
+                Fundamentals
+              </TabsTrigger>
+              {/* AI Research — LLM-assisted outlook per security (GET /api/research-ai). */}
+              <TabsTrigger
+                value="ai"
+                className="rounded-lg px-4 py-2 text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground"
+              >
+                AI Research
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="before" className="mt-0 space-y-4">
-              <GlassSection
-                title="Holdings"
-                subtitle={`${meta?.asOf ?? "—"} · live marks`}
-                endpoint="strategies_c + securities_c"
-                dataSource={panelSource}
-                noPadding
-                right={
-                  <div className="flex flex-wrap items-center gap-2">
-                    <ProposalActionBar
-                      onAdd={() => openWorkflow({ action: "add" })}
-                      onRemove={() => openWorkflow({ action: "remove" })}
-                      proposalCount={proposalsForStrategy.length}
-                    />
-                    <GlassBadge>{meta?.benchmark}</GlassBadge>
-                    {payload?.iressOverlay ? (
-                      <GlassBadge tone="success">{payload.iressOverlay} IRESS</GlassBadge>
-                    ) : null}
-                  </div>
-                }
-              >
-                {current.holdings.length === 0 ? (
+            {/* ── Composition tab ───────────────────────────────────────── */}
+            <TabsContent value="composition" className="mt-0 space-y-4">
+              {current.holdings.length === 0 ? (
+                <GlassSection title="Holdings" dataSource={panelSource}>
                   <EmptyDataState
                     message="No published holdings for this strategy."
                     hint="holdings JSON on strategies_c is empty."
                     badgeLabel="unconfigured"
                   />
-                ) : (
-                  <div className="grid grid-cols-1 gap-6 p-5 xl:grid-cols-12">
-                    <div className="xl:col-span-7">
+                </GlassSection>
+              ) : (
+                <GlassSection
+                  title="Basket composition"
+                  subtitle={`${meta?.asOf ?? "—"} · live marks · edit the proposed basket, then submit for approval`}
+                  endpoint="strategies_c + securities_c"
+                  dataSource={panelSource}
+                  right={
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* Items 3 + 8 — propose changes (add via wizard, remove
+                          one-by-one inline) then route them for sign-off. */}
+                      <ProposalActionBar
+                        onAdd={() => openWorkflow({ action: "add" })}
+                        onRemove={() => openWorkflow({ action: "remove" })}
+                        proposalCount={proposalsForStrategy.length}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="glass-inset gap-1.5 border-0"
+                        disabled={draftProposals.length === 0}
+                        onClick={submitForApproval}
+                      >
+                        <Send className="h-4 w-4" />
+                        Submit for approval
+                      </Button>
+                      <GlassBadge>{meta?.benchmark}</GlassBadge>
+                      {payload?.iressOverlay ? (
+                        <GlassBadge tone="success">{payload.iressOverlay} IRESS</GlassBadge>
+                      ) : null}
+                    </div>
+                  }
+                >
+                  {/* Item 4 — current vs proposed SIDE-BY-SIDE with live totals
+                      and a chart (twin pies, item 5) under each. The proposed
+                      table removes constituents one-by-one (item 3) and shows a
+                      research tick + clickable thesis per name (item 7). */}
+                  <BasketCompare
+                    current={current}
+                    proposed={proposedSide}
+                    currentTable={
                       <HoldingsTable
                         rows={current.holdings}
                         constituentTotal={current.totals.constituent}
@@ -428,206 +580,59 @@ export function ResearchLabPage() {
                         cashPct={current.totals.cashPct}
                         basketMin={current.totals.basketMin}
                       />
-                    </div>
-                    <div className="space-y-5 xl:col-span-5">
-                      <div className="glass-inset p-4">
-                        <AllocationDonut holdings={current.holdings} totals={current.totals} />
-                      </div>
-                      <div className="glass-inset p-4">
-                        <HoldingsWeightChart holdings={current.holdings} />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </GlassSection>
-
-              <GlassSection title="Sector exposure" dataSource={panelSource}>
-                {current.sectors.length > 0 ? (
-                  <SectorExposureChart title="Current allocation" data={current.sectors} variant="both" />
-                ) : (
-                  <EmptyDataState message="No sector weights to display." badgeLabel="unconfigured" />
-                )}
-              </GlassSection>
-            </TabsContent>
-
-            <TabsContent value="proposed" className="mt-0 space-y-4">
-              {proposed ? (
-                <>
-                  {proposalsForStrategy.length > 0 && (
-                    <GlassSection
-                      title="Session proposals"
-                      subtitle="Strategist workflow · not yet persisted"
-                      endpoint="research_workflow"
-                      dataSource="code-gap"
-                    >
-                      <SessionProposalsList proposals={proposalsForStrategy} onRemove={removeProposal} />
-                    </GlassSection>
-                  )}
-                  <GlassSection
-                    title="Proposed holdings"
-                    subtitle={
-                      proposalsForStrategy.length > 0
-                        ? "Projected from session proposals + live marks"
-                        : "Pending flags from strategies_c"
                     }
-                    endpoint={proposalsForStrategy.length > 0 ? "session" : "strategies_c"}
-                    dataSource={proposalsForStrategy.length > 0 ? "code-gap" : panelSource}
-                    noPadding
-                  >
-                    <div className="grid grid-cols-1 gap-6 p-5 xl:grid-cols-12">
-                      <div className="xl:col-span-7">
-                        <HoldingsTable
-                          rows={proposed.holdings}
-                          constituentTotal={proposed.totals.constituent}
-                          cash={proposed.totals.cash}
-                          cashPct={proposed.totals.cashPct}
-                          basketMin={proposed.totals.basketMin}
-                          showRating
-                          cashLabel={`Cash reserve (${proposed.totals.cashPct.toFixed(1)}%)`}
-                        />
-                      </div>
-                      <div className="space-y-5 xl:col-span-5">
-                        <div className="glass-inset p-4">
-                          <AllocationDonut
-                            holdings={proposed.holdings}
-                            totals={proposed.totals}
-                            title="Proposed allocation"
-                          />
-                        </div>
-                        <div className="glass-inset p-4">
-                          <HoldingsWeightChart holdings={proposed.holdings} title="Proposed weights" />
-                        </div>
-                      </div>
-                    </div>
-                  </GlassSection>
+                    proposedTable={
+                      <RemovableHoldingsTable
+                        rows={proposedSide.holdings}
+                        constituentTotal={proposedSide.totals.constituent}
+                        cash={proposedSide.totals.cash}
+                        cashPct={proposedSide.totals.cashPct}
+                        basketMin={proposedSide.totals.basketMin}
+                        researchedTickers={researchedTickers}
+                        ratingFor={ratingFor}
+                        onOpenResearch={openResearch}
+                        onRemoveOne={removeOneConstituent}
+                        onSetShares={setConstituentShares}
+                        cashLabel={`Cash reserve (${proposedSide.totals.cashPct.toFixed(1)}%)`}
+                      />
+                    }
+                  />
+                </GlassSection>
+              )}
 
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <DeltaComparisonChart
-                      label="Constituent value"
-                      current={current.totals.constituent}
-                      proposed={proposed.totals.constituent}
-                    />
-                    <DeltaComparisonChart
-                      label="Basket minimum price"
-                      current={current.totals.basketMin}
-                      proposed={proposed.totals.basketMin}
-                    />
-                  </div>
-
-                  <GlassSection title="Sector shift" dataSource={panelSource}>
-                    <SectorCompareCharts before={current.sectors} after={proposed.sectors} />
-                  </GlassSection>
-                </>
-              ) : (
-                <GlassSection title="Proposed changes" dataSource="code-gap">
-                  <div className="space-y-4">
-                    <ProposalActionBar
-                      onAdd={() => openWorkflow({ action: "add" })}
-                      onRemove={() => openWorkflow({ action: "remove" })}
-                      proposalCount={0}
-                    />
-                    <EmptyDataState
-                      message="No pending changes on this strategy."
-                      hint="Use Add stock or Remove stock to propose a change with investment thesis and impact preview."
-                      badgeLabel="unconfigured"
-                    />
+              {/* Session proposals + Submit for approval (items 3, 8) */}
+              {proposalsForStrategy.length > 0 && (
+                <GlassSection
+                  title="Session proposals"
+                  subtitle="Strategist workflow · not yet persisted"
+                  endpoint="research_workflow"
+                  dataSource="code-gap"
+                  right={
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="gap-1.5 bg-primary text-primary-foreground shadow-[0_2px_12px_hsl(var(--primary)/0.35)] hover:bg-primary/90"
+                      disabled={draftProposals.length === 0}
+                      onClick={submitForApproval}
+                    >
+                      <Send className="h-4 w-4" />
+                      Submit {draftProposals.length > 0 ? `${draftProposals.length} ` : ""}for approval
+                    </Button>
+                  }
+                >
+                  <div className="space-y-3">
+                    <SessionProposalsList proposals={proposalsForStrategy} onRemove={removeProposal} />
+                    <p className="text-caption">
+                      Nothing takes effect until the Head of Investments signs off — submitting routes the
+                      proposed basket into the committee approval queue below (wires into the /compliance
+                      Approvals queue in the data phase).
+                    </p>
                   </div>
                 </GlassSection>
               )}
-            </TabsContent>
-          </Tabs>
 
-          <GlassSection
-            title="Compare candidates"
-            subtitle="Search the JSE universe"
-            endpoint="securities_c"
-            dataSource="supabase"
-          >
-            <div className="space-y-4">
-              <div className="relative max-w-lg">
-                <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder="Ticker or company name…"
-                  value={compareQ}
-                  onChange={(e) => setCompareQ(e.target.value)}
-                  className="glass-inset h-11 border-0 pl-10 text-sm shadow-none"
-                />
-              </div>
-              {compareCandidates.length > 0 && (
-                <ul className="glass-inset max-w-lg divide-y divide-[hsl(var(--glass-border))] overflow-hidden">
-                  {compareCandidates.map((c) => (
-                    <li key={c.ticker}>
-                      <button
-                        type="button"
-                        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm transition-colors hover:bg-[hsl(var(--primary)/0.06)]"
-                        onClick={() => {
-                          if (!extraTickers.includes(c.ticker) && !matrixTickers.includes(c.ticker)) {
-                            setExtraTickers((prev) => [...prev, c.ticker]);
-                          }
-                          setCompareQ("");
-                        }}
-                      >
-                        <span>
-                          <span className="font-semibold text-primary">{c.ticker}</span>
-                          <span className="ml-2 text-muted-foreground">{c.name}</span>
-                        </span>
-                        <ChevronDown className="h-3 w-3 rotate-[-90deg] text-muted-foreground" />
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {extraTickers.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {extraTickers.map((t) => (
-                    <GlassBadge key={t}>
-                      <button
-                        type="button"
-                        className="flex items-center gap-1"
-                        onClick={() => setExtraTickers((p) => p.filter((x) => x !== t))}
-                      >
-                        {t} ×
-                      </button>
-                    </GlassBadge>
-                  ))}
-                </div>
-              )}
-              <p className="text-caption">
-                Comparison columns are session-only. Open any name in Security for full L1 + fundamentals.
-              </p>
-            </div>
-          </GlassSection>
-
-          <GlassSection
-            title="Fundamentals"
-            subtitle="Yahoo securities_c + model heuristics"
-            endpoint="securities_c"
-            dataSource={panelSource}
-          >
-            <div className="space-y-4">
-              <VerdictStrip tickers={matrixTickers} metrics={payload?.fundamentals ?? []} />
-              <FundamentalsChart tickers={matrixTickers} metrics={payload?.fundamentals ?? []} />
-              <FundamentalsMatrix metrics={payload?.fundamentals ?? []} tickers={matrixTickers} />
-            </div>
-            {payload?.gaps.map((g) => (
-              <p key={g} className="mt-4 text-caption leading-relaxed">
-                {g}
-              </p>
-            ))}
-            <div className="mt-4 flex flex-wrap gap-2">
-              {matrixTickers.map((t) => (
-                <Link
-                  key={t}
-                  href={`/oems/security?sym=${t}`}
-                  className="glass-inset inline-flex items-center gap-1.5 px-3 py-1.5 font-mono text-xs text-primary transition-colors hover:border-[hsl(var(--glass-border-strong))]"
-                >
-                  {t} <ExternalLink className="h-3 w-3" />
-                </Link>
-              ))}
-            </div>
-          </GlassSection>
-
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              {/* Committee approval workflow (item 8) + audit log */}
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <GlassSection
               title="Committee approvals"
               subtitle="Pending change requests"
@@ -710,9 +715,151 @@ export function ResearchLabPage() {
                 />
               )}
             </GlassSection>
-          </div>
+              </div>
+            </TabsContent>
+
+            {/* ── Fundamentals tab (item 6) ─────────────────────────────── */}
+            <TabsContent value="fundamentals" className="mt-0 space-y-4">
+              {/* Per-security research shortlist / "wish list" (item 7) */}
+              <GlassSection
+                title="Research shortlist"
+                subtitle="Notes + buy/sell rating per security — desk-wide wish list"
+                endpoint="security_research"
+                dataSource="code-gap"
+                right={
+                  <GlassBadge>
+                    <NotebookPen className="h-3 w-3" />
+                    {researchedTickers.size} researched
+                  </GlassBadge>
+                }
+              >
+                <ResearchWishlist research={researchList} onOpen={openResearch} />
+              </GlassSection>
+
+              <GlassSection
+                title="Fundamentals"
+                subtitle="Basket constituents, then research candidates below the line"
+                endpoint="securities_c"
+                dataSource={panelSource}
+              >
+                <div className="space-y-4">
+                  <VerdictStrip tickers={current.holdings.map((h) => h.ticker)} metrics={payload?.fundamentals ?? []} />
+                  <FundamentalsChart
+                    tickers={current.holdings.map((h) => h.ticker)}
+                    metrics={payload?.fundamentals ?? []}
+                  />
+                  <FundamentalsMatrix
+                    metrics={payload?.fundamentals ?? []}
+                    tickers={current.holdings.map((h) => h.ticker)}
+                  />
+                </div>
+
+                {/* Item 6 — divider between current basket constituents (above)
+                    and research candidates pulled from the universe (below). */}
+                <div className="my-6 flex items-center gap-3">
+                  <span className="h-px flex-1 bg-[hsl(var(--glass-border-strong))]" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Research candidates
+                  </span>
+                  <span className="h-px flex-1 bg-[hsl(var(--glass-border-strong))]" />
+                </div>
+
+                <div className="space-y-4">
+                  <div className="relative max-w-lg">
+                    <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search JSE universe — ticker or company name…"
+                      value={compareQ}
+                      onChange={(e) => setCompareQ(e.target.value)}
+                      className="glass-inset h-11 border-0 pl-10 text-sm shadow-none"
+                    />
+                  </div>
+                  {compareCandidates.length > 0 && (
+                    <ul className="glass-inset max-w-lg divide-y divide-[hsl(var(--glass-border))] overflow-hidden">
+                      {compareCandidates.map((c) => (
+                        <li key={c.ticker}>
+                          <button
+                            type="button"
+                            className="flex w-full items-center justify-between px-4 py-3 text-left text-sm transition-colors hover:bg-[hsl(var(--primary)/0.06)]"
+                            onClick={() => {
+                              if (!extraTickers.includes(c.ticker) && !matrixTickers.includes(c.ticker)) {
+                                setExtraTickers((prev) => [...prev, c.ticker]);
+                              }
+                              setCompareQ("");
+                            }}
+                          >
+                            <span>
+                              <span className="font-semibold text-primary">{c.ticker}</span>
+                              <span className="ml-2 text-muted-foreground">{c.name}</span>
+                            </span>
+                            <ChevronDown className="h-3 w-3 rotate-[-90deg] text-muted-foreground" />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {extraTickers.length > 0 ? (
+                    <>
+                      <div className="flex flex-wrap gap-1.5">
+                        {extraTickers.map((t) => (
+                          <GlassBadge key={t}>
+                            <button
+                              type="button"
+                              className="flex items-center gap-1"
+                              onClick={() => setExtraTickers((p) => p.filter((x) => x !== t))}
+                            >
+                              {t} ×
+                            </button>
+                          </GlassBadge>
+                        ))}
+                      </div>
+                      <VerdictStrip tickers={extraTickers} metrics={payload?.fundamentals ?? []} />
+                      <FundamentalsMatrix metrics={payload?.fundamentals ?? []} tickers={extraTickers} />
+                    </>
+                  ) : (
+                    <p className="text-caption">
+                      Search a candidate to compare it against the basket — session-only. Each name can carry
+                      its own research thesis + buy/sell rating from the shortlist above.
+                    </p>
+                  )}
+                </div>
+
+                {payload?.gaps.map((g) => (
+                  <p key={g} className="mt-4 text-caption leading-relaxed">
+                    {g}
+                  </p>
+                ))}
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {matrixTickers.map((t) => (
+                    <Link
+                      key={t}
+                      href={`/oems/security?sym=${t}`}
+                      className="glass-inset inline-flex items-center gap-1.5 px-3 py-1.5 font-mono text-xs text-primary transition-colors hover:border-[hsl(var(--glass-border-strong))]"
+                    >
+                      {t} <ExternalLink className="h-3 w-3" />
+                    </Link>
+                  ))}
+                </div>
+              </GlassSection>
+            </TabsContent>
+
+            {/* ── AI Research tab ───────────────────────────────────────── */}
+            <TabsContent value="ai" className="mt-0 space-y-4">
+              <AiResearch />
+            </TabsContent>
+          </Tabs>
         </>
       )}
+
+      {/* Item 7 — per-security research dialog (notes + rating). */}
+      <SecurityResearchDialog
+        open={researchOpen}
+        onOpenChange={setResearchOpen}
+        ticker={researchTarget?.ticker ?? null}
+        name={researchTarget?.name ?? ""}
+        existing={researchTarget ? securityResearch[researchTarget.ticker] : undefined}
+        onSave={saveResearch}
+      />
 
       {current && (
         <ProposalWorkflowDialog
