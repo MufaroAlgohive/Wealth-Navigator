@@ -202,7 +202,66 @@ An inline `SIMULATED` tag would be nice-to-have.
 
 ---
 
-## 8. Source-of-truth files
+## 8. Page status — verified / pending / unverified (2026-06-21)
+
+Checked page-by-page against the running dev server in **real-data-default mode
+with no IRESS worker** — so worker-fed feeds are empty/seed locally and populate
+in production. Method: every BFF endpoint probed for HTTP status / source / row
+count, and every page client-rendered and checked for a crash.
+
+**Nothing is broken** — every endpoint returns 200, every page renders without a
+React error. The gaps below are "real path, no data here yet" (worker /
+entitlement / admin auth), not failures.
+
+Legend: ✓ real data · ◑ honest-empty, awaiting worker/entitlement/data · ⚠ unverified · ✗ broken (none found)
+
+### OEMS desk — all render, no crashes
+
+| Page | Endpoint(s) | Local data | Notes |
+|---|---|---|---|
+| Cockpit `/oems` | client-book, orders, equities, curves, indices, news, portfolio, sa-rates, fx | ✓ equities/orders(18)/news/rates · ◑ curves & J203 = seed · ◑ portfolio empty | curves are IRESS in prod, seed-fallback locally |
+| Equities `/oems/equities` | `/api/equities`, `/api/portfolio` | ✓ 246 securities · ◑ portfolio empty | 1M/6M return cols pending TS2 |
+| Curves `/oems/curves` | `/api/curves/*`, `/metrics` | ◑ seed (12 pts); metrics `unavailable` | IRESS-live in prod (YFX/YFXD) |
+| Fixed Income `/oems/fixed-income` | `/api/bonds`, `/api/curves/ZAR_GOVI` | ◑ bonds empty (0); govi history TS2-blocked | IRESS-live in prod |
+| Money Market `/oems/money-market` | `/api/money-market`, `/api/sa-rates` | ✓ SARB rates · ◑ instruments/JIBAR empty | TS2-blocked |
+| Macro `/oems/macro` | `/api/macro`, `/api/sa-rates` | ✓ SARB · ◑ indicators empty | vendor table empty locally |
+| News `/oems/news` | `/api/news` | ✓ RSS wire (5+) | SENS = vendor, not wired |
+| Blotter `/oems/blotter` | `/api/orders`(`/live`) | ✓ 18 orders | live-orders = worker passthrough |
+| Security `/oems/security` | quote-snapshot, intraday, history, equities | ✓ snapshot · ◑ intraday/history empty (no worker) | depth/T&S simulated only under `?mock=1` |
+| Integration `/oems/integration` | `/api/worker-health` | ◑ no worker locally | live in prod |
+| Research Lab `/oems/research-lab` | `/api/research-lab`, `/api/research-ai` | ✓ 9 strategies; AI works (MiniMax-M3) | |
+
+### Portals & settings — all render
+
+| Page | Endpoint(s) | Local data | Notes |
+|---|---|---|---|
+| Strategies `/strategies` | `/api/strategies` | ✓ 9 strategies (real) | the real `StrategiesMonitor` |
+| WM / Strategist / FC / Business / Compliance | PersonaRealDataGate | ◑ honest "Not configured" by default | ⚠ headers show demo identities — see Unsure #4 |
+| Settings `/settings` | `iress.config` + worker-health note | ✓ config real; health = honest note | |
+
+### Admin — render, but data UNVERIFIED
+
+All `/admin/*` pages (dashboard, clients, order-book, factsheets, emailers, team,
+app-settings, investors, eft) render without crashing, but under the session used
+here they show the **auth gate** — the admin BFFs require admin RBAC and returned
+`no-session` (401) both headless and in-browser. ⚠ **Their data rendering needs an
+authenticated admin session to verify — not checked.**
+
+### Unsure / needs attention
+
+1. **Admin page data** — unverified; needs an admin login (the RBAC gate blocked verification here).
+2. **Worker-fed feeds** — live curves, intraday, history, portfolio/IPS accounts, money-market, J203 index, sectors are empty/seed locally because the Railway `iress-ingest` worker isn't running. **Unverified against a live worker**; expected to populate in production once the worker + entitlements are on.
+3. **Curves / indices / sectors badges** — show `IRESS`/`blocked-external` (the *production* source), but locally without the worker the data is a **seed fallback**. The badge is prod-accurate, not local-accurate.
+4. **Persona headers** — wm/strategist/fc/business/compliance data is honest-empty, but `PersonaHeader` still shows a **sample demo identity** from `PERSONA_USERS` (`src/lib/store/session-provider.ts`) — the persona-switcher demo. Product call: keep the demo personas or wire real auth identities. (Not financial data.)
+5. **`/api/history`** — returns "Railway IRESS worker URL not configured" locally → honest-empty; needs `IRESS_WORKER_URL` set in production.
+6. **SENS feed** — not configured; needs a vendor (or a confirmed IRESS news path).
+
+### Not working
+
+None found. Every endpoint returns 200; every page renders without a crash. The
+empties are honest, expected states — not bugs.
+
+## 9. Source-of-truth files
 
 - Supabase clients + DB targeting: `src/lib/supabase/server.ts`
 - Source kinds + badge: `src/components/oems/primitives/data-source-badge.tsx`
