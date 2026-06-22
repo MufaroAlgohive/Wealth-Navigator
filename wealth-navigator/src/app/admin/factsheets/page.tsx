@@ -183,6 +183,7 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
   const [data, setData] = React.useState<{ strategy: Strategy; returns: ReturnRow[]; securities: Record<string, Sec> } | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   const [year, setYear] = React.useState<number | null>(null);
+  const [reserveRate, setReserveRate] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     (async () => {
@@ -191,6 +192,18 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
       else setNotFound(true);
     })();
   }, [id]);
+
+  // The CASH row weight = the configured execution-reserve app-setting, not a
+  // hardcoded constant. Defensive: accepts a fraction (0.08) or a percent (8);
+  // falls back to the documented 8% default if the setting isn't available.
+  React.useEffect(() => {
+    (async () => {
+      const r = await fetch(`/api/admin/app-settings`).then((x) => x.json()).catch(() => null);
+      const raw = r?.settings?.executionReserveRate ?? r?.executionReserveRate;
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) setReserveRate(n <= 1 ? n * 100 : n);
+    })();
+  }, []);
 
   const secMap = React.useMemo(() => {
     const m = new Map<string, Sec>();
@@ -231,7 +244,7 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
   const years = Object.keys(monthly).sort().reverse();
   const activeYear = year ?? (years.length ? Number(years[0]) : null);
 
-  const cashWeight = 8;
+  const cashWeight = reserveRate ?? 8;
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <button onClick={onBack} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="h-4 w-4" /> Back to factsheets</button>

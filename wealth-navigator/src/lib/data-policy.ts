@@ -28,13 +28,15 @@ export function isRealDataOnlyClient(): boolean {
     if (flag === "1" || flag?.toLowerCase() === "true") return false;
     if (flag === "0" || flag?.toLowerCase() === "false") return true;
   }
-  if (typeof window === "undefined") {
-    const raw = process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES;
-    return raw === "1" || raw?.toLowerCase() === "true";
-  }
+  // Default to REAL-DATA-ONLY when the flag is unset. Mock/seed must be opted
+  // into explicitly (NEXT_PUBLIC_USE_SUPABASE_QUOTES=0/false, or ?mock=1) so a
+  // default/unset config never renders seed or fixture data as if it were real
+  // — e.g. the persona portals' demo branch only shows under an explicit mock
+  // opt-in (and the ?mock=1 path carries the DEV·MOCK banner). Server and client
+  // resolve identically to avoid a hydration mismatch.
   const raw = process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES;
-  if (!raw) return false;
-  return raw === "1" || raw.toLowerCase() === "true";
+  if (raw === "0" || raw?.toLowerCase() === "false") return false;
+  return true;
 }
 
 /**
