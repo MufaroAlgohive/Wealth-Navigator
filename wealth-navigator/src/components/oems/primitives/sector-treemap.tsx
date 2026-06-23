@@ -7,6 +7,12 @@ import { ResponsiveContainer, Treemap } from "recharts";
  * (green up / red down, intensity by magnitude). Replaces the flat sector list
  * on the Cockpit per Lonwabo: "similar to a JHB heat map where you see which
  * sector is big… and you can see the big sector performed green or red."
+ *
+ * Labels are PURE SVG (no foreignObject — that double-renders/clamps oddly in
+ * the production build). A tile is labelled only when it's big enough to read;
+ * the name word-wraps to at most two lines and is clipped to the tile, so it
+ * can never bleed into a neighbour. Tiles too small to label stay colour-only
+ * with the full name + day-move on hover.
  */
 export interface SectorDatum {
   name: string;
@@ -23,9 +29,46 @@ interface CellProps {
   height?: number;
   name?: string;
   change?: number;
+  /** recharts tree depth — 0 is the synthetic root node, 1 are the sector leaves. */
+  depth?: number;
 }
 
-function SectorCell({ x = 0, y = 0, width = 0, height = 0, name = "", change = 0 }: CellProps) {
+/** Greedy word-wrap into at most `maxLines` lines of ~`maxChars`, ellipsising
+ *  the last line if the name doesn't fit. */
+function wrapLabel(name: string, maxChars: number, maxLines: number): string[] {
+  const clean = name.replace(/\s+/g, " ").trim();
+  if (clean.length <= maxChars || maxLines <= 1) {
+    return [clean.length > maxChars ? clean.slice(0, Math.max(1, maxChars - 1)) + "…" : clean];
+  }
+  const words = clean.split(" ");
+  const lines: string[] = [];
+  let cur = "";
+  for (let i = 0; i < words.length; i += 1) {
+    const w = words[i]!;
+    const cand = cur ? `${cur} ${w}` : w;
+    if (cand.length <= maxChars) {
+      cur = cand;
+    } else {
+      if (cur) lines.push(cur);
+      cur = w;
+      if (lines.length === maxLines - 1) break;
+    }
+  }
+  if (cur && lines.length < maxLines) lines.push(cur);
+  const placed = lines.join(" ").length;
+  if (placed < clean.length) {
+    const li = lines.length - 1;
+    const l = lines[li]!;
+    lines[li] = (l.length > maxChars - 1 ? l.slice(0, maxChars - 1) : l) + "…";
+  }
+  return lines;
+}
+
+function SectorCell({ x = 0, y = 0, width = 0, height = 0, name = "", change = 0, depth }: CellProps) {
+  // recharts also renders the synthetic ROOT node (depth 0, empty name) that
+  // spans the whole area — skip it so its placeholder rect/label doesn't paint
+  // a duplicate "+0.00%" + blank label under the real sector tiles.
+  if (depth === 0 || !name) return <g />;
   const up = change > 0;
   const down = change < 0;
   const mag = Math.min(1, Math.abs(change) / 3); // 3% move ≈ full intensity
@@ -35,65 +78,55 @@ function SectorCell({ x = 0, y = 0, width = 0, height = 0, name = "", change = 0
     : down
       ? `hsl(var(--down) / ${op})`
       : "hsl(var(--muted-foreground) / 0.25)";
-  // Flexible label: an HTML foreignObject bounded to the tile, so text wraps,
-  // the font scales with the tile, the % shows when there's room, and it only
-  // ellipsises as a last resort — and can never overflow into the next tile
-  // (overflow:hidden + the fixed bounds do the clipping).
-  const pad = 6;
-  const innerW = Math.max(0, width - pad * 2);
-  const innerH = Math.max(0, height - pad * 2);
-  // Only label tiles big enough to read; tiny ones stay colour-only with the
-  // name on hover (cramming text into a ~40px sliver is what looked broken).
-  const showLabel = width >= 60 && height >= 26;
-  const fontSize = Math.max(9, Math.min(13, Math.floor(Math.min(width / 7.5, height / 3.2))));
-  const showPct = height >= 40 && width >= 54;
-  const nameLines = Math.max(1, Math.min(3, Math.floor((innerH - (showPct ? fontSize + 4 : 0)) / (fontSize * 1.25)) || 1));
+  const titleText = `${name}${Number.isFinite(change) ? ` · ${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : ""}`;
+
+  const showLabel = width >= 64 && height >= 30;
+  const fontSize = Math.max(9, Math.min(12, Math.floor(Math.min(width / 8, height / 3.4))));
+  const nameMaxLines = height >= 46 ? 2 : 1;
+  const showPct = showLabel && height >= 54 && width >= 70;
+  const maxChars = Math.max(3, Math.floor((width - 12) / (fontSize * 0.58)));
+  const lines = showLabel ? wrapLabel(name, maxChars, nameMaxLines) : [];
+  const lineH = fontSize * 1.18;
+  const clipId = `sc-${Math.round(x)}-${Math.round(y)}-${Math.round(width)}`;
+
   return (
     <g>
       <rect x={x} y={y} width={width} height={height} fill={fill} stroke="hsl(var(--canvas))" strokeWidth={2} rx={4}>
-        <title>{name}{Number.isFinite(change) ? ` · ${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : ""}</title>
+        <title>{titleText}</title>
       </rect>
       {showLabel && (
-        <foreignObject x={x + pad} y={y + pad} width={innerW} height={innerH} style={{ pointerEvents: "none" }}>
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              flexDirection: "column",
-              gap: 1,
-              overflow: "hidden",
-              userSelect: "none",
-            }}
-          >
-            <span
-              style={{
-                fontSize,
-                fontWeight: 600,
-                lineHeight: 1.2,
-                color: "hsl(var(--foreground))",
-                display: "-webkit-box",
-                WebkitLineClamp: nameLines,
-                WebkitBoxOrient: "vertical",
-                overflow: "hidden",
-                wordBreak: "break-word",
-              }}
-            >
-              {name}
-            </span>
+        <>
+          <defs>
+            <clipPath id={clipId}>
+              <rect x={x} y={y} width={width} height={height} rx={4} />
+            </clipPath>
+          </defs>
+          <g clipPath={`url(#${clipId})`} className="pointer-events-none select-none">
+            {lines.map((ln, i) => (
+              <text
+                key={i}
+                x={x + 7}
+                y={y + 14 + i * lineH}
+                fill="hsl(var(--foreground))"
+                fontSize={fontSize}
+                fontWeight={600}
+              >
+                {ln}
+              </text>
+            ))}
             {showPct && (
-              <span
-                style={{
-                  fontSize: Math.max(8, fontSize - 2),
-                  fontFamily: "var(--font-mono, monospace)",
-                  color: "hsl(var(--foreground) / 0.75)",
-                  lineHeight: 1,
-                }}
+              <text
+                x={x + 7}
+                y={y + 14 + lines.length * lineH + 1}
+                fill="hsl(var(--foreground) / 0.75)"
+                fontSize={Math.max(8, fontSize - 1)}
+                style={{ fontFamily: "var(--font-mono, monospace)" }}
               >
                 {change >= 0 ? "+" : ""}{change.toFixed(2)}%
-              </span>
+              </text>
             )}
-          </div>
-        </foreignObject>
+          </g>
+        </>
       )}
     </g>
   );
