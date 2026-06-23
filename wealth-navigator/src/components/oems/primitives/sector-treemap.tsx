@@ -35,20 +35,65 @@ function SectorCell({ x = 0, y = 0, width = 0, height = 0, name = "", change = 0
     : down
       ? `hsl(var(--down) / ${op})`
       : "hsl(var(--muted-foreground) / 0.25)";
-  const showName = width > 52 && height > 26;
-  const showPct = width > 52 && height > 42;
+  // Flexible label: an HTML foreignObject bounded to the tile, so text wraps,
+  // the font scales with the tile, the % shows when there's room, and it only
+  // ellipsises as a last resort — and can never overflow into the next tile
+  // (overflow:hidden + the fixed bounds do the clipping).
+  const pad = 6;
+  const innerW = Math.max(0, width - pad * 2);
+  const innerH = Math.max(0, height - pad * 2);
+  // Only label tiles big enough to read; tiny ones stay colour-only with the
+  // name on hover (cramming text into a ~40px sliver is what looked broken).
+  const showLabel = width >= 60 && height >= 26;
+  const fontSize = Math.max(9, Math.min(13, Math.floor(Math.min(width / 7.5, height / 3.2))));
+  const showPct = height >= 40 && width >= 54;
+  const nameLines = Math.max(1, Math.min(3, Math.floor((innerH - (showPct ? fontSize + 4 : 0)) / (fontSize * 1.25)) || 1));
   return (
     <g>
-      <rect x={x} y={y} width={width} height={height} fill={fill} stroke="hsl(var(--canvas))" strokeWidth={2} rx={4} />
-      {showName && (
-        <text x={x + 7} y={y + 16} fill="hsl(var(--foreground))" fontSize={11} fontWeight={600} className="pointer-events-none select-none">
-          {name}
-        </text>
-      )}
-      {showPct && (
-        <text x={x + 7} y={y + 31} fill="hsl(var(--foreground) / 0.75)" fontSize={10} className="pointer-events-none select-none" style={{ fontFamily: "var(--font-mono, monospace)" }}>
-          {change >= 0 ? "+" : ""}{change.toFixed(2)}%
-        </text>
+      <rect x={x} y={y} width={width} height={height} fill={fill} stroke="hsl(var(--canvas))" strokeWidth={2} rx={4}>
+        <title>{name}{Number.isFinite(change) ? ` · ${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : ""}</title>
+      </rect>
+      {showLabel && (
+        <foreignObject x={x + pad} y={y + pad} width={innerW} height={innerH} style={{ pointerEvents: "none" }}>
+          <div
+            style={{
+              height: "100%",
+              display: "flex",
+              flexDirection: "column",
+              gap: 1,
+              overflow: "hidden",
+              userSelect: "none",
+            }}
+          >
+            <span
+              style={{
+                fontSize,
+                fontWeight: 600,
+                lineHeight: 1.2,
+                color: "hsl(var(--foreground))",
+                display: "-webkit-box",
+                WebkitLineClamp: nameLines,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+                wordBreak: "break-word",
+              }}
+            >
+              {name}
+            </span>
+            {showPct && (
+              <span
+                style={{
+                  fontSize: Math.max(8, fontSize - 2),
+                  fontFamily: "var(--font-mono, monospace)",
+                  color: "hsl(var(--foreground) / 0.75)",
+                  lineHeight: 1,
+                }}
+              >
+                {change >= 0 ? "+" : ""}{change.toFixed(2)}%
+              </span>
+            )}
+          </div>
+        </foreignObject>
       )}
     </g>
   );
