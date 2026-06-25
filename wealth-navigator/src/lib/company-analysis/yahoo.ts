@@ -406,3 +406,50 @@ export async function fetchYahooChart(symbol: string, rangeIn = "5Y"): Promise<C
     return fail(e instanceof Error ? e.message : "Yahoo chart failed");
   }
 }
+
+// ── symbol search (typeahead) ───────────────────────────────────────────
+
+export interface SymbolHit {
+  /** Pass to ?sym= (e.g. "TSLA" or "NPN.JO"). */
+  symbol: string;
+  /** Bare code for display (e.g. "TSLA", "NPN"). */
+  display: string;
+  name: string;
+  /** Friendly exchange (e.g. "NasdaqGS", "Johannesburg", "JSE"). */
+  exchange: string;
+  /** "EQUITY" | "ETF". */
+  type: string;
+  source: "iress" | "yahoo";
+}
+
+/**
+ * Global symbol search via Yahoo (any US / SA / global ticker). Equities + ETFs
+ * only. Best-effort — returns [] on any failure (the SA universe still covers
+ * JSE names from our own DB in the search route).
+ */
+export async function searchYahooSymbols(query: string): Promise<SymbolHit[]> {
+  const q = query.trim();
+  if (!q) return [];
+  try {
+    const session = await getSession();
+    const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
+    if (session?.cookie) headers.cookie = session.cookie;
+    const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=12&newsCount=0&listsCount=0&enableFuzzyQuery=false`;
+    const r = await fetch(url, { headers, cache: "no-store" });
+    if (!r.ok) return [];
+    const j = (await r.json()) as { quotes?: Array<Record<string, unknown>> };
+    const out: SymbolHit[] = [];
+    for (const qt of j.quotes ?? []) {
+      const symbol = str(qt.symbol);
+      if (!symbol) continue;
+      const type = (str(qt.quoteType) ?? "").toUpperCase();
+      if (type !== "EQUITY" && type !== "ETF") continue;
+      const name = str(qt.shortname) ?? str(qt.longname) ?? symbol;
+      const exchange = str(qt.exchDisp) ?? str(qt.exchange) ?? "";
+      out.push({ symbol, display: symbol.replace(/\.(JO|JSE)$/i, ""), name, exchange, type, source: "yahoo" });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}

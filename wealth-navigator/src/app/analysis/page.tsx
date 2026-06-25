@@ -15,12 +15,13 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Globe, Search, Sparkles } from "lucide-react";
+import { Globe, Sparkles } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense } from "react";
 
 import { AiEdge, CompanyStatistics } from "@/components/analysis/company-analysis-panels";
 import { CompanyPriceChart } from "@/components/analysis/company-price-chart";
+import { TickerSearch } from "@/components/analysis/ticker-search";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { Pill } from "@/components/oems/primitives/pill";
@@ -45,13 +46,7 @@ function ccySym(code: string): string {
 function AnalysisTabContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const symFromUrl = (searchParams.get("sym") ?? "MSFT").toUpperCase();
-  const [draft, setDraft] = useState(symFromUrl);
-  const sym = symFromUrl;
-
-  useEffect(() => {
-    setDraft(symFromUrl);
-  }, [symFromUrl]);
+  const sym = (searchParams.get("sym") ?? "MSFT").toUpperCase();
 
   const go = (next: string) => {
     const v = next.trim().toUpperCase();
@@ -96,30 +91,7 @@ function AnalysisTabContent() {
               MiniMax. fiscal.ai-style, with an edge.
             </p>
           </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              go(draft);
-            }}
-            className="flex items-center gap-2"
-          >
-            <div className="glass-inset flex h-10 items-center gap-2 rounded-xl px-3">
-              <Search className="h-4 w-4 text-muted-foreground" />
-              <input
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder="Ticker — MSFT, AAPL, NPN.JO…"
-                aria-label="Ticker symbol"
-                className="w-48 bg-transparent font-mono text-sm uppercase outline-none placeholder:text-muted-foreground/60"
-              />
-            </div>
-            <button
-              type="submit"
-              className="inline-flex h-10 items-center gap-1 rounded-xl bg-primary px-3 text-sm font-medium text-primary-foreground shadow-[0_2px_12px_hsl(var(--primary)/0.35)] transition-transform hover:scale-[1.02]"
-            >
-              Analyse <ArrowRight className="h-4 w-4" />
-            </button>
-          </form>
+          <TickerSearch current={sym} onSelect={go} />
         </div>
         {/* Quick suggestions */}
         <div className="relative mt-3 flex flex-wrap items-center gap-1.5">
