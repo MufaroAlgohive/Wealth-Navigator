@@ -44,13 +44,20 @@ export function GlassSection({
             <h2 className="text-section">{title}</h2>
             {(dataSource || db) && <DataSourceBadge source={dataSource ?? "supabase"} db={db} />}
           </div>
-          {(subtitle || endpoint) && (
-            <p className="text-caption truncate">
-              {subtitle}
-              {subtitle && endpoint ? " · " : ""}
-              {endpoint && <span className="font-mono text-[10px] opacity-70">{endpoint}</span>}
-            </p>
-          )}
+          {(() => {
+            // The `endpoint` (e.g. "GET /api/…") is a developer affordance — it
+            // is hidden in production builds so the UI reads clean for users, and
+            // shown only in dev where it helps trace data flow.
+            const showEndpoint = Boolean(endpoint) && process.env.NODE_ENV !== "production";
+            if (!subtitle && !showEndpoint) return null;
+            return (
+              <p className="text-caption truncate">
+                {subtitle}
+                {subtitle && showEndpoint ? " · " : ""}
+                {showEndpoint && <span className="font-mono text-[10px] opacity-70">{endpoint}</span>}
+              </p>
+            );
+          })()}
         </div>
         {right && <div className="shrink-0">{right}</div>}
       </header>

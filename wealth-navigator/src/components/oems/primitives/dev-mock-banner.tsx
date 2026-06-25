@@ -17,12 +17,15 @@ export function DevMockBanner() {
   if (typeof window === "undefined") return null;
   if (isRealDataOnlyClient()) return null; // real-data mode → nothing to flag
   return (
-    <div className="flex items-center justify-center gap-2 border-b border-warning/40 bg-warning/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-warning">
+    <div
+      className="flex items-center justify-center gap-2 border-b border-warning/40 bg-warning/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-warning"
+      title="Mock mode is on via ?mock=1 or NEXT_PUBLIC_USE_SUPABASE_QUOTES=0. Set the flag to 1 (or remove it) to serve live data."
+    >
       <FlaskConical className="h-3.5 w-3.5" />
-      DEV · MOCK
+      Demo mode
       <span className="ml-2 normal-case text-warning/80">
-        Synthetic / seed data is active (via <code>?mock=1</code> or{" "}
-        <code>NEXT_PUBLIC_USE_SUPABASE_QUOTES=0</code>). This is not live market data.
+        Live market quotes are switched off in this environment, so price panels show seed values.
+        Company analysis and fundamentals (Yahoo) are live.
       </span>
     </div>
   );

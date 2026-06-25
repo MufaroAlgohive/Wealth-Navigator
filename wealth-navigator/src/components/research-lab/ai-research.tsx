@@ -486,12 +486,7 @@ export function AiResearch() {
                   <p className="font-medium text-warning">AI provider not configured</p>
                   <p className="text-muted-foreground">
                     {data.error ??
-                      "No model API key is set, so no outlook was generated. The gathered fundamentals, price, and news count above are real where available."}
-                  </p>
-                  <p className="text-caption">
-                    Set <span className="font-mono">MINIMAX_API_KEY</span> or{" "}
-                    <span className="font-mono">ANTHROPIC_API_KEY</span> in the server environment to enable
-                    generation.
+                      "The AI outlook is not enabled in this environment, so no thesis was generated. The gathered fundamentals, price, and news count above are real where available."}
                   </p>
                 </div>
               </div>

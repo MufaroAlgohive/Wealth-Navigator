@@ -87,8 +87,8 @@ function AnalysisTabContent() {
               </Pill>
             </div>
             <p className="text-caption text-muted-foreground">
-              Deep fundamentals, valuation, earnings and an AI thesis for any listed company. Yahoo Finance +
-              MiniMax. fiscal.ai-style, with an edge.
+              Deep fundamentals, valuation, earnings and an AI thesis for any listed company. SA and global
+              coverage, with an edge.
             </p>
           </div>
           <TickerSearch current={sym} onSelect={go} />

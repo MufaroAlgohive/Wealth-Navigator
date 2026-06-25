@@ -317,8 +317,8 @@ export function CompanyStatistics({ sym }: { sym: string }) {
             />
           </div>
           <p className="mt-2 text-[10.5px] text-muted-foreground/80">
-            Yahoo exposes the last 4 reported quarters — a longer beat history (fiscal.ai shows ~10y) needs a
-            paid estimates vendor.
+            Yahoo exposes the last 4 reported quarters. A longer beat history (10y+) needs a paid estimates
+            vendor.
           </p>
         </GlassSection>
 
@@ -514,7 +514,7 @@ export function AiEdge({ sym }: { sym: string }) {
       subtitle={
         d?.configured === false
           ? "AI provider not configured"
-          : `AI thesis${d?.model ? ` · ${d.model}` : ""} · web + Yahoo news`
+          : "AI-generated thesis · grounded on financials, web and recent news"
       }
       endpoint="GET /api/research-ai"
       dataSource="external"
@@ -550,8 +550,8 @@ export function AiEdge({ sym }: { sym: string }) {
           message={d?.configured === false ? "AI research provider not configured." : `No AI thesis generated for ${sym}.`}
           hint={
             d?.configured === false
-              ? "Set MINIMAX_API_KEY (or ANTHROPIC_API_KEY) to enable the AI thesis. Gathered evidence still shows on the Research tab."
-              : (d?.error ?? "The model returned no usable outlook — try Regenerate.")
+              ? "The AI thesis is not enabled in this environment. The fundamentals and price chart above are live."
+              : (d?.error ?? "The model returned no usable outlook. Try Regenerate.")
           }
           badgeLabel="unconfigured"
         />
