@@ -24,8 +24,12 @@ import { CompanyPriceChart } from "@/components/analysis/company-price-chart";
 import {
   DividendsTab,
   EstimatesTab,
+  FilingsTab,
   FinancialsTab,
+  IndustryTab,
+  InvestorRelationsTab,
   ModelingTab,
+  NewsTab,
   OwnershipTab,
   ResearchTab,
 } from "@/components/analysis/analysis-tabs";
@@ -44,9 +48,13 @@ const SUBTABS = [
   { id: "financials", label: "Financials" },
   { id: "estimates", label: "Estimates" },
   { id: "research", label: "Research" },
+  { id: "news", label: "News" },
   { id: "ownership", label: "Insiders" },
+  { id: "industry", label: "Industry" },
   { id: "dividends", label: "Dividends" },
+  { id: "ir", label: "Investor Relations" },
   { id: "modeling", label: "Modeling" },
+  { id: "filings", label: "Filings" },
 ] as const;
 type SubTabId = (typeof SUBTABS)[number]["id"];
 
@@ -244,9 +252,13 @@ function AnalysisTabContent() {
       {tab === "financials" && <FinancialsTab sym={sym} />}
       {tab === "estimates" && <EstimatesTab sym={sym} />}
       {tab === "research" && <ResearchTab sym={sym} />}
+      {tab === "news" && <NewsTab sym={sym} />}
       {tab === "ownership" && <OwnershipTab sym={sym} />}
+      {tab === "industry" && <IndustryTab sym={sym} />}
       {tab === "dividends" && <DividendsTab sym={sym} />}
+      {tab === "ir" && <InvestorRelationsTab sym={sym} />}
       {tab === "modeling" && <ModelingTab sym={sym} />}
+      {tab === "filings" && <FilingsTab sym={sym} />}
     </div>
   );
 }

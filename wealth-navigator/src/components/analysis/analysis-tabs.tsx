@@ -9,14 +9,14 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, Scale, TrendingDown, TrendingUp } from "lucide-react";
+import { CalendarDays, ExternalLink, Globe, Scale, TrendingDown, TrendingUp } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassSection } from "@/components/oems/primitives/glass";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { Pill } from "@/components/oems/primitives/pill";
-import type { CompanyDeep, EstimateRow, StatementTable as TStmt } from "@/lib/company-analysis/yahoo";
+import type { CompanyAnalysis, CompanyDeep, EstimateRow, StatementTable as TStmt } from "@/lib/company-analysis/yahoo";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 
@@ -542,5 +542,192 @@ function NumInput({ label, value, step, onChange, icon }: { label: string; value
         className="w-16 bg-transparent text-right font-mono text-xs font-semibold tabular-nums outline-none"
       />
     </label>
+  );
+}
+
+// ── shared overview query (deduped with the page + Company statistics) ────
+
+function useAnalysis(sym: string) {
+  return useQuery<CompanyAnalysis>({
+    queryKey: ["company-analysis", sym],
+    queryFn: async () => {
+      const r = await fetch(`/api/company-analysis/${encodeURIComponent(sym)}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`analysis ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+    enabled: Boolean(sym),
+    staleTime: 5 * 60_000,
+  });
+}
+
+const STAT_GRID = "grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[hsl(var(--glass-border))] sm:grid-cols-3";
+
+// ── News ───────────────────────────────────────────────────────────────
+
+interface NewsItem { title: string; url: string; publisher: string | null; publishedAt: string | null }
+
+export function NewsTab({ sym }: { sym: string }) {
+  const a = useAnalysis(sym);
+  const name = a.data?.overview.name ?? sym;
+  const q = useQuery<{ ok: boolean; items: NewsItem[]; error?: string }>({
+    queryKey: ["company-news", sym, name],
+    queryFn: async () => {
+      const r = await fetch(`/api/company-analysis/${encodeURIComponent(sym)}/news?q=${encodeURIComponent(name)}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`news ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+    enabled: Boolean(sym),
+    staleTime: 5 * 60_000,
+  });
+  const items = q.data?.items ?? [];
+  return (
+    <GlassSection title="News" subtitle="Recent company news" dataSource="external">
+      {q.isLoading ? (
+        <PanelSkeleton rows={5} />
+      ) : !items.length ? (
+        <EmptyDataState reason="empty" message={`No recent news for ${sym}.`} hint={q.data?.error ?? "No headlines from the news feed for this security."} badgeLabel="external" />
+      ) : (
+        <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))]/50 overflow-hidden rounded-xl">
+          {items.slice(0, 20).map((n, i) => (
+            <li key={i} className="px-4 py-3 transition-colors hover:bg-[hsl(var(--primary)/0.04)]">
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span className="font-mono">{n.publisher ?? "News"}</span>
+                {n.publishedAt ? <span>· {fmtDate(n.publishedAt)}</span> : null}
+              </div>
+              {n.url ? (
+                <a href={n.url} target="_blank" rel="noopener noreferrer" className="mt-0.5 block text-sm font-medium hover:text-primary hover:underline">
+                  {n.title} <ExternalLink className="inline h-3 w-3 align-baseline" />
+                </a>
+              ) : (
+                <p className="mt-0.5 text-sm font-medium">{n.title}</p>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </GlassSection>
+  );
+}
+
+// ── Filings (SEC EDGAR) ──────────────────────────────────────────────────
+
+interface FilingRow { form: string; date: string | null; title: string; url: string | null }
+
+export function FilingsTab({ sym }: { sym: string }) {
+  const q = useQuery<{ ok: boolean; source: string; filings: FilingRow[]; note?: string; error?: string }>({
+    queryKey: ["company-filings", sym],
+    queryFn: async () => {
+      const r = await fetch(`/api/company-analysis/${encodeURIComponent(sym)}/filings`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`filings ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+    enabled: Boolean(sym),
+    staleTime: 30 * 60_000,
+  });
+  const filings = q.data?.filings ?? [];
+  return (
+    <GlassSection title="Filings" subtitle="SEC EDGAR (US-listed)" dataSource="external">
+      {q.isLoading ? (
+        <PanelSkeleton rows={5} />
+      ) : q.data?.source === "none" || !filings.length ? (
+        <EmptyDataState reason="empty" message={`No SEC filings for ${sym}.`} hint={q.data?.note ?? q.data?.error ?? "No EDGAR filings returned for this ticker."} badgeLabel="external" />
+      ) : (
+        <div className="glass-inset overflow-hidden rounded-xl">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] text-muted-foreground">
+                <th className="px-3 py-2.5 text-left font-medium">Form</th>
+                <th className="px-3 py-2.5 text-left font-medium">Date</th>
+                <th className="px-3 py-2.5 text-left font-medium">Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filings.map((f, i) => (
+                <tr key={i} className="border-b border-[hsl(var(--glass-border))]/50">
+                  <td className="px-3 py-2"><Pill tone="info" size="xs">{f.form}</Pill></td>
+                  <td className="px-3 py-2 font-mono text-muted-foreground">{fmtDate(f.date)}</td>
+                  <td className="px-3 py-2">
+                    {f.url ? (
+                      <a href={f.url} target="_blank" rel="noopener noreferrer" className="hover:text-primary hover:underline">
+                        {f.title} <ExternalLink className="inline h-3 w-3 align-baseline" />
+                      </a>
+                    ) : (
+                      f.title
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </GlassSection>
+  );
+}
+
+// ── Industry ───────────────────────────────────────────────────────────
+
+export function IndustryTab({ sym }: { sym: string }) {
+  const a = useAnalysis(sym);
+  const o = a.data?.overview;
+  return (
+    <GlassSection title="Industry" subtitle="Sector and industry classification" dataSource="yahoo">
+      {a.isLoading ? (
+        <PanelSkeleton rows={2} />
+      ) : (
+        <>
+          <div className={STAT_GRID}>
+            <Stat k="Sector" v={o?.sector ?? "—"} />
+            <Stat k="Industry" v={o?.industry ?? "—"} />
+            <Stat k="Country" v={o?.country ?? "—"} />
+          </div>
+          <p className="mt-3 text-[10.5px] leading-snug text-muted-foreground/80">
+            Peer comparison and industry aggregates require a classification vendor feed (planned). Sector,
+            industry and domicile are shown from the company profile.
+          </p>
+        </>
+      )}
+    </GlassSection>
+  );
+}
+
+// ── Investor relations ───────────────────────────────────────────────────
+
+export function InvestorRelationsTab({ sym }: { sym: string }) {
+  const a = useAnalysis(sym);
+  const o = a.data?.overview;
+  return (
+    <GlassSection title="Investor relations" subtitle="IR resources and upcoming events" dataSource="yahoo">
+      {a.isLoading ? (
+        <PanelSkeleton rows={2} />
+      ) : (
+        <div className="space-y-3">
+          <div className={STAT_GRID}>
+            <Stat k="Next earnings" v={o?.nextEarnings ? fmtDate(o.nextEarnings) : "—"} />
+            <Stat k="CEO" v={o?.ceo ?? "—"} />
+            <Stat k="Employees" v={o?.employees != null ? o.employees.toLocaleString("en-US") : "—"} />
+          </div>
+          {o?.website ? (
+            <a
+              href={o.website}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-sm text-primary transition-colors hover:border-primary/40 hover:bg-primary/5"
+            >
+              <Globe className="h-3.5 w-3.5" />
+              Company / IR website
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          ) : null}
+          <p className="text-[10.5px] leading-snug text-muted-foreground/80">
+            Earnings-call transcripts and investor presentations require an IR vendor feed (planned). The next
+            earnings date and the company site are shown above.
+          </p>
+        </div>
+      )}
+    </GlassSection>
   );
 }

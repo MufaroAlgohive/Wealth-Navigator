@@ -91,6 +91,8 @@ export interface CompanyAnalysis {
     industry: string | null;
     country: string | null;
     employees: number | null;
+    /** Next scheduled earnings date (ISO), from the calendar. */
+    nextEarnings: string | null;
   };
   /** Metric groups, keyed exactly like fiscal.ai. */
   groups: Record<string, Record<string, AnalysisMetric>>;
@@ -129,7 +131,7 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
   const empty = (err: string): CompanyAnalysis => ({
     ok: false, symbol: clean, yahooSymbol, currency: "USD", asOf, error: err,
     price: { last: null, change: null, changePct: null, marketState: null, exchange: null },
-    overview: { name: null, description: null, ceo: null, website: null, sector: null, industry: null, country: null, employees: null },
+    overview: { name: null, description: null, ceo: null, website: null, sector: null, industry: null, country: null, employees: null, nextEarnings: null },
     groups: {}, earnings: { revenue: null, estimate: null, quarter: null, surprisePct: null, revBeatRate: null, epsBeatRate: null },
     series: { years: [], revenue: [], netIncome: [], eps: [], fcf: [] }, notes: [err],
   });
@@ -185,6 +187,10 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
   // ── overview ──
   const officers = (profileM.companyOfficers as Array<Record<string, unknown>>) ?? [];
   const ceo = officers.find((o) => /chief executive|ceo/i.test(str(o.title) ?? ""))?.name as string | undefined;
+  const calEarningsDates = ((res.calendarEvents as { earnings?: { earningsDate?: unknown[] } })?.earnings?.earningsDate) ?? [];
+  const nextEarnings = calEarningsDates.length && num(calEarningsDates[0]) != null
+    ? new Date(num(calEarningsDates[0])! * 1000).toISOString()
+    : null;
   const overview = {
     name: str(priceM.longName) ?? str(priceM.shortName),
     description: str(profileM.longBusinessSummary),
@@ -194,6 +200,7 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
     industry: str(profileM.industry),
     country: str(profileM.country),
     employees: num(profileM.fullTimeEmployees),
+    nextEarnings,
   };
 
   // ── core figures ──
@@ -699,4 +706,60 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
   if (dividends.yield == null) notes.push("No dividend reported for this security.");
 
   return { ok: true, symbol: clean, currency, asOf, statements, estimates, research, ownership, dividends, notes };
+}
+
+// ── SEC filings (US) ─────────────────────────────────────────────────────
+
+export interface Filing {
+  form: string;
+  date: string | null;
+  title: string;
+  url: string | null;
+}
+export interface CompanyFilings {
+  ok: boolean;
+  symbol: string;
+  source: "sec-edgar" | "none";
+  filings: Filing[];
+  note?: string;
+  error?: string;
+}
+
+/**
+ * Recent SEC EDGAR filings for a US-listed ticker (free, real). JSE issuers do
+ * not file with the SEC, so those return an honest empty with a note pointing to
+ * JSE SENS. Best-effort Atom parse; any failure returns ok:false honestly.
+ */
+export async function fetchSecFilings(symbol: string): Promise<CompanyFilings> {
+  const clean = symbol.trim().toUpperCase();
+  if (clean.endsWith(".JO") || clean.endsWith(".JSE")) {
+    return { ok: true, symbol: clean, source: "none", filings: [], note: "SEC EDGAR covers US-listed filings. JSE issuers file via JSE SENS." };
+  }
+  const ticker = clean.replace(/\..*$/, "");
+  try {
+    const url = `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&ticker=${encodeURIComponent(ticker)}&type=&dateb=&owner=include&count=30&output=atom`;
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Mint Wealth Navigator research (admin@stratosphere.vip)", Accept: "application/atom+xml" },
+      cache: "no-store",
+    });
+    if (!r.ok) return { ok: false, symbol: clean, source: "sec-edgar", filings: [], error: `EDGAR ${r.status}` };
+    const xml = await r.text();
+    const entries = xml.split("<entry>").slice(1);
+    const grab = (block: string, re: RegExp): string | null => {
+      const m = block.match(re);
+      return m && m[1] != null ? m[1].trim() : null;
+    };
+    const filings: Filing[] = [];
+    for (const e of entries) {
+      const block = e.split("</entry>")[0] ?? "";
+      const form = grab(block, /<filing-type>([^<]+)<\/filing-type>/) ?? grab(block, /term="([^"]+)"/);
+      const date = grab(block, /<filing-date>([^<]+)<\/filing-date>/) ?? grab(block, /<updated>([^<]+)<\/updated>/);
+      const href = grab(block, /<filing-href>([^<]+)<\/filing-href>/) ?? grab(block, /<link[^>]*href="([^"]+)"/);
+      const title = grab(block, /<title>([^<]+)<\/title>/) ?? form ?? "Filing";
+      if (form || title) filings.push({ form: form ?? "—", date: date ? date.slice(0, 10) : null, title, url: href });
+    }
+    return { ok: true, symbol: clean, source: "sec-edgar", filings: filings.slice(0, 30) };
+  } catch (e) {
+    return { ok: false, symbol: clean, source: "sec-edgar", filings: [], error: e instanceof Error ? e.message : "EDGAR fetch failed" };
+  }
 }
