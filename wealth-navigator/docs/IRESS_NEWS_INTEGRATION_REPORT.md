@@ -44,10 +44,28 @@
 
 ## Live probe result
 
-To be filled in once the Railway `Iress-Worker` is redeployed and the probe below is called. The probe is read-only — no Supabase writes — so the standing `IRESS_WORKER_DRY_RUN=1` / `SUPABASE_ALLOW_WRITES=0` defaults are NOT being flipped.
+**BLOCKED (2026-06-25) — Railway GitHub-app integration for `edgeza/Wealth-Navigator` is no longer installed.**
 
+The probe code (`/debug/news-vendor-probe`, default vendor now `IRESS`) was committed in `3734e29 Analysis Tab added` and the default-vendor flip was committed in `56a5c49 chore(iress): switch NewsVendorGet default from SENS to IRESS`. The push to `edgeza/Wealth-Navigator@main` succeeded (`git ls-remote edgeza main` returns `56a5c49`). However, every Railway MCP `redeploy` of `Iress-Worker` (deployments `0905d66c` and `92b0936a`) re-uses the cached image from commit `59ef104` (2026-06-22) because the Railway GitHub app for `edgeza/Wealth-Navigator` is not installed, so the webhook never fires and a fresh `main` build is never triggered.
+
+Result of the probe call:
 ```bash
-curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=IRESS&pageSize=10&includeBody=1'
+$ curl.exe -s 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=IRESS&pageSize=10&includeBody=1'
+{"ok":false,"status":404,"code":"not_found","error":"No route for GET /debug/news-vendor-probe"}
 ```
 
-The probe respects a per-process 10 s throttle (`NEWS_PROBE_MIN_GAP_MS` env). After the live probe runs the verdict goes here (body populates / headlines-only / entitlement block) and the `REMAINING_GAPS.md` item #6 is closed or narrowed accordingly.
+This 404 is a build-staleness 404 — the route does not exist in commit `59ef104`. It is NOT an entitlement / vendor / body verdict. The probe will not run until the worker is rebuilt with `3734e29` (or later) code.
+
+**Operator action required to unblock this probe:**
+1. Re-install the Railway GitHub app for the `edgeza` GitHub org (https://railway.com/account/integrations). Ensure `edgeza/Wealth-Navigator` is granted access.
+2. Once the app is connected, either:
+   - Push a new commit to `main` (even `--allow-empty`) to fire the webhook → Railway will rebuild from the latest commit
+   - Or click "Deploy" in the Railway dashboard for `Iress-Worker` to pull `56a5c49` manually
+3. Wait for the new build to reach `SUCCESS`, then re-run:
+   ```bash
+   curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=IRESS&pageSize=10&includeBody=1'
+   ```
+4. The probe respects a per-process 10 s throttle (`NEWS_PROBE_MIN_GAP_MS` env). The first call after the rebuild will return 200 with the IRESS envelope (or a SOAP fault code if entitlement-blocked). Capture the response in this section and decide: persist to `news_item_c` (vendor contract TBD), keep the probe as the only reader, or fall back to the Alliance News wire (`/api/news` already wired).
+5. After the live probe runs the verdict goes here (body populates / headlines-only / entitlement block) and the `REMAINING_GAPS.md` item #6 is closed or narrowed accordingly.
+
+The probe is read-only — no Supabase writes — so the standing `IRESS_WORKER_DRY_RUN=1` / `SUPABASE_ALLOW_WRITES=0` defaults are NOT being flipped.

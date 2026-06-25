@@ -12,18 +12,19 @@ Charles Ntjana confirmed on 2026-06-25 that IRESS Pro `NewsVendorGet` is the V4 
 - Mock client: empty page (no fabricated news), 25018 when `Vendor` is missing.
 - Tests: 2 new mock tests in `iress-mock.test.ts` (`newsVendorGet` empty page + missing-vendor 25018); full `bunx vitest run` is 393/395 passing (the 2 failures are pre-existing `worker-api.test.ts` `isWorkerLiveMode` flag interactions — unrelated).
 - Typecheck: worker clean (`tsc -p workers/iress-ingest/tsconfig.json --noEmit` exit 0). Next.js has 3 pre-existing errors in `src/app/oems/analysis/[sym]/page.tsx` + `analysis-chart.tsx` + `tick-stream-provider` — none touched by this work.
-- **2026-06-25 follow-up**: Default vendor switched from `SENS` → `IRESS` in `client.ts` (NewsVendor doc + `NewsVendorGetRequest.Vendor` JSDoc), `http-api.ts` (probe default + JSDoc), and `/api/iress/news/route.ts` (BFF default). All three call sites accept the full `NewsVendor` union (`SENS | IRESS | Reuters | Bloomberg | Moneyweb | Dow Jones | Business Day`) so callers can still target SENS explicitly. `SENS` was the initial guess (JSE / SA-flavored); the user switched the default to `IRESS` after Charles confirmed the `DFM@Mint` IRESS Pro entitlement is for the broker feed. Worker typecheck + 5 affected test suites (`iress-live`, `iress-mock`, `worker-http-api`, `live-queries`, `order-recovery`) re-run: 159/159 pass; worker redeployed; live probe pending in this session — see the next sub-line for the result.
+- **2026-06-25 follow-up**: Default vendor switched from `SENS` → `IRESS` in `client.ts` (NewsVendor doc + `NewsVendorGetRequest.Vendor` JSDoc), `http-api.ts` (probe default + JSDoc), and `/api/iress/news/route.ts` (BFF default). All three call sites accept the full `NewsVendor` union (`SENS | IRESS | Reuters | Bloomberg | Moneyweb | Dow Jones | Business Day`) so callers can still target SENS explicitly. `SENS` was the initial guess (JSE / SA-flavored); the user switched the default to `IRESS` after Charles confirmed the `DFM@Mint` IRESS Pro entitlement is for the broker feed. Worker typecheck + 5 affected test suites (`iress-live`, `iress-mock`, `worker-http-api`, `live-queries`, `order-recovery`) re-run: 159/159 pass.
 
-**Entitlement / headline-only / body status: TBD until the worker is redeployed and a live probe runs.** The probe will tell us:
-1. Whether `DFM@Mint` is entitled to `NewsVendorGet` (expect 25010 / 25034 otherwise).
-2. Whether rows include full story bodies or just headlines.
-3. Whether `Vendor=SENS` returns results or we need `Vendor=IRESS` (broker-sourced).
+**Entitlement / headline-only / body status: BLOCKED on Railway GitHub-app integration (see "0.5.1" below).** The probe code was committed in `3734e29 Analysis Tab added` but the Railway `Iress-Worker` has not been rebuilt since `59ef104` (2026-06-22) — that build does NOT contain the probe route, so `curl ... /debug/news-vendor-probe` returns 404 regardless of `?vendor=…`. The Railway GitHub app for `edgeza/Wealth-Navigator` is no longer installed, so the MCP `redeploy` tool reuses the cached `59ef104` image instead of pulling a fresh build from the latest `main` (now at `56a5c49`).
 
 The user rule says do NOT redeploy without explicit approval. After approval, redeploy the Railway `Iress-Worker` service and verify with:
 ```bash
 curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=IRESS&pageSize=10&includeBody=1'
 ```
 Then close the gap in `REMAINING_GAPS.md` § "Charles / vendor action items" #6.
+
+### 0.5.1 Live probe — BLOCKED on Railway GitHub-app integration (2026-06-25)
+
+Default vendor switched from `SENS` → `IRESS` in `client.ts` + `http-api.ts` + `/api/iress/news/route.ts` (commit `56a5c49`); worker typecheck clean, 159/159 tests across `iress-live` / `iress-mock` / `worker-http-api` / `live-queries` / `order-recovery` pass. The change was pushed to `edgeza/Wealth-Navigator@main` (commit `56a5c49`); `git ls-remote edgeza main` confirms the push succeeded. **However, the Railway `Iress-Worker` service is still running commit `59ef104`** — every `redeploy` MCP call (`0905d66c` and `92b0936a`) re-uses the cached image because the Railway GitHub app for `edgeza/Wealth-Navigator` is not installed. `getServiceConfig` confirms the service source is `edgeza/Wealth-Navigator/main`, but the webhook never fires (the dashboard install for that org has lapsed). Result: `GET /debug/news-vendor-probe?vendor=IRESS&pageSize=10&includeBody=1` returns `404 not_found` — the route was added in commit `3734e29`, AFTER `59ef104`. Operator action: re-install the Railway GitHub app for `edgeza/Wealth-Navigator` (https://railway.com/account/integrations) and either wait for the webhook to rebuild on the next push or click "Deploy" in the Railway dashboard. Once the worker is rebuilt with the `56a5c49` code, the curl above will resolve the entitlement / body / vendor trio (#1–#3 above).
 
 ## 0. UI-honesty pass — completed (2026-06-13)
 
