@@ -65,6 +65,10 @@ Last updated: 2026-06-25. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_
 3. Confirm `OrderPadGetByAccount` account code for worker poll.
 4. ~~Advise on SENS/news — IRESS path vs third-party.~~ **Resolved 2026-06-25** — `NewsVendorGet` confirmed; default `Vendor=SENS`. Adapter + probe + BFF wired; only the headline-vs-body entitlement + vendor exact-match are pending a live probe.
 5. Entitlement check for `TimeSeriesGet2` on J203 and ZAR curve codes.
-6. **NEW** — confirm `NewsVendorGet` entitlement on `DFM@Mint`, and whether the returned rows include story bodies or only headlines. Verify with `curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=SENS&pageSize=10'` after a worker redeploy (NOT before — the user rule says do not redeploy without explicit approval).
+6. **NEW** — confirm `NewsVendorGet` entitlement on `DFM@Mint`, and whether the returned rows include story bodies or only headlines. Probe code is committed (default vendor switched to `IRESS` in `56a5c49`); the curl is now:
+   ```bash
+   curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=IRESS&pageSize=10&includeBody=1'
+   ```
+   **BLOCKED (2026-06-25):** the live probe returns `404 not_found` because the Railway `Iress-Worker` is still running commit `59ef104` (2026-06-22), which predates the probe route. The Railway GitHub app for `edgeza/Wealth-Navigator` is no longer installed, so the MCP `redeploy` re-uses the cached image. Operator action: re-install the Railway GitHub app for the `edgeza` org (https://railway.com/account/integrations), then push a new commit (or click "Deploy") to trigger a fresh build with `56a5c49`. Re-run the curl above once the build is `SUCCESS`. See `docs/ISSUES_LOG.md` § 0.5.1 for the verbatim response + unblock steps.
 
 See also: `docs/DATA_PROVENANCE.md`, `docs/MINT_GO_LIVE_RUNBOOK.html`.
