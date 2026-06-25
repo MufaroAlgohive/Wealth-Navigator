@@ -1349,7 +1349,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               title="JSE All Share · Intraday"
               endpoint="GET /api/indices/J203"
               db="institutional"
-              dataSource="blocked-external"
+              dataSource={alsiBffQ.data.source === "seed-fallback" ? "seed" : alsiBffQ.data.source === "supabase" ? "supabase" : "blocked-external"}
               className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
               right={(() => {
                 const pts = alsiBffQ.data.points;

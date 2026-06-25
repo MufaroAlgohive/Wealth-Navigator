@@ -357,7 +357,7 @@ export default function IntegrationPage() {
           title="Latency · IRESS calls"
           db="institutional"
           endpoint="GET /api/worker-health"
-          dataSource="worker"
+          dataSource={realDataOnly ? "worker" : "mock"}
           className="col-span-12 h-[420px] lg:col-span-4"
         >
           <div className="glass-inset h-[calc(100%-0.5rem)] p-2">

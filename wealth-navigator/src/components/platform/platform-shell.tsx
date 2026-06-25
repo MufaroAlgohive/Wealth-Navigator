@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 
 import { CommandPaletteProvider } from "@/components/oems/command-palette";
+import { DevMockBanner } from "@/components/oems/primitives/dev-mock-banner";
 import { SkipLink } from "@/components/oems/primitives/skip-link";
 import { TopBar } from "@/components/oems/shell/top-bar";
 import { TickerBar } from "@/components/oems/primitives/ticker-bar";
@@ -22,6 +23,9 @@ export function PlatformShell({ children, banner }: { children: ReactNode; banne
       <div className="flex h-screen flex-col overflow-hidden bg-canvas text-foreground">
         <TopBar />
         <TickerBar />
+        {/* Global safety label: always shows when synthetic/seed data is active,
+            on any build. Mounted here so every surface is covered. */}
+        <DevMockBanner />
         {banner}
         <div className="flex min-h-0 flex-1">
           <PlatformNav />
