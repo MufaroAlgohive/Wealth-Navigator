@@ -11,6 +11,7 @@
  * never fabricated. Equities + ETFs.
  */
 
+import { cached, TTL } from "@/lib/company-analysis/cache";
 import { searchYahooSymbols, type SymbolHit } from "@/lib/company-analysis/yahoo";
 import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 
@@ -58,17 +59,9 @@ async function searchSaUniverse(q: string): Promise<SymbolHit[]> {
   }
 }
 
-export async function GET(req: Request) {
-  const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
-  if (q.length < 1) {
-    return Response.json({ ok: true, query: q, results: [], saCount: 0, yahooCount: 0 } satisfies SearchResponse);
-  }
-
-  // Run both universes in parallel.
+/** Merge the SA (IRESS-backed) and Yahoo global universes, SA first, deduped. */
+async function runSearch(q: string): Promise<SearchResponse> {
   const [sa, yahoo] = await Promise.all([searchSaUniverse(q), searchYahooSymbols(q)]);
-
-  // SA matches first (our IRESS-backed universe), then Yahoo global; dedupe by
-  // bare code so a JSE name doesn't appear twice.
   const seen = new Set(sa.map((s) => s.display.toUpperCase()));
   const merged: SymbolHit[] = [...sa];
   for (const y of yahoo) {
@@ -77,12 +70,18 @@ export async function GET(req: Request) {
     seen.add(k);
     merged.push(y);
   }
+  return { ok: true, query: q, results: merged.slice(0, 12), saCount: sa.length, yahooCount: yahoo.length };
+}
 
-  return Response.json({
-    ok: true,
-    query: q,
-    results: merged.slice(0, 12),
-    saCount: sa.length,
-    yahooCount: yahoo.length,
-  } satisfies SearchResponse);
+export async function GET(req: Request) {
+  const q = (new URL(req.url).searchParams.get("q") ?? "").trim();
+  if (q.length < 1) {
+    return Response.json({ ok: true, query: q, results: [], saCount: 0, yahooCount: 0 } satisfies SearchResponse);
+  }
+  // Cache merged results per query (~24h) so repeated lookups never re-hit the
+  // rate-limited Yahoo search; only cache when something matched.
+  const r = await cached(`search:${q.toLowerCase()}`, TTL.search, () => runSearch(q), {
+    isValid: (v) => v.ok && v.results.length > 0,
+  });
+  return Response.json(r.value, { headers: { "x-cache": r.hit ? `hit:${r.tier}` : "miss" } });
 }

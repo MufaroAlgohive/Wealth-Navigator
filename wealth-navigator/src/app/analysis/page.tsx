@@ -196,7 +196,7 @@ function AnalysisTabContent() {
                     : `${up ? "+" : ""}${d.price.changePct.toFixed(2)}%`}
                 </span>
               </div>
-              <DataSourceBadge source="yahoo" />
+              <DataSourceBadge source={d?.price.priceSource === "iress" ? "iress" : "yahoo"} />
             </div>
           </>
         ) : (

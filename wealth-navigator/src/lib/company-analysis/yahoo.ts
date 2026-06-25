@@ -79,6 +79,8 @@ export interface CompanyAnalysis {
     changePct: number | null;
     marketState: string | null;
     exchange: string | null;
+    /** Which feed the live last/change came from. JSE prices prefer IRESS. */
+    priceSource?: "iress" | "yahoo";
   };
   overview: {
     name: string | null;
@@ -177,6 +179,7 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
     changePct: num(priceM.regularMarketChangePercent) != null ? num(priceM.regularMarketChangePercent)! * 100 : null,
     marketState: str(priceM.marketState),
     exchange: str(priceM.exchangeName) ?? str(priceM.fullExchangeName),
+    priceSource: "yahoo" as const,
   };
 
   // ── overview ──
