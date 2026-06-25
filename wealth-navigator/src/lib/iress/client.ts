@@ -166,6 +166,82 @@ export interface SecuritySearchGetRequest {
   SearchText: string;
 }
 
+// ─── News (Iress Pro) ────────────────────────────────────────────────────
+
+/**
+ * Known `NewsVendorGet` vendor codes (per V4 spec).
+ *
+ * Charles confirmed 2026-06-25 that `NewsVendorGet` is the correct method for
+ * Market Data / News; the vendor parameter selects which vendor's feed to
+ * query. The SA-flavoured OEMS mostly cares about `SENS` (JSE Stock Exchange
+ * News Service) and `IRESS` (broker-sourced general news). Defaults to
+ * `SENS` in the live client; the mock + probe accept any of these.
+ *
+ * Note: this is the V4 vendor *enum*, NOT the `NewsItem.source` taxonomy on
+ * the typed `NewsItem` interface (`Reuters | Bloomberg | Moneyweb | ...`).
+ * The mapper below collapses whatever the row reports into the matching
+ * `NewsItem.source` value where possible, falling back to `IRESS`.
+ */
+export type NewsVendor =
+  | "SENS"
+  | "IRESS"
+  | "Reuters"
+  | "Bloomberg"
+  | "Moneyweb"
+  | "Dow Jones"
+  | "Business Day";
+
+export interface NewsVendorGetRequest {
+  Header: IressHeader;
+  /** Vendor code — e.g. "SENS", "IRESS", "Reuters". Required; "" faults 25018. */
+  Vendor: NewsVendor | string;
+  /**
+   * Optional per-vendor parameters. V4 spec accepts a free-form `<Parameters>`
+   * block (Charles' example was empty). Common sub-keys:
+   *   - `Category`      — narrow to a SENS category (RESULTS, DIVIDEND, …)
+   *   - `SecurityCode`  — single-symbol filter (RIC or IRESS code)
+   *   - `From` / `To`   — ISO timestamp range
+   *   - `MaxResults`    — cap; the global `<PageSize>` also applies
+   * The live client sends whatever the caller supplies — no server-side
+   * validation here (the SOAP layer is the source of truth).
+   */
+  Parameters?: Record<string, unknown>;
+}
+
+/**
+ * Normalised `NewsVendorGet` row. Only fields the schema is known to
+ * return are surfaced; entitlement-blocked fields (story body, RIC list,
+ * etc.) are TODO-marked and surfaced as `null` until a live probe confirms
+ * what the CT build returns.
+ */
+export interface NewsStory {
+  /** IRESS story id (string — V4 doesn't pin a numeric type). */
+  StoryId: string;
+  /** Headline text. Confirmed live on every IRESS Pro build. */
+  Headline: string;
+  /** Vendor code as reported by the row (often "SENS", "Reuters", …). */
+  Source: string;
+  /** Story timestamp (ISO 8601 string from V4, parsed to ms). */
+  Timestamp: string;
+  /** ISO → epoch ms convenience copy; 0 when unparseable. */
+  ts: number;
+  /**
+   * Full story body. ENTITLEMENT-DEPENDENT — the DFM@Mint profile may only
+   * return headlines; we keep the field but emit `null` until a live probe
+   * confirms. See worker `/debug/news-vendor-probe` for verification.
+   */
+  Story?: string | null;
+  /**
+   * RICs / IRESS codes the story is attached to (free-form string list).
+   * TODO(entitlement): confirm with a probe; expected empty on CT headine-only.
+   */
+  RelatedCodes?: string[];
+  /** Vendor-specific category label (e.g. SENS category). TODO: typed map. */
+  Category?: string | null;
+  /** Free-form pass-through for any field we haven't normalised. */
+  [k: string]: unknown;
+}
+
 export interface SecuritySearchRow {
   SecurityCode: string;
   Exchange: string;
@@ -308,6 +384,26 @@ export interface IressClient {
    * combining it with `SecurityCode` faults (10065). Base IRIS session.
    */
   securitySearchGet(req: SecuritySearchGetRequest): Promise<IressResponse<SecuritySearchRow>>;
+
+  /**
+   * Market data / news headlines & bodies via the IRESS Pro News service.
+   * Charles Ntjana confirmed 2026-06-25 that `NewsVendorGet` is the V4 verb
+   * for Market Data and News. Runs on the base IRIS session (no IOS+/IPS/
+   * FIX+ service session needed).
+   *
+   * Entitlement gate: the user's IRESS profile must include `NewsVendorGet`
+   * (Charles has to enable). 25010 / 25034 → `IressError(…)` bubbles up;
+   * the BFF surfaces it as an `unconfigured` empty state.
+   *
+   * T5 (vendor content) policy: this client is **read-only** — the worker
+   * does NOT persist the response to Supabase. The BFF proxies the response
+   * through as a Path B passthrough; news panels show `UNCONFIGURED` when
+   * the source is unconfigured and never fall back to seed.
+   *
+   * Spec: `Documentation & Vision/iress-v4-docs/05-services/market-data/03-news-vendor-get.md`
+   * (to be created on first probe confirmation).
+   */
+  newsVendorGet(req: NewsVendorGetRequest): Promise<IressResponse<NewsStory>>;
 
   // ── trading (IOS+) ──────────────────────────────────────────────
   orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response>;

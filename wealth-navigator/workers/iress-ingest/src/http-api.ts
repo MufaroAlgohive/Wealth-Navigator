@@ -150,9 +150,62 @@ interface TimeSeriesProbeResult {
   build: string;
 }
 
+interface NewsProbeRow {
+  storyId: string;
+  headline: string;
+  source: string;
+  timestamp: string;
+  ts: number;
+  category: string | null;
+  relatedCodes: string[] | null;
+  storyPreview: string | null;
+  /** First 200 chars of the story body — to confirm headline-only vs full body without dumping the entire row. */
+}
+
+interface NewsProbeResult {
+  ok: boolean;
+  vendor: string;
+  pageSize: number;
+  timeout: number;
+  errorNumber: number | null;
+  errorDescription: string | null;
+  rawFault: string | null;
+  dataRowCount: number;
+  firstRow: Record<string, unknown> | null;
+  /** First N headlines (truncated body previews) for log-friendly inspection. */
+  headlines: NewsProbeRow[];
+  iressMode: string;
+  elapsedMs: number;
+  probedAt: string;
+  build: string;
+}
+
+/**
+ * Per-process rate limiter for `*VendorGet` / `*Probe` debug endpoints.
+ *
+ * The CT license seat is a single, contended resource — the standing user
+ * rule is "1-hour rate-limit; batch probes carefully and never hammer the
+ * CT seat". We enforce a minimum gap between consecutive probes (default
+ * `NEWS_PROBE_MIN_GAP_MS` = 10 s) so a misconfigured client or a CI loop
+ * can't burn the seat by accident. Bumped via env when operators need a
+ * tighter / looser gap.
+ */
+const NEWS_PROBE_MIN_GAP_MS = Number(process.env.NEWS_PROBE_MIN_GAP_MS ?? "10000");
+let lastNewsProbeAt = 0;
+
+function newsProbeThrottleOrError(): { throttled: false } | { throttled: true; retryAfterMs: number } {
+  const now = Date.now();
+  const since = now - lastNewsProbeAt;
+  if (since < NEWS_PROBE_MIN_GAP_MS) {
+    return { throttled: true, retryAfterMs: NEWS_PROBE_MIN_GAP_MS - since };
+  }
+  lastNewsProbeAt = now;
+  return { throttled: false };
+}
+
 // Bump on every deploy that touches the TimeSeriesGet2 wire shape so a probe
 // response confirms WHICH code is live (Railway deploy timing was opaque).
-const PROBE_BUILD = "ts-2026-06-16-svckey";
+const PROBE_BUILD = "ts-2026-06-16-news";
 
 /**
  * One-shot `TimeSeriesGet2` probe with the caller-supplied period
@@ -242,6 +295,95 @@ async function probeTimeSeriesInterval(
       rawFault: msg,
       dataRowCount: 0,
       firstRow: null,
+      iressMode: deps.env.iressMode,
+      elapsedMs: Date.now() - started,
+      probedAt: new Date().toISOString(),
+      build: PROBE_BUILD,
+    };
+  }
+}
+
+/**
+ * One-shot `NewsVendorGet` probe — Charles Ntjana confirmed 2026-06-25
+ * that this is the V4 verb for Market Data / News. Runs on the base
+ * IRIS session (no IOS+/IPS/FIX+ service session required).
+ *
+ * Wire shape mirrors `probeTimeSeriesInterval`:
+ *   - caller supplies `vendor` (default `SENS` — JSE/South Africa
+ *     default; override with `IRESS`, `Reuters`, …)
+ *   - `pageSize` capped at 1000 (the CT max per Charles' example)
+ *   - `timeout` capped at 25 (the CT ceiling for this method)
+ *   - per-process throttle (10s default — see `newsProbeThrottleOrError`)
+ *     so a runaway loop can't burn the CT license seat.
+ *
+ * The probe is read-only — it does NOT persist to Supabase (T5 vendor
+ * content is passthrough-only). It DOES count as one live call against
+ * the CT rate-limit budget; that's why the throttle exists.
+ */
+async function probeNewsVendor(
+  deps: HttpApiDeps,
+  vendor: string,
+  pageSize: number,
+  timeout: number,
+  includeBody: boolean,
+): Promise<NewsProbeResult> {
+  const started = Date.now();
+  try {
+    const session = await deps.sessions.getSession();
+    const client = getIressClient("live");
+    const res = await client.newsVendorGet({
+      Header: {
+        SessionKey: session.iressSessionKey,
+        RequestID: newRequestID(`news-${vendor}`),
+        WaitForResponse: true,
+        Updates: false,
+        PagingBookmark: "",
+        PagingDirection: 0,
+        PageSize: pageSize,
+        Timeout: timeout,
+      },
+      Vendor: vendor,
+    });
+    const headlines: NewsProbeRow[] = res.DataRows.slice(0, 10).map((s) => ({
+      storyId: s.StoryId,
+      headline: s.Headline,
+      source: s.Source,
+      timestamp: s.Timestamp,
+      ts: s.ts,
+      category: s.Category ?? null,
+      relatedCodes: s.RelatedCodes ?? null,
+      storyPreview: includeBody && s.Story ? s.Story.slice(0, 200) : null,
+    }));
+    return {
+      ok: res.Header.ErrorNumber === 0,
+      vendor,
+      pageSize,
+      timeout,
+      errorNumber: res.Header.ErrorNumber ?? null,
+      errorDescription: res.Header.ErrorDescription ?? null,
+      rawFault: null,
+      dataRowCount: res.DataRows?.length ?? 0,
+      firstRow: (res.DataRows?.[0] as unknown as Record<string, unknown> | undefined) ?? null,
+      headlines,
+      iressMode: deps.env.iressMode,
+      elapsedMs: Date.now() - started,
+      probedAt: new Date().toISOString(),
+      build: PROBE_BUILD,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const faultCode = err instanceof IressError ? err.code : null;
+    return {
+      ok: false,
+      vendor,
+      pageSize,
+      timeout,
+      errorNumber: faultCode,
+      errorDescription: null,
+      rawFault: msg,
+      dataRowCount: 0,
+      firstRow: null,
+      headlines: [],
       iressMode: deps.env.iressMode,
       elapsedMs: Date.now() - started,
       probedAt: new Date().toISOString(),
@@ -974,6 +1116,73 @@ export async function handleRequest(
     );
     // Always 200 — the IRESS response (success or fault) IS the answer.
     // `ok` and `errorNumber` describe the result, not the HTTP envelope.
+    send(res, 200, result);
+    return;
+  }
+
+  /**
+   * `GET /debug/news-vendor-probe` — one-shot `NewsVendorGet` verifier.
+   *
+   * Mirrors `/debug/timeseries-probe`'s shape but uses GET + query string
+   * (the only call site is the BFF passthrough / a curl from the operator,
+   * so the URL-as-config ergonomics of GET win over the POST body for a
+   * probe).
+   *
+   * Query params (all optional):
+   *   - `vendor`       default "SENS" (Charles' SA-flavored default;
+   *                    override with `IRESS`, `Reuters`, …)
+   *   - `pageSize`     default 50, capped at 1000 (CT max)
+   *   - `timeout`      default 25, capped at 25 (CT ceiling)
+   *   - `includeBody`  "1" to include a 200-char preview of each story body
+   *                    (default off — the body may be large; keep responses
+   *                    bounded)
+   *
+   * Rate-limit: the per-process `newsProbeThrottleOrError()` enforces a
+   * minimum 10s gap between probes (env-overridable via
+   * `NEWS_PROBE_MIN_GAP_MS`). This protects the single CT license seat.
+   *
+   * The probe is read-only — it does NOT persist to Supabase. T5 news is
+   * passthrough-only and the standing policy is "seed until contracted".
+   */
+  if (req.method === "GET" && path === "/debug/news-vendor-probe") {
+    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+    if (!isLive) {
+      sendError(
+        res,
+        503,
+        "iress_mode_not_live",
+        `Cannot probe in iressMode=${deps.env.iressMode}; switch the worker to live`,
+        { iressMode: deps.env.iressMode },
+      );
+      return;
+    }
+    const throttle = newsProbeThrottleOrError();
+    if (throttle.throttled) {
+      sendError(
+        res,
+        429,
+        "rate_limited",
+        `News probe throttled — wait ${throttle.retryAfterMs}ms before retrying (NEWS_PROBE_MIN_GAP_MS=${NEWS_PROBE_MIN_GAP_MS})`,
+        { retryAfterMs: throttle.retryAfterMs, minGapMs: NEWS_PROBE_MIN_GAP_MS },
+      );
+      return;
+    }
+    const vendorRaw = url.searchParams.get("vendor") ?? "SENS";
+    const vendor = vendorRaw.trim();
+    if (!vendor) {
+      sendError(res, 400, "bad_request", "`vendor` query param required (e.g. ?vendor=SENS)");
+      return;
+    }
+    const pageSizeRaw = Number(url.searchParams.get("pageSize") ?? "50");
+    const pageSize = Number.isFinite(pageSizeRaw)
+      ? Math.min(1000, Math.max(1, Math.trunc(pageSizeRaw)))
+      : 50;
+    const timeoutRaw = Number(url.searchParams.get("timeout") ?? "25");
+    const timeout = Number.isFinite(timeoutRaw)
+      ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw)))
+      : 25;
+    const includeBody = url.searchParams.get("includeBody") === "1";
+    const result = await probeNewsVendor(deps, vendor, pageSize, timeout, includeBody);
     send(res, 200, result);
     return;
   }

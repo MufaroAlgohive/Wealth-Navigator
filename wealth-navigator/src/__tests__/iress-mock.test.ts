@@ -334,3 +334,28 @@ describe("ipsPositionGetAll1 (mock)", () => {
     expect(after.DataRows.length).toBe(all.DataRows.length - 1);
   });
 });
+
+describe("newsVendorGet (mock)", () => {
+  it("returns an empty page with ErrorNumber=0 (T5 vendor content is seed-until-contracted)", async () => {
+    // The mock must NEVER fabricate news — T5 policy is "honest empty
+    // state when the source is unconfigured". The UI distinguishes a
+    // configured-but-empty feed from a not-configured feed via the BFF
+    // envelope, not the mock contract.
+    const res = await mockIressClient.newsVendorGet({
+      Header: { SessionKey: "TEST-KEY", RequestID: "rid-news" },
+      Vendor: "SENS",
+    });
+    expect(res.Header?.ErrorNumber).toBe(0);
+    expect(Array.isArray(res.DataRows)).toBe(true);
+    expect(res.DataRows.length).toBe(0);
+  });
+
+  it("throws IressError 25018 when the caller omits `Vendor` (mirror the live 25018)", async () => {
+    await expect(
+      mockIressClient.newsVendorGet({
+        Header: { SessionKey: "TEST-KEY", RequestID: "rid-news-no-vendor" },
+        Vendor: "",
+      }),
+    ).rejects.toMatchObject({ code: 25018, method: "NewsVendorGet" });
+  });
+});

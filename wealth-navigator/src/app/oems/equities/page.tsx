@@ -3,6 +3,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search } from "lucide-react";
+import Link from "next/link";
 
 import { GlassSection, GlassKpi, GlassBadge } from "@/components/oems/primitives/glass";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
@@ -365,6 +366,7 @@ export default function EquitiesPage() {
                     <th className="px-3 py-2.5 text-right text-caption font-medium">VWAP</th>
                     <th className="px-3 py-2.5 text-right text-caption font-medium">Volume</th>
                     <th className="px-3 py-2.5 text-right text-caption font-medium">Chg</th>
+                    <th className="px-3 py-2.5 text-right text-caption font-medium">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -517,6 +519,15 @@ function EquityRow({
       <td className="px-3 py-2 text-right">
         <NumberCell sym={symbol} fallback={ref} decimals={2} showChange size="xs" />
       </td>
+      <td className="px-3 py-2 text-right">
+        <Link
+          href={`/oems/analysis/${symbol}` as never}
+          className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-[hsl(var(--primary)/0.08)] hover:text-primary"
+          title="Open in Analysis"
+        >
+          ↗
+        </Link>
+      </td>
     </tr>
   );
 }
@@ -585,9 +596,10 @@ function RealEquitiesTable({
               <th className="px-3 py-2.5 text-right text-caption font-medium">1D</th>
               <th className="px-3 py-2.5 text-right text-caption font-medium">1M</th>
               <th className="px-3 py-2.5 text-right text-caption font-medium">6M</th>
-              <th className="px-3 py-2.5 text-center text-caption font-medium">Src</th>
-            </tr>
-          </thead>
+            <th className="px-3 py-2.5 text-center text-caption font-medium">Src</th>
+            <th className="px-3 py-2.5 text-right text-caption font-medium">Action</th>
+          </tr>
+        </thead>
           <tbody>
             {rows.map((e) => {
               const sym = bareSymbol(e.symbol);
@@ -618,6 +630,15 @@ function RealEquitiesTable({
                     <Pill tone={onIress ? "success" : "neutral"} size="xs" title={onIress ? "Live IRESS last + change" : "Yahoo fallback (no IRESS snapshot for this name yet)"}>
                       {onIress ? "IRESS" : "Yahoo"}
                     </Pill>
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <Link
+                      href={`/oems/analysis/${sym}` as never}
+                      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-[hsl(var(--primary)/0.08)] hover:text-primary"
+                      title="Open in Analysis"
+                    >
+                      ↗
+                    </Link>
                   </td>
                 </tr>
               );

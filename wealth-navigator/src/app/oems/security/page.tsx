@@ -3,7 +3,8 @@
 import { Suspense, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
-import { Search } from "lucide-react";
+import { Search, ChevronRight } from "lucide-react";
+import Link from "next/link";
 
 import { Panel } from "@/components/oems/primitives/panel";
 import { GlassSection } from "@/components/oems/primitives/glass";
@@ -68,6 +69,15 @@ function SecurityPageContent() {
             placeholder="Ticker / ISIN / RIC"
             className="glass-inset h-10 border-0 pl-10 font-mono text-sm shadow-none"
           />
+        </div>
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/oems/analysis/${activeSym}` as never}
+            className="glass-inset inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-mono text-[11px] font-medium text-primary transition-colors hover:border-[hsl(var(--glass-border-strong))]"
+          >
+            Open in Analysis
+            <ChevronRight className="h-3 w-3" />
+          </Link>
         </div>
       </header>
 

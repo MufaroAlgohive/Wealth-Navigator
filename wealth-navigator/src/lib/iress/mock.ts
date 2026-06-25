@@ -34,6 +34,8 @@ import type {
   IressSessionStartRequest,
   IressSessionStartResponse,
   NewOrder,
+  NewsVendorGetRequest,
+  NewsStory,
   OrderCreate3Request,
   OrderCreate3Response,
   PricingQuoteGetRequest,
@@ -229,6 +231,26 @@ export const mockIressClient: IressClient = {
   // Reference-data search — mock returns no rows (the live worker is the only
   // caller; the UI never searches in mock mode).
   async securitySearchGet() { return ok([]); },
+
+  // T5 vendor content — the mock NEVER fabricates news headlines. The BFF
+  // surfaces `source: "unconfigured"` to the UI when no live IRESS vendor
+  // feed is reachable, and the mock honours that contract by returning an
+  // empty page. The mock still validates the request shape (Vendor is
+  // required) so callers don't silently hit a 25018 in production for a
+  // shape mismatch they could have caught in dev.
+  async newsVendorGet(req: NewsVendorGetRequest): Promise<IressResponse<NewsStory>> {
+    if (!req.Vendor || typeof req.Vendor !== "string") {
+      throw new IressError(25018, "NewsVendorGet", "NewsVendorGet: missing required field `Vendor`");
+    }
+    return {
+      Header: {
+        StatusCode: 2,
+        ErrorNumber: 0,
+        ErrorDescription: "mock news feed — empty (T5 vendor content, seed-until-contracted)",
+      },
+      DataRows: [],
+    };
+  },
 
   // ── trading ────────────────────────────────────────────────────
   async orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response> {

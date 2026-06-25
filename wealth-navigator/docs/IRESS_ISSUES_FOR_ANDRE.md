@@ -119,8 +119,18 @@ the method + wire shape? (Lower priority.)
 
 ### 9. News / SENS
 
-**Ask:** is there a V4 path for SENS / company announcements, or should we source
-this from an external vendor? (We currently run general RSS only.)
+**Partial resolution 2026-06-25** — Charles Ntjana confirmed that IRESS Pro `NewsVendorGet` is the V4 verb for Market Data / News (vendor parameter, default `SENS`). Adapter + worker probe (`GET /debug/news-vendor-probe`) + BFF passthrough (`GET /api/iress/news`) wired; nothing persisted to Supabase yet (T5 vendor content — passthrough-only until vendor contract).
+
+**Open sub-questions:**
+- Does `DFM@Mint` carry the `NewsVendorGet` entitlement? (25010 / 25034 otherwise.)
+- Do the rows include full story bodies or only headlines on this profile?
+- `Vendor=SENS` vs `Vendor=IRESS` — which one populates against this account?
+
+Verify after a worker redeploy with:
+```bash
+curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=SENS&pageSize=10&includeBody=1'
+```
+(Probe is rate-limited to 1 call per 10 s by default — env `NEWS_PROBE_MIN_GAP_MS`.)
 
 ### 10. CT vs production + license seat
 

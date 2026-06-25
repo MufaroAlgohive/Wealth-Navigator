@@ -43,6 +43,8 @@ import type {
   TimeSeriesGet2Request,
   SecuritySearchGetRequest,
   SecuritySearchRow,
+  NewsVendorGetRequest,
+  NewsStory,
   IPSTransactionGetByAccount5Request,
   IPSAccountGetAll1Request,
   IPSAccountRow,
@@ -554,6 +556,78 @@ function emptyQuote(): Quote {
   };
 }
 
+/**
+ * Map a raw `NewsVendorGet` row into the normalised `NewsStory` shape.
+ *
+ * The CT build's field names are not yet pinned empirically — Charles'
+ * example was an empty `<Parameters />` payload, so we have no sample row
+ * to inspect. The mapper does best-effort reads across common V4 naming
+ * variants (camelCase + short forms) so a future live probe "just works"
+ * once we know which one CT returns. Fields we don't find stay `null`.
+ *
+ * TODO(entitlement): the live CT build may only return headlines for
+ * non-provisioned profiles. When the worker's `/debug/news-vendor-probe`
+ * reports what the row actually contains, narrow the `str(...)` fallbacks
+ * here and remove the entitlement-blocked branches.
+ */
+function mapNewsStory(row: Record<string, unknown> | undefined): NewsStory {
+  const str = (...keys: string[]) => {
+    if (!row) return "";
+    for (const k of keys) {
+      const v = row[k];
+      if (v !== undefined && v !== null && v !== "") return String(v);
+    }
+    return "";
+  };
+  const tsRaw = str(
+    "Timestamp",
+    "StoryTimestamp",
+    "StoryTime",
+    "PublishDate",
+    "PublishDateTime",
+    "DateTime",
+    "TimeStamp",
+    "WebServiceTimeStamp",
+  );
+  const ts = tsRaw ? Date.parse(tsRaw) || 0 : 0;
+  // Related codes / RICs can be a delimited string, an array of strings,
+  // or an array of objects. The V4 doc hasn't pinned this — keep the
+  // surface small and let the caller decide what to do with the raw form.
+  const rawRelated =
+    row?.["RelatedCodes"] ?? row?.["RelatedRICs"] ?? row?.["Codes"] ?? row?.["Symbols"];
+  let relatedCodes: string[] | undefined;
+  if (Array.isArray(rawRelated)) {
+    relatedCodes = rawRelated.map((c) => String(c ?? "").trim()).filter(Boolean);
+    if (relatedCodes.length === 0) relatedCodes = undefined;
+  } else if (typeof rawRelated === "string" && rawRelated.trim() !== "") {
+    relatedCodes = rawRelated
+      .split(/[\s,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (relatedCodes.length === 0) relatedCodes = undefined;
+  }
+  const storyId =
+    str("StoryId", "StoryID", "Id", "NewsId", "ID") ||
+    `news-${ts || Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const story: NewsStory = {
+    StoryId: storyId,
+    Headline: str("Headline", "Title", "StoryHeadline") || "(untitled)",
+    Source: str("Source", "Vendor", "VendorCode", "Feed", "Provider") || "IRESS",
+    Timestamp: tsRaw,
+    ts,
+    Story: (() => {
+      const body = str("Story", "Body", "Text", "Content", "StoryBody");
+      return body === "" ? null : body;
+    })(),
+    RelatedCodes: relatedCodes,
+    Category: (() => {
+      const c = str("Category", "StoryCategory", "Section");
+      return c === "" ? null : c;
+    })(),
+  };
+  return story;
+}
+
 function mapOrder(row: Record<string, unknown>): Order {
   const str = (k: string) => String(row[k] ?? "");
   const num = (k: string) => Number(row[k] ?? 0);
@@ -998,6 +1072,96 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         // read SecurityCode / Exchange / SecurityType / SecurityDescription / ISIN).
         dataRows: result.dataRows.map((r) => r as unknown as SecuritySearchRow),
       });
+    },
+
+    /**
+     * `NewsVendorGet` — Market Data / News via the IRESS Pro News service.
+     *
+     * Confirmed method name + envelope by Charles Ntjana (2026-06-25). The
+     * accepted V4 call shape is:
+     *
+     *   <Header>
+     *     <SessionKey>…</SessionKey>
+     *     <RequestID>…</RequestID>
+     *     <WaitForResponse>true</WaitForResponse>
+     *     <PagingBookmark></PagingBookmark>
+     *     <PagingDirection>0</PagingDirection>
+     *     <Updates>false</Updates>
+     *     <Timeout>25</Timeout>
+     *     <PageSize>1000</PageSize>
+     *     <InputLocalizationType>0</InputLocalizationType>
+     *     <OutputLocalizationType>0</OutputLocalizationType>
+     *   </Header>
+     *   <Parameters>
+     *     <Vendor>SENS</Vendor>
+     *     <!-- additional vendor-specific filters (Category, SecurityCode, …) -->
+     *   </Parameters>
+     *
+     * `IressHeader` already covers the standard `<Header>` fields. The two
+     * `*LocalizationType` integers are V4-wide concerns; we don't surface
+     * them on `IressHeader` (the OEMS never needs to override them) but the
+     * transport's `WaitForResponse` / `Timeout` / `PageSize` defaults are
+     * fine. Charles' sample doesn't include them, so the probe is the only
+     * way to confirm whether the CT build wants them — flag for follow-up
+     * if the probe 25010s with a "missing localization" fault.
+     *
+     * T5 policy: this method does **not** persist to Supabase. News is T5
+     * "vendor content — seed until contracted", so the worker reads the
+     * response on demand (Path B passthrough), and news panels render
+     * `UNCONFIGURED` when the source is unconfigured. We deliberately
+     * keep the `IRESS_RETAIL_DRY_RUN` / `SUPABASE_ALLOW_WRITES` gates out
+     * of this client — news is read-only end-to-end.
+     *
+     * Entitlement failures (25010 / 25034) and SOAP faults bubble up as
+     * `IressError`; the BFF surfaces them with a typed code so the UI can
+     * render the honest empty state ("`NewsVendorGet` entitlement not
+     * enabled — ask Charles").
+     */
+    async newsVendorGet(req: NewsVendorGetRequest): Promise<IressResponse<NewsStory>> {
+      requireSessionKey(req.Header, "NewsVendorGet");
+      require(req.Vendor, "Vendor", "NewsVendorGet");
+      // V4 puts the vendor at the TOP of `<Parameters>` (alongside the
+      // vendor-specific filters). The transport flattens nested objects
+      // into XML elements automatically.
+      const parameters: Record<string, unknown> = {
+        Vendor: req.Vendor,
+        ...(req.Parameters ?? {}),
+      };
+      const result = await transport.call({
+        method: "NewsVendorGet",
+        header: makeHeader({
+          sessionKey: req.Header.SessionKey,
+          requestID: req.Header.RequestID,
+          updates: req.Header.Updates ?? false,
+          timeout: req.Header.Timeout ?? 25,
+          pageSize: req.Header.PageSize ?? 1000,
+          pagingBookmark: req.Header.PagingBookmark ?? "",
+          pagingDirection: req.Header.PagingDirection ?? 0,
+          waitForResponse: req.Header.WaitForResponse ?? true,
+        }),
+        parameters,
+      });
+      const mapped = mapResponse<NewsStory>({
+        header: result.header,
+        dataRows: result.dataRows.map((r) => mapNewsStory(r)),
+      });
+      // Surface the raw rows too — same pattern as `PricingQuoteGet`. The
+      // mapper above collapses some fields to `null` (story body, related
+      // codes) and the worker probe needs to see exactly what came back so
+      // we can narrow the fallbacks after the first live run.
+      (mapped as { RawDataRows?: Array<Record<string, unknown>> }).RawDataRows = result.dataRows;
+      // Same fault-as-OK-with-ErrorNumber trap as PricingQuoteGet: refuse
+      // to silently mask entitlement failures (25010 / 25034) by
+      // returning a 200 with `ErrorNumber != 0`.
+      if (mapped.Header.ErrorNumber !== 0) {
+        throw new IressError(
+          mapped.Header.ErrorNumber,
+          "NewsVendorGet",
+          mapped.Header.ErrorDescription ??
+            `NewsVendorGet error ${mapped.Header.ErrorNumber}`,
+        );
+      }
+      return mapped;
     },
 
     // ── trading (IOS+) ─────────────────────────────────────────────

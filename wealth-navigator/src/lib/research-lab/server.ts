@@ -1,19 +1,19 @@
 import {
-  createRetailServiceRoleClient,
-  isRetailSupabaseConfigured,
-  createServiceRoleClient,
-  isSupabaseConfigured,
-} from "@/lib/supabase/server";
-import {
+  type SecurityRef,
   buildFundamentals,
   buildHoldings,
   computeSectors,
   computeTotals,
   parseHoldingsJson,
   securitiesMap,
-  type SecurityRef,
 } from "@/lib/research-lab/compose-basket";
 import type { ResearchLabListItem, ResearchLabPayload } from "@/lib/research-lab/types";
+import {
+  createRetailServiceRoleClient,
+  createServiceRoleClient,
+  isRetailSupabaseConfigured,
+  isSupabaseConfigured,
+} from "@/lib/supabase/server";
 
 const bare = (sym: string) => sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
 
@@ -96,6 +96,53 @@ export async function listResearchStrategies(): Promise<{
   return { strategies, source: "retail-supabase" };
 }
 
+/**
+ * Subset of `listResearchStrategies` filtered to strategies that hold a given
+ * ticker. Used by the per-symbol Analysis tab's Research sub-tab. We fetch the
+ * full `strategies_c` (it's small, ~tens of rows) and filter server-side so
+ * the call shape mirrors `listResearchStrategies` — no new client contract.
+ *
+ * Returns `{ strategies, source, reason: "no_match" }` when no published
+ * basket holds the symbol. The page renders the honest empty state for that
+ * reason (different from "supabase not configured").
+ */
+export async function listResearchStrategiesForSymbol(sym: string): Promise<{
+  strategies: ResearchLabListItem[];
+  source: string;
+  reason?: string;
+}> {
+  if (!isRetailSupabaseConfigured()) {
+    return { strategies: [], source: "unavailable", reason: "supabase_not_configured" };
+  }
+  const retail = createRetailServiceRoleClient();
+  const { data, error } = await retail
+    .from("strategies_c")
+    .select("id,name,benchmark_name,benchmark_symbol,status,holdings,min_investment")
+    .order("name");
+  if (error) {
+    return { strategies: [], source: "unavailable", reason: error.message };
+  }
+  const target = bare(sym);
+  const strategies = ((data ?? []) as StrategyRow[])
+    .filter((s) => {
+      const raw = parseHoldingsJson(s.holdings);
+      return raw.some((h) => bare(String(h.symbol ?? h.ticker ?? "")) === target);
+    })
+    .map((s) => ({
+      id: s.id,
+      name: s.name ?? "Strategy",
+      benchmark: s.benchmark_name ?? s.benchmark_symbol ?? "—",
+      holdingsCount: Array.isArray(s.holdings) ? s.holdings.length : 0,
+      minInvestment: Number(s.min_investment) || 0,
+      status: String(s.status ?? "—"),
+    }));
+  return {
+    strategies,
+    source: "retail-supabase",
+    reason: strategies.length === 0 ? "no_match" : undefined,
+  };
+}
+
 export async function loadResearchLab(
   strategyId: string,
   extraTickers: string[] = [],
@@ -152,7 +199,9 @@ export async function loadResearchLab(
   const basketMin = Number(row.min_investment) || 0;
 
   const currentHoldings = buildHoldings(raw, secMap, basketMin, { includePending: false });
-  const proposedHoldings = hasPending ? buildHoldings(raw, secMap, basketMin, { includePending: true }) : null;
+  const proposedHoldings = hasPending
+    ? buildHoldings(raw, secMap, basketMin, { includePending: true })
+    : null;
 
   const currentTotals = computeTotals(currentHoldings, basketMin);
   const proposedTotals = proposedHoldings ? computeTotals(proposedHoldings, basketMin) : null;

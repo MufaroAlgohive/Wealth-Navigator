@@ -1,6 +1,6 @@
 # Remaining Data Gaps — Real Data Mandate
 
-Last updated: 2026-06-12. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_PUBLIC_USE_SUPABASE_QUOTES=true` → **no seed/mock prices in UI**. Empty states show `Data feed not configured`.
+Last updated: 2026-06-25. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_PUBLIC_USE_SUPABASE_QUOTES=true` → **no seed/mock prices in UI**. Empty states show `Data feed not configured`. News panel now routes through `/api/iress/news` (Path B) when the worker is live — UI shows `T5_PASSTHROUGH` badge instead of `SEED`.
 
 ## Wired in this session
 
@@ -36,8 +36,8 @@ Last updated: 2026-06-12. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_
 
 | Surface | Vendor / system | Notes |
 |---------|-----------------|-------|
-| SENS announcements | JSE SENS / Refinitiv / etc. | No IRESS method in adapter |
-| News flow | Bloomberg / Refinitiv / IRESS news | Not in current V4 surface |
+| SENS announcements | IRESS Pro `NewsVendorGet` (vendor=SENS) | **Adapter wired 2026-06-25**; BFF passthrough + worker probe (`/debug/news-vendor-probe`). Still T5 vendor content — passthrough-only, nothing persisted to `news_item_c` until vendor contract. Entitlement / headline-vs-body shape TBD pending live probe |
+| News flow | IRESS Pro `NewsVendorGet` (vendor=IRESS/Reuters/Bloomberg/…) | Same adapter; vendor parameter picks the feed. Currently no UI surface consuming it; BFF ready |
 | Macro pulse (CPI, PMI, etc.) | Macro data vendor | Not in IRESS mock surface |
 | Platform AUM / Day P&L | Portfolio / accounting system | Strategies are seed-only |
 | PCA curve decomposition | Derived from live curve | Blocked on curve feed |
@@ -63,7 +63,8 @@ Last updated: 2026-06-12. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_
 1. Confirm `BHG` board / quotation basis — CT returns hollow row today.
 2. Provide sector index codes for JSE heatmap.
 3. Confirm `OrderPadGetByAccount` account code for worker poll.
-4. Advise on SENS/news — IRESS path vs third-party.
+4. ~~Advise on SENS/news — IRESS path vs third-party.~~ **Resolved 2026-06-25** — `NewsVendorGet` confirmed; default `Vendor=SENS`. Adapter + probe + BFF wired; only the headline-vs-body entitlement + vendor exact-match are pending a live probe.
 5. Entitlement check for `TimeSeriesGet2` on J203 and ZAR curve codes.
+6. **NEW** — confirm `NewsVendorGet` entitlement on `DFM@Mint`, and whether the returned rows include story bodies or only headlines. Verify with `curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=SENS&pageSize=10'` after a worker redeploy (NOT before — the user rule says do not redeploy without explicit approval).
 
 See also: `docs/DATA_PROVENANCE.md`, `docs/MINT_GO_LIVE_RUNBOOK.html`.

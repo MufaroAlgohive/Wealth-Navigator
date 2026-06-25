@@ -211,6 +211,19 @@ function PaletteResults({ onSelect }: { onSelect: () => void }) {
         onSelect();
       },
     }));
+    // Analysis-tab entry — operator types a ticker to jump straight to the
+    // per-symbol Fiscal.ai-style view (Overview · Financials · Estimates ·
+    // Dividends · Ownership · News · Filings · Research · Modeling).
+    const analysisItems: PaletteItem[] = (equitiesQ.data ?? []).slice(0, 30).map<PaletteItem>((e) => ({
+      key: `analysis:${e.symbol}`,
+      label: `Open analysis · ${e.symbol}`,
+      hint: `${e.name} · ${e.sector}`,
+      section: "Analysis",
+      onSelect: () => {
+        router.push(`/oems/analysis/${encodeURIComponent(e.symbol)}` as Route);
+        onSelect();
+      },
+    }));
     const strategies = (strategiesQ.data ?? []).map<PaletteItem>((s) => ({
       key: `strat:${s.id}`,
       label: s.name,
@@ -245,6 +258,7 @@ function PaletteResults({ onSelect }: { onSelect: () => void }) {
     return [
       { heading: "Navigation", items: navItems },
       { heading: "Equities",   items: equities },
+      { heading: "Analysis",   items: analysisItems },
       { heading: "Strategies", items: strategies },
       { heading: "Orders",     items: orders },
     ];

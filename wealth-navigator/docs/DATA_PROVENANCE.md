@@ -123,6 +123,7 @@ Local dev without the flags still uses mock adapter + seed for UI building.
 | HYBRID | blue | Live where possible; seed/sim fallback |
 | SEED | amber | Static seed or synthetic generation |
 | MOCK | muted | In-process mock adapter |
+| T5_PASSTHROUGH | info | T5 vendor content; worker reads on demand via Path B; nothing persisted until vendor contract. UI shows `UNCONFIGURED` empty state when the BFF returns `source: "unconfigured"` |
 | PENDING | — | No V4 method identified |
 
 ---
@@ -188,7 +189,7 @@ Production (Vercel): `IRESS_MODE=mock`, `USE_SUPABASE_QUOTES=true`, `NEXT_PUBLIC
 | Money market | /oems/money-market | seed | TimeSeriesGet2 | SEED |
 | Curves | /oems/curves | seed | TimeSeriesGet2 | SEED |
 | Macro | /oems/macro | seed | — | SEED |
-| News + SENS | /oems/news | seed | — | SEED |
+| News + SENS | /oems/news | `/api/iress/news` (Path B, vendor=SENS) OR seed | NewsVendorGet | T5_PASSTHROUGH / SEED |
 | Integration health | /oems/integration | seed + `/api/iress/health` | IRESSSessionStart | HYBRID |
 
 ## Infrastructure
@@ -203,7 +204,8 @@ Production (Vercel): `IRESS_MODE=mock`, `USE_SUPABASE_QUOTES=true`, `NEXT_PUBLIC
 | BFF live orders (Path B) | /api/orders/live | reverse-proxies worker `/orders` | OrderPadGetByAccount (worker) | LIVE |
 | BFF integration health (Path B) | /api/integration/health | reverse-proxies worker `/health` | session-manager (worker) | LIVE |
 | BFF orders SSE (Path B) | /api/orders/stream | reverse-proxies worker `/orders/stream` | OrderPadGetByAccount (worker) | LIVE |
-| Worker read-only HTTP | worker `:8765/{health,orders,orders/stream}` | `workers/iress-ingest/src/http-api.ts` | (worker-internal) | LIVE |
+| BFF news (Path B) | /api/iress/news | reverse-proxies worker `/debug/news-vendor-probe` | NewsVendorGet (worker) | T5_PASSTHROUGH |
+| Worker read-only HTTP | worker `:8765/{health,orders,orders/stream,debug/news-vendor-probe}` | `workers/iress-ingest/src/http-api.ts` | (worker-internal) | LIVE |
 | `isWorkerLiveMode()` helper | `@/lib/data-policy` | `USE_SUPABASE_QUOTES` server flag | — | — |
 | `WorkerReadOnlyApi` helper | `@/lib/iress/worker-api` | `fetch` w/ 10s timeout + error envelope | — | — |
 
@@ -227,6 +229,48 @@ If SOAP to `https://webservices-ct.iress.co.za/v4` fails (network, auth, WSDL en
 2. Falls back to `seed-fallback` in `/api/iress/quotes`
 3. Shows **SEED** or **HYBRID** badges — never pretends data is live
 4. Documents the error in this file (update after verification runs)
+
+### T5 — News (vendor content)
+
+**Source:** IRESS Pro `NewsVendorGet` (base IRIS session; no IOS+/IPS/FIX+ service session required). Confirmed by Charles Ntjana on 2026-06-25 — Market Data and News in IRESS V4 surface through this single verb, not a separate SENS feed.
+
+**Persistence:** **none**. T5 vendor content is "seed until contracted" per the standing rule, so the worker reads on demand and the BFF reverses-proxies the response to the UI. The worker **does NOT** write to `news_item_c` today; once a vendor contract is in place the worker can ingest (e.g. 6-hourly poll) and the OEMS can switch its UI to `/api/news`. Until then, `IRESS_RETAIL_DRY_RUN` / `SUPABASE_ALLOW_WRITES` are not in the news path.
+
+**Vendor parameter:** default `SENS` (Charles' SA-flavored default); override with `IRESS`, `Reuters`, `Bloomberg`, `Moneyweb`, `Dow Jones`, `Business Day`. Unknown vendor codes are passed through verbatim — the SOAP server is the source of truth for what `Vendor` accepts.
+
+**Wire shape** (Charles' example):
+```xml
+<Header>
+  <SessionKey>…</SessionKey>
+  <RequestID>…</RequestID>
+  <WaitForResponse>true</WaitForResponse>
+  <PagingBookmark></PagingBookmark>
+  <PagingDirection>0</PagingDirection>
+  <Updates>false</Updates>
+  <Timeout>25</Timeout>
+  <PageSize>1000</PageSize>
+</Header>
+<Parameters>
+  <Vendor>SENS</Vendor>
+  <!-- vendor-specific filters: Category, SecurityCode, From/To, MaxResults -->
+</Parameters>
+```
+
+`IressHeader` covers every standard V4 field. The CT build may also expect `InputLocalizationType` / `OutputLocalizationType` integers — not surfaced on `IressHeader` (no override needed today) but flagged for follow-up if the probe 25010s with "missing localization".
+
+**Worker probe:** `GET /debug/news-vendor-probe?vendor=SENS&pageSize=50&timeout=25[&includeBody=1]`. Rate-limited to 1 call per `NEWS_PROBE_MIN_GAP_MS` (default 10s) so a misconfigured client can't burn the CT license seat. Returns the first page + the first 10 headlines + the raw fault when the call fails.
+
+**BFF passthrough:** `GET /api/iress/news?vendor=SENS&pageSize=50&timeout=25[&includeBody=1]`. Returns:
+- `200 { source: "unconfigured", tier: "T5", error: { code: "T5_NOT_PERSISTED" } }` when `IRESS_MODE=mock` (Vercel never calls IRESS)
+- `503 not_configured` when `IRESS_WORKER_URL` unset
+- `503 worker_mode_off` when `USE_SUPABASE_QUOTES` off
+- `200 { source: "live", tier: "T5", ... }` with the worker's probe envelope when everything is wired
+- `503 upstream_error` (entitlement, rate-limited, unreachable) when the worker says no
+
+**Entitlement / open questions** (probe resolves):
+- Does `NewsVendorGet` return full story bodies on the `DFM@Mint` profile, or headlines only?
+- Does `Vendor=SENS` return results, or do we need `Vendor=IRESS` (broker-sourced)?
+- Do `NewsVendorGetUpdates` / `NewsVendorGet2` exist on CT? Charles' example only mentioned `NewsVendorGet`.
 
 ### Last verification (2026-06-11)
 

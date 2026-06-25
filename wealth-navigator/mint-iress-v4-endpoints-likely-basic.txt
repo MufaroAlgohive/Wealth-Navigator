@@ -1,6 +1,6 @@
 MINT WEALTH NAVIGATOR
 V4 Web Services -- Likely (future) endpoint list (basic)
-Version: 2026-06-09
+Version: 2026-06-25
 
 IRESS PRO
 AuditTrailGetByAccount
@@ -8,7 +8,8 @@ PricingQuoteExGet
 PricingQuoteExGetUpdates
 PricingTradeHistoricalGet
 IRESSSessionStart (SessionNumberToKick=-1 variant)
-<PENDING: News / SENS feed>
+NewsVendorGet            <- confirmed by Charles 2026-06-25 for Market Data / News; T5 vendor content, passthrough-only; vendor=SENS default, override via ?vendor=
+NewsVendorGetUpdates     <- TODO(entitlement): updates flavour not yet confirmed against CT
 <PENDING: Macro releases feed>
 <PENDING: JSE sector weights>
 <PENDING: JIBAR / ZARONIA fixings (TimeSeriesGet2 codes?)>
