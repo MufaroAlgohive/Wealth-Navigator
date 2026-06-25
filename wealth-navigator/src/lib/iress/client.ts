@@ -175,7 +175,11 @@ export interface SecuritySearchGetRequest {
  * Market Data / News; the vendor parameter selects which vendor's feed to
  * query. The SA-flavoured OEMS mostly cares about `SENS` (JSE Stock Exchange
  * News Service) and `IRESS` (broker-sourced general news). Defaults to
- * `SENS` in the live client; the mock + probe accept any of these.
+ * `IRESS` in the live client (broker-sourced, general market news — chosen
+ * over `SENS` because the `DFM@Mint` IRESS Pro entitlement is for the
+ * broker feed); the mock + probe accept any of these. Override at the
+ * call site (BFF query string, worker probe `?vendor=…`) to use any of
+ * the other supported vendors.
  *
  * Note: this is the V4 vendor *enum*, NOT the `NewsItem.source` taxonomy on
  * the typed `NewsItem` interface (`Reuters | Bloomberg | Moneyweb | ...`).
@@ -193,7 +197,15 @@ export type NewsVendor =
 
 export interface NewsVendorGetRequest {
   Header: IressHeader;
-  /** Vendor code — e.g. "SENS", "IRESS", "Reuters". Required; "" faults 25018. */
+  /**
+   * Vendor code — e.g. `"SENS"`, `"IRESS"`, `"Reuters"`. Required;
+   * an empty / missing `Vendor` faults `25018` at the SOAP layer.
+   *
+   * The default at every call site (worker probe + BFF passthrough) is
+   * `"IRESS"` — broker-sourced general market news. `SENS` (JSE
+   * Stock Exchange News Service) is still a valid override when the
+   * caller wants only SENS announcements.
+   */
   Vendor: NewsVendor | string;
   /**
    * Optional per-vendor parameters. V4 spec accepts a free-form `<Parameters>`

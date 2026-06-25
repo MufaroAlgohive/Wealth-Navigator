@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/iress/news?vendor=SENS&pageSize=50
+ * GET /api/iress/news?vendor=IRESS&pageSize=50
  *
  * Path B BFF passthrough for the worker's `/debug/news-vendor-probe`. The
  * worker is the only process that holds the IRESS license seat; this
@@ -89,7 +89,7 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url);
-  const vendorRaw = url.searchParams.get("vendor") ?? "SENS";
+  const vendorRaw = url.searchParams.get("vendor") ?? "IRESS";
   const vendor = vendorRaw.trim();
   if (!vendor) {
     return Response.json(
@@ -97,7 +97,7 @@ export async function GET(req: Request) {
         ok: false,
         source: "unconfigured",
         tier: "T5",
-        error: { code: "bad_request", message: "`vendor` query param required (e.g. ?vendor=SENS)" },
+        error: { code: "bad_request", message: "`vendor` query param required (e.g. ?vendor=IRESS)" },
         headlines: [],
       },
       { status: 400 },

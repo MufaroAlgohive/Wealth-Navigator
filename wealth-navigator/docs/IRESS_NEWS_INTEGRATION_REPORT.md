@@ -38,16 +38,16 @@
 
 ## Open questions (need user input)
 
-1. **Default vendor:** I chose `SENS` as the default since this is JSE/South Africa. Charles' example envelope left `Parameters/Vendor` empty. Should the default be `SENS` or `IRESS` (more general)? Easy one-line change in `wealth-navigator/src/lib/iress/client.ts` once decided.
-2. **Story body vs headlines:** IRESS may return headline-only rows depending on entitlement. After probe, if `NewsStory.Story` is empty/populated we either populate or trim the field. Already TODO-flagged in `live.ts`.
+1. **Default vendor:** **RESOLVED 2026-06-25** — user switched the default from `SENS` → `IRESS` in `client.ts` (NewsVendor doc + `NewsVendorGetRequest.Vendor` JSDoc), `http-api.ts` (probe default + JSDoc), and `/api/iress/news/route.ts` (BFF default). The full `NewsVendor` union (`SENS | IRESS | Reuters | Bloomberg | Moneyweb | Dow Jones | Business Day`) stays valid at every call site, so SENS is still reachable via `?vendor=SENS` on the probe/BFF. Reasoning: Charles confirmed the `DFM@Mint` IRESS Pro entitlement is for the broker feed, and `IRESS` is the more general vendor that covers general market news as well as company announcements.
+2. **Story body vs headlines:** IRESS may return headline-only rows depending on entitlement. After probe, if `NewsStory.Story` is empty/populated we either populate or trim the field. Already TODO-flagged in `live.ts`. **Live probe result pending worker redeploy — see "Live probe result" below.**
 3. **Caching policy:** Per T5 rule (vendor content — seed until contracted), I left it passthrough-only (no DB writes). Do we want to add a `news_*` table once we have a stable feed? Not in scope of this work.
 
----
+## Live probe result
 
-## Ready-to-redeploy curl
+To be filled in once the Railway `Iress-Worker` is redeployed and the probe below is called. The probe is read-only — no Supabase writes — so the standing `IRESS_WORKER_DRY_RUN=1` / `SUPABASE_ALLOW_WRITES=0` defaults are NOT being flipped.
 
 ```bash
-curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=SENS&pageSize=10&includeBody=1'
+curl 'https://iress-worker-production.up.railway.app/debug/news-vendor-probe?vendor=IRESS&pageSize=10&includeBody=1'
 ```
 
-The probe respects a per-process 10 s throttle (`NEWS_PROBE_MIN_GAP_MS` env). Worker is NOT redeployed — awaiting your approval before the redeploy + probe.
+The probe respects a per-process 10 s throttle (`NEWS_PROBE_MIN_GAP_MS` env). After the live probe runs the verdict goes here (body populates / headlines-only / entitlement block) and the `REMAINING_GAPS.md` item #6 is closed or narrowed accordingly.

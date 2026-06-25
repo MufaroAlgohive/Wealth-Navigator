@@ -309,8 +309,9 @@ async function probeTimeSeriesInterval(
  * IRIS session (no IOS+/IPS/FIX+ service session required).
  *
  * Wire shape mirrors `probeTimeSeriesInterval`:
- *   - caller supplies `vendor` (default `SENS` — JSE/South Africa
- *     default; override with `IRESS`, `Reuters`, …)
+ *   - caller supplies `vendor` (default `IRESS` — broker-sourced
+ *     general market news; override with `SENS`, `Reuters`, `Bloomberg`,
+ *     `Moneyweb`, `Dow Jones`, `Business Day`)
  *   - `pageSize` capped at 1000 (the CT max per Charles' example)
  *   - `timeout` capped at 25 (the CT ceiling for this method)
  *   - per-process throttle (10s default — see `newsProbeThrottleOrError`)
@@ -1129,8 +1130,9 @@ export async function handleRequest(
    * probe).
    *
    * Query params (all optional):
-   *   - `vendor`       default "SENS" (Charles' SA-flavored default;
-   *                    override with `IRESS`, `Reuters`, …)
+   *   - `vendor`       default "IRESS" (broker-sourced general market news;
+   *                    override with `SENS`, `Reuters`, `Bloomberg`,
+   *                    `Moneyweb`, `Dow Jones`, `Business Day`)
    *   - `pageSize`     default 50, capped at 1000 (CT max)
    *   - `timeout`      default 25, capped at 25 (CT ceiling)
    *   - `includeBody`  "1" to include a 200-char preview of each story body
@@ -1167,10 +1169,10 @@ export async function handleRequest(
       );
       return;
     }
-    const vendorRaw = url.searchParams.get("vendor") ?? "SENS";
+    const vendorRaw = url.searchParams.get("vendor") ?? "IRESS";
     const vendor = vendorRaw.trim();
     if (!vendor) {
-      sendError(res, 400, "bad_request", "`vendor` query param required (e.g. ?vendor=SENS)");
+      sendError(res, 400, "bad_request", "`vendor` query param required (e.g. ?vendor=IRESS)");
       return;
     }
     const pageSizeRaw = Number(url.searchParams.get("pageSize") ?? "50");

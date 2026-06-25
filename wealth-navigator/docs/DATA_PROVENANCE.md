@@ -236,7 +236,7 @@ If SOAP to `https://webservices-ct.iress.co.za/v4` fails (network, auth, WSDL en
 
 **Persistence:** **none**. T5 vendor content is "seed until contracted" per the standing rule, so the worker reads on demand and the BFF reverses-proxies the response to the UI. The worker **does NOT** write to `news_item_c` today; once a vendor contract is in place the worker can ingest (e.g. 6-hourly poll) and the OEMS can switch its UI to `/api/news`. Until then, `IRESS_RETAIL_DRY_RUN` / `SUPABASE_ALLOW_WRITES` are not in the news path.
 
-**Vendor parameter:** default `SENS` (Charles' SA-flavored default); override with `IRESS`, `Reuters`, `Bloomberg`, `Moneyweb`, `Dow Jones`, `Business Day`. Unknown vendor codes are passed through verbatim — the SOAP server is the source of truth for what `Vendor` accepts.
+**Vendor parameter:** default `IRESS` (broker-sourced general market news — the vendor the `DFM@Mint` IRESS Pro entitlement is for); override with `SENS`, `Reuters`, `Bloomberg`, `Moneyweb`, `Dow Jones`, `Business Day`. Unknown vendor codes are passed through verbatim — the SOAP server is the source of truth for what `Vendor` accepts. The default was switched from `SENS` → `IRESS` on 2026-06-25 (default-vendor change in `client.ts` JSDoc + `http-api.ts` probe default + `/api/iress/news` BFF default).
 
 **Wire shape** (Charles' example):
 ```xml
@@ -258,9 +258,9 @@ If SOAP to `https://webservices-ct.iress.co.za/v4` fails (network, auth, WSDL en
 
 `IressHeader` covers every standard V4 field. The CT build may also expect `InputLocalizationType` / `OutputLocalizationType` integers — not surfaced on `IressHeader` (no override needed today) but flagged for follow-up if the probe 25010s with "missing localization".
 
-**Worker probe:** `GET /debug/news-vendor-probe?vendor=SENS&pageSize=50&timeout=25[&includeBody=1]`. Rate-limited to 1 call per `NEWS_PROBE_MIN_GAP_MS` (default 10s) so a misconfigured client can't burn the CT license seat. Returns the first page + the first 10 headlines + the raw fault when the call fails.
+**Worker probe:** `GET /debug/news-vendor-probe?vendor=IRESS&pageSize=50&timeout=25[&includeBody=1]`. Rate-limited to 1 call per `NEWS_PROBE_MIN_GAP_MS` (default 10s) so a misconfigured client can't burn the CT license seat. Returns the first page + the first 10 headlines + the raw fault when the call fails.
 
-**BFF passthrough:** `GET /api/iress/news?vendor=SENS&pageSize=50&timeout=25[&includeBody=1]`. Returns:
+**BFF passthrough:** `GET /api/iress/news?vendor=IRESS&pageSize=50&timeout=25[&includeBody=1]`. Returns:
 - `200 { source: "unconfigured", tier: "T5", error: { code: "T5_NOT_PERSISTED" } }` when `IRESS_MODE=mock` (Vercel never calls IRESS)
 - `503 not_configured` when `IRESS_WORKER_URL` unset
 - `503 worker_mode_off` when `USE_SUPABASE_QUOTES` off

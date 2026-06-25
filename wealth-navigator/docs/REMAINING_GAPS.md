@@ -36,8 +36,8 @@ Last updated: 2026-06-25. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_
 
 | Surface | Vendor / system | Notes |
 |---------|-----------------|-------|
-| SENS announcements | IRESS Pro `NewsVendorGet` (vendor=SENS) | **Adapter wired 2026-06-25**; BFF passthrough + worker probe (`/debug/news-vendor-probe`). Still T5 vendor content — passthrough-only, nothing persisted to `news_item_c` until vendor contract. Entitlement / headline-vs-body shape TBD pending live probe |
-| News flow | IRESS Pro `NewsVendorGet` (vendor=IRESS/Reuters/Bloomberg/…) | Same adapter; vendor parameter picks the feed. Currently no UI surface consuming it; BFF ready |
+| SENS announcements | IRESS Pro `NewsVendorGet` (vendor=SENS override) | **Adapter wired 2026-06-25**; BFF passthrough + worker probe (`/debug/news-vendor-probe`). Default `Vendor` is `IRESS` (broker-sourced general market news); pass `?vendor=SENS` to target SENS announcements. Still T5 vendor content — passthrough-only, nothing persisted to `news_item_c` until vendor contract. Entitlement / headline-vs-body shape TBD pending live probe |
+| News flow | IRESS Pro `NewsVendorGet` (vendor=IRESS default; Reuters/Bloomberg/Moneyweb/Dow Jones/Business Day also valid) | Same adapter; vendor parameter picks the feed. Default vendor is now `IRESS` (was `SENS`) — switched 2026-06-25 because the `DFM@Mint` IRESS Pro entitlement is for the broker feed. Currently no UI surface consuming it; BFF ready |
 | Macro pulse (CPI, PMI, etc.) | Macro data vendor | Not in IRESS mock surface |
 | Platform AUM / Day P&L | Portfolio / accounting system | Strategies are seed-only |
 | PCA curve decomposition | Derived from live curve | Blocked on curve feed |
