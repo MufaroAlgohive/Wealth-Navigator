@@ -21,6 +21,14 @@ import { Suspense } from "react";
 
 import { AiEdge, CompanyStatistics } from "@/components/analysis/company-analysis-panels";
 import { CompanyPriceChart } from "@/components/analysis/company-price-chart";
+import {
+  DividendsTab,
+  EstimatesTab,
+  FinancialsTab,
+  ModelingTab,
+  OwnershipTab,
+  ResearchTab,
+} from "@/components/analysis/analysis-tabs";
 import { TickerSearch } from "@/components/analysis/ticker-search";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
@@ -30,6 +38,17 @@ import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 
 const SUGGESTIONS = ["MSFT", "AAPL", "NVDA", "GOOGL", "AMZN", "TSLA", "NPN.JO", "CPI.JO"];
+
+const SUBTABS = [
+  { id: "overview", label: "Overview" },
+  { id: "financials", label: "Financials" },
+  { id: "estimates", label: "Estimates" },
+  { id: "research", label: "Research" },
+  { id: "ownership", label: "Insiders" },
+  { id: "dividends", label: "Dividends" },
+  { id: "modeling", label: "Modeling" },
+] as const;
+type SubTabId = (typeof SUBTABS)[number]["id"];
 
 function ccySym(code: string): string {
   switch (code?.toUpperCase()) {
@@ -48,11 +67,19 @@ function AnalysisTabContent() {
   const searchParams = useSearchParams();
   const sym = (searchParams.get("sym") ?? "MSFT").toUpperCase();
 
+  const tabParam = searchParams.get("tab");
+  const tab: SubTabId = SUBTABS.some((t) => t.id === tabParam) ? (tabParam as SubTabId) : "overview";
+
   const go = (next: string) => {
     const v = next.trim().toUpperCase();
     if (!v) return;
     const sp = new URLSearchParams(Array.from(searchParams.entries()));
     sp.set("sym", v);
+    router.replace(`/analysis?${sp.toString()}` as never);
+  };
+  const goTab = (t: SubTabId) => {
+    const sp = new URLSearchParams(Array.from(searchParams.entries()));
+    sp.set("tab", t);
     router.replace(`/analysis?${sp.toString()}` as never);
   };
 
@@ -185,14 +212,41 @@ function AnalysisTabContent() {
         )}
       </div>
 
-      {/* ── Price chart ── */}
-      <CompanyPriceChart sym={sym} />
+      {/* ── Sub-tab strip ── */}
+      <div role="tablist" aria-label="Analysis sections" className="glass-inset flex flex-wrap items-center gap-0.5 p-1">
+        {SUBTABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => goTab(t.id)}
+            className={cn(
+              "h-8 rounded-lg px-3 text-[12px] font-medium transition-all duration-200",
+              tab === t.id
+                ? "bg-primary text-primary-foreground shadow-[0_2px_12px_hsl(var(--primary)/0.35)]"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
 
-      {/* ── Company overview + statistics + earnings + trend ── */}
-      <CompanyStatistics sym={sym} />
-
-      {/* ── AI edge ── */}
-      <AiEdge sym={sym} />
+      {/* ── Active section ── */}
+      {tab === "overview" && (
+        <>
+          <CompanyPriceChart sym={sym} />
+          <CompanyStatistics sym={sym} />
+          <AiEdge sym={sym} />
+        </>
+      )}
+      {tab === "financials" && <FinancialsTab sym={sym} />}
+      {tab === "estimates" && <EstimatesTab sym={sym} />}
+      {tab === "research" && <ResearchTab sym={sym} />}
+      {tab === "ownership" && <OwnershipTab sym={sym} />}
+      {tab === "dividends" && <DividendsTab sym={sym} />}
+      {tab === "modeling" && <ModelingTab sym={sym} />}
     </div>
   );
 }

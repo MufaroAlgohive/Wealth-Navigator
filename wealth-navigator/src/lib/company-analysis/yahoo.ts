@@ -453,3 +453,247 @@ export async function searchYahooSymbols(query: string): Promise<SymbolHit[]> {
     return [];
   }
 }
+
+// ── deep data (financials / estimates / research / ownership / dividends) ──
+
+export interface StatementTable {
+  periods: string[];
+  rows: { key: string; label: string; values: (number | null)[] }[];
+}
+export interface EstimateRow {
+  period: string;
+  avg: number | null;
+  low: number | null;
+  high: number | null;
+  yearAgo: number | null;
+  growth: number | null; // fraction
+  numAnalysts: number | null;
+}
+export interface CompanyDeep {
+  ok: boolean;
+  symbol: string;
+  currency: string;
+  asOf: string;
+  error?: string;
+  statements: {
+    income: { annual: StatementTable; quarterly: StatementTable };
+    balance: { annual: StatementTable; quarterly: StatementTable };
+    cashflow: { annual: StatementTable; quarterly: StatementTable };
+  };
+  estimates: { revenue: EstimateRow[]; earnings: EstimateRow[]; ltGrowth: number | null };
+  research: {
+    recommendationKey: string | null;
+    recommendationMean: number | null;
+    numAnalysts: number | null;
+    targetMean: number | null;
+    targetHigh: number | null;
+    targetLow: number | null;
+    currentPrice: number | null;
+    trend: { strongBuy: number; buy: number; hold: number; sell: number; strongSell: number } | null;
+    actions: { date: string | null; firm: string | null; toGrade: string | null; fromGrade: string | null; action: string | null }[];
+  };
+  ownership: {
+    insiderPct: number | null;
+    institutionPct: number | null;
+    floatPct: number | null;
+    institutionsCount: number | null;
+    topInstitutions: { name: string; pct: number | null; value: number | null; shares: number | null; date: string | null }[];
+    insiderTx: { name: string; relation: string | null; text: string | null; shares: number | null; value: number | null; date: string | null }[];
+  };
+  dividends: {
+    rate: number | null;
+    yield: number | null; // fraction
+    payout: number | null; // fraction
+    exDate: string | null;
+    fiveYrAvgYield: number | null; // percent
+  };
+  notes: string[];
+}
+
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function periodLabel(tsSec: number | null, quarterly: boolean): string {
+  if (tsSec == null) return "";
+  const d = new Date(tsSec * 1000);
+  return quarterly ? `${MON[d.getUTCMonth()]} ${d.getUTCFullYear()}` : String(d.getUTCFullYear());
+}
+function mapStatement(rows: Array<Record<string, unknown>>, items: Array<[string, string]>, quarterly: boolean): StatementTable {
+  const periods = rows.map((r) => periodLabel(num(r.endDate), quarterly));
+  return { periods, rows: items.map(([key, label]) => ({ key, label, values: rows.map((r) => num(r[key])) })) };
+}
+const ISTMT: Array<[string, string]> = [
+  ["totalRevenue", "Revenue"], ["costOfRevenue", "Cost of revenue"], ["grossProfit", "Gross profit"],
+  ["researchDevelopment", "R&D"], ["sellingGeneralAdministrative", "SG&A"], ["totalOperatingExpenses", "Operating expenses"],
+  ["operatingIncome", "Operating income"], ["ebit", "EBIT"], ["interestExpense", "Interest expense"],
+  ["incomeBeforeTax", "Pre-tax income"], ["incomeTaxExpense", "Income tax"], ["netIncome", "Net income"],
+];
+const BSTMT: Array<[string, string]> = [
+  ["cash", "Cash & equivalents"], ["shortTermInvestments", "Short-term investments"], ["netReceivables", "Receivables"],
+  ["inventory", "Inventory"], ["totalCurrentAssets", "Total current assets"], ["propertyPlantEquipment", "PP&E"],
+  ["goodWill", "Goodwill"], ["totalAssets", "Total assets"], ["accountsPayable", "Accounts payable"],
+  ["totalCurrentLiabilities", "Total current liabilities"], ["longTermDebt", "Long-term debt"], ["totalLiab", "Total liabilities"],
+  ["totalStockholderEquity", "Shareholders' equity"], ["retainedEarnings", "Retained earnings"],
+];
+const CSTMT: Array<[string, string]> = [
+  ["netIncome", "Net income"], ["depreciation", "Depreciation & amortisation"], ["totalCashFromOperatingActivities", "Operating cash flow"],
+  ["capitalExpenditures", "Capital expenditure"], ["totalCashflowsFromInvestingActivities", "Investing cash flow"],
+  ["dividendsPaid", "Dividends paid"], ["repurchaseOfStock", "Share buybacks"], ["totalCashFromFinancingActivities", "Financing cash flow"],
+];
+
+/** Append a computed Free cash flow row (operating CF + capex) to a cash-flow table. */
+function withFcf(t: StatementTable): StatementTable {
+  const op = t.rows.find((r) => r.key === "totalCashFromOperatingActivities");
+  const cx = t.rows.find((r) => r.key === "capitalExpenditures");
+  if (!op || !cx) return t;
+  const values = op.values.map((v, i) => (v != null && cx.values[i] != null ? v + (cx.values[i] as number) : null));
+  return { ...t, rows: [...t.rows, { key: "freeCashFlow", label: "Free cash flow", values }] };
+}
+
+/**
+ * Deep company data for the Analysis sub-tabs (Financials, Estimates, Research,
+ * Ownership/Insiders, Dividends). One Yahoo quoteSummary call, all real data or
+ * honest null. JSE per-share fields (targets, EPS estimates, dividend rate) are
+ * de-cented; statement totals and ownership values are absolute and left as-is.
+ */
+export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
+  const clean = symbol.trim().toUpperCase();
+  const isJse = clean.endsWith(".JO") || clean.endsWith(".JSE");
+  const yahooSymbol = clean.replace(/\.JSE$/i, ".JO");
+  const centDiv = isJse ? 100 : 1;
+  const asOf = new Date().toISOString();
+  const notes: string[] = [];
+
+  const empty = (error: string): CompanyDeep => ({
+    ok: false, symbol: clean, currency: isJse ? "ZAR" : "USD", asOf, error,
+    statements: {
+      income: { annual: { periods: [], rows: [] }, quarterly: { periods: [], rows: [] } },
+      balance: { annual: { periods: [], rows: [] }, quarterly: { periods: [], rows: [] } },
+      cashflow: { annual: { periods: [], rows: [] }, quarterly: { periods: [], rows: [] } },
+    },
+    estimates: { revenue: [], earnings: [], ltGrowth: null },
+    research: { recommendationKey: null, recommendationMean: null, numAnalysts: null, targetMean: null, targetHigh: null, targetLow: null, currentPrice: null, trend: null, actions: [] },
+    ownership: { insiderPct: null, institutionPct: null, floatPct: null, institutionsCount: null, topInstitutions: [], insiderTx: [] },
+    dividends: { rate: null, yield: null, payout: null, exDate: null, fiveYrAvgYield: null },
+    notes: [error],
+  });
+
+  const session = await getSession();
+  if (!session) return empty("Could not establish a data session");
+
+  const modules = [
+    "price", "summaryDetail", "financialData", "defaultKeyStatistics",
+    "incomeStatementHistory", "incomeStatementHistoryQuarterly",
+    "balanceSheetHistory", "balanceSheetHistoryQuarterly",
+    "cashflowStatementHistory", "cashflowStatementHistoryQuarterly",
+    "earningsTrend", "recommendationTrend", "upgradeDowngradeHistory",
+    "institutionOwnership", "insiderTransactions", "majorHoldersBreakdown", "calendarEvents",
+  ].join(",");
+
+  let res: Record<string, unknown>;
+  try {
+    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(yahooSymbol)}?modules=${modules}&crumb=${encodeURIComponent(session.crumb)}`;
+    const r = await fetch(url, { headers: { "User-Agent": UA, cookie: session.cookie, Accept: "application/json" }, cache: "no-store" });
+    if (!r.ok) return empty(`Data provider returned ${r.status}`);
+    const j = (await r.json()) as { quoteSummary?: { result?: Array<Record<string, unknown>> } };
+    const first = j?.quoteSummary?.result?.[0];
+    if (!first) return empty("No data for this symbol");
+    res = first;
+  } catch (e) {
+    return empty(e instanceof Error ? e.message : "Data fetch failed");
+  }
+
+  const arr = (mod: unknown, key: string): Array<Record<string, unknown>> =>
+    (((mod as Record<string, unknown>)?.[key]) as Array<Record<string, unknown>>) ?? [];
+  const priceM = (res.price ?? {}) as Record<string, unknown>;
+  const detail = (res.summaryDetail ?? {}) as Record<string, unknown>;
+  const fd = (res.financialData ?? {}) as Record<string, unknown>;
+  const currency = str(priceM.currency) ?? str(fd.financialCurrency) ?? (isJse ? "ZAR" : "USD");
+
+  // statements
+  const statements = {
+    income: {
+      annual: mapStatement(arr(res.incomeStatementHistory, "incomeStatementHistory"), ISTMT, false),
+      quarterly: mapStatement(arr(res.incomeStatementHistoryQuarterly, "incomeStatementHistory"), ISTMT, true),
+    },
+    balance: {
+      annual: mapStatement(arr(res.balanceSheetHistory, "balanceSheetStatements"), BSTMT, false),
+      quarterly: mapStatement(arr(res.balanceSheetHistoryQuarterly, "balanceSheetStatements"), BSTMT, true),
+    },
+    cashflow: {
+      annual: withFcf(mapStatement(arr(res.cashflowStatementHistory, "cashflowStatements"), CSTMT, false)),
+      quarterly: withFcf(mapStatement(arr(res.cashflowStatementHistoryQuarterly, "cashflowStatements"), CSTMT, true)),
+    },
+  };
+  if (statements.income.annual.periods.length <= 4) notes.push("Statements cover ~4 years (provider limit); deeper history needs a paid vendor.");
+
+  // estimates (earningsTrend)
+  const trend = arr(res.earningsTrend, "trend");
+  const periodName: Record<string, string> = { "0q": "Current Qtr", "+1q": "Next Qtr", "0y": "Current Year", "+1y": "Next Year" };
+  const estRows = (kind: "revenueEstimate" | "earningsEstimate", perShare: boolean): EstimateRow[] =>
+    trend
+      .filter((t) => periodName[str(t.period) ?? ""])
+      .map((t) => {
+        const e = (t[kind] ?? {}) as Record<string, unknown>;
+        const d = perShare ? centDiv : 1;
+        const yearAgoKey = kind === "revenueEstimate" ? "yearAgoRevenue" : "yearAgoEps";
+        const sc = (v: number | null) => (v == null ? null : v / d);
+        return {
+          period: periodName[str(t.period) ?? ""] ?? (str(t.period) ?? ""),
+          avg: sc(num(e.avg)), low: sc(num(e.low)), high: sc(num(e.high)),
+          yearAgo: sc(num(e[yearAgoKey])), growth: num(e.growth), numAnalysts: num(e.numberOfAnalysts),
+        };
+      });
+  const lt = trend.find((t) => str(t.period) === "+5y");
+  const estimates = { revenue: estRows("revenueEstimate", false), earnings: estRows("earningsEstimate", true), ltGrowth: lt ? num(lt.growth) : null };
+  if (!estimates.revenue.length && !estimates.earnings.length) notes.push("No analyst estimates published for this security.");
+
+  // research (consensus + targets + up/downgrades)
+  const recTrend = arr(res.recommendationTrend, "trend").find((t) => str(t.period) === "0m") ?? arr(res.recommendationTrend, "trend")[0];
+  const upgrades = arr(res.upgradeDowngradeHistory, "history").slice(0, 10).map((h) => ({
+    date: num(h.epochGradeDate) != null ? new Date(num(h.epochGradeDate)! * 1000).toISOString() : null,
+    firm: str(h.firm), toGrade: str(h.toGrade), fromGrade: str(h.fromGrade), action: str(h.action),
+  }));
+  const research = {
+    recommendationKey: str(fd.recommendationKey),
+    recommendationMean: num(fd.recommendationMean),
+    numAnalysts: num(fd.numberOfAnalystOpinions),
+    targetMean: num(fd.targetMeanPrice) != null ? num(fd.targetMeanPrice)! / centDiv : null,
+    targetHigh: num(fd.targetHighPrice) != null ? num(fd.targetHighPrice)! / centDiv : null,
+    targetLow: num(fd.targetLowPrice) != null ? num(fd.targetLowPrice)! / centDiv : null,
+    currentPrice: num(fd.currentPrice) != null ? num(fd.currentPrice)! / centDiv : null,
+    trend: recTrend
+      ? { strongBuy: num(recTrend.strongBuy) ?? 0, buy: num(recTrend.buy) ?? 0, hold: num(recTrend.hold) ?? 0, sell: num(recTrend.sell) ?? 0, strongSell: num(recTrend.strongSell) ?? 0 }
+      : null,
+    actions: upgrades,
+  };
+  if (research.numAnalysts == null && !research.trend) notes.push("No sell-side analyst coverage on the free feed for this security.");
+
+  // ownership (insiders + institutions)
+  const mhb = (res.majorHoldersBreakdown ?? {}) as Record<string, unknown>;
+  const topInstitutions = arr(res.institutionOwnership, "ownershipList").slice(0, 12).map((o) => ({
+    name: str(o.organization) ?? "—",
+    pct: num(o.pctHeld), shares: num(o.position), value: num(o.value),
+    date: num(o.reportDate) != null ? new Date(num(o.reportDate)! * 1000).toISOString() : null,
+  }));
+  const insiderTx = arr(res.insiderTransactions, "transactions").slice(0, 12).map((t) => ({
+    name: str(t.filerName) ?? "—", relation: str(t.filerRelation), text: str(t.transactionText),
+    shares: num(t.shares), value: num(t.value),
+    date: num(t.startDate) != null ? new Date(num(t.startDate)! * 1000).toISOString() : null,
+  }));
+  const ownership = {
+    insiderPct: num(mhb.insidersPercentHeld), institutionPct: num(mhb.institutionsPercentHeld),
+    floatPct: num(mhb.institutionsFloatPercentHeld), institutionsCount: num(mhb.institutionsCount),
+    topInstitutions, insiderTx,
+  };
+
+  // dividends
+  const dividends = {
+    rate: num(detail.dividendRate) != null ? num(detail.dividendRate)! / centDiv : (num(detail.trailingAnnualDividendRate) != null ? num(detail.trailingAnnualDividendRate)! / centDiv : null),
+    yield: num(detail.dividendYield) ?? num(detail.trailingAnnualDividendYield),
+    payout: num(detail.payoutRatio),
+    exDate: num(detail.exDividendDate) != null ? new Date(num(detail.exDividendDate)! * 1000).toISOString() : null,
+    fiveYrAvgYield: num(detail.fiveYearAvgDividendYield),
+  };
+  if (dividends.yield == null) notes.push("No dividend reported for this security.");
+
+  return { ok: true, symbol: clean, currency, asOf, statements, estimates, research, ownership, dividends, notes };
+}
