@@ -154,7 +154,7 @@ export default function IntegrationPage() {
         <div className="relative space-y-3">
           <GlassBadge tone="primary">
             <Cable className="h-3.5 w-3.5" />
-            IRESS V4 adapter
+            Market data adapter
           </GlassBadge>
           <h1 className="text-display">Integration</h1>
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
@@ -166,8 +166,8 @@ export default function IntegrationPage() {
       {ghostRowsHidden > 0 ? (
         <div className="glass-inset flex items-center justify-between border-warning/30 bg-warning/5 px-3 py-2 text-[11px] text-warning">
           <span>
-            <strong>{ghostRowsHidden}</strong> stale worker heartbeats hidden by the
-            BFF ghost filter. Delete the ghost Railway service to clear.
+            <strong>{ghostRowsHidden}</strong> stale data records hidden by the
+            stale data filter. Contact your administrator to clear stale records.
           </span>
         </div>
       ) : null}
@@ -228,7 +228,7 @@ export default function IntegrationPage() {
           ) : (
             <GlassSection
               title="Worker health"
-              subtitle="Railway worker · integration_worker_health"
+              subtitle="Data sync service · health status"
               db="institutional"
               endpoint="GET /api/worker-health"
               dataSource="worker"
@@ -237,7 +237,7 @@ export default function IntegrationPage() {
             >
               <GlassScrollBody>
                 {workers.length === 0 ? (
-                  <EmptyDataState message="No worker heartbeat rows — start iress-ingest on Railway." />
+                  <EmptyDataState message="Data ingestion service is not active. Contact your administrator." />
                 ) : (
                   <div className="glass-inset overflow-x-auto">
                     <table className="w-full font-mono text-[11px]">
@@ -428,7 +428,7 @@ export default function IntegrationPage() {
               {!primaryWorker ? (
                 <p className="text-[12px] text-muted-foreground">
                   No worker heartbeat yet — start the Railway{" "}
-                  <span className="font-mono text-foreground">Iress-Worker</span> service to begin ingesting.
+                  <span className="font-mono text-foreground">background service</span> to begin syncing orders.
                 </p>
               ) : primaryWorker.account_configured ? (
                 <ul className="space-y-2 text-[12px] text-muted-foreground">
@@ -437,29 +437,29 @@ export default function IntegrationPage() {
                     <span className="font-mono text-foreground">
                       {primaryWorker.accounts?.join(", ") || "—"}
                     </span>{" "}
-                    (<span className="font-mono text-foreground">IRESS_ACCOUNT_CODE</span>)
+                    (configured account codes)
                   </li>
                   <li>
                     <span className="font-mono text-foreground">OrderPadGetByAccount</span> every{" "}
-                    <span className="font-mono text-foreground">IRESS_WORKER_ORDER_POLL_SEC</span>{" "}
+                    <span className="font-mono text-foreground">order polling interval</span>{" "}
                     (default 60s) → upserts into{" "}
-                    <span className="font-mono text-foreground">oems_order_audit</span>. Cockpit Open
+                    <span className="font-mono text-foreground">the order audit table</span>. Cockpit Open
                     Orders + Blotter read from this table.
                   </li>
                 </ul>
               ) : (
                 <div className="space-y-2 text-[12px]">
                   <div className="glass-inset border-warning/30 bg-warning/10 px-3 py-2 text-[12px]">
-                    <p className="font-medium text-warning">Set <span className="font-mono">IRESS_ACCOUNT_CODE</span> on Railway to enable order mirror</p>
+                    <p className="font-medium text-warning">Configure account code to enable order tracking</p>
                     <p className="mt-1 text-muted-foreground">
-                      The worker is running but <span className="font-mono">IRESS_ACCOUNT_CODE</span>{" "}
-                      is empty, so <span className="font-mono">OrderPadGetByAccount</span> returns
+                      The order service is running but the account code is not configured{" "}
+                      yet, so order tracking returns
                       no rows. The Cockpit Open Orders panel will stay empty until this is set.
                     </p>
                   </div>
                   <p className="text-muted-foreground">
-                    Set the env on the Railway <span className="font-mono text-foreground">Iress-Worker</span>{" "}
-                    service to a comma-separated list of account codes (e.g.{" "}
+                    Enter your account code in the quote service configuration{" "}
+                    as a comma-separated list of account codes (e.g.{" "}
                     <span className="font-mono text-foreground">Z12345,Z67890</span>), then restart.
                     Quote ingest keeps running independently of this env.
                   </p>
@@ -468,7 +468,7 @@ export default function IntegrationPage() {
             </GlassSection>
             <GlassSection
               title="Environment checklist"
-              subtitle="Quote ingest · stock_intraday_c"
+              subtitle="Quote synchronization"
               db="institutional"
               endpoint="GET /api/worker-health"
               dataSource="worker"
@@ -477,7 +477,7 @@ export default function IntegrationPage() {
               <ul className="space-y-2 text-[12px] text-muted-foreground">
                 <li>
                   Vercel reads worker snapshots via <span className="font-mono text-foreground">GET /api/quotes</span> (~15s poll) and optional Realtime on{" "}
-                  <span className="font-mono text-foreground">stock_intraday_c</span>.
+                  <span className="font-mono text-foreground">the intraday quote table</span>.
                 </li>
                 <li>
                   Watchlist:{" "}
@@ -492,7 +492,7 @@ export default function IntegrationPage() {
                     ? `${(primaryWorker.symbols_covered ?? []).filter((s) => ["USDZAR", "JIBAR_3M"].includes(s)).length} rate codes (FX/MM)`
                     : "—"}
                   ). Rate codes (USDZAR → <span className="font-mono text-foreground">FX</span>, JIBAR_3M → <span className="font-mono text-foreground">MM</span>)
-                  ride the same <span className="font-mono text-foreground">PricingQuoteGet</span> loop — no extra entitlement needed.
+                  ride the same <span className="font-mono text-foreground">pricing update cycle</span>, no extra entitlement needed.
                 </li>
                 <li>
                   Connection pill shows <span className="font-mono text-foreground">SUPABASE OK</span> when the last quote tick is under 20s old;{" "}
@@ -599,7 +599,7 @@ function ProductionStatusGrid({
           <li>Orders: <span className="font-mono text-foreground">{(primaryWorker?.metadata as Record<string, unknown> | undefined)?.last_order_sync_at ? formatTime(new Date(String((primaryWorker!.metadata as Record<string, unknown>).last_order_sync_at)).getTime()) : "—"}</span></li>
           <li>IPS:    <span className="font-mono text-foreground">{(primaryWorker?.metadata as Record<string, unknown> | undefined)?.last_ips_sync_at ? formatTime(new Date(String((primaryWorker!.metadata as Record<string, unknown>).last_ips_sync_at)).getTime()) : "—"}</span></li>
         </ul>
-        <p className="mt-1 text-[10.5px] text-muted-foreground">License seat: <span className="font-mono text-foreground">{seatCount}/1</span> — IRESS CT is single-seat; concurrent replicas will 25008 on PricingQuoteGet.</p>
+        <p className="mt-1 text-[10.5px] text-muted-foreground">License seat: <span className="font-mono text-foreground">{seatCount}/1</span>. Only one concurrent connection is allowed; additional connections will return a licensing error.</p>
       </div>
     </div>
   );

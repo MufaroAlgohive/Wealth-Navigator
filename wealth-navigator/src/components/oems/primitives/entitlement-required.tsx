@@ -50,7 +50,7 @@ export function EntitlementRequired({ method, codes, note, className }: Entitlem
         </div>
       ) : null}
       <p className="max-w-xs text-[11px] text-muted-foreground">
-        {note ?? `Ask Charles to enable ${method} on the production IRESS V4 profile.`}
+        {note ?? `This data source is not yet enabled. Contact your administrator.`}
       </p>
     </div>
   );

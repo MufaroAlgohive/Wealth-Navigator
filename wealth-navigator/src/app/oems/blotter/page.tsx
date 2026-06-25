@@ -77,7 +77,7 @@ export default function BlotterPage() {
     onError: () => toast.error("Cancel-all failed"),
   });
 
-  const dataSourceLabel = realDataOnly ? "oems_order_audit" : "mock · OrderPadGetByAccount";
+  const dataSourceLabel = realDataOnly ? "order record" : "mock · demo orders";
 
   return (
     <div className="space-y-4">
@@ -199,7 +199,7 @@ export default function BlotterPage() {
           <div className="p-3.5">
             <EmptyDataState
               title="No orders"
-              message={realDataOnly ? "Worker has not mirrored orders to oems_order_audit yet." : "No orders in mock book."}
+              message={realDataOnly ? "Order history is syncing. Check back shortly." : "No orders in mock book."}
             />
           </div>
         ) : (

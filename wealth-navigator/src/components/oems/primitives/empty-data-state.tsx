@@ -36,7 +36,7 @@ const reasonCopy: Record<
 > = {
   supabase_not_configured: {
     title: "Vercel env missing",
-    body: "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on the production Vercel project.",
+    body: "Contact your administrator to complete platform configuration.",
     badge: "unconfigured",
   },
   supabase_query_failed: {
@@ -50,13 +50,13 @@ const reasonCopy: Record<
     badge: "unconfigured",
   },
   entitlement_blocked: {
-    title: "IRESS entitlement required",
-    body: "Ask Charles to enable the relevant IRESS V4 method on the production profile.",
+    title: "Data source entitlement required",
+    body: "Contact your administrator to enable the required data entitlement on the production system.",
     badge: "blocked-external",
   },
   worker_not_running: {
-    title: "Railway worker offline",
-    body: "The iress-ingest worker is not heartbeating. Restart the Railway Iress-Worker service.",
+    title: "Data ingestion service offline",
+    body: "The data ingestion service is not responding. Please contact your administrator.",
     badge: "unavailable",
   },
 };

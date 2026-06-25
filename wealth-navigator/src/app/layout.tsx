@@ -27,7 +27,7 @@ export const metadata: Metadata = {
     template: "%s · Mint Wealth Navigator",
   },
   description:
-    "Institutional OEMS and wealth platform for the South African market. IRESS V4 wired.",
+    "Institutional OEMS and wealth platform for the South African market.",
   applicationName: "Mint Wealth Navigator",
 };
 

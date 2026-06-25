@@ -65,7 +65,7 @@ export function Panel({
                 </Badge>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="font-mono text-[10px]">
-                IRESS V4 · {endpoint}
+                Endpoint: {endpoint}
               </TooltipContent>
             </Tooltip>
           )}

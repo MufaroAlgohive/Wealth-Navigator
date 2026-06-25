@@ -567,7 +567,7 @@ function OverviewTab({
       {/* Chart panel */}
       <GlassSection
         title={`${sym} · ${range}`}
-        subtitle={usingHistory ? "IRESS TimeSeriesGet2 daily" : "Worker-ingested ticks (stock_intraday_c)"}
+        subtitle={usingHistory ? "Daily closing prices" : "Live market ticks"}
         endpoint={chartEndpoint}
         dataSource={chartSource}
         noPadding
@@ -648,7 +648,7 @@ function OverviewTab({
               <EntitlementRequired
                 method="TimeSeriesGet2"
                 codes={["J200", "J203", "R2030", "R2035", "R2040"]}
-                note="Ask Charles to enable TimeSeriesGet2 on the production IRESS V4 profile. Until flipped, the 5D…MAX history chart stays empty."
+                note="Historical price data is not yet available. Contact your administrator to enable this data source."
               />
             ) : points.length < 2 ? (
               <EmptyDataState
@@ -657,7 +657,7 @@ function OverviewTab({
                 hint={
                   usingHistory
                     ? (data.sub.history.message ??
-                      "Worker hasn't ingested daily history yet (or TimeSeriesGet2 is entitlement-blocked).")
+                      "Price history not yet available for this security.")
                     : (data.sub.intraday.message ??
                       "No intraday ticks — worker has not polled this symbol yet.")
                 }
@@ -721,7 +721,7 @@ function OverviewTab({
 
         <GlassSection
           title="Company statistics"
-          subtitle="Yahoo (securities_c) + IRESS L1 (quote_snapshot_c)"
+          subtitle="Yahoo Finance + live market quotes"
           endpoint="GET /api/equities + /api/quote-snapshot"
           dataSource={
             data.sub.fundamentals.source === "supabase" && data.sub.snapshot.source === "supabase"
@@ -790,12 +790,12 @@ function OverviewTab({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <GlassSection
           title="Profile"
-          subtitle="securities_c + public filings"
+          subtitle="Company fundamentals + public filings"
           endpoint="GET /api/equities"
           dataSource="yahoo"
         >
           <div className="grid grid-cols-1 gap-px overflow-hidden sm:grid-cols-2">
-            <FieldRow k="Description" v="—" reason="securities_c.description not yet populated" />
+            <FieldRow k="Description" v="—" reason="Description not yet available" />
             <FieldRow k="CEO" v="—" reason="no officer feed" />
             <FieldRow k="Sector" v={data.sector ?? "—"} />
             <FieldRow k="Industry" v={data.industry ?? "—"} />
@@ -808,7 +808,7 @@ function OverviewTab({
 
         <GlassSection
           title="Live tick overlay"
-          subtitle="Worker stream (stock_intraday_c → SSE)"
+          subtitle="Live tick stream"
           endpoint="WS /api/ticks"
           dataSource={_hasLiveTick ? "stream" : "unavailable"}
         >
@@ -900,7 +900,7 @@ function FinancialsTab({ sym: _sym, data }: { sym: string; data: AnalysisRespons
 
       <GlassSection
         title={`${view === "income" ? "Income statement" : view === "balance" ? "Balance sheet" : "Cash flow"} · ${period === "annual" ? "FY" : "FQ"}`}
-        subtitle="securities_c has only the current-period snapshot; full statements require a fundamentals vendor"
+        subtitle="Current period only; full financial statements require additional data sources"
         endpoint="GET /api/equities"
         dataSource="yahoo"
       >
@@ -948,13 +948,13 @@ function FinancialsTab({ sym: _sym, data }: { sym: string; data: AnalysisRespons
         </div>
         <p className="mt-2 text-caption">
           Full per-period statements require a fundamentals vendor (Refinitiv / FactSet). Only the
-          current-period snapshot (EPS, P/E, market cap) is sourced from securities_c. The time-series panels
-          elsewhere in the desk remain entitlement-blocked until TimeSeriesGet2 is enabled.
+          current-period snapshot (EPS, P/E, market cap) is available. Multi-period data requires additional entitlements. The time-series panels
+          elsewhere in the desk remain unavailable until those entitlements are enabled.
         </p>
         {data.sub.history.entitlementBlocked ? (
           <div className="mt-2">
             <BlockedNote>
-              TimeSeriesGet2 entitlement required for any multi-period statement to populate.
+              Multi-period financial statements require data entitlements.
             </BlockedNote>
           </div>
         ) : null}
@@ -978,13 +978,13 @@ function EstimatesTab({ sym: _sym, data }: { sym: string; data: AnalysisResponse
         <FieldRow k="EPS growth (NTM)" v="—" reason="no consensus vendor" />
         <FieldRow k="Price target (consensus)" v="—" reason="no consensus vendor" />
         <FieldRow k="EPS LT growth est." v="—" reason="no consensus vendor" />
-        <FieldRow k="P/E (TTM)" v={f.pe != null ? f.pe.toFixed(2) : "—"} reason="securities_c snapshot" />
-        <FieldRow k="EPS (TTM)" v={f.eps != null ? f.eps.toFixed(2) : "—"} reason="securities_c snapshot" />
+        <FieldRow k="P/E (TTM)" v={f.pe != null ? f.pe.toFixed(2) : "—"} reason="Latest available data" />
+        <FieldRow k="EPS (TTM)" v={f.eps != null ? f.eps.toFixed(2) : "—"} reason="Latest available data" />
         <FieldRow k="Recommendation distribution" v="—" reason="no consensus vendor" />
       </div>
       <p className="mt-3 text-caption">
         Sell-side estimates require a vendor (Refinitiv I/B/E/S, FactSet, S&P Capital IQ). The OEMS stack does
-        not subscribe to a consensus feed today; only the Yahoo-fed securities_c snapshot is available.
+        not subscribe to a consensus feed today; only the latest market data is available.
       </p>
     </GlassSection>
   );
@@ -1219,7 +1219,7 @@ function FilingsTab({ sym }: { sym: string }) {
         <EmptyDataState
           reason="empty"
           message={`No upcoming IR calendar events for ${sym}.`}
-          hint="Wire an IR calendar vendor (IRfirm, Q4 Desktop) into oems_calendar_c."
+          hint="An IR calendar vendor must be integrated to display this data."
           badgeLabel="blocked-vendor"
         />
       </GlassSection>
@@ -1266,7 +1266,7 @@ function ResearchTab({ sym }: { sym: string }) {
     <div className="space-y-4">
       <GlassSection
         title="Research Lab · baskets holding this symbol"
-        subtitle="strategies_c filter by ?sym="
+        subtitle="Model portfolios holding this symbol"
         endpoint="GET /api/research-lab?sym=…"
         db="retail"
         dataSource={listQ.data?.source === "unavailable" ? "unavailable" : "supabase"}
@@ -1279,9 +1279,9 @@ function ResearchTab({ sym }: { sym: string }) {
             message={`No published basket holds ${sym}.`}
             hint={
               listQ.data?.reason === "supabase_not_configured"
-                ? "Set RETAIL_SUPABASE_URL and RETAIL_SUPABASE_SERVICE_ROLE_KEY."
+                ? "Database not configured. Contact your administrator."
                 : listQ.data?.reason === "no_match"
-                  ? "Add this symbol to a strategies_c row's holdings JSON, or open it via the Security page to define one."
+                  ? "Add this symbol to a model portfolio's holdings, or define a new portfolio via the Security page."
                   : "No strategies reference this ticker today."
             }
             badgeLabel="unconfigured"

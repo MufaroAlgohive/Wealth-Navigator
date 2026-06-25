@@ -221,7 +221,7 @@ export default function CurvesPage() {
             <EntitlementRequired
               method="TimeSeriesGet2"
               codes={["J200", "J203", "R2030", "R2035", "R2040"]}
-              note="Ask Charles to enable TimeSeriesGet2 on the production profile. Until flipped, the ALSI intraday panel on the Cockpit also stays empty."
+              note="Contact your administrator to enable historical data. Until available, the ALSI panel will remain empty."
             />
           </GlassSection>
         ) : (
@@ -299,7 +299,7 @@ export default function CurvesPage() {
           ) : (
             <EmptyDataState
               message="PCA decomposition requires fitted yield curve + derived metrics."
-              hint={metricsQ.data?.message ?? "Wire TimeSeriesGet2 + the curve-derived metrics loop in the worker."}
+              hint={metricsQ.data?.message ?? "PCA metrics are not available yet. Historical price data and curve calculations will enable this analysis."}
             />
           )}
         </GlassSection>

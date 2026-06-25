@@ -325,10 +325,10 @@ export function ResearchLabPage() {
           <h1 className="text-lg font-semibold tracking-tight">Research Lab</h1>
           <p className="text-xs text-muted-foreground">Strategy research · composition · fundamentals</p>
         </header>
-        <Panel title="Strategy catalogue" endpoint="strategies_c">
+        <Panel title="Strategy catalogue" endpoint="model-portfolios">
           <EmptyDataState
             message="No model portfolios available."
-            hint="Configure RETAIL_SUPABASE_URL and ensure strategies_c is populated."
+            hint="No model portfolios found. Contact your administrator to set up portfolio data."
             badgeLabel="unconfigured"
           />
         </Panel>
@@ -528,7 +528,7 @@ export function ResearchLabPage() {
                 <GlassSection title="Holdings" db="retail" dataSource={panelSource}>
                   <EmptyDataState
                     message="No published holdings for this strategy."
-                    hint="holdings JSON on strategies_c is empty."
+                    hint="No holdings data has been added to this portfolio."
                     badgeLabel="unconfigured"
                   />
                 </GlassSection>
@@ -881,8 +881,7 @@ export function ResearchLabPage() {
       )}
 
       <footer className="text-center text-caption">
-        Live marks via IRESS where entitled · fundamentals from Yahoo securities_c · quantities from
-        strategies_c
+        Live market prices · company fundamentals · model portfolio quantities
       </footer>
     </ResearchLabCanvas>
   );

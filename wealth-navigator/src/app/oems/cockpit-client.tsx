@@ -236,13 +236,13 @@ const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL", "USDZAR"
 function portfolioAumSub(portfolio: { source: string; reason?: string; migration?: string; error?: string; accounts?: unknown[] } | undefined): React.ReactNode {
   if (!portfolio) return "Loading portfolio…";
   if (portfolio.source === "supabase") return `${(portfolio.accounts ?? []).length} accounts`;
-  if (portfolio.reason === "supabase_not_configured") return <span>Set <span className="font-mono">SUPABASE_URL</span> + <span className="font-mono">SUPABASE_SERVICE_ROLE_KEY</span> on Vercel</span>;
+  if (portfolio.reason === "supabase_not_configured") return <span>Database not configured. Contact your administrator to complete platform configuration.</span>;
   if (portfolio.reason === "supabase_query_failed") return (
     <span>Run <span className="font-mono">{portfolio.migration ?? "supabase migration"}</span></span>
   );
   if (portfolio.reason === "empty") return <span>No open positions — derived from IOS+ order fills (book currently flat)</span>;
-  if (portfolio.reason === "entitlement_blocked") return <span>Positions are derived from IOS+ fills (we don&apos;t use IPS) for <span className="font-mono">DFM@MINT</span></span>;
-  if (portfolio.reason === "worker_not_running") return <span>Railway iress-ingest offline — start the worker</span>;
+  if (portfolio.reason === "entitlement_blocked") return <span>Positions are unavailable due to account permissions. Contact your administrator.</span>;
+  if (portfolio.reason === "worker_not_running") return <span>Data ingestion service is offline. Contact your administrator.</span>;
   return FEED_NOT_CONFIGURED;
 }
 
@@ -288,10 +288,10 @@ function JibarOrUsdzarSub({
   const tick = useTick(sym);
   const fresh = tick && tick.ts && Date.now() - tick.ts < 60_000;
   if (fresh) {
-    return <span>Live tick from <span className="font-mono">stock_intraday_c</span></span>;
+    return <span>Live market data</span>;
   }
   if (!primaryWorker) {
-    return <span>Worker not configured — start Railway <span className="font-mono">Iress-Worker</span></span>;
+    return <span>Data service not configured. Contact your administrator.</span>;
   }
   // JIBAR / USD-ZAR are not in this account's IRESS security master (FX spot +
   // SARB/JIBAR rates aren't provisioned for DFM@MINT — confirmed via
@@ -313,7 +313,7 @@ function ordersEmptyMessage(
   if (reason === "supabase_query_failed") return "Run supabase/migrations/20260613000000_oems_order_audit.sql first";
   if (!primaryWorker) return "Worker not heartbeating";
   if (primaryWorker.status === "healthy" && primaryWorker.account_configured === false)
-    return "Set IRESS_ACCOUNT_CODE on the Railway worker";
+    return "Account code not configured. Contact your administrator.";
   if (primaryWorker.status === "healthy" && primaryWorker.account_configured === true) {
     // Worker healthy + account set + no WORKING orders. IOS+ is live (orders
     // are read from the pad); the current book is simply filled/cancelled, so
@@ -954,7 +954,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               <EntitlementRequired
                 method="TimeSeriesGet2"
                 codes={["J200", "J203"]}
-                note="Official J2xx sector indices have no data on the prod-test (CT) feed (TimeSeriesGet2 works; the index feed isn't on CT for DFM@MINT). The heatmap above is computed live from JSE constituents instead."
+                note="Index data is not available in this environment. The heatmap above is computed live from JSE constituents instead."
               />
             </GlassSection>
           )
@@ -1531,9 +1531,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     </summary>
                     <div className="mt-1.5 space-y-1 rounded-md border border-border/60 bg-surface-2/40 p-2 font-mono text-[10px]">
                       <p>
-                        Set <span className="text-foreground">IRESS_ACCOUNT_CODE</span> on the Railway
-                        <span className="text-foreground"> Iress-Worker </span>
-                        service to a comma-separated list of account codes (e.g.{" "}
+                        Configure your account code in the
+                        <span className="text-foreground"> background service </span>
+                        as a comma-separated list of account codes (e.g.{" "}
                         <span className="text-foreground">Z12345,Z67890</span>), then restart.
                       </p>
                       <p>

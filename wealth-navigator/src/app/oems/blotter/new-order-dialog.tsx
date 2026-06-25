@@ -151,7 +151,7 @@ export function NewOrderDialog({ onCreated }: { onCreated: () => void }) {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>New order</DialogTitle>
-          <DialogDescription>IRESS · OrderCreate3 · idempotent via OrderTag</DialogDescription>
+          <DialogDescription>Create a new order</DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-2 gap-3">
           <Field id="new-order-symbol" label="Symbol">

@@ -345,8 +345,8 @@ export default function EquitiesPage() {
         <div className="space-y-3 px-5 pb-5">
           {realDataOnly ? (
             <p className="pt-5 text-[10.5px] text-muted-foreground">
-              Retail <span className="font-mono">securities_c</span> board — L1 last-trade +
-              day change. Bid/ask/vwap/volume require IPS L2 or a streaming feed.
+              JSE securities data. Last-trade and day change shown.
+              Bid, ask, vwap, and volume require a streaming market data feed.
             </p>
           ) : null}
           {realDataOnly ? (

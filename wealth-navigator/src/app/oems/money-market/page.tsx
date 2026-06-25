@@ -213,7 +213,7 @@ export default function MoneyMarketPage() {
               <div className="p-5">
                 <EmptyDataState
                   message="No MM instruments ingested."
-                  hint="The worker writes rows to money_market_instrument_c — wire the IRESS rate entitlement or a vendor feed to populate."
+                  hint="Provide IRESS rate data or connect a vendor feed to populate money market instruments."
                 />
               </div>
             ) : (
@@ -273,9 +273,8 @@ export default function MoneyMarketPage() {
           Money market is a separate OEMS surface
         </p>
         <p className="mt-1 text-muted-foreground">
-          The Money Market module is a thin view over the same IPS portfolio. MM-only mandates live in{" "}
-          <span className="font-mono">oems_strategy_c</span> with{" "}
-          <span className="font-mono">asset_class = &quot;money_market&quot;</span>; the audit-grade rebalance state is
+          The Money Market module is a thin view over the same portfolio. MM-only mandates live in{" "}
+          model portfolios designated for money market; the audit-grade rebalance state is
           the same as the equity strategies view.
         </p>
         <p className="mt-2 text-muted-foreground">

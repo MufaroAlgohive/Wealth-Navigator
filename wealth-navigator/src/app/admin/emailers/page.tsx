@@ -275,7 +275,7 @@ export default function EmailersPage() {
               <span>
                 In Supabase set the URL, choose tables (e.g. <code>stock_holdings</code>, <code>profiles</code>,{" "}
                 <code>wallet_transactions</code>), select events, and add header{" "}
-                <code>x-webhook-secret</code> matching <code>SUPABASE_WEBHOOK_SECRET</code>.
+                a webhook secret header value from your Supabase webhook configuration.
               </span>
             </div>
           </div>

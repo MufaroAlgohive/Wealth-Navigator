@@ -155,7 +155,7 @@ export function StrategiesMonitor() {
         <GlassSection title="Strategy mandates" db="retail" dataSource="supabase" endpoint="GET /api/strategies">
           <EmptyDataState
             message="Mock mode disables the strategies module."
-            hint="Switch to real-data mode and ensure the worker has written oems_strategy_c rows."
+            hint="Switch to real-data mode and ensure the data sync service has loaded portfolio data."
             badgeLabel="mock"
           />
         </GlassSection>
@@ -380,11 +380,11 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
         endpoint="GET /api/strategies"
         dataSource="supabase"
         className="h-[420px]"
-        right={<span className="font-mono text-[10px]">{strategy.holdingsCount} positions (from oems_position_c)</span>}
+        right={<span className="font-mono text-[10px]">{strategy.holdingsCount} positions</span>}
       >
         <EmptyDataState
           message="Per-investor holdings not yet published for this strategy."
-          hint="The worker computes target vs actual from oems_position_c and oems_transaction_c per investor — wire the per-strategy rollup in the worker to populate this panel."
+          hint="This data will be available after the data sync service processes position and transaction records."
         />
       </GlassSection>
     </div>

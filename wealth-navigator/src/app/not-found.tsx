@@ -34,7 +34,7 @@ export default function NotFound() {
           </Link>
         </div>
         <p className="mt-6 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
-          Mint Wealth Navigator · IRESS V4 wired
+          Mint Wealth Navigator
         </p>
       </div>
     </div>

@@ -133,7 +133,7 @@ export default function FixedIncomePage() {
         >
           <EmptyDataState
             message="No bonds ingested yet."
-            hint={bondsQ.data?.message ?? "bonds_c is empty. Bond pricing requires the IRESS bond entitlement (or an upstream vendor)."}
+            hint={bondsQ.data?.message ?? "No bonds available. Bond pricing requires appropriate entitlements."}
             badgeLabel="blocked-vendor"
           />
         </GlassSection>
@@ -263,7 +263,7 @@ export default function FixedIncomePage() {
           <EntitlementRequired
             method="TimeSeriesGet2"
             codes={["ZAR_NSS", "ZAR_GOVI"]}
-            note="Curve history requires TimeSeriesGet2 on the production IRESS V4 profile. Ask Charles."
+            note="Historical curve data requires additional entitlements. Contact your administrator."
           />
         </GlassSection>
 

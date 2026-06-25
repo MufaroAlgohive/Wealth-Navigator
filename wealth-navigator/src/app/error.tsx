@@ -30,7 +30,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
         </div>
         <h1 className="text-2xl font-semibold tracking-tight">Something broke</h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          The desk hit an unrecoverable error rendering this surface. The full error is in the browser console.
+          Something unexpected happened. Please refresh the page and try again.
         </p>
         {error.digest && (
           <p className="mt-3 font-mono text-[10.5px] text-muted-foreground/70">digest · {error.digest}</p>
@@ -44,7 +44,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
           </Link>
         </div>
         <p className="mt-6 font-mono text-[10px] uppercase tracking-wider text-muted-foreground/70">
-          Mint Wealth Navigator · IRESS V4 wired
+          Mint Wealth Navigator
         </p>
       </div>
     </div>

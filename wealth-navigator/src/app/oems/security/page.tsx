@@ -87,7 +87,7 @@ function SecurityPageContent() {
         ) : (
           <Panel
             title="Watchlist · JSE"
-            endpoint={realDataOnly ? "GET /api/quotes" : "GET /v1/quotes/batch"}
+            endpoint={realDataOnly ? "GET /api/quotes" : "Live Quotes"}
             dataSource={realDataOnly ? quoteSource : undefined}
             className="col-span-6 lg:col-span-2 h-[400px]"
             density="scroll"
@@ -151,7 +151,7 @@ function SecurityPageContent() {
             <div className="flex min-h-0 flex-1 flex-col p-4">
               <div className="glass-inset min-h-0 flex-1 overflow-hidden p-2">
                 {realDataOnly && chartRange === "1D" && !hasLiveQuote ? (
-                  <EmptyDataState message="No intraday series — quote feed has no ticks for this symbol yet. Try 1M / 1Y (daily history via IRESS)." />
+                  <EmptyDataState message="No intraday data available yet. Try a longer time range." />
                 ) : (
                   <SecurityChart sym={activeSym} realDataOnly={realDataOnly} range={chartRange} />
                 )}
@@ -172,7 +172,7 @@ function SecurityPageContent() {
             {realDataOnly ? (
               <EmptyDataState
                 title="No L2 order book"
-                message="IRESS V4 on this account returns top-of-book only (PricingQuoteExGet = best bid/ask + order counts) — not a multi-level depth ladder. Best Bid/Ask is shown in Key Statistics below."
+                message="Order book depth is not available for this account. Best bid/ask is shown in Key Statistics below."
               />
             ) : (
               <DepthLadder mid={seedLastFor(activeSym)} tick={seedLastFor(activeSym) > 1000 ? 0.5 : 0.05} levels={8} />
@@ -411,10 +411,10 @@ function SecurityStatsGrid({ sym }: { sym: string }) {
       </div>
       <p className="text-[10px] leading-relaxed text-muted-foreground/70">
         Prev Close / Open / Bid / Ask / Day&apos;s Range / Volume: <span className="text-muted-foreground">IRESS PricingQuoteGet</span>
-        {s == null ? " (apply the quote_snapshot_c migration to populate)" : ""}. 52-Week Range / Avg. Volume:
+        {s == null ? " (data pending)" : ""}. 52-Week Range / Avg. Volume:
         IRESS daily history (worker fill pending). Market Cap / Beta / PE / EPS / Dividend:{" "}
-        <span className="text-muted-foreground">Yahoo (securities_c)</span>. Earnings Date / Ex-Dividend / 1y Target
-        Est: pending a fundamentals vendor (not on the IRESS V4 surface, not in securities_c).
+        <span className="text-muted-foreground">Yahoo Finance</span>. Earnings Date / Ex-Dividend / 1y Target
+        Est: pending a fundamentals vendor.
       </p>
     </div>
   );
