@@ -1,0 +1,408 @@
+/**
+ * Company analysis — deep fundamentals from Yahoo Finance (free), mapped to the
+ * fiscal.ai metric groups, for ANY ticker (US like MSFT, or JSE `.JO`).
+ *
+ * Powers the Analysis tab Overview. Everything is REAL Yahoo data or an honest
+ * `null` (the UI renders "—"); `notes` records anything computed or unavailable.
+ * No fabrication. Yahoo `quoteSummary` gives ~4 years of annual statements, so
+ * 3-year CAGRs are exact, 5/10-year are marked unavailable (needs a paid vendor).
+ *
+ * JSE (.JO) prices come back in cents; per-share price fields (last, target) are
+ * converted to major units. Ratios/margins are unitless and left as-is.
+ */
+
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+
+let cachedSession: { cookie: string; crumb: string; expires: number } | null = null;
+
+async function getSession(): Promise<{ cookie: string; crumb: string } | null> {
+  if (cachedSession && cachedSession.expires > Date.now()) return cachedSession;
+  try {
+    const c = await fetch("https://fc.yahoo.com/", { headers: { "User-Agent": UA } });
+    const cookie = c.headers.get("set-cookie")?.split(";")[0] ?? "";
+    const cr = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+      headers: { "User-Agent": UA, cookie, Accept: "text/plain" },
+    });
+    const crumb = (await cr.text()).trim();
+    if (!crumb || crumb.includes("<")) return null;
+    cachedSession = { cookie, crumb, expires: Date.now() + 25 * 60_000 };
+    return cachedSession;
+  } catch {
+    return null;
+  }
+}
+
+interface Raw { raw?: number }
+const num = (m: unknown): number | null =>
+  typeof m === "number" && Number.isFinite(m)
+    ? m
+    : m && typeof m === "object" && typeof (m as Raw).raw === "number" && Number.isFinite((m as Raw).raw)
+      ? (m as Raw).raw!
+      : null;
+const str = (m: unknown): string | null => (typeof m === "string" && m.trim() ? m.trim() : null);
+/** CAGR from first→last over `years`; null if not computable. */
+function cagr(latest: number | null, earliest: number | null, years: number): number | null {
+  if (latest == null || earliest == null || earliest <= 0 || latest <= 0 || years <= 0) return null;
+  return (Math.pow(latest / earliest, 1 / years) - 1) * 100;
+}
+function div(a: number | null, b: number | null): number | null {
+  return a != null && b != null && b !== 0 ? a / b : null;
+}
+
+export interface AnalysisMetric {
+  /** Raw value. For "pct" the value is a FRACTION (UI ×100); for "pct100" it's
+   *  already a percent (display as-is). */
+  value: number | null;
+  /**
+   * How the UI formats it:
+   *  pct    — fraction → ×100 + "%"  (Yahoo margins/yield/growth)
+   *  pct100 — already a percent → "%" (our computed CAGRs)
+   *  x      — multiple, "21.0x"
+   *  ratio  — plain ratio, "1.1"
+   *  money  — abbreviated currency, "$2.62T"
+   *  int    — abbreviated count, "228,000" / "7.4B"
+   *  price  — per-share price in the security's currency
+   */
+  fmt: "pct" | "pct100" | "x" | "money" | "ratio" | "int" | "price";
+}
+
+export interface CompanyAnalysis {
+  ok: boolean;
+  symbol: string;
+  yahooSymbol: string;
+  currency: string;
+  asOf: string;
+  error?: string;
+  price: {
+    last: number | null;
+    change: number | null;
+    changePct: number | null;
+    marketState: string | null;
+    exchange: string | null;
+  };
+  overview: {
+    name: string | null;
+    description: string | null;
+    ceo: string | null;
+    website: string | null;
+    sector: string | null;
+    industry: string | null;
+    country: string | null;
+    employees: number | null;
+  };
+  /** Metric groups, keyed exactly like fiscal.ai. */
+  groups: Record<string, Record<string, AnalysisMetric>>;
+  earnings: {
+    revenue: number | null;
+    estimate: number | null;
+    quarter: string | null;
+    surprisePct: number | null;
+    revBeatRate: { beats: number; total: number } | null;
+    epsBeatRate: { beats: number; total: number } | null;
+  };
+  /** Annual series (most recent first) for charts + CAGRs. */
+  series: {
+    years: number[];
+    revenue: (number | null)[];
+    netIncome: (number | null)[];
+    eps: (number | null)[];
+    fcf: (number | null)[];
+  };
+  notes: string[];
+}
+
+const M = (value: number | null, fmt: AnalysisMetric["fmt"]): AnalysisMetric => ({ value, fmt });
+
+/**
+ * Fetch the full fiscal.ai-style analysis for a ticker. `symbol` may be a bare
+ * US ticker (MSFT), a Yahoo symbol (CPI.JO), or a JSE code we suffix with .JO.
+ */
+export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnalysis> {
+  const clean = symbol.trim().toUpperCase();
+  const isJse = clean.endsWith(".JO") || clean.endsWith(".JSE");
+  const yahooSymbol = clean.replace(/\.JSE$/i, ".JO");
+  const notes: string[] = [];
+  const asOf = new Date().toISOString();
+
+  const empty = (err: string): CompanyAnalysis => ({
+    ok: false, symbol: clean, yahooSymbol, currency: "USD", asOf, error: err,
+    price: { last: null, change: null, changePct: null, marketState: null, exchange: null },
+    overview: { name: null, description: null, ceo: null, website: null, sector: null, industry: null, country: null, employees: null },
+    groups: {}, earnings: { revenue: null, estimate: null, quarter: null, surprisePct: null, revBeatRate: null, epsBeatRate: null },
+    series: { years: [], revenue: [], netIncome: [], eps: [], fcf: [] }, notes: [err],
+  });
+
+  const session = await getSession();
+  if (!session) return empty("Could not establish a Yahoo session");
+
+  const modules = [
+    "assetProfile", "price", "summaryDetail", "defaultKeyStatistics", "financialData",
+    "incomeStatementHistory", "balanceSheetHistory", "cashflowStatementHistory",
+    "earnings", "earningsHistory", "earningsTrend", "calendarEvents",
+  ].join(",");
+
+  let res: Record<string, unknown>;
+  try {
+    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(yahooSymbol)}?modules=${modules}&crumb=${encodeURIComponent(session.crumb)}`;
+    const r = await fetch(url, { headers: { "User-Agent": UA, cookie: session.cookie, Accept: "application/json" }, cache: "no-store" });
+    if (!r.ok) return empty(`Yahoo quoteSummary ${r.status}`);
+    const j = (await r.json()) as { quoteSummary?: { result?: Array<Record<string, unknown>> } };
+    const first = j?.quoteSummary?.result?.[0];
+    if (!first) return empty("No Yahoo data for this symbol");
+    res = first;
+  } catch (e) {
+    return empty(e instanceof Error ? e.message : "Yahoo fetch failed");
+  }
+
+  const profileM = (res.assetProfile ?? {}) as Record<string, unknown>;
+  const priceM = (res.price ?? {}) as Record<string, unknown>;
+  const detail = (res.summaryDetail ?? {}) as Record<string, unknown>;
+  const ks = (res.defaultKeyStatistics ?? {}) as Record<string, unknown>;
+  const fd = (res.financialData ?? {}) as Record<string, unknown>;
+  const inc = ((res.incomeStatementHistory as { incomeStatementHistory?: Array<Record<string, unknown>> })?.incomeStatementHistory ?? []);
+  const bs = ((res.balanceSheetHistory as { balanceSheetStatements?: Array<Record<string, unknown>> })?.balanceSheetStatements ?? []);
+  const cf = ((res.cashflowStatementHistory as { cashflowStatements?: Array<Record<string, unknown>> })?.cashflowStatements ?? []);
+  const earningsM = (res.earnings ?? {}) as Record<string, unknown>;
+  const earnHist = ((res.earningsHistory as { history?: Array<Record<string, unknown>> })?.history ?? []);
+  const earnTrend = ((res.earningsTrend as { trend?: Array<Record<string, unknown>> })?.trend ?? []);
+
+  const currency = str(priceM.currency) ?? str(fd.financialCurrency) ?? (isJse ? "ZAR" : "USD");
+  const centDiv = isJse ? 100 : 1; // JSE per-share prices come back in cents
+
+  // ── price ──
+  const last = num(priceM.regularMarketPrice);
+  const price = {
+    last: last != null ? last / centDiv : null,
+    change: num(priceM.regularMarketChange) != null ? num(priceM.regularMarketChange)! / centDiv : null,
+    changePct: num(priceM.regularMarketChangePercent) != null ? num(priceM.regularMarketChangePercent)! * 100 : null,
+    marketState: str(priceM.marketState),
+    exchange: str(priceM.exchangeName) ?? str(priceM.fullExchangeName),
+  };
+
+  // ── overview ──
+  const officers = (profileM.companyOfficers as Array<Record<string, unknown>>) ?? [];
+  const ceo = officers.find((o) => /chief executive|ceo/i.test(str(o.title) ?? ""))?.name as string | undefined;
+  const overview = {
+    name: str(priceM.longName) ?? str(priceM.shortName),
+    description: str(profileM.longBusinessSummary),
+    ceo: ceo ?? null,
+    website: str(profileM.website),
+    sector: str(profileM.sector),
+    industry: str(profileM.industry),
+    country: str(profileM.country),
+    employees: num(profileM.fullTimeEmployees),
+  };
+
+  // ── core figures ──
+  const revenue = num(fd.totalRevenue) ?? num((inc[0] ?? {}).totalRevenue);
+  const ebitda = num(fd.ebitda);
+  const grossMarginRaw = num(fd.grossMargins);
+  const grossProfit = num((inc[0] ?? {}).grossProfit) ?? (revenue != null && grossMarginRaw != null ? revenue * grossMarginRaw : null);
+  const marketCap = num(priceM.marketCap) ?? num(detail.marketCap);
+  const ev = num(ks.enterpriseValue);
+  const totalCash = num(fd.totalCash);
+  const totalDebt = num(fd.totalDebt);
+  const fcf = num(fd.freeCashflow);
+  const opCash = num((cf[0] ?? {}).totalCashFromOperatingActivities);
+  const capex = num((cf[0] ?? {}).capitalExpenditures);
+  const fcfComputed = fcf ?? (opCash != null && capex != null ? opCash + capex : null);
+
+  // ── margins (Yahoo fractions) ──
+  const groups: Record<string, Record<string, AnalysisMetric>> = {};
+  groups.Profile = {
+    "Market Cap": M(marketCap, "money"),
+    EV: M(ev, "money"),
+    "Shares Out": M(num(ks.sharesOutstanding) ?? num(priceM.sharesOutstanding), "int"),
+    Revenue: M(revenue, "money"),
+    Employees: M(overview.employees, "int"),
+  };
+  groups.Margins = {
+    Gross: M(num(fd.grossMargins) ?? div(grossProfit, revenue), "pct"),
+    EBITDA: M(num(fd.ebitdaMargins) ?? div(ebitda, revenue), "pct"),
+    Operating: M(num(fd.operatingMargins) ?? div(num((inc[0] ?? {}).operatingIncome), revenue), "pct"),
+    "Pre-Tax": M(div(num((inc[0] ?? {}).incomeBeforeTax), revenue), "pct"),
+    Net: M(num(fd.profitMargins) ?? num(ks.profitMargins) ?? div(num((inc[0] ?? {}).netIncome), revenue), "pct"),
+    FCF: M(div(fcfComputed, revenue), "pct"),
+  };
+  groups.Returns = {
+    ROA: M(num(fd.returnOnAssets), "pct"),
+    ROE: M(num(fd.returnOnEquity), "pct"),
+    ROIC: M(null, "pct"),
+    ROCE: M(null, "pct"),
+    ROTA: M(null, "pct"),
+  };
+  notes.push("ROIC/ROCE/ROTA need NOPAT + invested-capital from full statements — not derivable from Yahoo free; shown as —.");
+
+  const trailingPE = num(detail.trailingPE) ?? num(ks.trailingPE);
+  const pb = num(ks.priceToBook);
+  groups["Valuation (TTM)"] = {
+    "P/E": M(trailingPE, "x"),
+    "P/B": M(pb, "x"),
+    "EV/Sales": M(num(ks.enterpriseToRevenue) ?? div(ev, revenue), "x"),
+    "EV/EBITDA": M(num(ks.enterpriseToEbitda) ?? div(ev, ebitda), "x"),
+    "P/FCF": M(div(marketCap, fcfComputed), "x"),
+    "EV/Gross Profit": M(div(ev, grossProfit), "x"),
+  };
+  const targetRaw = num(fd.targetMeanPrice);
+  const target = targetRaw != null ? targetRaw / centDiv : null;
+  const fwdEps = num(ks.forwardEps);
+  groups["Valuation (NTM)"] = {
+    "Price Target": M(target, "price"),
+    "P/E": M(num(ks.forwardPE) ?? num(detail.forwardPE) ?? div(price.last, fwdEps), "x"),
+    PEG: M(num(ks.pegRatio), "ratio"),
+    "EV/Sales": M(null, "x"),
+    "EV/EBITDA": M(null, "x"),
+    "P/FCF": M(null, "x"),
+  };
+
+  const ebit = num((inc[0] ?? {}).ebit) ?? num((inc[0] ?? {}).operatingIncome);
+  const interest = num((inc[0] ?? {}).interestExpense);
+  groups["Financial Health"] = {
+    Cash: M(totalCash, "money"),
+    "Net Debt": M(totalDebt != null && totalCash != null ? totalDebt - totalCash : null, "money"),
+    "Debt/Equity": M(num(fd.debtToEquity) != null ? num(fd.debtToEquity)! / 100 : null, "ratio"),
+    "EBIT/Interest": M(interest != null && interest !== 0 && ebit != null ? Math.abs(ebit / interest) : null, "x"),
+  };
+
+  // ── annual series (most-recent-first) for CAGRs + charts ──
+  const years = inc.map((r) => new Date(num((r as Record<string, unknown>).endDate)! * 1000).getFullYear()).filter((y) => Number.isFinite(y));
+  const revSeries = inc.map((r) => num((r as Record<string, unknown>).totalRevenue));
+  const niSeries = inc.map((r) => num((r as Record<string, unknown>).netIncome));
+  const epsSeries = earnHist.length ? earnHist.map((r) => num((r as Record<string, unknown>).epsActual)) : [];
+  const n = inc.length;
+  // Yahoo gives ~4 annual statements → 3yr CAGR exact; 5/10yr unavailable.
+  const rev3 = n >= 4 ? cagr(revSeries[0] ?? null, revSeries[3] ?? null, 3) : null;
+  const epsLatest = num(ks.trailingEps);
+  const eps3 = n >= 4 ? cagr(niSeries[0] ?? null, niSeries[3] ?? null, 3) : null;
+  const trend1y = earnTrend.find((t) => str((t as Record<string, unknown>).period) === "+1y") as Record<string, unknown> | undefined;
+  const trend5y = earnTrend.find((t) => str((t as Record<string, unknown>).period) === "+5y") as Record<string, unknown> | undefined;
+  groups["Growth (CAGR)"] = {
+    "Rev 3Yr": M(rev3, "pct100"),
+    "Rev 5Yr": M(null, "pct100"),
+    "Rev 10Yr": M(null, "pct100"),
+    "EPS 3Yr": M(eps3, "pct100"),
+    "Rev Fwd": M(num(fd.revenueGrowth), "pct"),
+    "EPS Fwd": M(num((trend1y?.growth)) , "pct"),
+    "EPS LT Est": M(num(trend5y?.growth), "pct"),
+  } as Record<string, AnalysisMetric>;
+  if (n < 4) notes.push("Yahoo returned <4 annual statements — multi-year CAGRs limited.");
+  notes.push("5Yr/10Yr CAGRs require >4yr history (paid vendor) — shown as —.");
+
+  const divYield = num(detail.dividendYield) ?? num(detail.trailingAnnualDividendYield);
+  const dpsRate = num(detail.dividendRate);
+  groups.Dividends = {
+    Yield: M(divYield, "pct"),
+    Payout: M(num(detail.payoutRatio), "pct"),
+    DPS: M(dpsRate != null ? dpsRate / centDiv : num(detail.trailingAnnualDividendRate), "price"),
+  };
+  if (divYield == null) notes.push("No dividend (or yield not reported) for this security.");
+
+  // ── earnings beat track record ──
+  const eChart = (earningsM.earningsChart as Record<string, unknown>) ?? {};
+  const curQ = (eChart.currentQuarterEstimate != null)
+    ? { est: num(eChart.currentQuarterEstimate), q: `${str(eChart.currentQuarterEstimateDate) ?? ""} ${num(eChart.currentQuarterEstimateYear) ?? ""}`.trim() }
+    : null;
+  const finChart = ((earningsM.financialsChart as { quarterly?: Array<Record<string, unknown>> })?.quarterly ?? []);
+  const lastQ = finChart[finChart.length - 1];
+  const lastQRev = lastQ ? num(lastQ.revenue) : null;
+  const epsBeats = earnHist.filter((h) => { const a = num(h.epsActual), e = num(h.epsEstimate); return a != null && e != null && a >= e; }).length;
+  const earnings = {
+    revenue: lastQRev,
+    estimate: null as number | null,
+    quarter: lastQ ? str(lastQ.date) : (curQ?.q ?? null),
+    surprisePct: null as number | null,
+    revBeatRate: null,
+    epsBeatRate: earnHist.length ? { beats: epsBeats, total: earnHist.length } : null,
+  };
+
+  return {
+    ok: true, symbol: clean, yahooSymbol, currency, asOf, price, overview, groups, earnings,
+    series: {
+      years,
+      revenue: revSeries,
+      netIncome: niSeries,
+      eps: epsSeries.length ? epsSeries : [epsLatest],
+      fcf: cf.map((r) => { const o = num((r as Record<string, unknown>).totalCashFromOperatingActivities), c = num((r as Record<string, unknown>).capitalExpenditures); return o != null && c != null ? o + c : null; }),
+    },
+    notes,
+  };
+}
+
+// ── price history (for the standalone Analysis chart) ───────────────────
+
+export interface ChartPoint {
+  t: number; // epoch ms
+  c: number; // close (major units; JSE cents divided out)
+}
+export interface CompanyChart {
+  ok: boolean;
+  symbol: string;
+  currency: string;
+  range: string;
+  points: ChartPoint[];
+  firstClose: number | null;
+  lastClose: number | null;
+  /** Simple total return over the window, %. */
+  changePct: number | null;
+  /** Annualised CAGR over the window, % (null for <1y windows). */
+  cagrPct: number | null;
+  error?: string;
+}
+
+const RANGE_INTERVAL: Record<string, string> = {
+  "1M": "1d", "6M": "1d", YTD: "1d", "1Y": "1d", "3Y": "1wk", "5Y": "1wk", MAX: "1mo",
+};
+const RANGE_YEARS: Record<string, number> = {
+  "1M": 1 / 12, "6M": 0.5, YTD: 0.5, "1Y": 1, "3Y": 3, "5Y": 5, MAX: 10,
+};
+
+/** Daily/weekly close history from Yahoo's chart endpoint. Works globally. */
+export async function fetchYahooChart(symbol: string, rangeIn = "5Y"): Promise<CompanyChart> {
+  const clean = symbol.trim().toUpperCase();
+  const isJse = clean.endsWith(".JO") || clean.endsWith(".JSE");
+  const yahooSymbol = clean.replace(/\.JSE$/i, ".JO");
+  const range = RANGE_INTERVAL[rangeIn] ? rangeIn : "5Y";
+  const interval = RANGE_INTERVAL[range] ?? "1wk";
+  const yahooRange = range === "YTD" ? "ytd" : range.toLowerCase();
+  const centDiv = isJse ? 100 : 1;
+
+  const fail = (error: string): CompanyChart => ({
+    ok: false, symbol: clean, currency: isJse ? "ZAR" : "USD", range, points: [],
+    firstClose: null, lastClose: null, changePct: null, cagrPct: null, error,
+  });
+
+  try {
+    const session = await getSession();
+    const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
+    if (session?.cookie) headers.cookie = session.cookie;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${yahooRange}&interval=${interval}`;
+    const r = await fetch(url, { headers, cache: "no-store" });
+    if (!r.ok) return fail(`Yahoo chart ${r.status}`);
+    const j = (await r.json()) as {
+      chart?: { result?: Array<{ timestamp?: number[]; meta?: { currency?: string }; indicators?: { quote?: Array<{ close?: Array<number | null> }> } }> };
+    };
+    const res = j?.chart?.result?.[0];
+    const ts = res?.timestamp ?? [];
+    const closes = res?.indicators?.quote?.[0]?.close ?? [];
+    const points: ChartPoint[] = [];
+    for (let i = 0; i < ts.length; i++) {
+      const c = closes[i];
+      const t = ts[i];
+      if (typeof c === "number" && Number.isFinite(c) && c > 0 && typeof t === "number") {
+        points.push({ t: t * 1000, c: c / centDiv });
+      }
+    }
+    if (points.length < 2) return fail("No price history for this symbol/range");
+    const firstClose = points[0]!.c;
+    const lastClose = points[points.length - 1]!.c;
+    const changePct = ((lastClose - firstClose) / firstClose) * 100;
+    const years = RANGE_YEARS[range] ?? 5;
+    const cagrPct = years >= 1 && firstClose > 0 ? (Math.pow(lastClose / firstClose, 1 / years) - 1) * 100 : null;
+    return {
+      ok: true, symbol: clean, currency: res?.meta?.currency ?? (isJse ? "ZAR" : "USD"), range,
+      points, firstClose, lastClose, changePct, cagrPct,
+    };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "Yahoo chart failed");
+  }
+}

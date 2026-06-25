@@ -2,7 +2,7 @@ import {
   LayoutDashboard, TrendingUp, LineChart, Banknote, Globe2, Layers, FileText,
   ClipboardList, Users, MonitorSmartphone, BookOpen, Mail, Sunrise, Newspaper,
   FlaskConical, ShieldCheck, Shield, Cable, SlidersHorizontal, Settings, Landmark,
-  Activity, type LucideIcon,
+  Activity, Search, type LucideIcon,
 } from "lucide-react";
 
 import type { Persona } from "@/lib/store/session-provider";
@@ -58,6 +58,7 @@ export const PLATFORM_NAV: NavSection[] = [
     title: "Markets",
     items: [
       { label: "Securities", href: "/oems/equities", icon: TrendingUp, roles: [DESK, STRAT, WM] },
+      { label: "Analysis", href: "/analysis", icon: Search, roles: [DESK, STRAT, WM, BIZ] },
       { label: "Fixed Income", href: "/oems/fixed-income", icon: LineChart, roles: [DESK, STRAT] },
       { label: "Money Market", href: "/oems/money-market", icon: Banknote, roles: [DESK, STRAT] },
       { label: "Curves", href: "/oems/curves", icon: Activity, roles: [DESK, STRAT] },
