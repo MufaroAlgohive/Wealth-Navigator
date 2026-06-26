@@ -11,8 +11,11 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
  * fundamentals + TimeSeriesGet2 entitlements (see docs/PHASE1_IRESS_RETAIL_CUTOVER.md).
  *
  * Auth: Vercel cron `Authorization: Bearer ${CRON_SECRET}`, OR an admin session.
- * Write gate: DEFAULT SHADOW — set `YAHOO_FUNDAMENTALS_WRITE=1` to write live to
- * the RETAIL securities_c. NEVER writes last_price/change_percent (Iress owns those).
+ * Write gate: DEFAULT SHADOW. Set `YAHOO_FUNDAMENTALS_WRITE=1` to write live to
+ * the RETAIL securities_c. In production, IRESS owns last_price/change_percent and
+ * this leaves them untouched. During UAT (`IRESS_PRICE_OVERLAY=0`) IRESS quotes are
+ * test data, so this ALSO refreshes last_price/change_percent from Yahoo to keep
+ * the live board/ticker accurate.
  *
  * Suggested schedule (vercel.json): daily, e.g. "0 5 * * *".
  */
@@ -47,7 +50,11 @@ async function yahooCrumb(): Promise<{ cookie: string; crumb: string } | null> {
 
 interface YahooModule { raw?: number }
 interface YahooResult {
-  price?: { marketCap?: YahooModule };
+  price?: {
+    marketCap?: YahooModule;
+    regularMarketPrice?: YahooModule;
+    regularMarketChangePercent?: YahooModule;
+  };
   summaryDetail?: { trailingPE?: YahooModule; dividendRate?: YahooModule; dividendYield?: YahooModule };
   defaultKeyStatistics?: { trailingPE?: YahooModule; ytdReturn?: YahooModule; "52WeekChange"?: YahooModule };
 }
@@ -96,6 +103,18 @@ export async function GET(req: Request) {
       if (dy != null) update.dividend_yield = dy * 100;
       const ytd = res.defaultKeyStatistics?.ytdReturn?.raw ?? res.defaultKeyStatistics?.["52WeekChange"]?.raw;
       if (ytd != null) update.ytd_performance = ytd * 100;
+
+      // UAT phase (IRESS_PRICE_OVERLAY=0): IRESS quotes are test data, so Yahoo
+      // owns last_price + change_percent too, keeping the live board/ticker
+      // accurate. JSE Yahoo quotes are in ZAc (cents) and securities_c.last_price
+      // is cents, so regularMarketPrice is stored directly. In production the
+      // IRESS worker owns these fields, so we leave them untouched there.
+      if (process.env.IRESS_PRICE_OVERLAY === "0") {
+        const px = res.price?.regularMarketPrice?.raw;
+        if (px != null && px > 0) update.last_price = Math.round(px);
+        const chg = res.price?.regularMarketChangePercent?.raw;
+        if (chg != null) update.change_percent = Math.round(chg * 10000) / 100;
+      }
 
       if (Object.keys(update).length === 0) { continue; }
       covered++;
