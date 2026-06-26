@@ -18,25 +18,33 @@ export default async function AdminLayout({ children }: { children: ReactNode })
   // in a non-production build, render the shell without a session for sign-off.
   const previewMode = process.env.NODE_ENV !== "production" && process.env.ADMIN_PREVIEW === "1";
 
+  // Only a genuine no-session bounces to login. An authenticated user who is
+  // simply not in `admin_team` yet must NOT be redirected: middleware sees an
+  // authed user hitting /login and bounces them straight to /oems, so every
+  // /admin/* sidebar link reads as "broken, refreshes back to OEMS". The
+  // sidebar already shows every section to any signed-in user (documented
+  // stopgap until per-user page_access RBAC lands), so render the shell here
+  // to match, with an honest notice.
   if (res.status === "no-session" && !previewMode) redirect("/login?next=/admin");
-  if (res.status === "not-member" && !previewMode) redirect("/login?reason=not-a-member");
 
   let ctx: AdminContext;
   let notice: string | null = null;
   if (res.status === "ok") {
     ctx = res.ctx;
   } else {
-    // Render the shell with full visibility so the merged frontend is reviewable:
+    // Render the shell with full visibility for:
+    //  - 'not-member'   (authenticated, not yet provisioned in admin_team),
     //  - 'unconfigured' (service-role env not set in local dev), or
-    //  - no-session / not-member under ADMIN_PREVIEW.
-    // Never reached in prod where RETAIL_SUPABASE_* is set and ADMIN_PREVIEW is off.
+    //  - no-session under ADMIN_PREVIEW.
     notice =
-      res.status === "unconfigured"
-        ? `Admin RBAC unavailable (${res.reason}) — dev fallback: showing all sections.`
-        : "Design-preview mode (ADMIN_PREVIEW) — not authenticated; all sections shown, no live data.";
+      res.status === "not-member"
+        ? `Signed in as ${res.email}: not yet in admin_team. Full access shown until RBAC is provisioned.`
+        : res.status === "unconfigured"
+          ? `Admin RBAC unavailable (${res.reason}). Dev fallback: showing all sections.`
+          : "Design-preview mode (ADMIN_PREVIEW): not authenticated; all sections shown, no live data.";
     ctx = {
-      email: "preview@local",
-      fullName: "Design Preview",
+      email: res.status === "not-member" ? res.email : "preview@local",
+      fullName: res.status === "not-member" ? null : "Design Preview",
       role: "admin",
       pageAccess: [],
       approverTier: null,
