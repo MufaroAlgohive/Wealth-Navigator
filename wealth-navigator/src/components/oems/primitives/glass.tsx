@@ -4,6 +4,7 @@ import * as React from "react";
 import { cn } from "@/lib/cn";
 import type { DataSourceKind, DbName } from "@/components/oems/primitives/data-source-badge";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
+import { useDevTools } from "@/lib/dev/dev-tools";
 
 /** Full-page ambient wrapper for OEMS pages */
 export function ResearchLabCanvas({ children }: { children: React.ReactNode }) {
@@ -36,6 +37,7 @@ export function GlassSection({
   children,
   ...rest
 }: GlassSectionProps) {
+  const dev = useDevTools();
   return (
     <section className={cn("glass-panel", className)} {...rest}>
       <header className="flex items-start justify-between gap-3 border-b border-[hsl(var(--glass-border))] px-5 py-3.5">
@@ -45,10 +47,11 @@ export function GlassSection({
             {(dataSource || db) && <DataSourceBadge source={dataSource ?? "supabase"} db={db} />}
           </div>
           {(() => {
-            // The `endpoint` (e.g. "GET /api/…") is a developer affordance — it
-            // is hidden in production builds so the UI reads clean for users, and
-            // shown only in dev where it helps trace data flow.
-            const showEndpoint = Boolean(endpoint) && process.env.NODE_ENV !== "production";
+            // The `endpoint` (e.g. "GET /api/…") is a developer affordance. It is
+            // hidden from normal users so the UI reads clean, and shown in local
+            // dev OR to the allowlisted debug users (IRESS integration devs) in
+            // any build, so they can trace which API each module calls.
+            const showEndpoint = Boolean(endpoint) && (process.env.NODE_ENV !== "production" || dev.enabled);
             if (!subtitle && !showEndpoint) return null;
             return (
               <p className="text-caption truncate">

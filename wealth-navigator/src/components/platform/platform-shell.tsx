@@ -8,6 +8,7 @@ import { SkipLink } from "@/components/oems/primitives/skip-link";
 import { TopBar } from "@/components/oems/shell/top-bar";
 import { TickerBar } from "@/components/oems/primitives/ticker-bar";
 import { PlatformNav } from "@/components/platform/platform-nav";
+import { DevToolsHud } from "@/components/platform/dev-tools-hud";
 
 /**
  * The single platform shell — one top bar + ticker + the unified role-gated
@@ -37,6 +38,8 @@ export function PlatformShell({ children, banner }: { children: ReactNode; banne
             <div className="relative mx-auto max-w-[1800px] animate-fade-in">{children}</div>
           </main>
         </div>
+        {/* Developer debug HUD: renders only for the allowlisted debug users. */}
+        <DevToolsHud />
       </div>
     </CommandPaletteProvider>
   );
