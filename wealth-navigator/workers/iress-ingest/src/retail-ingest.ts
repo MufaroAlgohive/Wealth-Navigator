@@ -171,12 +171,20 @@ export async function syncRetailPrices(opts: {
       // column the legacy Yahoo feed populated). Omitting it makes every insert
       // fail with "null value in column symbol", so the IRESS retail feed never
       // lands. Write the same `.JO` symbol securities_c uses.
-      const { error: tickErr } = await retail.from("stock_intraday_c").insert({
-        security_id: sec.id,
-        symbol: sec.symbol,
-        current_price: choice.cents,
-        timestamp: ts,
-      });
+      //
+      // Upsert (not insert) on the (symbol, timestamp) unique key: `ts` is fixed
+      // for the whole cycle, so if withSession reconnects mid-loop and re-runs,
+      // the symbols already written this cycle would otherwise fail with a
+      // duplicate-key violation. Upserting makes the re-run idempotent.
+      const { error: tickErr } = await retail.from("stock_intraday_c").upsert(
+        {
+          security_id: sec.id,
+          symbol: sec.symbol,
+          current_price: choice.cents,
+          timestamp: ts,
+        },
+        { onConflict: "symbol,timestamp" },
+      );
       if (tickErr) {
         console.error(`[retail-ingest] stock_intraday_c insert(${sec.symbol}): ${tickErr.message}`);
         continue;
