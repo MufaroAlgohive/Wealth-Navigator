@@ -25,6 +25,17 @@ export const maxDuration = 300;
 
 const GAP_FIELDS = ["market_cap", "pe_ratio", "dividend_per_share", "dividend_yield", "ytd_performance"] as const;
 
+/**
+ * securities_c stores bare JSE codes (NPN, CPI, SOL). Yahoo's quoteSummary needs
+ * the `.JO` suffix for the Johannesburg listing; without it a bare code can
+ * resolve to a same-named foreign ticker (e.g. `CPI` is a US ETF in USD, not
+ * Capitec on the JSE) and we would write a wrong-currency price as ZAc. Always
+ * query the explicit JSE symbol.
+ */
+function toYahooJseSymbol(sym: string): string {
+  return `${sym.replace(/\.(JO|JSE)$/i, "").toUpperCase()}.JO`;
+}
+
 async function authorized(req: Request): Promise<boolean> {
   const secret = process.env.CRON_SECRET;
   const bearer = req.headers.get("authorization")?.replace("Bearer ", "");
@@ -54,6 +65,7 @@ interface YahooResult {
     marketCap?: YahooModule;
     regularMarketPrice?: YahooModule;
     regularMarketChangePercent?: YahooModule;
+    currency?: string;
   };
   summaryDetail?: { trailingPE?: YahooModule; dividendRate?: YahooModule; dividendYield?: YahooModule };
   defaultKeyStatistics?: { trailingPE?: YahooModule; ytdReturn?: YahooModule; "52WeekChange"?: YahooModule };
@@ -82,15 +94,21 @@ export async function GET(req: Request) {
   for (const sec of securities ?? []) {
     const sym = String(sec.symbol || "").trim();
     if (!sym) continue;
+    const ySym = toYahooJseSymbol(sym);
     try {
       const r = await fetch(
-        `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(sym)}?modules=price,summaryDetail,defaultKeyStatistics&crumb=${encodeURIComponent(session.crumb)}`,
+        `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ySym)}?modules=price,summaryDetail,defaultKeyStatistics&crumb=${encodeURIComponent(session.crumb)}`,
         { headers: { "User-Agent": "Mozilla/5.0", cookie: session.cookie, Accept: "application/json" } },
       );
       if (!r.ok) { failed++; continue; }
       const j = (await r.json()) as { quoteSummary?: { result?: YahooResult[] } };
       const res = j?.quoteSummary?.result?.[0];
       if (!res) { failed++; continue; }
+      // Reject a same-named non-JSE listing: only the Johannesburg quote is in
+      // ZAc. If Yahoo reports a currency and it is not ZAc, this resolved to the
+      // wrong entity (a US/global collision), so skip rather than write garbage.
+      const cur = res.price?.currency;
+      if (cur && cur !== "ZAc") { failed++; continue; }
 
       const update: Record<string, number> = {};
       const mc = res.price?.marketCap?.raw;

@@ -132,9 +132,18 @@ export async function GET(req: Request, { params }: { params: Promise<{ code: st
     return Response.json({ code, points, source: "supabase" });
   }
 
-  // Mock / non-supabase path: synthesise a deterministic 78-point
-  // intraday series off the seed index level so the chart still
-  // renders during local dev.
+  // Mock / non-supabase path. Prefer a real Yahoo series for codes it covers
+  // (J203 -> ^J203.JO) so a split-flag config (server USE_SUPABASE_QUOTES off,
+  // client expecting real data) shows the real index rather than a fabricated
+  // level. Only fall through to the synthetic seed for unmapped codes / when
+  // Yahoo is unreachable, so local dev still renders.
+  const yMockSym = YAHOO_INDEX[code];
+  if (yMockSym) {
+    const yPoints = await fetchYahooIndexIntraday(yMockSym, windowKey);
+    if (yPoints.length >= 2) {
+      return Response.json({ code, points: yPoints, source: "yahoo" });
+    }
+  }
   const seed = globalIndices.find((i) => i.code === code);
   const base = seed?.last ?? 87000;
   const now = Date.now();

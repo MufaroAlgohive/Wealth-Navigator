@@ -14,6 +14,7 @@
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,6 +56,19 @@ export async function GET(_req: Request, { params }: { params: Promise<{ sym: st
   const { sym: rawSym } = await params;
   const sym = rawSym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
   if (!sym) return Response.json({ error: "sym path param required" }, { status: 400 });
+
+  // UAT (IRESS_PRICE_OVERLAY=0): quote_snapshot_c holds IRESS test L1 prices.
+  // Do not serve them; the Security page renders the honest empty state for the
+  // IRESS-sourced statistics and keeps the Yahoo-fed fundamentals grid.
+  if (!iressPriceOverlayEnabled()) {
+    return Response.json({
+      symbol: sym,
+      snapshot: null,
+      source: "overlay-disabled",
+      message:
+        "IRESS price overlay is off (UAT phase): the IRESS L1 snapshot is test data and is not shown. Prices come from the Yahoo-fed board instead.",
+    });
+  }
 
   if (!isSupabaseConfigured()) {
     return Response.json({ symbol: sym, snapshot: null, source: "unavailable", reason: "supabase_not_configured" }, { status: 503 });

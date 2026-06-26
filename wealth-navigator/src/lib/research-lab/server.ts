@@ -14,6 +14,7 @@ import {
   isRetailSupabaseConfigured,
   isSupabaseConfigured,
 } from "@/lib/supabase/server";
+import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
 
 const bare = (sym: string) => sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
 
@@ -21,6 +22,13 @@ const SEC_SELECT =
   "symbol,name,sector,industry,last_price,pe,eps,dividend_yield,beta,market_cap,ytd_performance";
 
 async function overlayIressQuotes(rows: SecurityRef[]): Promise<number> {
+  // UAT (IRESS_PRICE_OVERLAY=0): IRESS quotes are test data. Keep the Yahoo-fed
+  // securities_c last_price so basket valuations/weights are not computed from
+  // CT test prices.
+  if (!iressPriceOverlayEnabled()) {
+    for (const r of rows) r.price_source = "yahoo";
+    return 0;
+  }
   if (!isSupabaseConfigured()) return 0;
   try {
     const inst = createServiceRoleClient();

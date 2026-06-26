@@ -1,5 +1,6 @@
 import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
+import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
 import { callWorker } from "@/lib/iress/worker-api";
 /**
  * GET /api/analysis/[sym]?range=1Y
@@ -110,6 +111,13 @@ async function loadInstitutionalSnapshot(sym: string): Promise<{
   message?: string;
   source: string;
 }> {
+  // UAT (IRESS_PRICE_OVERLAY=0): the IRESS L1 snapshot in quote_snapshot_c is
+  // test data. Do not surface it; the Analysis page then falls back to the
+  // Yahoo-fed securities_c last_price for the header and shows the honest empty
+  // state for the IRESS-only statistics (bid/ask/vwap/52w).
+  if (!iressPriceOverlayEnabled()) {
+    return { snapshot: null, source: "overlay-disabled" };
+  }
   if (!isInstitutionalSupabaseConfigured()) {
     return { snapshot: null, source: "unavailable", reason: "supabase_not_configured" };
   }
