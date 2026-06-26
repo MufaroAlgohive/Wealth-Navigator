@@ -18,33 +18,45 @@ export default async function AdminLayout({ children }: { children: ReactNode })
   // in a non-production build, render the shell without a session for sign-off.
   const previewMode = process.env.NODE_ENV !== "production" && process.env.ADMIN_PREVIEW === "1";
 
-  // Only a genuine no-session bounces to login. An authenticated user who is
-  // simply not in `admin_team` yet must NOT be redirected: middleware sees an
-  // authed user hitting /login and bounces them straight to /oems, so every
-  // /admin/* sidebar link reads as "broken, refreshes back to OEMS". The
-  // sidebar already shows every section to any signed-in user (documented
-  // stopgap until per-user page_access RBAC lands), so render the shell here
-  // to match, with an honest notice.
+  // A genuine no-session goes to login. NB: do NOT redirect an authenticated
+  // non-member to /login: middleware would bounce that authed user straight to
+  // /oems, which reads as "the /admin link is broken". Handle not-member below
+  // with an explicit access-denied surface instead.
   if (res.status === "no-session" && !previewMode) redirect("/login?next=/admin");
+
+  // Locked down: an authenticated user who is not a member of admin_team gets a
+  // clear access-denied surface (still inside the shell so they can navigate
+  // away), never the admin pages. Provision the user in admin_team to grant it.
+  if (res.status === "not-member") {
+    return (
+      <PlatformShell>
+        <div className="mx-auto mt-20 max-w-md px-4">
+          <div className="glass-panel rounded-2xl p-8 text-center">
+            <h1 className="text-section text-base">Admin access required</h1>
+            <p className="text-caption mt-2 leading-relaxed">
+              {res.email} is signed in but is not a member of the admin team. Ask an
+              administrator to add your account, then reload this page.
+            </p>
+          </div>
+        </div>
+      </PlatformShell>
+    );
+  }
 
   let ctx: AdminContext;
   let notice: string | null = null;
   if (res.status === "ok") {
     ctx = res.ctx;
   } else {
-    // Render the shell with full visibility for:
-    //  - 'not-member'   (authenticated, not yet provisioned in admin_team),
-    //  - 'unconfigured' (service-role env not set in local dev), or
-    //  - no-session under ADMIN_PREVIEW.
+    // 'unconfigured' (service-role env not set in local dev) or no-session under
+    // ADMIN_PREVIEW: render the shell with a dev fallback context for sign-off.
     notice =
-      res.status === "not-member"
-        ? `Signed in as ${res.email}: not yet in admin_team. Full access shown until RBAC is provisioned.`
-        : res.status === "unconfigured"
-          ? `Admin RBAC unavailable (${res.reason}). Dev fallback: showing all sections.`
-          : "Design-preview mode (ADMIN_PREVIEW): not authenticated; all sections shown, no live data.";
+      res.status === "unconfigured"
+        ? `Admin RBAC unavailable (${res.reason}). Dev fallback: showing all sections.`
+        : "Design-preview mode (ADMIN_PREVIEW): not authenticated; all sections shown, no live data.";
     ctx = {
-      email: res.status === "not-member" ? res.email : "preview@local",
-      fullName: res.status === "not-member" ? null : "Design Preview",
+      email: "preview@local",
+      fullName: "Design Preview",
       role: "admin",
       pageAccess: [],
       approverTier: null,
