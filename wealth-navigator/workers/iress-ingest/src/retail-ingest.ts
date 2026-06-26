@@ -167,8 +167,13 @@ export async function syncRetailPrices(opts: {
 
       if (!writesOn) continue; // shadow: comparison captured, nothing written to RETAIL
 
+      // `symbol` is NOT NULL on the production stock_intraday_c (a denormalised
+      // column the legacy Yahoo feed populated). Omitting it makes every insert
+      // fail with "null value in column symbol", so the IRESS retail feed never
+      // lands. Write the same `.JO` symbol securities_c uses.
       const { error: tickErr } = await retail.from("stock_intraday_c").insert({
         security_id: sec.id,
+        symbol: sec.symbol,
         current_price: choice.cents,
         timestamp: ts,
       });
