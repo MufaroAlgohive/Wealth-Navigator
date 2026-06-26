@@ -370,6 +370,39 @@ export function OwnershipTab({ sym }: { sym: string }) {
               </div>
             </GlassSection>
 
+            {o.insiders.length ? (
+              <GlassSection title="Insider roster" subtitle="Officers and directors, reported holdings" dataSource="yahoo">
+                <div className="glass-inset overflow-hidden rounded-xl">
+                  <div className="overflow-x-auto scrollbar-thin">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] text-muted-foreground">
+                          {["Insider", "Title", "Shares held", "Market value", "% owned"].map((h, i) => (
+                            <th key={h} className={cn("px-3 py-2.5 font-medium", i <= 1 ? "text-left" : "text-right")}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {o.insiders.map((it, i) => {
+                          const val = it.shares != null && d.research.currentPrice != null ? it.shares * d.research.currentPrice : null;
+                          const owned = it.shares != null && o.sharesOutstanding != null && o.sharesOutstanding > 0 ? it.shares / o.sharesOutstanding : null;
+                          return (
+                            <tr key={i} className="border-b border-[hsl(var(--glass-border))]/50">
+                              <td className="px-3 py-2 font-medium">{it.name}</td>
+                              <td className="px-3 py-2 text-muted-foreground">{it.title ?? "—"}</td>
+                              <td className="px-3 py-2 text-right font-mono tabular-nums">{intFmt(it.shares)}</td>
+                              <td className="px-3 py-2 text-right font-mono tabular-nums">{money(val, d.currency)}</td>
+                              <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">{owned != null ? `${(owned * 100).toFixed(4)}%` : "—"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </GlassSection>
+            ) : null}
+
             <GlassSection title="Top institutional holders" subtitle="Largest reported positions" dataSource="yahoo">
               {o.topInstitutions.length ? (
                 <div className="glass-inset overflow-hidden rounded-xl">
@@ -441,34 +474,78 @@ export function OwnershipTab({ sym }: { sym: string }) {
 
 // ── Dividends ──────────────────────────────────────────────────────────
 
+interface DivPayment { date: string; amount: number; changePct: number | null }
+
 export function DividendsTab({ sym }: { sym: string }) {
+  const dq = useDeep(sym);
+  const hq = useQuery<{ ok: boolean; currency: string; payments: DivPayment[]; error?: string }>({
+    queryKey: ["company-dividends", sym],
+    queryFn: async () => {
+      const r = await fetch(`/api/company-analysis/${encodeURIComponent(sym)}/dividends`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`dividends ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+    enabled: Boolean(sym),
+    staleTime: 30 * 60_000,
+  });
+
+  if (dq.isLoading) return <PanelSkeleton rows={5} height="h-[320px]" />;
+  const d = dq.data;
+  const dv = d?.dividends;
+  const ccy = d?.currency ?? "USD";
+  const none = !dv || (dv.yield == null && dv.rate == null);
+  const payments = hq.data?.payments ?? [];
+
   return (
-    <DeepGate sym={sym} title="Dividends" subtitle="Yahoo Finance dividend profile">
-      {(d) => {
-        const dv = d.dividends;
-        const none = dv.yield == null && dv.rate == null;
-        return (
-          <GlassSection title="Dividend profile" subtitle="Yahoo Finance" dataSource="yahoo">
-            {none ? (
-              <EmptyDataState reason="empty" message={`${sym} does not currently pay a dividend.`} hint="No dividend rate or yield reported." badgeLabel="yahoo" />
-            ) : (
-              <>
-                <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[hsl(var(--glass-border))] sm:grid-cols-3">
-                  <Stat k="Annual rate (DPS)" v={price(dv.rate, d.currency)} />
-                  <Stat k="Yield" v={pct(dv.yield)} />
-                  <Stat k="Payout ratio" v={pct(dv.payout)} />
-                  <Stat k="Ex-dividend date" v={fmtDate(dv.exDate)} />
-                  <Stat k="5-yr avg yield" v={dv.fiveYrAvgYield != null ? `${dv.fiveYrAvgYield.toFixed(2)}%` : "—"} />
-                </div>
-                <p className="mt-3 text-[10.5px] text-muted-foreground/80">
-                  Per-payment dividend history and growth rates require a longer-history vendor feed.
-                </p>
-              </>
-            )}
-          </GlassSection>
-        );
-      }}
-    </DeepGate>
+    <div className="space-y-4">
+      <GlassSection title="Dividend profile" subtitle="Yahoo Finance" dataSource="yahoo">
+        {none ? (
+          <EmptyDataState reason="empty" message={`${sym} does not currently pay a dividend.`} hint="No dividend rate or yield reported." badgeLabel="yahoo" />
+        ) : (
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[hsl(var(--glass-border))] sm:grid-cols-3">
+            <Stat k="Annual rate (DPS)" v={price(dv!.rate, ccy)} />
+            <Stat k="Yield" v={pct(dv!.yield)} />
+            <Stat k="Payout ratio" v={pct(dv!.payout)} />
+            <Stat k="Ex-dividend date" v={fmtDate(dv!.exDate)} />
+            <Stat k="5-yr avg yield" v={dv!.fiveYrAvgYield != null ? `${dv!.fiveYrAvgYield.toFixed(2)}%` : "—"} />
+          </div>
+        )}
+      </GlassSection>
+
+      <GlassSection title="Dividend history" subtitle="Per-payment record" dataSource="yahoo">
+        {hq.isLoading ? (
+          <PanelSkeleton rows={4} />
+        ) : !payments.length ? (
+          <EmptyDataState reason="empty" message="No dividend payment history." hint={hq.data?.error ?? "No dividend events returned for this security."} badgeLabel="yahoo" />
+        ) : (
+          <div className="glass-inset overflow-hidden rounded-xl">
+            <div className="max-h-[420px] overflow-y-auto scrollbar-thin">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-[hsl(var(--background))]">
+                  <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] text-muted-foreground">
+                    <th className="px-3 py-2.5 text-left font-medium">Pay date</th>
+                    <th className="px-3 py-2.5 text-right font-medium">Amount</th>
+                    <th className="px-3 py-2.5 text-right font-medium">Change</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {payments.map((p, i) => (
+                    <tr key={i} className="border-b border-[hsl(var(--glass-border))]/50">
+                      <td className="px-3 py-2 font-mono text-muted-foreground">{fmtDate(p.date)}</td>
+                      <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">{price(p.amount, hq.data?.currency ?? ccy)}</td>
+                      <td className={cn("px-3 py-2 text-right font-mono tabular-nums", p.changePct == null ? "text-muted-foreground" : p.changePct > 0 ? "text-up" : p.changePct < 0 ? "text-down" : "text-muted-foreground")}>
+                        {p.changePct == null ? "—" : `${p.changePct > 0 ? "+" : ""}${p.changePct.toFixed(1)}%`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </GlassSection>
+    </div>
   );
 }
 
@@ -632,45 +709,92 @@ export function FilingsTab({ sym }: { sym: string }) {
     enabled: Boolean(sym),
     staleTime: 30 * 60_000,
   });
+  const [cat, setCat] = useState("All");
+  const [search, setSearch] = useState("");
   const filings = q.data?.filings ?? [];
+  const cats = ["All", "Annual & Quarterly", "News", "Proxy", "Ownership", "Registrations", "Other"];
+  const filtered = filings.filter(
+    (f) => (cat === "All" || filingCategory(f.form) === cat) && (!search || `${f.form} ${f.title}`.toLowerCase().includes(search.toLowerCase())),
+  );
   return (
-    <GlassSection title="Filings" subtitle="SEC EDGAR (US-listed)" dataSource="external">
+    <GlassSection
+      title="Filings"
+      subtitle="SEC EDGAR (US-listed)"
+      dataSource="external"
+      right={
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search filings…"
+          className="glass-inset h-7 w-44 rounded-lg px-2.5 text-[11px] outline-none placeholder:text-muted-foreground/60"
+        />
+      }
+    >
       {q.isLoading ? (
         <PanelSkeleton rows={5} />
       ) : q.data?.source === "none" || !filings.length ? (
         <EmptyDataState reason="empty" message={`No SEC filings for ${sym}.`} hint={q.data?.note ?? q.data?.error ?? "No EDGAR filings returned for this ticker."} badgeLabel="external" />
       ) : (
-        <div className="glass-inset overflow-hidden rounded-xl">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] text-muted-foreground">
-                <th className="px-3 py-2.5 text-left font-medium">Form</th>
-                <th className="px-3 py-2.5 text-left font-medium">Date</th>
-                <th className="px-3 py-2.5 text-left font-medium">Description</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filings.map((f, i) => (
-                <tr key={i} className="border-b border-[hsl(var(--glass-border))]/50">
-                  <td className="px-3 py-2"><Pill tone="info" size="xs">{f.form}</Pill></td>
-                  <td className="px-3 py-2 font-mono text-muted-foreground">{fmtDate(f.date)}</td>
-                  <td className="px-3 py-2">
-                    {f.url ? (
-                      <a href={f.url} target="_blank" rel="noopener noreferrer" className="hover:text-primary hover:underline">
-                        {f.title} <ExternalLink className="inline h-3 w-3 align-baseline" />
-                      </a>
-                    ) : (
-                      f.title
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div className="mb-3 flex flex-wrap gap-1">
+            {cats.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setCat(c)}
+                className={cn(
+                  "rounded-md border px-2 py-0.5 text-[10.5px] transition-colors",
+                  cat === c ? "border-primary/40 bg-primary/10 text-primary" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+          <div className="glass-inset overflow-hidden rounded-xl">
+            <div className="max-h-[560px] overflow-y-auto scrollbar-thin">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-[hsl(var(--background))]">
+                  <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] text-muted-foreground">
+                    <th className="px-3 py-2.5 text-left font-medium">Form</th>
+                    <th className="px-3 py-2.5 text-left font-medium">Date</th>
+                    <th className="px-3 py-2.5 text-left font-medium">Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((f, i) => (
+                    <tr key={i} className="border-b border-[hsl(var(--glass-border))]/50">
+                      <td className="px-3 py-2"><Pill tone="info" size="xs">{f.form}</Pill></td>
+                      <td className="px-3 py-2 font-mono text-muted-foreground">{fmtDate(f.date)}</td>
+                      <td className="px-3 py-2">
+                        {f.url ? (
+                          <a href={f.url} target="_blank" rel="noopener noreferrer" className="hover:text-primary hover:underline">
+                            {f.title} <ExternalLink className="inline h-3 w-3 align-baseline" />
+                          </a>
+                        ) : (
+                          f.title
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
       )}
     </GlassSection>
   );
+}
+
+function filingCategory(form: string): string {
+  const f = (form ?? "").toUpperCase().trim();
+  if (f.startsWith("10-K") || f.startsWith("10-Q")) return "Annual & Quarterly";
+  if (f.startsWith("8-K")) return "News";
+  if (f.includes("14A") || f.startsWith("DEF")) return "Proxy";
+  if (f === "3" || f === "4" || f === "5" || f.startsWith("SC ")) return "Ownership";
+  if (f.startsWith("S-") || f.startsWith("424") || f.startsWith("F-")) return "Registrations";
+  return "Other";
 }
 
 // ── Industry ───────────────────────────────────────────────────────────

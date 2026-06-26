@@ -499,6 +499,55 @@ export async function fetchYahooChart(symbol: string, rangeIn = "5Y"): Promise<C
   }
 }
 
+// ── dividend history ─────────────────────────────────────────────────────
+
+export interface DividendPayment {
+  date: string;
+  amount: number;
+  changePct: number | null;
+}
+export interface CompanyDividends {
+  ok: boolean;
+  symbol: string;
+  currency: string;
+  payments: DividendPayment[];
+  error?: string;
+}
+
+/** Per-payment dividend history (Yahoo chart dividend events). JSE cents ÷100. */
+export async function fetchYahooDividends(symbol: string): Promise<CompanyDividends> {
+  const clean = symbol.trim().toUpperCase();
+  const isJse = clean.endsWith(".JO") || clean.endsWith(".JSE");
+  const yahooSymbol = clean.replace(/\.JSE$/i, ".JO");
+  const centDiv = isJse ? 100 : 1;
+  const fail = (error: string): CompanyDividends => ({ ok: false, symbol: clean, currency: isJse ? "ZAR" : "USD", payments: [], error });
+  try {
+    const session = await getSession();
+    const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
+    if (session?.cookie) headers.cookie = session.cookie;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=10y&interval=1mo&events=div`;
+    const r = await fetch(url, { headers, cache: "no-store" });
+    if (!r.ok) return fail(`Yahoo dividends ${r.status}`);
+    const j = (await r.json()) as { chart?: { result?: Array<{ meta?: { currency?: string }; events?: { dividends?: Record<string, { amount?: number; date?: number }> } }> } };
+    const res = j?.chart?.result?.[0];
+    const currency = res?.meta?.currency ?? (isJse ? "ZAR" : "USD");
+    const divs = res?.events?.dividends ?? {};
+    const sorted = Object.values(divs)
+      .filter((d): d is { amount: number; date: number } => typeof d.amount === "number" && typeof d.date === "number")
+      .map((d) => ({ ts: d.date, amount: d.amount / centDiv }))
+      .sort((a, b) => b.ts - a.ts);
+    const payments: DividendPayment[] = sorted.map((d, i) => {
+      const prev = sorted[i + 1]; // older payment
+      const changePct = prev && prev.amount > 0 ? ((d.amount - prev.amount) / prev.amount) * 100 : null;
+      return { date: new Date(d.ts * 1000).toISOString(), amount: d.amount, changePct };
+    });
+    if (!payments.length) return fail("No dividend history for this security");
+    return { ok: true, symbol: clean, currency, payments };
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : "dividends failed");
+  }
+}
+
 // ── symbol search (typeahead) ───────────────────────────────────────────
 
 export interface SymbolHit {
@@ -591,6 +640,8 @@ export interface CompanyDeep {
     institutionsCount: number | null;
     topInstitutions: { name: string; pct: number | null; value: number | null; shares: number | null; date: string | null }[];
     insiderTx: { name: string; relation: string | null; text: string | null; shares: number | null; value: number | null; date: string | null }[];
+    insiders: { name: string; title: string | null; shares: number | null; date: string | null }[];
+    sharesOutstanding: number | null;
   };
   dividends: {
     rate: number | null;
@@ -663,7 +714,7 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
     },
     estimates: { revenue: [], earnings: [], ltGrowth: null },
     research: { recommendationKey: null, recommendationMean: null, numAnalysts: null, targetMean: null, targetHigh: null, targetLow: null, currentPrice: null, trend: null, actions: [] },
-    ownership: { insiderPct: null, institutionPct: null, floatPct: null, institutionsCount: null, topInstitutions: [], insiderTx: [] },
+    ownership: { insiderPct: null, institutionPct: null, floatPct: null, institutionsCount: null, topInstitutions: [], insiderTx: [], insiders: [], sharesOutstanding: null },
     dividends: { rate: null, yield: null, payout: null, exDate: null, fiveYrAvgYield: null },
     notes: [error],
   });
@@ -677,7 +728,7 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
     "balanceSheetHistory", "balanceSheetHistoryQuarterly",
     "cashflowStatementHistory", "cashflowStatementHistoryQuarterly",
     "earningsTrend", "recommendationTrend", "upgradeDowngradeHistory",
-    "institutionOwnership", "insiderTransactions", "majorHoldersBreakdown", "calendarEvents",
+    "institutionOwnership", "insiderTransactions", "insiderHolders", "majorHoldersBreakdown", "calendarEvents",
   ].join(",");
 
   let res: Record<string, unknown>;
@@ -775,10 +826,18 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
     shares: num(t.shares), value: num(t.value),
     date: num(t.startDate) != null ? new Date(num(t.startDate)! * 1000).toISOString() : null,
   }));
+  const ksDeep = (res.defaultKeyStatistics ?? {}) as Record<string, unknown>;
+  const insiders = arr(res.insiderHolders, "holders").slice(0, 25).map((h) => ({
+    name: str(h.name) ?? "—",
+    title: str(h.relation),
+    shares: num(h.positionDirect),
+    date: num(h.positionDirectDate) != null ? new Date(num(h.positionDirectDate)! * 1000).toISOString() : (num(h.latestTransDate) != null ? new Date(num(h.latestTransDate)! * 1000).toISOString() : null),
+  }));
   const ownership = {
     insiderPct: num(mhb.insidersPercentHeld), institutionPct: num(mhb.institutionsPercentHeld),
     floatPct: num(mhb.institutionsFloatPercentHeld), institutionsCount: num(mhb.institutionsCount),
-    topInstitutions, insiderTx,
+    topInstitutions, insiderTx, insiders,
+    sharesOutstanding: num(ksDeep.sharesOutstanding) ?? num(priceM.sharesOutstanding),
   };
 
   // dividends
