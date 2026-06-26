@@ -548,6 +548,28 @@ export async function fetchYahooDividends(symbol: string): Promise<CompanyDivide
   }
 }
 
+// ── peers ────────────────────────────────────────────────────────────────
+
+/** Related/peer tickers from Yahoo (free). Best-effort; [] on failure. */
+export async function fetchYahooPeers(symbol: string): Promise<{ ok: boolean; symbol: string; peers: string[] }> {
+  const clean = symbol.trim().toUpperCase();
+  const yahooSymbol = clean.replace(/\.JSE$/i, ".JO");
+  try {
+    const session = await getSession();
+    const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
+    if (session?.cookie) headers.cookie = session.cookie;
+    const url = `https://query2.finance.yahoo.com/v6/finance/recommendationsbysymbol/${encodeURIComponent(yahooSymbol)}`;
+    const r = await fetch(url, { headers, cache: "no-store" });
+    if (!r.ok) return { ok: false, symbol: clean, peers: [] };
+    const j = (await r.json()) as { finance?: { result?: Array<{ recommendedSymbols?: Array<{ symbol?: string }> }> } };
+    const rec = j?.finance?.result?.[0]?.recommendedSymbols ?? [];
+    const peers = rec.map((x) => str(x.symbol)).filter((s): s is string => Boolean(s)).slice(0, 8);
+    return { ok: peers.length > 0, symbol: clean, peers };
+  } catch {
+    return { ok: false, symbol: clean, peers: [] };
+  }
+}
+
 // ── symbol search (typeahead) ───────────────────────────────────────────
 
 export interface SymbolHit {

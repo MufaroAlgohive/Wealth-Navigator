@@ -974,10 +974,21 @@ export function IndustryTab({ sym }: { sym: string }) {
   const o = a.data?.overview;
   const [extra, setExtra] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
+  const peersQ = useQuery<{ ok: boolean; peers: string[] }>({
+    queryKey: ["company-peers", sym],
+    queryFn: async () => {
+      const r = await fetch(`/api/company-analysis/${encodeURIComponent(sym)}/peers`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`peers ${r.status}`);
+      return r.json();
+    },
+    ...queryOpts("reference"),
+    enabled: Boolean(sym),
+    staleTime: 30 * 60_000,
+  });
   useEffect(() => {
-    setExtra([]);
     setDraft("");
-  }, [sym]);
+    setExtra((peersQ.data?.peers ?? []).filter((p) => p.toUpperCase() !== sym.toUpperCase()));
+  }, [sym, peersQ.data]);
   const add = () => {
     const v = draft.trim().toUpperCase();
     if (v && v !== sym && !extra.includes(v)) setExtra((e) => [...e, v]);
