@@ -445,11 +445,18 @@ export interface CompanyChart {
   error?: string;
 }
 
-const RANGE_INTERVAL: Record<string, string> = {
-  "1M": "1d", "6M": "1d", YTD: "1d", "1Y": "1d", "3Y": "1wk", "5Y": "1wk", MAX: "1mo",
-};
-const RANGE_YEARS: Record<string, number> = {
-  "1M": 1 / 12, "6M": 0.5, YTD: 0.5, "1Y": 1, "3Y": 3, "5Y": 5, MAX: 10,
+// Each UI range maps to a VALID Yahoo chart range + interval. 1D/1W are
+// intraday; 3Y has no native Yahoo range so we fetch 5y weekly and slice to 3y.
+const RANGE_CFG: Record<string, { yr: string; interval: string; years: number; slice?: number }> = {
+  "1D": { yr: "1d", interval: "5m", years: 0 },
+  "1W": { yr: "5d", interval: "30m", years: 0 },
+  "1M": { yr: "1mo", interval: "1d", years: 1 / 12 },
+  "6M": { yr: "6mo", interval: "1d", years: 0.5 },
+  YTD: { yr: "ytd", interval: "1d", years: 0.5 },
+  "1Y": { yr: "1y", interval: "1d", years: 1 },
+  "3Y": { yr: "5y", interval: "1wk", years: 3, slice: 3 },
+  "5Y": { yr: "5y", interval: "1wk", years: 5 },
+  MAX: { yr: "max", interval: "1mo", years: 10 },
 };
 
 /** Daily/weekly close history from Yahoo's chart endpoint. Works globally. */
@@ -457,9 +464,8 @@ export async function fetchYahooChart(symbol: string, rangeIn = "5Y"): Promise<C
   const clean = symbol.trim().toUpperCase();
   const isJse = clean.endsWith(".JO") || clean.endsWith(".JSE");
   const yahooSymbol = clean.replace(/\.JSE$/i, ".JO");
-  const range = RANGE_INTERVAL[rangeIn] ? rangeIn : "5Y";
-  const interval = RANGE_INTERVAL[range] ?? "1wk";
-  const yahooRange = range === "YTD" ? "ytd" : range.toLowerCase();
+  const range = RANGE_CFG[rangeIn] ? rangeIn : "5Y";
+  const cfg = RANGE_CFG[range]!;
   const centDiv = isJse ? 100 : 1;
 
   const fail = (error: string): CompanyChart => ({
@@ -471,7 +477,7 @@ export async function fetchYahooChart(symbol: string, rangeIn = "5Y"): Promise<C
     const session = await getSession();
     const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
     if (session?.cookie) headers.cookie = session.cookie;
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${yahooRange}&interval=${interval}`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol)}?range=${cfg.yr}&interval=${cfg.interval}`;
     const r = await fetch(url, { headers, cache: "no-store" });
     if (!r.ok) return fail(`Yahoo chart ${r.status}`);
     const j = (await r.json()) as {
@@ -488,15 +494,16 @@ export async function fetchYahooChart(symbol: string, rangeIn = "5Y"): Promise<C
         points.push({ t: t * 1000, c: c / centDiv });
       }
     }
-    if (points.length < 2) return fail("No price history for this symbol/range");
-    const firstClose = points[0]!.c;
-    const lastClose = points[points.length - 1]!.c;
+    const sliced = cfg.slice ? points.filter((p) => p.t >= Date.now() - cfg.slice! * 365 * 24 * 3600 * 1000) : points;
+    if (sliced.length < 2) return fail("No price history for this symbol/range");
+    const firstClose = sliced[0]!.c;
+    const lastClose = sliced[sliced.length - 1]!.c;
     const changePct = ((lastClose - firstClose) / firstClose) * 100;
-    const years = RANGE_YEARS[range] ?? 5;
+    const years = cfg.years;
     const cagrPct = years >= 1 && firstClose > 0 ? (Math.pow(lastClose / firstClose, 1 / years) - 1) * 100 : null;
     return {
       ok: true, symbol: clean, currency: isJse ? "ZAR" : (res?.meta?.currency ?? "USD"), range,
-      points, firstClose, lastClose, changePct, cagrPct,
+      points: sliced, firstClose, lastClose, changePct, cagrPct,
     };
   } catch (e) {
     return fail(e instanceof Error ? e.message : "Yahoo chart failed");

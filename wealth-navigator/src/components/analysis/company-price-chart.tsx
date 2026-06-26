@@ -31,7 +31,7 @@ interface ChartResp {
   error?: string;
 }
 
-const RANGES = ["1M", "6M", "YTD", "1Y", "3Y", "5Y", "MAX"] as const;
+const RANGES = ["1D", "1W", "1M", "6M", "YTD", "1Y", "3Y", "5Y", "MAX"] as const;
 type Range = (typeof RANGES)[number];
 
 function ccySym(code: string): string {
@@ -149,7 +149,12 @@ export function CompanyPriceChart({ sym }: { sym: string }) {
                   type="number"
                   scale="time"
                   domain={["dataMin", "dataMax"]}
-                  tickFormatter={(t: number) => new Date(t).toLocaleDateString("en-ZA", { month: "short", year: "2-digit" })}
+                  tickFormatter={(t: number) => {
+                    const dt = new Date(t);
+                    if (range === "1D") return dt.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", hour12: false });
+                    if (range === "1W") return dt.toLocaleDateString("en-ZA", { weekday: "short" });
+                    return dt.toLocaleDateString("en-ZA", { month: "short", year: "2-digit" });
+                  }}
                   tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 10 }}
                   axisLine={{ stroke: "hsl(var(--glass-border))" }}
                   tickLine={false}
@@ -171,8 +176,12 @@ export function CompanyPriceChart({ sym }: { sym: string }) {
                     borderRadius: 12,
                     fontSize: 12,
                   }}
-                  labelFormatter={(t: number) => new Date(t).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })}
-                  formatter={(v: number) => [`${sym$}${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, "Close"]}
+                  labelFormatter={(t: number) =>
+                    range === "1D" || range === "1W"
+                      ? new Date(t).toLocaleString("en-ZA", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: false })
+                      : new Date(t).toLocaleDateString("en-ZA", { day: "2-digit", month: "short", year: "numeric" })
+                  }
+                  formatter={(v: number) => [`${sym$}${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, "Price"]}
                 />
                 <Area
                   dataKey="c"
