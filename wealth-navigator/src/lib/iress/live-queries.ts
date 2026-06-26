@@ -14,6 +14,7 @@
 import { getIressClient, iressConfig } from "@/lib/iress/index";
 import { iressQueries } from "@/lib/iress/mock";
 import { IressError } from "@/lib/iress/errors";
+import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
 import { getMintSession, withMintSession, invalidateMintSession } from "@/lib/iress/session-manager";
 import { emptyQuote, isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { initialQuotes, zarGoviCurve } from "@/lib/iress/seed";
@@ -81,7 +82,10 @@ function buildQuoteFromIntraday(
 ): Quote {
   const tickCents = Number(intraday.current_price) || 0;
   const metaCents = Number(meta?.last_price) || 0;
-  const iressLastCents = iress?.last != null && iress.last > 0 ? iress.last : 0;
+  // IRESS_PRICE_OVERLAY=0 (UAT phase): drop the IRESS snapshot so the quote is
+  // sourced from the intraday tick / securities_c (Yahoo), not UAT test prices.
+  const iq = iressPriceOverlayEnabled() ? iress : undefined;
+  const iressLastCents = iq?.last != null && iq.last > 0 ? iq.last : 0;
   // Divergence guard: a worker price (intraday tick or IRESS snapshot) that is
   // more than 25% off the Yahoo reference (securities_c.last_price) is almost
   // certainly CT/test/stale data, so ignore it and fall back to Yahoo. Same
@@ -102,10 +106,10 @@ function buildQuoteFromIntraday(
   const last = priceCents / 100;
   let changePct: number;
   let prev: number;
-  if (iressOk && iress?.prev != null && iress.prev > 0 && priceCents > 0) {
+  if (iressOk && iq?.prev != null && iq.prev > 0 && priceCents > 0) {
     // IRESS prev_close (cents) → change is scale-invariant.
-    prev = iress.prev / 100;
-    changePct = ((priceCents - iress.prev) / iress.prev) * 100;
+    prev = iq.prev / 100;
+    changePct = ((priceCents - iq.prev) / iq.prev) * 100;
   } else {
     // Yahoo fallback: securities_c has no prev_close, so derive it from the %.
     changePct = Number(meta?.change_percent) || 0;

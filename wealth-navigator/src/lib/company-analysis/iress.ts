@@ -13,6 +13,7 @@
  */
 
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
 import type { CompanyAnalysis, CompanyDeep } from "./yahoo";
 
 /** IRESS snapshot is considered live only within this window (else stale). */
@@ -35,7 +36,8 @@ function isJseSymbol(a: CompanyAnalysis): boolean {
  * analysis unchanged when there is no IRESS row, no DB, or any error.
  */
 export async function overlayIressPrice(analysis: CompanyAnalysis): Promise<CompanyAnalysis> {
-  if (!analysis.ok || !isJseSymbol(analysis) || !isSupabaseConfigured()) return analysis;
+  if (!analysis.ok || !isJseSymbol(analysis) || !isSupabaseConfigured() || !iressPriceOverlayEnabled())
+    return analysis;
   try {
     const sb = createServiceRoleClient();
     const { data, error } = await sb
@@ -84,7 +86,7 @@ export async function overlayIressPrice(analysis: CompanyAnalysis): Promise<Comp
 export async function overlayIressDeep(deep: CompanyDeep): Promise<CompanyDeep> {
   const s = deep.symbol.toUpperCase();
   const isJse = s.endsWith(".JO") || s.endsWith(".JSE") || deep.currency === "ZAR" || deep.currency === "ZAc";
-  if (!deep.ok || !isJse || !isSupabaseConfigured()) return deep;
+  if (!deep.ok || !isJse || !isSupabaseConfigured() || !iressPriceOverlayEnabled()) return deep;
   try {
     const sb = createServiceRoleClient();
     const { data, error } = await sb

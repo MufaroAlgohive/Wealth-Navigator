@@ -20,6 +20,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
+import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -79,7 +80,8 @@ const IRESS_DIVERGENCE = 0.25;
  * symbols actually overlaid (after the guards).
  */
 async function overlayIressQuotes(rows: SecurityRow[]): Promise<number> {
-  if (!isSupabaseConfigured()) {
+  // IRESS_PRICE_OVERLAY=0 (UAT phase): ignore IRESS quotes, keep Yahoo prices.
+  if (!isSupabaseConfigured() || !iressPriceOverlayEnabled()) {
     for (const r of rows) r.price_source = "yahoo";
     return 0;
   }
