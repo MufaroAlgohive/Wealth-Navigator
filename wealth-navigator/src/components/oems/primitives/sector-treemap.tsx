@@ -1,144 +1,166 @@
 "use client";
 
-import { ResponsiveContainer, Treemap } from "recharts";
+import * as React from "react";
 
 /**
- * Sector treemap — box size = sector weight (allocation), colour = day move
- * (green up / red down, intensity by magnitude). Replaces the flat sector list
- * on the Cockpit per Lonwabo: "similar to a JHB heat map where you see which
- * sector is big… and you can see the big sector performed green or red."
+ * Sector heatmap.
  *
- * Labels are PURE SVG (no foreignObject — that double-renders/clamps oddly in
- * the production build). A tile is labelled only when it's big enough to read;
- * the name word-wraps to at most two lines and is clipped to the tile, so it
- * can never bleed into a neighbour. Tiles too small to label stay colour-only
- * with the full name + day-move on hover.
+ * A uniform grid where every sector is an EQUAL cell, sorted best to worst by
+ * day move, coloured on a diverging green / slate / red scale. Equal cells mean
+ * you can read every sector and how it did at a glance, instead of squinting at
+ * market-cap-weighted boxes.
+ *
+ * The colour uses a neutral slate band for tiny moves (|change| below
+ * NEUTRAL_EPS) so a flat tape reads as a calm grid instead of muddy maroon, and
+ * a PER-DAY ADAPTIVE reference so the biggest mover of the day carries clear
+ * colour while a wild day still scales out to 3% before saturating.
  */
+
 export interface SectorDatum {
   name: string;
-  /** Relative size of the box (sector weight / market cap). */
+  /** Relative weight (market cap), kept for the cap-share readout, not size. */
   weight: number;
   /** Day change %, drives the colour. */
   change: number;
+  /** Optional: number of constituents (shown as the secondary metric). */
+  count?: number;
+  /** Optional: absolute market cap, used for the tooltip if present. */
+  marketCap?: number;
+  /** Optional: pre-computed weight percentage (seed path). */
+  weightPct?: number;
 }
 
-interface CellProps {
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-  name?: string;
-  change?: number;
-  /** recharts tree depth — 0 is the synthetic root node, 1 are the sector leaves. */
-  depth?: number;
+// NEUTRAL_EPS is the neutral deadband in percent: moves smaller than this paint
+// slate, not colour. REF_MIN / REF_MAX bound the per-day adaptive reference.
+const NEUTRAL_EPS = 0.06;
+const REF_MIN = 0.5;
+const REF_MAX = 3;
+
+/** sqrt-scaled magnitude past the deadband, 0..1, against the per-day ref. */
+function intensityOf(change: number, ref: number): number {
+  const a = Math.abs(change);
+  if (a < NEUTRAL_EPS) return 0;
+  const span = Math.max(0.0001, ref - NEUTRAL_EPS);
+  const t = Math.min(1, Math.max(0, (a - NEUTRAL_EPS) / span));
+  return Math.sqrt(t);
 }
 
-/** Greedy word-wrap into at most `maxLines` lines of ~`maxChars`, ellipsising
- *  the last line if the name doesn't fit. */
-function wrapLabel(name: string, maxChars: number, maxLines: number): string[] {
-  const clean = name.replace(/\s+/g, " ").trim();
-  if (clean.length <= maxChars || maxLines <= 1) {
-    return [clean.length > maxChars ? clean.slice(0, Math.max(1, maxChars - 1)) + "…" : clean];
-  }
-  const words = clean.split(" ");
-  const lines: string[] = [];
-  let cur = "";
-  for (let i = 0; i < words.length; i += 1) {
-    const w = words[i]!;
-    const cand = cur ? `${cur} ${w}` : w;
-    if (cand.length <= maxChars) {
-      cur = cand;
-    } else {
-      if (cur) lines.push(cur);
-      cur = w;
-      if (lines.length === maxLines - 1) break;
-    }
-  }
-  if (cur && lines.length < maxLines) lines.push(cur);
-  const placed = lines.join(" ").length;
-  if (placed < clean.length) {
-    const li = lines.length - 1;
-    const l = lines[li]!;
-    lines[li] = (l.length > maxChars - 1 ? l.slice(0, maxChars - 1) : l) + "…";
-  }
-  return lines;
+/** Tint colour for a cell, or null when inside the neutral band. */
+function tintColor(change: number, ref: number): string | null {
+  const intensity = intensityOf(change, ref);
+  if (intensity === 0) return null;
+  if (change > 0) return `hsl(var(--up) / ${(0.12 + 0.5 * intensity).toFixed(3)})`;
+  return `hsl(var(--down) / ${(0.14 + 0.5 * intensity).toFixed(3)})`;
 }
 
-function SectorCell({ x = 0, y = 0, width = 0, height = 0, name = "", change = 0, depth }: CellProps) {
-  // recharts also renders the synthetic ROOT node (depth 0, empty name) that
-  // spans the whole area — skip it so its placeholder rect/label doesn't paint
-  // a duplicate "+0.00%" + blank label under the real sector tiles.
-  if (depth === 0 || !name) return <g />;
-  const up = change > 0;
-  const down = change < 0;
-  const mag = Math.min(1, Math.abs(change) / 3); // 3% move ≈ full intensity
-  const op = 0.18 + mag * 0.55;
-  const fill = up
-    ? `hsl(var(--up) / ${op})`
-    : down
-      ? `hsl(var(--down) / ${op})`
-      : "hsl(var(--muted-foreground) / 0.25)";
-  const titleText = `${name}${Number.isFinite(change) ? ` · ${change >= 0 ? "+" : ""}${change.toFixed(2)}%` : ""}`;
-
-  const showLabel = width >= 64 && height >= 30;
-  const fontSize = Math.max(9, Math.min(12, Math.floor(Math.min(width / 8, height / 3.4))));
-  const nameMaxLines = height >= 46 ? 2 : 1;
-  const showPct = showLabel && height >= 54 && width >= 70;
-  const maxChars = Math.max(3, Math.floor((width - 12) / (fontSize * 0.58)));
-  const lines = showLabel ? wrapLabel(name, maxChars, nameMaxLines) : [];
-  const lineH = fontSize * 1.18;
-  const clipId = `sc-${Math.round(x)}-${Math.round(y)}-${Math.round(width)}`;
-
-  return (
-    <g>
-      <rect x={x} y={y} width={width} height={height} fill={fill} stroke="hsl(var(--canvas))" strokeWidth={2} rx={4}>
-        <title>{titleText}</title>
-      </rect>
-      {showLabel && (
-        <>
-          <defs>
-            <clipPath id={clipId}>
-              <rect x={x} y={y} width={width} height={height} rx={4} />
-            </clipPath>
-          </defs>
-          <g clipPath={`url(#${clipId})`} className="pointer-events-none select-none">
-            {lines.map((ln, i) => (
-              <text
-                key={i}
-                x={x + 7}
-                y={y + 14 + i * lineH}
-                fill="hsl(var(--foreground))"
-                fontSize={fontSize}
-                fontWeight={600}
-              >
-                {ln}
-              </text>
-            ))}
-            {showPct && (
-              <text
-                x={x + 7}
-                y={y + 14 + lines.length * lineH + 1}
-                fill="hsl(var(--foreground) / 0.75)"
-                fontSize={Math.max(8, fontSize - 1)}
-                style={{ fontFamily: "var(--font-mono, monospace)" }}
-              >
-                {change >= 0 ? "+" : ""}{change.toFixed(2)}%
-              </text>
-            )}
-          </g>
-        </>
-      )}
-    </g>
-  );
+/** Layered cell background: slate base for depth, then the tint on top. */
+function cellBackground(change: number, ref: number): string {
+  const base = "linear-gradient(150deg, hsl(var(--elevated)), hsl(var(--surface-2)))";
+  const tint = tintColor(change, ref);
+  const top = tint ?? "hsl(var(--muted-foreground) / 0.05)";
+  return `linear-gradient(0deg, ${top}, ${top}), ${base}`;
 }
+
+/** Lit-edge colour for a cell. */
+function borderColor(change: number, ref: number): string {
+  const intensity = intensityOf(change, ref);
+  if (intensity === 0) return "hsl(var(--foreground) / 0.1)";
+  const a = (0.22 + 0.34 * intensity).toFixed(3);
+  return change > 0 ? `hsl(var(--up) / ${a})` : `hsl(var(--down) / ${a})`;
+}
+
+function changeText(change: number): string {
+  const sign = change >= 0 ? "+" : "";
+  return `${sign}${change.toFixed(2)}%`;
+}
+
+function changeTextColor(change: number): string {
+  if (Math.abs(change) < NEUTRAL_EPS) return "hsl(var(--muted-foreground))";
+  return change > 0 ? "hsl(var(--up))" : "hsl(var(--down))";
+}
+
+const clampStyle: React.CSSProperties = {
+  display: "-webkit-box",
+  WebkitLineClamp: 2,
+  WebkitBoxOrient: "vertical",
+  overflow: "hidden",
+};
 
 export function SectorTreemap({ data }: { data: SectorDatum[] }) {
-  const rows = data.filter((d) => d.weight > 0);
+  const rows = React.useMemo(() => data.filter((d) => d.name && d.name.trim().length > 0), [data]);
+
+  // Per-day adaptive reference: the biggest absolute move sets the top of the
+  // colour ramp, floored at REF_MIN so a flat tape still separates and capped
+  // at REF_MAX so a wild day does not clip.
+  const ref = React.useMemo(() => {
+    const maxAbs = rows.reduce((m, r) => Math.max(m, Math.abs(r.change || 0)), 0);
+    return Math.min(REF_MAX, Math.max(REF_MIN, maxAbs));
+  }, [rows]);
+  const refLabel = Number.isInteger(ref) ? String(ref) : ref.toFixed(1);
+
+  const totalWeight = React.useMemo(() => rows.reduce((s, r) => s + Math.max(0, r.weight), 0), [rows]);
+
+  // Sort best to worst so the grid reads as a performance heatmap; tie-break by
+  // the larger sector first.
+  const ordered = React.useMemo(
+    () => [...rows].sort((a, b) => b.change - a.change || b.weight - a.weight),
+    [rows],
+  );
+
   if (rows.length === 0) return null;
+
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      {/* `change` is spread onto each node by recharts and read in SectorCell. */}
-      <Treemap data={rows} dataKey="weight" nameKey="name" isAnimationActive={false} content={<SectorCell />} />
-    </ResponsiveContainer>
+    <div className="flex h-full w-full select-none flex-col gap-2">
+      <div
+        className="grid min-h-0 flex-1 gap-1.5"
+        style={{
+          gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
+          gridAutoRows: "minmax(0, 1fr)",
+        }}
+      >
+        {ordered.map((s) => {
+          const capPct = totalWeight > 0 ? (Math.max(0, s.weight) / totalWeight) * 100 : 0;
+          const meta =
+            typeof s.count === "number" ? `${s.count} stk` : `${(s.weightPct ?? capPct).toFixed(1)}%`;
+          return (
+            <div
+              key={s.name}
+              title={`${s.name} · ${changeText(s.change)}${typeof s.count === "number" ? ` · ${s.count} constituents` : ""} · ${capPct.toFixed(1)}% cap`}
+              className="relative flex min-h-0 cursor-default flex-col justify-between overflow-hidden rounded-lg border p-2 transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_18px_-10px_hsl(var(--canvas))] hover:ring-1 hover:ring-[hsl(var(--glass-border-strong))]"
+              style={{ background: cellBackground(s.change, ref), borderColor: borderColor(s.change, ref) }}
+            >
+              <span
+                className="text-[11px] font-semibold leading-tight tracking-tight text-foreground/90"
+                style={clampStyle}
+              >
+                {s.name}
+              </span>
+              <span className="flex items-baseline justify-between gap-1">
+                <span
+                  className="font-mono text-[12px] font-semibold tabular-nums"
+                  style={{ color: changeTextColor(s.change) }}
+                >
+                  {changeText(s.change)}
+                </span>
+                <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground">{meta}</span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend: diverging scale, range is the adaptive per-day reference. */}
+      <div className="flex shrink-0 items-center justify-between gap-2 px-0.5">
+        <span className="font-mono text-[9px] tabular-nums text-muted-foreground">-{refLabel}%</span>
+        <div
+          className="h-1.5 flex-1 rounded-full"
+          style={{
+            background:
+              "linear-gradient(90deg, hsl(var(--down)/0.85) 0%, hsl(var(--down)/0.3) 38%, hsl(var(--muted-foreground)/0.25) 50%, hsl(var(--up)/0.3) 62%, hsl(var(--up)/0.85) 100%)",
+          }}
+        />
+        <span className="font-mono text-[9px] tabular-nums text-muted-foreground">+{refLabel}%</span>
+      </div>
+    </div>
   );
 }

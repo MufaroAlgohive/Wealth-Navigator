@@ -926,7 +926,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               noPadding
               className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
               right={
-                <span className="text-caption font-mono">size = market cap · colour = day move</span>
+                <span className="text-caption font-mono">colour = day move · sorted best to worst</span>
               }
             >
               <div className="min-h-0 flex-1 p-3">
@@ -935,6 +935,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     name: s.sector,
                     weight: s.totalMarketCap || s.count || 1,
                     change: s.avgChangePct,
+                    count: s.count,
+                    marketCap: s.totalMarketCap,
                   }))}
                 />
               </div>
@@ -970,7 +972,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             dataSource="seed"
             noPadding
             className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
-            right={<span className="text-caption font-mono">size = weight · colour = day move</span>}
+            right={<span className="text-caption font-mono">colour = day move · sorted best to worst</span>}
           >
             <div className="min-h-0 flex-1 p-3">
               <SectorTreemap data={sectors.map((s) => ({ name: s.sector, weight: s.weight, change: s.change }))} />
