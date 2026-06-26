@@ -13,13 +13,15 @@ import { fetchCompanyDeep } from "@/lib/company-analysis/yahoo";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, ctx: { params: Promise<{ sym: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ sym: string }> }) {
   const { sym } = await ctx.params;
   const symbol = (sym ?? "").trim();
   if (!symbol) return Response.json({ ok: false, error: "Missing symbol" }, { status: 400 });
+  const refresh = new URL(req.url).searchParams.get("refresh") === "1";
   try {
     const r = await cached(`deep:${symKey(symbol)}`, TTL.deep, () => fetchCompanyDeep(symbol), {
       isValid: (v) => v.ok,
+      bypass: refresh,
     });
     return Response.json(r.value, { headers: { "x-cache": r.hit ? `hit:${r.tier}` : "miss" } });
   } catch (err) {
