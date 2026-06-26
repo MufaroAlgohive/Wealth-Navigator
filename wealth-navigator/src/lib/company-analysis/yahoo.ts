@@ -773,10 +773,11 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
   const fd = (res.financialData ?? {}) as Record<string, unknown>;
   const currency = str(priceM.currency) ?? str(fd.financialCurrency) ?? (isJse ? "ZAR" : "USD");
 
-  // statements — prefer the modern fundamentals-timeseries feed (real values);
-  // fall back to the legacy quoteSummary modules only if it returns nothing.
-  const tsStmts = await fetchYahooStatements(yahooSymbol);
-  const statements: CompanyDeep["statements"] = tsStmts.ok
+  // statements — annual from SEC EDGAR (US, 10+ years) where available, else the
+  // fundamentals-timeseries feed (~5 years); quarterly from the timeseries feed.
+  // Legacy quoteSummary modules are the last-resort fallback.
+  const [tsStmts, edgar] = await Promise.all([fetchYahooStatements(yahooSymbol), fetchEdgarStatements(clean)]);
+  const base: CompanyDeep["statements"] = tsStmts.ok
     ? tsStmts.statements
     : {
         income: {
@@ -792,7 +793,18 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
           quarterly: withFcf(mapStatement(arr(res.cashflowStatementHistoryQuarterly, "cashflowStatements"), CSTMT, true)),
         },
       };
-  if (statements.income.annual.periods.length <= 5) notes.push("Statements cover ~5 years; deeper history needs a paid vendor.");
+  // Use EDGAR annual only when its revenue series is clean (latest year present
+  // and good coverage); otherwise keep the clean ~5yr timeseries so gappy data
+  // never ships. Concept coverage across older filings is still being hardened.
+  const edgarRev = edgar?.income.rows.find((r) => r.key === "TotalRevenue");
+  const edgarClean = Boolean(edgar && edgarRev && edgarRev.values[0] != null && edgarRev.values.filter((v) => v != null).length >= 6);
+  const statements: CompanyDeep["statements"] = {
+    income: { annual: edgarClean ? edgar!.income : base.income.annual, quarterly: base.income.quarterly },
+    balance: { annual: edgarClean ? edgar!.balance : base.balance.annual, quarterly: base.balance.quarterly },
+    cashflow: { annual: edgarClean ? edgar!.cashflow : base.cashflow.annual, quarterly: base.cashflow.quarterly },
+  };
+  if (edgarClean) notes.push("Annual statements sourced from SEC filings (10-K).");
+  else if (statements.income.annual.periods.length <= 5) notes.push("Statements cover ~5 years; deeper history needs a paid vendor.");
 
   // estimates (earningsTrend)
   const trend = arr(res.earningsTrend, "trend");
@@ -961,6 +973,159 @@ export async function fetchYahooStatements(yahooSymbol: string): Promise<{ ok: b
     return { ok, statements };
   } catch {
     return { ok: false, statements: blank };
+  }
+}
+
+// ── SEC EDGAR XBRL statements (US, 10+ years, free) ──────────────────────
+
+const EDGAR_UA = "Mint Wealth Navigator research (admin@stratosphere.vip)";
+let _cikMap: Record<string, string> | null = null;
+let _cikExp = 0;
+
+/** Ticker -> 10-digit CIK from the SEC map (cached 24h). */
+async function edgarCik(ticker: string): Promise<string | null> {
+  const t = ticker.toUpperCase();
+  if (!_cikMap || _cikExp < Date.now()) {
+    try {
+      const r = await fetch("https://www.sec.gov/files/company_tickers.json", { headers: { "User-Agent": EDGAR_UA, Accept: "application/json" }, cache: "no-store" });
+      if (r.ok) {
+        const j = (await r.json()) as Record<string, { ticker?: string; cik_str?: number }>;
+        const m: Record<string, string> = {};
+        for (const k of Object.keys(j)) {
+          const e = j[k];
+          if (e?.ticker && e.cik_str != null) m[String(e.ticker).toUpperCase()] = String(e.cik_str).padStart(10, "0");
+        }
+        _cikMap = m;
+        _cikExp = Date.now() + 24 * 3600 * 1000;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return _cikMap?.[t] ?? null;
+}
+
+interface EdgarSpec { key: string; label: string; concepts: string[]; negate?: boolean }
+const E_INCOME: EdgarSpec[] = [
+  { key: "TotalRevenue", label: "Revenue", concepts: ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerIncludingAssessedTax"] },
+  { key: "CostOfRevenue", label: "Cost of revenue", concepts: ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"] },
+  { key: "GrossProfit", label: "Gross profit", concepts: ["GrossProfit"] },
+  { key: "SellingGeneralAndAdministration", label: "SG&A", concepts: ["SellingGeneralAndAdministrativeExpense"] },
+  { key: "ResearchAndDevelopment", label: "R&D", concepts: ["ResearchAndDevelopmentExpense"] },
+  { key: "OperatingIncome", label: "Operating income", concepts: ["OperatingIncomeLoss"] },
+  { key: "PretaxIncome", label: "Pre-tax income", concepts: ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"] },
+  { key: "TaxProvision", label: "Income tax", concepts: ["IncomeTaxExpenseBenefit"] },
+  { key: "NetIncome", label: "Net income", concepts: ["NetIncomeLoss"] },
+];
+const E_BALANCE: EdgarSpec[] = [
+  { key: "CashAndCashEquivalents", label: "Cash & equivalents", concepts: ["CashAndCashEquivalentsAtCarryingValue"] },
+  { key: "OtherShortTermInvestments", label: "Short-term investments", concepts: ["ShortTermInvestments"] },
+  { key: "AccountsReceivable", label: "Receivables", concepts: ["AccountsReceivableNetCurrent"] },
+  { key: "Inventory", label: "Inventory", concepts: ["InventoryNet"] },
+  { key: "CurrentAssets", label: "Total current assets", concepts: ["AssetsCurrent"] },
+  { key: "NetPPE", label: "Net PP&E", concepts: ["PropertyPlantAndEquipmentNet"] },
+  { key: "Goodwill", label: "Goodwill", concepts: ["Goodwill"] },
+  { key: "TotalAssets", label: "Total assets", concepts: ["Assets"] },
+  { key: "AccountsPayable", label: "Accounts payable", concepts: ["AccountsPayableCurrent"] },
+  { key: "CurrentLiabilities", label: "Total current liabilities", concepts: ["LiabilitiesCurrent"] },
+  { key: "LongTermDebt", label: "Long-term debt", concepts: ["LongTermDebtNoncurrent", "LongTermDebt"] },
+  { key: "TotalLiabilitiesNetMinorityInterest", label: "Total liabilities", concepts: ["Liabilities"] },
+  { key: "RetainedEarnings", label: "Retained earnings", concepts: ["RetainedEarningsAccumulatedDeficit"] },
+  { key: "StockholdersEquity", label: "Shareholders' equity", concepts: ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"] },
+];
+const E_CASHFLOW: EdgarSpec[] = [
+  { key: "OperatingCashFlow", label: "Operating cash flow", concepts: ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"] },
+  { key: "CapitalExpenditure", label: "Capital expenditure", concepts: ["PaymentsToAcquirePropertyPlantAndEquipment"], negate: true },
+  { key: "InvestingCashFlow", label: "Investing cash flow", concepts: ["NetCashProvidedByUsedInInvestingActivities"] },
+  { key: "FinancingCashFlow", label: "Financing cash flow", concepts: ["NetCashProvidedByUsedInFinancingActivities"] },
+  { key: "CashDividendsPaid", label: "Dividends paid", concepts: ["PaymentsOfDividendsCommonStock", "PaymentsOfDividends"], negate: true },
+  { key: "RepurchaseOfCapitalStock", label: "Share buybacks", concepts: ["PaymentsForRepurchaseOfCommonStock"], negate: true },
+];
+
+/**
+ * Annual income / balance / cash-flow statements from SEC EDGAR XBRL company
+ * facts (10-K, FY) for US tickers, 10+ years free. Returns null for non-US
+ * symbols or on any failure (caller falls back to Yahoo). Keys match the Yahoo
+ * statement keys so the UI / DCF are source-agnostic.
+ */
+export async function fetchEdgarStatements(symbol: string): Promise<{ income: StatementTable; balance: StatementTable; cashflow: StatementTable } | null> {
+  const clean = symbol.trim().toUpperCase();
+  if (clean.includes(".")) return null; // US tickers only
+  try {
+    const cik = await edgarCik(clean);
+    if (!cik) return null;
+    const r = await fetch(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`, { headers: { "User-Agent": EDGAR_UA, Accept: "application/json" }, cache: "no-store" });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { facts?: { "us-gaap"?: Record<string, { units?: Record<string, Array<Record<string, unknown>>> }> } };
+    const gaap = j?.facts?.["us-gaap"];
+    if (!gaap) return null;
+
+    // Merge across candidate concepts (a company can switch us-gaap tags over the
+    // years); earlier candidates take priority per fiscal year, later ones fill
+    // gaps. Within a concept, the latest filing wins (restatements).
+    const fyMap = (spec: EdgarSpec): Map<number, { val: number; end: string }> => {
+      const merged = new Map<number, { val: number; end: string }>();
+      for (const c of spec.concepts) {
+        const units = gaap[c]?.units?.USD;
+        if (!Array.isArray(units)) continue;
+        const cm = new Map<number, { val: number; end: string }>();
+        for (const u of units) {
+          const form = typeof u.form === "string" ? u.form : "";
+          const val = typeof u.val === "number" ? u.val : null;
+          const end = typeof u.end === "string" ? u.end : "";
+          if (!form.startsWith("10-K") || val == null || !end) continue;
+          // Duration concepts carry `start`; keep only full-year (~365d) periods so
+          // quarter/partial spans never count. Key by the value's own period-end
+          // year (NOT u.fy, which is the filing's fiscal year and collides across
+          // the 10-K's comparative years). Latest filing wins (array is ordered).
+          const start = typeof u.start === "string" ? u.start : null;
+          if (start) {
+            const days = (Date.parse(end) - Date.parse(start)) / 86_400_000;
+            if (!(days >= 330 && days <= 400)) continue;
+          }
+          const yr = Number(end.slice(0, 4));
+          if (Number.isFinite(yr)) cm.set(yr, { val: spec.negate ? -val : val, end });
+        }
+        for (const [yr, v] of cm) if (!merged.has(yr)) merged.set(yr, v);
+      }
+      return merged;
+    };
+
+    const incMaps = E_INCOME.map((s) => ({ s, m: fyMap(s) }));
+    const balMaps = E_BALANCE.map((s) => ({ s, m: fyMap(s) }));
+    const cfMaps = E_CASHFLOW.map((s) => ({ s, m: fyMap(s) }));
+
+    const yearSet = new Set<number>();
+    for (const { m } of [...incMaps, ...balMaps]) for (const y of m.keys()) yearSet.add(y);
+    const years = Array.from(yearSet).sort((a, b) => b - a).slice(0, 12);
+    if (years.length < 2) return null;
+    const revMap = incMaps[0]?.m ?? new Map<number, { val: number; end: string }>();
+    const periods = years.map((y) => {
+      const e = revMap.get(y)?.end;
+      return e ? fyLabel(e) : `FY${y}`;
+    });
+    const build = (maps: Array<{ s: EdgarSpec; m: Map<number, { val: number; end: string }> }>): StatementTable => ({
+      periods,
+      rows: maps.map(({ s, m }) => ({ key: s.key, label: s.label, values: years.map((y) => m.get(y)?.val ?? null) })),
+    });
+
+    const income = build(incMaps);
+    const balance = build(balMaps);
+    const cashflow = build(cfMaps);
+
+    const opRow = income.rows.find((r) => r.key === "OperatingIncome");
+    const daMap = fyMap({ key: "DA", label: "DA", concepts: ["DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet", "DepreciationAndAmortization"] });
+    if (opRow) {
+      income.rows.push({ key: "EBITDA", label: "EBITDA", values: years.map((y, i) => { const op = opRow.values[i]; return op != null ? op + (daMap.get(y)?.val ?? 0) : null; }) });
+    }
+    const ocf = cashflow.rows.find((r) => r.key === "OperatingCashFlow");
+    const capex = cashflow.rows.find((r) => r.key === "CapitalExpenditure");
+    if (ocf && capex) cashflow.rows.push({ key: "FreeCashFlow", label: "Free cash flow", values: years.map((_, i) => { const o = ocf.values[i], c = capex.values[i]; return o != null && c != null ? o + c : null; }) });
+
+    const ok = income.rows.some((r) => r.values.some((v) => v != null));
+    return ok ? { income, balance, cashflow } : null;
+  } catch {
+    return null;
   }
 }
 
