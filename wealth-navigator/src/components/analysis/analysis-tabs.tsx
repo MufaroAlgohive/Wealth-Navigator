@@ -10,7 +10,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, ExternalLink, Globe, Scale, TrendingDown, TrendingUp } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassSection } from "@/components/oems/primitives/glass";
@@ -552,61 +552,168 @@ export function DividendsTab({ sym }: { sym: string }) {
 // ── Financial Modeling (client-side DCF / DDM sandbox) ───────────────────
 
 export function ModelingTab({ sym }: { sym: string }) {
-  const q = useDeep(sym);
-  const last = q.data?.research.currentPrice ?? null;
-  // Cash-flow base = consensus current-year EPS (per share), so the model yields a
-  // per-share fair value comparable to the live price. Falls back to the nearest
-  // available EPS estimate; null when the security has no earnings coverage.
-  const baseEps =
-    q.data?.estimates.earnings.find((e) => e.period === "Current Year")?.avg ??
-    q.data?.estimates.earnings[0]?.avg ??
-    null;
-  const [growth, setGrowth] = useState(8);
-  const [discount, setDiscount] = useState(12);
-  const [exitMult, setExitMult] = useState(18);
-  const [horizon, setHorizon] = useState(5);
+  const dq = useDeep(sym);
+  const aq = useAnalysis(sym);
+  const d = dq.data;
+  const ccy = d?.currency ?? "USD";
+
+  const rowVal = (t: TStmt | undefined, key: string): number | null => t?.rows.find((r) => r.key === key)?.values?.[0] ?? null;
+  const inc = d?.statements.income.annual;
+  const bal = d?.statements.balance.annual;
+  const cf = d?.statements.cashflow.annual;
+
+  const rev0 = rowVal(inc, "TotalRevenue");
+  const ebit0 = rowVal(inc, "OperatingIncome");
+  const ebitda0 = rowVal(inc, "EBITDA");
+  const pretax0 = rowVal(inc, "PretaxIncome");
+  const taxProv0 = rowVal(inc, "TaxProvision");
+  const capex0 = rowVal(cf, "CapitalExpenditure");
+  const cash0 = rowVal(bal, "CashAndCashEquivalents");
+  const ltDebt0 = rowVal(bal, "LongTermDebt");
+  const shares = d?.ownership.sharesOutstanding ?? null;
+  const currentPrice = d?.research.currentPrice ?? null;
+  const marketCap = aq.data?.groups?.Profile?.["Market Cap"]?.value ?? null;
+  const netDebt = aq.data?.groups?.["Financial Health"]?.["Net Debt"]?.value ?? null;
+
+  const taxRate = pretax0 != null && pretax0 > 0 && taxProv0 != null ? Math.min(Math.max(taxProv0 / pretax0, 0), 0.5) : 0.2;
+  const ebitMargin = rev0 != null && rev0 > 0 && ebit0 != null ? ebit0 / rev0 : null;
+  const daRate = rev0 != null && rev0 > 0 && ebitda0 != null && ebit0 != null ? (ebitda0 - ebit0) / rev0 : 0.05;
+  const capexRate = rev0 != null && rev0 > 0 && capex0 != null ? capex0 / rev0 : -0.05;
+
+  const estRev = d?.estimates.revenue ?? [];
+  const cyRev = estRev.find((e) => e.period === "Current Year")?.avg ?? null;
+  const nyRev = estRev.find((e) => e.period === "Next Year")?.avg ?? null;
+  const defGrowth = cyRev != null && nyRev != null && cyRev > 0 ? Math.round(((nyRev - cyRev) / cyRev) * 1000) / 10 : 10;
+
+  const [growth, setGrowth] = useState(defGrowth);
+  const [years, setYears] = useState(5);
+  const [riskFree, setRiskFree] = useState(4.3);
+  const [mrp, setMrp] = useState(5);
+  const [beta, setBeta] = useState(1.1);
+  const [costOfDebt, setCostOfDebt] = useState(4);
+  const [exitMult, setExitMult] = useState(20);
 
   const model = useMemo(() => {
-    if (baseEps == null) return { fairValue: null as number | null, reason: "No earnings estimate available to model this security." };
-    const g = growth / 100, r = discount / 100;
-    if (r <= g) return { fairValue: null as number | null, reason: "Discount rate must exceed the growth rate." };
-    let pv = 0;
-    for (let i = 1; i <= horizon; i++) pv += (baseEps * Math.pow(1 + g, i)) / Math.pow(1 + r, i);
-    const terminal = (exitMult * baseEps * Math.pow(1 + g, horizon + 1)) / Math.pow(1 + r, horizon);
-    return { fairValue: pv + terminal, reason: undefined as string | undefined };
-  }, [baseEps, growth, discount, exitMult, horizon]);
+    if (rev0 == null || ebitMargin == null || shares == null || shares <= 0) return null;
+    const g = growth / 100;
+    const costOfEquity = (riskFree + beta * mrp) / 100;
+    const afterTaxKd = (costOfDebt / 100) * (1 - taxRate);
+    const debt = ltDebt0 != null ? ltDebt0 : netDebt != null && cash0 != null ? netDebt + cash0 : 0;
+    const equity = marketCap ?? (currentPrice != null ? currentPrice * shares : 0);
+    const totalCap = equity + debt;
+    const wD = totalCap > 0 ? debt / totalCap : 0;
+    const wE = 1 - wD;
+    const wacc = wE * costOfEquity + wD * afterTaxKd;
+    if (!(wacc > 0)) return null;
+    const rows: Array<{ year: number; rev: number; ebit: number; nopat: number; da: number; capex: number; ufcf: number; pv: number }> = [];
+    let sumPV = 0;
+    for (let i = 1; i <= years; i++) {
+      const rev = rev0 * Math.pow(1 + g, i);
+      const ebit = rev * ebitMargin;
+      const nopat = ebit * (1 - taxRate);
+      const da = rev * daRate;
+      const capex = rev * capexRate;
+      const ufcf = nopat + da + capex;
+      const pv = ufcf / Math.pow(1 + wacc, i);
+      sumPV += pv;
+      rows.push({ year: i, rev, ebit, nopat, da, capex, ufcf, pv });
+    }
+    const termUfcf = rows[rows.length - 1]?.ufcf ?? 0;
+    const pvTV = (exitMult * termUfcf) / Math.pow(1 + wacc, years);
+    const ev = sumPV + pvTV;
+    const nd = netDebt ?? debt - (cash0 ?? 0);
+    const equityValue = ev - nd;
+    const implied = equityValue / shares;
+    const upside = currentPrice != null && currentPrice > 0 ? implied / currentPrice - 1 : null;
+    return { rows, wacc, costOfEquity, afterTaxKd, wD, wE, sumPV, pvTV, ev, equityValue, implied, upside };
+  }, [rev0, ebitMargin, daRate, capexRate, taxRate, shares, currentPrice, marketCap, netDebt, ltDebt0, cash0, growth, years, riskFree, mrp, beta, costOfDebt, exitMult]);
 
-  const ccy = q.data?.currency ?? "USD";
-  const upside = model?.fairValue != null && last != null && last > 0 ? (model.fairValue - last) / last : null;
+  if (dq.isLoading) return <PanelSkeleton rows={8} height="h-[420px]" />;
+  if (!d || !d.ok || rev0 == null || ebitMargin == null) {
+    return (
+      <GlassSection title="Valuation model (DCF)" subtitle="Discounted cash flow" dataSource="code-gap">
+        <EmptyDataState reason="empty" message={`Not enough statement data to model ${sym}.`} hint="A DCF needs revenue, operating income and cash-flow history, which the free feed did not return for this security." badgeLabel="yahoo" />
+      </GlassSection>
+    );
+  }
+
+  const BUILD: Array<[string, "rev" | "ebit" | "nopat" | "da" | "capex" | "ufcf" | "pv"]> = [
+    ["Revenue", "rev"], ["EBIT", "ebit"], ["NOPAT", "nopat"], ["D&A", "da"], ["Capex", "capex"], ["Unlevered FCF", "ufcf"], ["PV of UFCF", "pv"],
+  ];
 
   return (
-    <GlassSection title="Valuation model" subtitle="Indicative two-stage model on the consensus earnings estimate. Not a recommendation." dataSource="code-gap">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <div className="grid grid-cols-2 gap-3">
-          <NumInput label="Growth rate (%)" value={growth} step={0.5} onChange={setGrowth} icon={<TrendingUp className="h-3.5 w-3.5" />} />
-          <NumInput label="Discount rate (%)" value={discount} step={0.5} onChange={setDiscount} icon={<Scale className="h-3.5 w-3.5" />} />
-          <NumInput label="Exit multiple (x)" value={exitMult} step={0.5} onChange={setExitMult} icon={<Scale className="h-3.5 w-3.5" />} />
-          <NumInput label="Horizon (years)" value={horizon} step={1} onChange={(n) => setHorizon(Math.max(1, Math.min(15, n)))} icon={<CalendarDays className="h-3.5 w-3.5" />} />
-        </div>
-        <div className="glass-inset flex flex-col justify-center gap-2 rounded-xl px-4 py-3">
-          <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Indicative fair value</span>
-          <span className="font-mono text-3xl font-semibold tabular-nums">{model?.fairValue != null ? price(model.fairValue, ccy) : "—"}</span>
-          {model?.reason ? <span className="font-mono text-[11px] text-warning">{model.reason}</span> : null}
-          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-            <span className="text-muted-foreground">Current {price(last, ccy)}</span>
-            <span className="text-muted-foreground">Base EPS {price(baseEps, ccy)}</span>
-            {upside != null ? (
-              <span className={cn("inline-flex items-center gap-1 font-semibold", upside >= 0 ? "text-up" : "text-down")}>
-                {upside >= 0 ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
-                {pct(upside)} vs fair value
-              </span>
-            ) : null}
-          </div>
-        </div>
+    <GlassSection title="Valuation model (DCF)" subtitle="Unlevered FCF built from the reported statements. Indicative, not a recommendation." dataSource="code-gap">
+      <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-7">
+        <NumInput label="Rev growth %" value={growth} step={0.5} onChange={setGrowth} icon={<TrendingUp className="h-3.5 w-3.5" />} />
+        <NumInput label="Years" value={years} step={1} onChange={(n) => setYears(Math.max(3, Math.min(10, n)))} icon={<CalendarDays className="h-3.5 w-3.5" />} />
+        <NumInput label="Risk-free %" value={riskFree} step={0.1} onChange={setRiskFree} icon={<Scale className="h-3.5 w-3.5" />} />
+        <NumInput label="Mkt prem %" value={mrp} step={0.25} onChange={setMrp} icon={<Scale className="h-3.5 w-3.5" />} />
+        <NumInput label="Beta" value={beta} step={0.05} onChange={setBeta} icon={<Scale className="h-3.5 w-3.5" />} />
+        <NumInput label="Cost of debt %" value={costOfDebt} step={0.25} onChange={setCostOfDebt} icon={<Scale className="h-3.5 w-3.5" />} />
+        <NumInput label="Exit x UFCF" value={exitMult} step={1} onChange={setExitMult} icon={<Scale className="h-3.5 w-3.5" />} />
       </div>
-      <p className="mt-3 text-[10.5px] leading-snug text-muted-foreground/80">
-        Two-stage model: present value of the consensus forward EPS grown over the horizon, plus an exit-multiple terminal value. Desk assumptions only, indicative, not investment advice.
-      </p>
+
+      {model ? (
+        <>
+          <div className="glass-inset overflow-hidden rounded-xl">
+            <div className="overflow-x-auto scrollbar-thin">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] text-muted-foreground">
+                    <th className="px-3 py-2 text-left font-medium">Build-up ({ccySym(ccy)})</th>
+                    {model.rows.map((r) => (
+                      <th key={r.year} className="px-3 py-2 text-right font-mono font-medium">Y{r.year}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {BUILD.map(([label, key]) => {
+                    const strong = label === "Unlevered FCF" || label === "PV of UFCF";
+                    return (
+                      <tr key={label} className="border-b border-[hsl(var(--glass-border))]/50">
+                        <td className={cn("px-3 py-1.5", strong ? "font-semibold" : "text-muted-foreground")}>{label}</td>
+                        {model.rows.map((r) => (
+                          <td key={r.year} className={cn("px-3 py-1.5 text-right font-mono tabular-nums", key === "capex" && "text-down", strong && "font-semibold")}>
+                            {money(r[key], ccy)}
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div>
+              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Discount rate (WACC)</div>
+              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[hsl(var(--glass-border))]">
+                <Stat k="Cost of equity" v={pct(model.costOfEquity)} />
+                <Stat k="After-tax cost of debt" v={pct(model.afterTaxKd)} />
+                <Stat k="Equity / debt weight" v={`${(model.wE * 100).toFixed(0)}% / ${(model.wD * 100).toFixed(0)}%`} />
+                <Stat k="WACC" v={pct(model.wacc)} tone="up" />
+              </div>
+            </div>
+            <div>
+              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Valuation</div>
+              <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[hsl(var(--glass-border))]">
+                <Stat k="PV of UFCF" v={money(model.sumPV, ccy)} />
+                <Stat k="PV of terminal" v={money(model.pvTV, ccy)} />
+                <Stat k="Enterprise value" v={money(model.ev, ccy)} />
+                <Stat k="Equity value" v={money(model.equityValue, ccy)} />
+                <Stat k="Implied share price" v={price(model.implied, ccy)} tone="up" />
+                <Stat k="Upside vs current" v={model.upside != null ? pct(model.upside) : "—"} tone={model.upside == null ? "none" : model.upside >= 0 ? "up" : "down"} />
+              </div>
+            </div>
+          </div>
+          <p className="mt-3 text-[10.5px] leading-snug text-muted-foreground/80">
+            Unlevered FCF = NOPAT + D&A + capex, projected at the revenue growth above with margins held at the latest reported year, discounted at WACC; terminal value = exit multiple times terminal-year UFCF. Editable desk assumptions, indicative, not investment advice.
+          </p>
+        </>
+      ) : (
+        <EmptyDataState reason="empty" message="Model inputs incomplete." hint="Adjust the assumptions; some base figures were unavailable." badgeLabel="yahoo" />
+      )}
     </GlassSection>
   );
 }
@@ -799,27 +906,114 @@ function filingCategory(form: string): string {
 
 // ── Industry ───────────────────────────────────────────────────────────
 
+function PeerRow({ sym, base, onRemove }: { sym: string; base: boolean; onRemove?: () => void }) {
+  const a = useAnalysis(sym);
+  const d = a.data;
+  const g = d?.groups;
+  const mcap = g?.Profile?.["Market Cap"]?.value ?? null;
+  const gm = g?.Margins?.Gross?.value ?? null;
+  const pe = g?.["Valuation (TTM)"]?.["P/E"]?.value ?? null;
+  const fpe = g?.["Valuation (NTM)"]?.["P/E"]?.value ?? null;
+  const ccy = d?.currency ?? "USD";
+  return (
+    <tr className="border-b border-[hsl(var(--glass-border))]/50">
+      <td className="px-3 py-2">
+        <span className="font-mono font-semibold">{d?.symbol ?? sym}</span>
+        {base ? <span className="ml-1.5 rounded bg-primary/15 px-1 py-0.5 text-[8.5px] uppercase tracking-wider text-primary">this</span> : null}
+      </td>
+      <td className="max-w-[180px] truncate px-3 py-2 text-muted-foreground">{a.isLoading ? "…" : d?.overview.name ?? "—"}</td>
+      <td className="px-3 py-2 text-right font-mono tabular-nums">{money(mcap, ccy)}</td>
+      <td className="px-3 py-2 text-right font-mono tabular-nums">{gm != null ? `${(gm * 100).toFixed(1)}%` : "—"}</td>
+      <td className="px-3 py-2 text-right font-mono tabular-nums">{pe != null ? `${pe.toFixed(1)}x` : "—"}</td>
+      <td className="px-3 py-2 text-right font-mono tabular-nums">{fpe != null ? `${fpe.toFixed(1)}x` : "—"}</td>
+      <td className="px-2 py-2 text-right">
+        {onRemove ? (
+          <button type="button" onClick={onRemove} className="text-muted-foreground transition-colors hover:text-down" aria-label="Remove">
+            ×
+          </button>
+        ) : null}
+      </td>
+    </tr>
+  );
+}
+
 export function IndustryTab({ sym }: { sym: string }) {
   const a = useAnalysis(sym);
   const o = a.data?.overview;
+  const [extra, setExtra] = useState<string[]>([]);
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    setExtra([]);
+    setDraft("");
+  }, [sym]);
+  const add = () => {
+    const v = draft.trim().toUpperCase();
+    if (v && v !== sym && !extra.includes(v)) setExtra((e) => [...e, v]);
+    setDraft("");
+  };
+  const peers = [sym, ...extra];
   return (
-    <GlassSection title="Industry" subtitle="Sector and industry classification" dataSource="yahoo">
-      {a.isLoading ? (
-        <PanelSkeleton rows={2} />
-      ) : (
-        <>
-          <div className={STAT_GRID}>
-            <Stat k="Sector" v={o?.sector ?? "—"} />
-            <Stat k="Industry" v={o?.industry ?? "—"} />
-            <Stat k="Country" v={o?.country ?? "—"} />
+    <div className="space-y-4">
+      <GlassSection title="Industry" subtitle="Sector and industry classification" dataSource="yahoo">
+        <div className={STAT_GRID}>
+          <Stat k="Sector" v={o?.sector ?? "—"} />
+          <Stat k="Industry" v={o?.industry ?? "—"} />
+          <Stat k="Country" v={o?.country ?? "—"} />
+        </div>
+      </GlassSection>
+
+      <GlassSection
+        title="Peer comparison"
+        subtitle="Add any ticker to compare key metrics"
+        dataSource="yahoo"
+        right={
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              add();
+            }}
+            className="flex items-center gap-1"
+          >
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="Add ticker (AAPL, NPN.JO)"
+              className="glass-inset h-7 w-44 rounded-lg px-2.5 text-[11px] uppercase outline-none placeholder:text-muted-foreground/60"
+            />
+            <button type="submit" className="h-7 rounded-lg bg-primary px-2.5 text-[11px] font-medium text-primary-foreground">
+              Add
+            </button>
+          </form>
+        }
+      >
+        <div className="glass-inset overflow-hidden rounded-xl">
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] text-muted-foreground">
+                  <th className="px-3 py-2.5 text-left font-medium">Ticker</th>
+                  <th className="px-3 py-2.5 text-left font-medium">Company</th>
+                  <th className="px-3 py-2.5 text-right font-medium">Market cap</th>
+                  <th className="px-3 py-2.5 text-right font-medium">Gross margin</th>
+                  <th className="px-3 py-2.5 text-right font-medium">P/E</th>
+                  <th className="px-3 py-2.5 text-right font-medium">Fwd P/E</th>
+                  <th className="px-2 py-2.5" />
+                </tr>
+              </thead>
+              <tbody>
+                {peers.map((p, i) => (
+                  <PeerRow key={p} sym={p} base={i === 0} onRemove={i === 0 ? undefined : () => setExtra((e) => e.filter((x) => x !== p))} />
+                ))}
+              </tbody>
+            </table>
           </div>
-          <p className="mt-3 text-[10.5px] leading-snug text-muted-foreground/80">
-            Peer comparison and industry aggregates require a classification vendor feed (planned). Sector,
-            industry and domicile are shown from the company profile.
-          </p>
-        </>
-      )}
-    </GlassSection>
+        </div>
+        <p className="mt-2 text-[10.5px] text-muted-foreground/80">
+          Each peer is pulled through the shared cache, so comparisons reuse data already loaded. An automatic
+          curated peer list needs a classification vendor.
+        </p>
+      </GlassSection>
+    </div>
   );
 }
 
