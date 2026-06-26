@@ -13,7 +13,13 @@
  */
 
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
-import type { CompanyAnalysis } from "./yahoo";
+import type { CompanyAnalysis, CompanyDeep } from "./yahoo";
+
+/** IRESS snapshot is considered live only within this window (else stale). */
+function iressMaxAgeMs(): number {
+  const h = Number(process.env.IRESS_QUOTE_MAX_AGE_HOURS);
+  return (Number.isFinite(h) && h > 0 ? h : 48) * 3_600_000;
+}
 
 const bareCode = (sym: string) => sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
 
@@ -34,14 +40,27 @@ export async function overlayIressPrice(analysis: CompanyAnalysis): Promise<Comp
     const sb = createServiceRoleClient();
     const { data, error } = await sb
       .from("quote_snapshot_c")
-      .select("security_code,last,prev_close")
+      .select("security_code,last,prev_close,as_of,updated_at")
       .eq("security_code", bareCode(analysis.symbol))
       .limit(1)
       .maybeSingle();
     const lastCents = data?.last == null ? null : Number(data.last);
     if (error || !data || lastCents == null || !(lastCents > 0)) return analysis;
 
+    // Freshness gate: a STALE IRESS snapshot must NOT override the live price.
+    // The CT/test feed can hold values days (or years) old — e.g. a 2023 close
+    // would show as today's price. When the snapshot is stale, keep the current
+    // price (Yahoo) rather than ship a wrong IRESS number.
+    const tsRaw = (data.as_of ?? data.updated_at) as string | null;
+    const ts = tsRaw ? Date.parse(tsRaw) : NaN;
+    if (!Number.isFinite(ts) || Date.now() - ts > iressMaxAgeMs()) return analysis;
+
     const last = lastCents / 100;
+    // Sanity: if the IRESS snapshot diverges materially from the live market
+    // (the Yahoo price already on `analysis`), it is almost certainly a stale or
+    // test CT value (e.g. a 2023 close) -> keep the market price, not a wrong one.
+    const yLast = analysis.price.last;
+    if (yLast != null && yLast > 0 && Math.abs(last - yLast) / yLast > 0.25) return analysis;
     const prevCents = data.prev_close == null ? null : Number(data.prev_close);
     const prev = prevCents != null && prevCents > 0 ? prevCents / 100 : null;
     const change = prev != null ? last - prev : analysis.price.change;
@@ -53,5 +72,37 @@ export async function overlayIressPrice(analysis: CompanyAnalysis): Promise<Comp
     };
   } catch {
     return analysis;
+  }
+}
+
+/**
+ * Overlay the live IRESS last onto the DEEP payload's research.currentPrice for
+ * JSE symbols, so the Research / Ownership / DCF tabs use the same live price as
+ * the Overview header (not a separate Yahoo value). Same freshness gate: a stale
+ * snapshot is ignored, keeping the Yahoo currentPrice. Best-effort.
+ */
+export async function overlayIressDeep(deep: CompanyDeep): Promise<CompanyDeep> {
+  const s = deep.symbol.toUpperCase();
+  const isJse = s.endsWith(".JO") || s.endsWith(".JSE") || deep.currency === "ZAR" || deep.currency === "ZAc";
+  if (!deep.ok || !isJse || !isSupabaseConfigured()) return deep;
+  try {
+    const sb = createServiceRoleClient();
+    const { data, error } = await sb
+      .from("quote_snapshot_c")
+      .select("last,as_of,updated_at")
+      .eq("security_code", bareCode(deep.symbol))
+      .limit(1)
+      .maybeSingle();
+    const lastCents = data?.last == null ? null : Number(data.last);
+    if (error || !data || lastCents == null || !(lastCents > 0)) return deep;
+    const tsRaw = (data.as_of ?? data.updated_at) as string | null;
+    const ts = tsRaw ? Date.parse(tsRaw) : NaN;
+    if (!Number.isFinite(ts) || Date.now() - ts > iressMaxAgeMs()) return deep;
+    const lastR = lastCents / 100;
+    const yLast = deep.research.currentPrice;
+    if (yLast != null && yLast > 0 && Math.abs(lastR - yLast) / yLast > 0.25) return deep;
+    return { ...deep, research: { ...deep.research, currentPrice: lastR } };
+  } catch {
+    return deep;
   }
 }

@@ -98,7 +98,8 @@ export async function GET(req: Request) {
       const sec = secMap[h.security_id as string];
       const qty = Number(h.quantity) || 0;
       const costCents = costCentsPerShare(h);
-      const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) : costCents / 100;
+      // securities_c.last_price is INTEGER CENTS (ZAc) -> divide by 100 for Rands.
+      const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) / 100 : costCents / 100;
       const valueCents = qty * Math.round(liveRands * 100);
       const investedCents = qty * costCents;
       return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };

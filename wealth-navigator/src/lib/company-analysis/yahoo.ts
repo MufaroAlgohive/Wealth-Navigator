@@ -219,7 +219,7 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
   const earnHist = ((res.earningsHistory as { history?: Array<Record<string, unknown>> })?.history ?? []);
   const earnTrend = ((res.earningsTrend as { trend?: Array<Record<string, unknown>> })?.trend ?? []);
 
-  const currency = str(priceM.currency) ?? str(fd.financialCurrency) ?? (isJse ? "ZAR" : "USD");
+  const currency = isJse ? "ZAR" : (str(priceM.currency) ?? str(fd.financialCurrency) ?? "USD");
   const centDiv = isJse ? 100 : 1; // JSE per-share prices come back in cents
 
   // ── price ──
@@ -318,7 +318,7 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
   const pb = num(ks.priceToBook);
   groups["Valuation (TTM)"] = {
     "P/E": M(trailingPE, "x"),
-    "P/B": M(pb, "x"),
+    "P/B": M(pb != null && isJse && pb > 40 ? pb / 100 : pb, "x"),
     "EV/Sales": M(num(ks.enterpriseToRevenue) ?? div(ev, revenue), "x"),
     "EV/EBITDA": M(num(ks.enterpriseToEbitda) ?? div(ev, ebitda), "x"),
     "P/FCF": M(div(marketCap, fcfComputed), "x"),
@@ -327,10 +327,14 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
   const targetRaw = num(fd.targetMeanPrice);
   const target = targetRaw != null ? targetRaw / centDiv : null;
   const fwdEps = num(ks.forwardEps);
+  // Yahoo computes JSE per-share ratios on the cents-quoted price, so they come
+  // back ~100x inflated; de-cent when implausibly large (trailing P/E is fine).
+  const fwdPE = num(ks.forwardPE) ?? num(detail.forwardPE) ?? div(price.last, fwdEps);
+  const pegRaw = num(ks.pegRatio);
   groups["Valuation (NTM)"] = {
     "Price Target": M(target, "price"),
-    "P/E": M(num(ks.forwardPE) ?? num(detail.forwardPE) ?? div(price.last, fwdEps), "x"),
-    PEG: M(num(ks.pegRatio), "ratio"),
+    "P/E": M(fwdPE != null && isJse && fwdPE > 80 ? fwdPE / 100 : fwdPE, "x"),
+    PEG: M(pegRaw != null && isJse && pegRaw > 15 ? pegRaw / 100 : pegRaw, "ratio"),
     "EV/Sales": M(null, "x"),
     "EV/EBITDA": M(null, "x"),
     "P/FCF": M(null, "x"),
@@ -385,7 +389,7 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
   groups.Dividends = {
     Yield: M(divYield, "pct"),
     Payout: M(num(detail.payoutRatio), "pct"),
-    DPS: M(dpsRate != null ? dpsRate / centDiv : num(detail.trailingAnnualDividendRate), "price"),
+    DPS: M(dpsRate ?? num(detail.trailingAnnualDividendRate), "price"),
   };
   if (divYield == null) notes.push("No dividend (or yield not reported) for this security.");
 
@@ -491,7 +495,7 @@ export async function fetchYahooChart(symbol: string, rangeIn = "5Y"): Promise<C
     const years = RANGE_YEARS[range] ?? 5;
     const cagrPct = years >= 1 && firstClose > 0 ? (Math.pow(lastClose / firstClose, 1 / years) - 1) * 100 : null;
     return {
-      ok: true, symbol: clean, currency: res?.meta?.currency ?? (isJse ? "ZAR" : "USD"), range,
+      ok: true, symbol: clean, currency: isJse ? "ZAR" : (res?.meta?.currency ?? "USD"), range,
       points, firstClose, lastClose, changePct, cagrPct,
     };
   } catch (e) {
@@ -530,7 +534,7 @@ export async function fetchYahooDividends(symbol: string): Promise<CompanyDivide
     if (!r.ok) return fail(`Yahoo dividends ${r.status}`);
     const j = (await r.json()) as { chart?: { result?: Array<{ meta?: { currency?: string }; events?: { dividends?: Record<string, { amount?: number; date?: number }> } }> } };
     const res = j?.chart?.result?.[0];
-    const currency = res?.meta?.currency ?? (isJse ? "ZAR" : "USD");
+    const currency = isJse ? "ZAR" : (res?.meta?.currency ?? "USD");
     const divs = res?.events?.dividends ?? {};
     const sorted = Object.values(divs)
       .filter((d): d is { amount: number; date: number } => typeof d.amount === "number" && typeof d.date === "number")
@@ -771,7 +775,7 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
   const priceM = (res.price ?? {}) as Record<string, unknown>;
   const detail = (res.summaryDetail ?? {}) as Record<string, unknown>;
   const fd = (res.financialData ?? {}) as Record<string, unknown>;
-  const currency = str(priceM.currency) ?? str(fd.financialCurrency) ?? (isJse ? "ZAR" : "USD");
+  const currency = isJse ? "ZAR" : (str(priceM.currency) ?? str(fd.financialCurrency) ?? "USD");
 
   // statements — annual from SEC EDGAR (US, 10+ years) where available, else the
   // fundamentals-timeseries feed (~5 years); quarterly from the timeseries feed.

@@ -15,13 +15,15 @@ import { fetchCompanyAnalysis } from "@/lib/company-analysis/yahoo";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET(_req: Request, ctx: { params: Promise<{ sym: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ sym: string }> }) {
   const { sym } = await ctx.params;
   const symbol = (sym ?? "").trim();
   if (!symbol) return Response.json({ ok: false, error: "Missing symbol" }, { status: 400 });
+  const refresh = new URL(req.url).searchParams.get("refresh") === "1";
   try {
     const r = await cached(`analysis:${symKey(symbol)}`, TTL.analysis, () => fetchCompanyAnalysis(symbol), {
       isValid: (v) => v.ok,
+      bypass: refresh,
     });
     // Live IRESS price overlay (JSE only) — runs outside the cache so the price
     // is current even when the fundamentals are reused.
