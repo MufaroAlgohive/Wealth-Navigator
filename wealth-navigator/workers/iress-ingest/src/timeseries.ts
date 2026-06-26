@@ -389,9 +389,15 @@ async function insertIndexPoints(
     timestamp: new Date(p.t).toISOString(),
     source: "iress-worker",
   }));
-  const { error } = await supabase.from("index_intraday_c").insert(rows);
+  // Upsert (not insert): the loop re-fetches a multi-day window each cycle, so
+  // the same (index_code, timestamp) recurs. Without onConflict it would stack
+  // duplicate rows. Requires the UNIQUE(index_code, timestamp) constraint
+  // (migration 20260626000001).
+  const { error } = await supabase
+    .from("index_intraday_c")
+    .upsert(rows, { onConflict: "index_code,timestamp" });
   if (error) {
-    console.warn(`[iress-ingest] index_intraday_c insert(${code}) failed: ${error.message}`);
+    console.warn(`[iress-ingest] index_intraday_c upsert(${code}) failed: ${error.message}`);
     return 0;
   }
   return rows.length;
@@ -430,9 +436,14 @@ async function insertSectorPoints(
       source: "iress-worker",
     };
   });
-  const { error } = await supabase.from("sector_intraday_c").insert(rows);
+  // Upsert (not insert) for the same reason as index_intraday_c: avoid stacking
+  // duplicate (sector_code, timestamp) rows across cycles. Requires the
+  // UNIQUE(sector_code, timestamp) constraint (migration 20260626000001).
+  const { error } = await supabase
+    .from("sector_intraday_c")
+    .upsert(rows, { onConflict: "sector_code,timestamp" });
   if (error) {
-    console.warn(`[iress-ingest] sector_intraday_c insert(${code}) failed: ${error.message}`);
+    console.warn(`[iress-ingest] sector_intraday_c upsert(${code}) failed: ${error.message}`);
     return 0;
   }
   return rows.length;
