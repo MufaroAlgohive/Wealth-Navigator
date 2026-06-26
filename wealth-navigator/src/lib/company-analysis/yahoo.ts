@@ -700,22 +700,26 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
   const fd = (res.financialData ?? {}) as Record<string, unknown>;
   const currency = str(priceM.currency) ?? str(fd.financialCurrency) ?? (isJse ? "ZAR" : "USD");
 
-  // statements
-  const statements = {
-    income: {
-      annual: mapStatement(arr(res.incomeStatementHistory, "incomeStatementHistory"), ISTMT, false),
-      quarterly: mapStatement(arr(res.incomeStatementHistoryQuarterly, "incomeStatementHistory"), ISTMT, true),
-    },
-    balance: {
-      annual: mapStatement(arr(res.balanceSheetHistory, "balanceSheetStatements"), BSTMT, false),
-      quarterly: mapStatement(arr(res.balanceSheetHistoryQuarterly, "balanceSheetStatements"), BSTMT, true),
-    },
-    cashflow: {
-      annual: withFcf(mapStatement(arr(res.cashflowStatementHistory, "cashflowStatements"), CSTMT, false)),
-      quarterly: withFcf(mapStatement(arr(res.cashflowStatementHistoryQuarterly, "cashflowStatements"), CSTMT, true)),
-    },
-  };
-  if (statements.income.annual.periods.length <= 4) notes.push("Statements cover ~4 years (provider limit); deeper history needs a paid vendor.");
+  // statements — prefer the modern fundamentals-timeseries feed (real values);
+  // fall back to the legacy quoteSummary modules only if it returns nothing.
+  const tsStmts = await fetchYahooStatements(yahooSymbol);
+  const statements: CompanyDeep["statements"] = tsStmts.ok
+    ? tsStmts.statements
+    : {
+        income: {
+          annual: mapStatement(arr(res.incomeStatementHistory, "incomeStatementHistory"), ISTMT, false),
+          quarterly: mapStatement(arr(res.incomeStatementHistoryQuarterly, "incomeStatementHistory"), ISTMT, true),
+        },
+        balance: {
+          annual: mapStatement(arr(res.balanceSheetHistory, "balanceSheetStatements"), BSTMT, false),
+          quarterly: mapStatement(arr(res.balanceSheetHistoryQuarterly, "balanceSheetStatements"), BSTMT, true),
+        },
+        cashflow: {
+          annual: withFcf(mapStatement(arr(res.cashflowStatementHistory, "cashflowStatements"), CSTMT, false)),
+          quarterly: withFcf(mapStatement(arr(res.cashflowStatementHistoryQuarterly, "cashflowStatements"), CSTMT, true)),
+        },
+      };
+  if (statements.income.annual.periods.length <= 5) notes.push("Statements cover ~5 years; deeper history needs a paid vendor.");
 
   // estimates (earningsTrend)
   const trend = arr(res.earningsTrend, "trend");
@@ -788,6 +792,95 @@ export async function fetchCompanyDeep(symbol: string): Promise<CompanyDeep> {
   if (dividends.yield == null) notes.push("No dividend reported for this security.");
 
   return { ok: true, symbol: clean, currency, asOf, statements, estimates, research, ownership, dividends, notes };
+}
+
+// ── statements from fundamentals-timeseries (real, multi-year) ───────────
+
+const STMT_SPECS: Record<"income" | "balance" | "cashflow", Array<[string, string]>> = {
+  income: [
+    ["TotalRevenue", "Revenue"], ["CostOfRevenue", "Cost of revenue"], ["GrossProfit", "Gross profit"],
+    ["SellingGeneralAndAdministration", "SG&A"], ["ResearchAndDevelopment", "R&D"],
+    ["OperatingIncome", "Operating income"], ["PretaxIncome", "Pre-tax income"],
+    ["TaxProvision", "Income tax"], ["NetIncome", "Net income"], ["EBITDA", "EBITDA"],
+  ],
+  balance: [
+    ["CashAndCashEquivalents", "Cash & equivalents"], ["OtherShortTermInvestments", "Short-term investments"],
+    ["AccountsReceivable", "Receivables"], ["Inventory", "Inventory"], ["CurrentAssets", "Total current assets"],
+    ["NetPPE", "Net PP&E"], ["Goodwill", "Goodwill"], ["TotalAssets", "Total assets"],
+    ["AccountsPayable", "Accounts payable"], ["CurrentLiabilities", "Total current liabilities"],
+    ["LongTermDebt", "Long-term debt"], ["TotalLiabilitiesNetMinorityInterest", "Total liabilities"],
+    ["RetainedEarnings", "Retained earnings"], ["StockholdersEquity", "Shareholders' equity"],
+  ],
+  cashflow: [
+    ["OperatingCashFlow", "Operating cash flow"], ["CapitalExpenditure", "Capital expenditure"],
+    ["FreeCashFlow", "Free cash flow"], ["InvestingCashFlow", "Investing cash flow"],
+    ["FinancingCashFlow", "Financing cash flow"], ["CashDividendsPaid", "Dividends paid"],
+    ["RepurchaseOfCapitalStock", "Share buybacks"],
+  ],
+};
+
+function fyLabel(dateStr: string): string {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return `${MON[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(2)}`;
+}
+
+/**
+ * Build real income / balance / cash-flow statements (annual + quarterly) from
+ * Yahoo's fundamentals-timeseries — the modern feed that actually carries the
+ * line items (the legacy quoteSummary statement modules return null/0). Returns
+ * { ok, statements } where each statement is { annual, quarterly } StatementTable.
+ */
+export async function fetchYahooStatements(yahooSymbol: string): Promise<{ ok: boolean; statements: CompanyDeep["statements"] }> {
+  const bases = Array.from(new Set(Object.values(STMT_SPECS).flat().map(([b]) => b)));
+  const types: string[] = [];
+  for (const b of bases) types.push(`annual${b}`, `quarterly${b}`);
+  const empty: StatementTable = { periods: [], rows: [] };
+  const blank: CompanyDeep["statements"] = {
+    income: { annual: empty, quarterly: empty }, balance: { annual: empty, quarterly: empty }, cashflow: { annual: empty, quarterly: empty },
+  };
+  try {
+    const session = await getSession();
+    const now = Math.floor(Date.now() / 1000);
+    const p1 = now - 60 * 60 * 24 * 365 * 7;
+    const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
+    if (session?.cookie) headers.cookie = session.cookie;
+    const url = `https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/${encodeURIComponent(yahooSymbol)}?symbol=${encodeURIComponent(yahooSymbol)}&type=${types.join(",")}&period1=${p1}&period2=${now}&merge=false`;
+    const r = await fetch(url, { headers, cache: "no-store" });
+    if (!r.ok) return { ok: false, statements: blank };
+    const j = (await r.json()) as { timeseries?: { result?: Array<Record<string, unknown>> } };
+    const F: Record<string, Array<{ date: string; value: number }>> = {};
+    for (const res of j?.timeseries?.result ?? []) {
+      const type = ((res.meta as { type?: string[] })?.type ?? [])[0];
+      if (!type || !Array.isArray(res[type])) continue;
+      const pts: Array<{ date: string; value: number }> = [];
+      for (const s of res[type] as unknown[]) {
+        const v = num((s as Record<string, unknown>)?.reportedValue);
+        const date = str((s as Record<string, unknown>)?.asOfDate);
+        if (v != null && date) pts.push({ date, value: v });
+      }
+      F[type] = pts;
+    }
+    const build = (specs: Array<[string, string]>, prefix: "annual" | "quarterly"): StatementTable => {
+      const dateSet = new Set<string>();
+      for (const [b] of specs) for (const p of F[`${prefix}${b}`] ?? []) dateSet.add(p.date);
+      const dates = Array.from(dateSet).sort().reverse().slice(0, prefix === "quarterly" ? 8 : 6);
+      const rows = specs.map(([b, label]) => {
+        const byDate = new Map((F[`${prefix}${b}`] ?? []).map((p) => [p.date, p.value]));
+        return { key: b, label, values: dates.map((d) => byDate.get(d) ?? null) };
+      });
+      return { periods: dates.map(fyLabel), rows };
+    };
+    const statements: CompanyDeep["statements"] = {
+      income: { annual: build(STMT_SPECS.income, "annual"), quarterly: build(STMT_SPECS.income, "quarterly") },
+      balance: { annual: build(STMT_SPECS.balance, "annual"), quarterly: build(STMT_SPECS.balance, "quarterly") },
+      cashflow: { annual: build(STMT_SPECS.cashflow, "annual"), quarterly: build(STMT_SPECS.cashflow, "quarterly") },
+    };
+    const ok = statements.income.annual.periods.length > 0 || statements.balance.annual.periods.length > 0;
+    return { ok, statements };
+  } catch {
+    return { ok: false, statements: blank };
+  }
 }
 
 // ── SEC filings (US) ─────────────────────────────────────────────────────

@@ -116,7 +116,12 @@ const NoteList = ({ notes }: { notes: string[] }) =>
 
 // ── statement table ───────────────────────────────────────────────────
 
-const BOLD_ROWS = new Set(["totalRevenue", "grossProfit", "operatingIncome", "netIncome", "totalAssets", "totalStockholderEquity", "totalCashFromOperatingActivities", "freeCashFlow"]);
+const BOLD_ROWS = new Set([
+  // timeseries keys (current)
+  "TotalRevenue", "GrossProfit", "OperatingIncome", "NetIncome", "TotalAssets", "StockholdersEquity", "OperatingCashFlow", "FreeCashFlow", "TotalLiabilitiesNetMinorityInterest",
+  // legacy quoteSummary keys (fallback)
+  "totalRevenue", "grossProfit", "operatingIncome", "netIncome", "totalAssets", "totalStockholderEquity", "totalCashFromOperatingActivities", "freeCashFlow",
+]);
 
 function StatementView({ table, ccy }: { table: TStmt; ccy: string }) {
   if (!table.periods.length || !table.rows.length) {
