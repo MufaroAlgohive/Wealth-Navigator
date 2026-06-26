@@ -94,6 +94,10 @@ export interface TimeSeriesSyncResult {
 export interface TimeSeriesConfig {
   indexCodes: string[];
   sectorCodes: string[];
+  /** DataSource for JSE index codes (Exchange=JSEI). Unknown until IRESS
+   *  confirms it: JSED, JSE, JSEI and JSEID all return error 5 "Invalid access".
+   *  Set via IRESS_TIMESERIES_INDEX_DATASOURCE; undefined falls back to JSED. */
+  indexDataSource?: string;
   /** Nominal ZAR govt curve constituents (GOVI basket) → curve_id `ZAR_NSS`. */
   curveCodes: string[];
   /** Inflation-linked (ILB) curve constituents → curve_id `ZAR_REAL`. */
@@ -109,6 +113,7 @@ export function loadTimeSeriesConfig(env: WorkerEnv): TimeSeriesConfig {
   return {
     indexCodes: parseList(process.env.IRESS_TIMESERIES_INDEX_CODES, ["J203"]),
     sectorCodes: parseList(process.env.IRESS_TIMESERIES_SECTOR_CODES, []),
+    indexDataSource: process.env.IRESS_TIMESERIES_INDEX_DATASOURCE?.trim() || undefined,
     // CONFIRMED live (2026-06-16): the ZAR govt yield curve is the GOVI-basket
     // bonds on Exchange=YFX, DataSource=YFXD. The earlier "Invalid code/exchange"
     // / "Invalid access" failures were the WRONG exchange+feed (JSE/JSED), not a
@@ -655,7 +660,7 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
     try {
       const t0 = Date.now();
       const res = isLive
-        ? await fetchSeries(sessions, code, "JSEI")
+        ? await fetchSeries(sessions, code, "JSEI", undefined, config.indexDataSource)
         : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
       recordWorkerEvent({
         level: "info",
@@ -710,7 +715,7 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
     try {
       const t0 = Date.now();
       const res = isLive
-        ? await fetchSeries(sessions, code, "JSEI")
+        ? await fetchSeries(sessions, code, "JSEI", undefined, config.indexDataSource)
         : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
       recordWorkerEvent({
         level: "info",
