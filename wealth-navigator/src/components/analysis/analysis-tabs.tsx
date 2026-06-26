@@ -26,7 +26,8 @@ const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct
 function ccySym(code: string): string {
   switch ((code ?? "").toUpperCase()) {
     case "USD": return "$";
-    case "ZAR": return "R";
+    case "ZAR":
+    case "ZAC": return "R";
     case "GBP":
     case "GBX": return "£";
     case "EUR": return "€";

@@ -57,6 +57,7 @@ function currencySymbol(code: string): string {
     case "USD":
       return "$";
     case "ZAR":
+    case "ZAC":
       return "R";
     case "GBP":
     case "GBX":

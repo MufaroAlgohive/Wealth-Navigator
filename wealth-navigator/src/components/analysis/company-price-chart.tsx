@@ -37,7 +37,8 @@ type Range = (typeof RANGES)[number];
 function ccySym(code: string): string {
   switch (code?.toUpperCase()) {
     case "USD": return "$";
-    case "ZAR": return "R";
+    case "ZAR":
+    case "ZAC": return "R";
     case "GBP":
     case "GBX": return "£";
     case "EUR": return "€";
