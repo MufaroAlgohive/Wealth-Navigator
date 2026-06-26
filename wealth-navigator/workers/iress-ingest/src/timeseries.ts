@@ -655,7 +655,7 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
     try {
       const t0 = Date.now();
       const res = isLive
-        ? await fetchSeries(sessions, code, "JSE")
+        ? await fetchSeries(sessions, code, "JSEI")
         : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
       recordWorkerEvent({
         level: "info",
@@ -710,7 +710,7 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
     try {
       const t0 = Date.now();
       const res = isLive
-        ? await fetchSeries(sessions, code, "JSE")
+        ? await fetchSeries(sessions, code, "JSEI")
         : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
       recordWorkerEvent({
         level: "info",

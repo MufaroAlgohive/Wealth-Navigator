@@ -89,7 +89,9 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url);
-  const vendorRaw = url.searchParams.get("vendor") ?? "IRESS";
+  // SENS is the JSE SENS-announcements vendor code (Charles, 2026-06-26). The
+  // earlier "IRESS" was not a valid vendor code, so it always returned 0 rows.
+  const vendorRaw = url.searchParams.get("vendor") ?? "SENS";
   const vendor = vendorRaw.trim();
   if (!vendor) {
     return Response.json(

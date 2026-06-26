@@ -1169,7 +1169,7 @@ export async function handleRequest(
       );
       return;
     }
-    const vendorRaw = url.searchParams.get("vendor") ?? "IRESS";
+    const vendorRaw = url.searchParams.get("vendor") ?? "SENS";
     const vendor = vendorRaw.trim();
     if (!vendor) {
       sendError(res, 400, "bad_request", "`vendor` query param required (e.g. ?vendor=IRESS)");
