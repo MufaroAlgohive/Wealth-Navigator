@@ -28,6 +28,47 @@ interface IndexIntradayRow {
   timestamp: string;
 }
 
+/**
+ * JSE index codes that Yahoo can serve as a fallback while the IRESS index feed
+ * is unavailable (UAT: index DataSource not yet confirmed). Yahoo prefixes JSE
+ * indices with "^". Only codes Yahoo reliably prices are mapped.
+ */
+const YAHOO_INDEX: Record<string, string> = {
+  J203: "^J203.JO", // JSE All Share
+};
+
+/** Yahoo intraday chart for an index symbol → `{ t, v }` points (or [] on any
+ *  failure, so the caller can fall through to the honest empty state). */
+async function fetchYahooIndexIntraday(
+  yahooSym: string,
+  windowKey: string,
+): Promise<Array<{ t: number; v: number }>> {
+  const range = windowKey === "5d" ? "5d" : "1d";
+  const interval = windowKey === "5d" ? "30m" : "5m";
+  try {
+    const r = await fetch(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSym)}?range=${range}&interval=${interval}`,
+      { headers: { "User-Agent": "Mozilla/5.0" }, cache: "no-store" },
+    );
+    if (!r.ok) return [];
+    const j = (await r.json()) as {
+      chart?: { result?: Array<{ timestamp?: number[]; indicators?: { quote?: Array<{ close?: Array<number | null> }> } }> };
+    };
+    const res = j.chart?.result?.[0];
+    const ts = res?.timestamp ?? [];
+    const closes = res?.indicators?.quote?.[0]?.close ?? [];
+    const out: Array<{ t: number; v: number }> = [];
+    for (let i = 0; i < ts.length; i += 1) {
+      const t = ts[i];
+      const c = closes[i];
+      if (t != null && c != null && Number.isFinite(c)) out.push({ t: t * 1000, v: c });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 export async function GET(req: Request, { params }: { params: Promise<{ code: string }> }) {
   const { code: rawCode } = await params;
   const code = rawCode.toUpperCase();
@@ -65,6 +106,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ code: st
       v: Number(r.value),
     }));
     if (points.length === 0) {
+      // IRESS index feed is empty (UAT: DataSource not yet confirmed). Fall back
+      // to Yahoo for the codes it covers (e.g. J203 → ^J203.JO) so the panel
+      // shows the real index instead of an empty state. When IRESS index data
+      // lands in prod, index_intraday_c is non-empty and this never runs.
+      const ySym = YAHOO_INDEX[code];
+      if (ySym) {
+        const yPoints = await fetchYahooIndexIntraday(ySym, windowKey);
+        if (yPoints.length >= 2) {
+          return Response.json({ code, points: yPoints, source: "yahoo" });
+        }
+      }
       return Response.json({
         code,
         points: [],
