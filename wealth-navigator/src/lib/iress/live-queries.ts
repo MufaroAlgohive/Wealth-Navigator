@@ -82,11 +82,27 @@ function buildQuoteFromIntraday(
   const tickCents = Number(intraday.current_price) || 0;
   const metaCents = Number(meta?.last_price) || 0;
   const iressLastCents = iress?.last != null && iress.last > 0 ? iress.last : 0;
-  const priceCents = tickCents > 0 ? tickCents : iressLastCents > 0 ? iressLastCents : metaCents;
+  // Divergence guard: a worker price (intraday tick or IRESS snapshot) that is
+  // more than 25% off the Yahoo reference (securities_c.last_price) is almost
+  // certainly CT/test/stale data, so ignore it and fall back to Yahoo. Same
+  // guard the board and the Analysis tab use. This is what stops CT values
+  // (e.g. NPN at R820 +35%) leaking into the ticker and live quote consumers.
+  const DIVERGE = 0.25;
+  const agreesWithYahoo = (cents: number) =>
+    metaCents <= 0 || (cents > 0 && Math.abs(cents - metaCents) / metaCents <= DIVERGE);
+  const tickOk = tickCents > 0 && agreesWithYahoo(tickCents);
+  const iressOk = iressLastCents > 0 && agreesWithYahoo(iressLastCents);
+  const priceCents = tickOk
+    ? tickCents
+    : iressOk
+      ? iressLastCents
+      : metaCents > 0
+        ? metaCents
+        : tickCents || iressLastCents;
   const last = priceCents / 100;
   let changePct: number;
   let prev: number;
-  if (iress?.prev != null && iress.prev > 0 && priceCents > 0) {
+  if (iressOk && iress?.prev != null && iress.prev > 0 && priceCents > 0) {
     // IRESS prev_close (cents) → change is scale-invariant.
     prev = iress.prev / 100;
     changePct = ((priceCents - iress.prev) / iress.prev) * 100;
