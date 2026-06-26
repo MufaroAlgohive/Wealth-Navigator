@@ -123,12 +123,30 @@ const BOLD_ROWS = new Set([
   "totalRevenue", "grossProfit", "operatingIncome", "netIncome", "totalAssets", "totalStockholderEquity", "totalCashFromOperatingActivities", "freeCashFlow",
 ]);
 
-function StatementView({ table, ccy }: { table: TStmt; ccy: string }) {
+function StatementView({ table, ccy, mode, reverse, baseKey }: { table: TStmt; ccy: string; mode: "value" | "pctchg" | "common"; reverse: boolean; baseKey: string }) {
   if (!table.periods.length || !table.rows.length) {
     return (
       <EmptyDataState reason="empty" message="No statement data for this period type." hint="Yahoo did not return these statements for this symbol." badgeLabel="yahoo" />
     );
   }
+  const order = table.periods.map((_, i) => i);
+  if (reverse) order.reverse();
+  const baseRow = table.rows.find((r) => r.key === baseKey);
+  const cell = (row: TStmt["rows"][number], i: number): { text: string; tone: "up" | "down" | "none" } => {
+    const v = row.values[i];
+    if (v == null) return { text: "—", tone: "none" };
+    if (mode === "common") {
+      const b = baseRow?.values[i];
+      return { text: b != null && b !== 0 ? `${((v / b) * 100).toFixed(1)}%` : "—", tone: "none" };
+    }
+    if (mode === "pctchg") {
+      const prev = row.values[i + 1]; // older period (values are newest-first)
+      if (prev == null || prev === 0) return { text: "—", tone: "none" };
+      const pc = ((v - prev) / Math.abs(prev)) * 100;
+      return { text: `${pc >= 0 ? "+" : ""}${pc.toFixed(1)}%`, tone: pc >= 0 ? "up" : "down" };
+    }
+    return { text: money(v, ccy), tone: v < 0 ? "down" : "none" };
+  };
   return (
     <div className="glass-inset overflow-hidden rounded-xl">
       <div className="overflow-x-auto scrollbar-thin">
@@ -136,22 +154,28 @@ function StatementView({ table, ccy }: { table: TStmt; ccy: string }) {
           <thead>
             <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)]">
               <th className="sticky left-0 bg-[hsl(var(--background))] px-3 py-2.5 text-left font-medium text-muted-foreground">Line item</th>
-              {table.periods.map((p) => (
-                <th key={p} className="px-3 py-2.5 text-right font-mono font-medium text-muted-foreground">{p}</th>
+              {order.map((i) => (
+                <th key={i} className="px-3 py-2.5 text-right font-mono font-medium text-muted-foreground">{table.periods[i]}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {table.rows.map((r) => (
-              <tr key={r.key} className="border-b border-[hsl(var(--glass-border))]/50 hover:bg-[hsl(var(--primary)/0.03)]">
-                <td className={cn("sticky left-0 bg-[hsl(var(--background))] px-3 py-2", BOLD_ROWS.has(r.key) ? "font-semibold" : "text-muted-foreground")}>{r.label}</td>
-                {r.values.map((v, i) => (
-                  <td key={i} className={cn("px-3 py-2 text-right font-mono tabular-nums", BOLD_ROWS.has(r.key) && "font-semibold", v != null && v < 0 && "text-down")}>
-                    {money(v, ccy)}
-                  </td>
-                ))}
-              </tr>
-            ))}
+            {table.rows.map((r) => {
+              const bold = BOLD_ROWS.has(r.key);
+              return (
+                <tr key={r.key} className="border-b border-[hsl(var(--glass-border))]/50 hover:bg-[hsl(var(--primary)/0.03)]">
+                  <td className={cn("sticky left-0 bg-[hsl(var(--background))] px-3 py-2", bold ? "font-semibold" : "text-muted-foreground")}>{r.label}</td>
+                  {order.map((i) => {
+                    const c = cell(r, i);
+                    return (
+                      <td key={i} className={cn("px-3 py-2 text-right font-mono tabular-nums", bold && "font-semibold", c.tone === "down" && "text-down", c.tone === "up" && "text-up")}>
+                        {c.text}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -164,27 +188,34 @@ function StatementView({ table, ccy }: { table: TStmt; ccy: string }) {
 export function FinancialsTab({ sym }: { sym: string }) {
   const [view, setView] = useState<"income" | "balance" | "cashflow">("income");
   const [period, setPeriod] = useState<"annual" | "quarterly">("annual");
+  const [mode, setMode] = useState<"value" | "pctchg" | "common">("value");
+  const [reverse, setReverse] = useState(false);
+  const baseKey = view === "balance" ? "TotalAssets" : view === "cashflow" ? "OperatingCashFlow" : "TotalRevenue";
+  const toggleCls = (on: boolean) =>
+    cn("h-6 rounded-md border px-2 text-[10.5px] transition-colors", on ? "border-primary/40 bg-primary/10 text-primary" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground");
   return (
     <DeepGate sym={sym} title="Financials" subtitle="Yahoo Finance income, balance sheet and cash flow">
-      {(d) => {
-        const table = d.statements[view][period];
-        return (
-          <GlassSection
-            title="Financial statements"
-            subtitle={`${ccySym(d.currency)} · Yahoo Finance · ${period === "annual" ? "annual" : "quarterly"}`}
-            dataSource="yahoo"
-            right={
-              <div className="flex flex-wrap items-center gap-2">
-                <Seg value={view} onChange={(v) => setView(v as typeof view)} options={[["income", "Income"], ["balance", "Balance"], ["cashflow", "Cash flow"]]} />
-                <Seg value={period} onChange={(v) => setPeriod(v as typeof period)} options={[["annual", "Annual"], ["quarterly", "Quarterly"]]} />
-              </div>
-            }
-          >
-            <StatementView table={table} ccy={d.currency} />
-            <NoteList notes={d.notes} />
-          </GlassSection>
-        );
-      }}
+      {(d) => (
+        <GlassSection
+          title="Financial statements"
+          subtitle={`${ccySym(d.currency)} · ${period === "annual" ? "annual" : "quarterly"}`}
+          dataSource="yahoo"
+          right={
+            <div className="flex flex-wrap items-center gap-2">
+              <Seg value={view} onChange={(v) => setView(v as typeof view)} options={[["income", "Income"], ["balance", "Balance"], ["cashflow", "Cash flow"]]} />
+              <Seg value={period} onChange={(v) => setPeriod(v as typeof period)} options={[["annual", "Annual"], ["quarterly", "Quarterly"]]} />
+            </div>
+          }
+        >
+          <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            <button type="button" className={toggleCls(mode === "pctchg")} onClick={() => setMode(mode === "pctchg" ? "value" : "pctchg")}>% Chg</button>
+            <button type="button" className={toggleCls(mode === "common")} onClick={() => setMode(mode === "common" ? "value" : "common")}>Common size</button>
+            <button type="button" className={toggleCls(reverse)} onClick={() => setReverse(!reverse)}>Reverse dates</button>
+          </div>
+          <StatementView table={d.statements[view][period]} ccy={d.currency} mode={mode} reverse={reverse} baseKey={baseKey} />
+          <NoteList notes={d.notes} />
+        </GlassSection>
+      )}
     </DeepGate>
   );
 }
