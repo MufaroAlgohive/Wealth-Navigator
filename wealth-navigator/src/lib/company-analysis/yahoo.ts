@@ -117,6 +117,49 @@ export interface CompanyAnalysis {
 
 const M = (value: number | null, fmt: AnalysisMetric["fmt"]): AnalysisMetric => ({ value, fmt });
 
+const FUND_TYPES = [
+  "annualTotalRevenue", "annualNetIncome", "annualOperatingIncome", "annualEBIT", "annualPretaxIncome",
+  "annualTaxProvision", "annualTotalAssets", "annualCurrentLiabilities", "annualStockholdersEquity",
+  "annualTotalDebt", "annualGrossProfit", "annualDilutedEPS", "annualFreeCashFlow",
+];
+
+/**
+ * Yahoo modern fundamentals-timeseries — reliable annual statement line items.
+ * The legacy quoteSummary statement modules are now sparse (many fields null/0),
+ * so returns/ratios and CAGRs are derived from this endpoint instead. Returns a
+ * map of type → points, most-recent-FIRST. Best-effort: {} on any failure.
+ */
+async function fetchYahooFundamentals(yahooSymbol: string): Promise<Record<string, Array<{ date: string; value: number }>>> {
+  try {
+    const session = await getSession();
+    const now = Math.floor(Date.now() / 1000);
+    const p1 = now - 60 * 60 * 24 * 365 * 11;
+    const headers: Record<string, string> = { "User-Agent": UA, Accept: "application/json" };
+    if (session?.cookie) headers.cookie = session.cookie;
+    const url = `https://query2.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/${encodeURIComponent(yahooSymbol)}?symbol=${encodeURIComponent(yahooSymbol)}&type=${FUND_TYPES.join(",")}&period1=${p1}&period2=${now}&merge=false`;
+    const r = await fetch(url, { headers, cache: "no-store" });
+    if (!r.ok) return {};
+    const j = (await r.json()) as { timeseries?: { result?: Array<Record<string, unknown>> } };
+    const out: Record<string, Array<{ date: string; value: number }>> = {};
+    for (const res of j?.timeseries?.result ?? []) {
+      const type = ((res.meta as { type?: string[] })?.type ?? [])[0];
+      if (!type) continue;
+      const series = res[type];
+      if (!Array.isArray(series)) continue;
+      const pts: Array<{ date: string; value: number }> = [];
+      for (const s of series) {
+        const v = num((s as Record<string, unknown>)?.reportedValue);
+        const date = str((s as Record<string, unknown>)?.asOfDate);
+        if (v != null && date) pts.push({ date, value: v });
+      }
+      out[type] = pts.reverse(); // API is oldest-first; expose newest-first
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Fetch the full fiscal.ai-style analysis for a ticker. `symbol` may be a bare
  * US ticker (MSFT), a Yahoo symbol (CPI.JO), or a JSE code we suffix with .JO.
@@ -157,6 +200,12 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
   } catch (e) {
     return empty(e instanceof Error ? e.message : "Yahoo fetch failed");
   }
+
+  // Reliable annual statement line items (the legacy statement modules above are
+  // sparse). Used for returns, pre-tax margin and CAGRs.
+  const F = await fetchYahooFundamentals(yahooSymbol);
+  const fLatest = (t: string): number | null => F[t]?.[0]?.value ?? null;
+  const fSeries = (t: string): Array<number | null> => (F[t] ?? []).map((p) => p.value);
 
   const profileM = (res.assetProfile ?? {}) as Record<string, unknown>;
   const priceM = (res.price ?? {}) as Record<string, unknown>;
@@ -230,18 +279,40 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
     Gross: M(num(fd.grossMargins) ?? div(grossProfit, revenue), "pct"),
     EBITDA: M(num(fd.ebitdaMargins) ?? div(ebitda, revenue), "pct"),
     Operating: M(num(fd.operatingMargins) ?? div(num((inc[0] ?? {}).operatingIncome), revenue), "pct"),
-    "Pre-Tax": M(div(num((inc[0] ?? {}).incomeBeforeTax), revenue), "pct"),
+    "Pre-Tax": M(div(fLatest("annualPretaxIncome"), fLatest("annualTotalRevenue")) ?? div(num((inc[0] ?? {}).incomeBeforeTax), revenue), "pct"),
     Net: M(num(fd.profitMargins) ?? num(ks.profitMargins) ?? div(num((inc[0] ?? {}).netIncome), revenue), "pct"),
     FCF: M(div(fcfComputed, revenue), "pct"),
   };
+  // Returns computed from the latest reported statements (income + balance):
+  //   ROTA = net income / total assets
+  //   ROCE = EBIT / (total assets - current liabilities)
+  //   ROIC = NOPAT / (total debt + equity), NOPAT = EBIT x (1 - effective tax rate)
+  const ni0 = fLatest("annualNetIncome") ?? num((inc[0] ?? {}).netIncome);
+  const tax0 = fLatest("annualTaxProvision") ?? num((inc[0] ?? {}).incomeTaxExpense);
+  const pretax0 = fLatest("annualPretaxIncome") ?? num((inc[0] ?? {}).incomeBeforeTax) ?? (ni0 != null && tax0 != null ? ni0 + tax0 : null);
+  const ebit0 = fLatest("annualEBIT") ?? fLatest("annualOperatingIncome") ?? num((inc[0] ?? {}).ebit) ?? num((inc[0] ?? {}).operatingIncome);
+  const totalAssets0 = fLatest("annualTotalAssets") ?? num((bs[0] ?? {}).totalAssets);
+  const currLiab0 = fLatest("annualCurrentLiabilities") ?? num((bs[0] ?? {}).totalCurrentLiabilities);
+  const equity0 = fLatest("annualStockholdersEquity") ?? num((bs[0] ?? {}).totalStockholderEquity);
+  const debt0 = fLatest("annualTotalDebt") ?? totalDebt;
+  const taxRate = pretax0 != null && pretax0 > 0 && tax0 != null ? Math.min(Math.max(tax0 / pretax0, 0), 0.5) : 0.21;
+  const nopat = ebit0 != null ? ebit0 * (1 - taxRate) : null;
+  const investedCapital = (debt0 ?? 0) + (equity0 ?? 0);
+  const capitalEmployed = totalAssets0 != null && currLiab0 != null ? totalAssets0 - currLiab0 : null;
+  const roicVal = nopat != null && investedCapital > 0 ? nopat / investedCapital : null;
+  const roceVal = ebit0 != null && capitalEmployed != null && capitalEmployed > 0 ? ebit0 / capitalEmployed : null;
+  const rotaVal = ni0 != null && totalAssets0 != null && totalAssets0 > 0 ? ni0 / totalAssets0 : null;
   groups.Returns = {
     ROA: M(num(fd.returnOnAssets), "pct"),
-    ROE: M(num(fd.returnOnEquity), "pct"),
-    ROIC: M(null, "pct"),
-    ROCE: M(null, "pct"),
-    ROTA: M(null, "pct"),
+    ROE: M(num(fd.returnOnEquity) ?? (ni0 != null && equity0 != null && equity0 > 0 ? ni0 / equity0 : null), "pct"),
+    ROIC: M(roicVal, "pct"),
+    ROCE: M(roceVal, "pct"),
+    ROTA: M(rotaVal, "pct"),
   };
-  notes.push("ROIC/ROCE/ROTA need NOPAT + invested-capital from full statements — not derivable from Yahoo free; shown as —.");
+  notes.push("Returns are computed from the latest reported statements (not a multi-year average).");
+  if (roicVal == null && roceVal == null && rotaVal == null) {
+    notes.push("Returns need full statements not available on the free feed for this security.");
+  }
 
   const trailingPE = num(detail.trailingPE) ?? num(ks.trailingPE);
   const pb = num(ks.priceToBook);
@@ -281,22 +352,33 @@ export async function fetchCompanyAnalysis(symbol: string): Promise<CompanyAnaly
   const epsSeries = earnHist.length ? earnHist.map((r) => num((r as Record<string, unknown>).epsActual)) : [];
   const n = inc.length;
   // Yahoo gives ~4 annual statements → 3yr CAGR exact; 5/10yr unavailable.
-  const rev3 = n >= 4 ? cagr(revSeries[0] ?? null, revSeries[3] ?? null, 3) : null;
+  const revTs = fSeries("annualTotalRevenue");
+  const epsTs = fSeries("annualDilutedEPS");
+  const at = (arr: Array<number | null>, i: number): number | null => arr[i] ?? null;
+  const cagrRev = (yrs: number) => cagr(at(revTs, 0) ?? at(revSeries, 0), at(revTs, yrs) ?? at(revSeries, yrs), yrs);
+  const rev3 = cagrRev(3);
+  const rev5 = cagrRev(5);
+  const rev10 = cagrRev(10);
+  const eps3v = cagr(at(epsTs, 0), at(epsTs, 3), 3) ?? (n >= 4 ? cagr(at(niSeries, 0), at(niSeries, 3), 3) : null);
+  const eps5v = cagr(at(epsTs, 0), at(epsTs, 5), 5);
+  const eps10v = cagr(at(epsTs, 0), at(epsTs, 10), 10);
   const epsLatest = num(ks.trailingEps);
-  const eps3 = n >= 4 ? cagr(niSeries[0] ?? null, niSeries[3] ?? null, 3) : null;
   const trend1y = earnTrend.find((t) => str((t as Record<string, unknown>).period) === "+1y") as Record<string, unknown> | undefined;
   const trend5y = earnTrend.find((t) => str((t as Record<string, unknown>).period) === "+5y") as Record<string, unknown> | undefined;
   groups["Growth (CAGR)"] = {
     "Rev 3Yr": M(rev3, "pct100"),
-    "Rev 5Yr": M(null, "pct100"),
-    "Rev 10Yr": M(null, "pct100"),
-    "EPS 3Yr": M(eps3, "pct100"),
-    "Rev Fwd": M(num(fd.revenueGrowth), "pct"),
-    "EPS Fwd": M(num((trend1y?.growth)) , "pct"),
+    "Rev 5Yr": M(rev5, "pct100"),
+    "Rev 10Yr": M(rev10, "pct100"),
+    "Dil EPS 3Yr": M(eps3v, "pct100"),
+    "Dil EPS 5Yr": M(eps5v, "pct100"),
+    "Dil EPS 10Yr": M(eps10v, "pct100"),
+    "Rev Fwd 2Yr": M(num(fd.revenueGrowth), "pct"),
+    "EPS Fwd 2Yr": M(num(trend1y?.growth), "pct"),
     "EPS LT Est": M(num(trend5y?.growth), "pct"),
   } as Record<string, AnalysisMetric>;
-  if (n < 4) notes.push("Yahoo returned <4 annual statements — multi-year CAGRs limited.");
-  notes.push("5Yr/10Yr CAGRs require >4yr history (paid vendor) — shown as —.");
+  if (rev5 == null && rev10 == null) {
+    notes.push("5-year and 10-year CAGRs need more history than the free feed returns; shown as a dash.");
+  }
 
   const divYield = num(detail.dividendYield) ?? num(detail.trailingAnnualDividendYield);
   const dpsRate = num(detail.dividendRate);
