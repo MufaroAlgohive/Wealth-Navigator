@@ -171,6 +171,25 @@ any committed file.
 
 
 
+### UAT phase: price source is Yahoo, not IRESS
+
+While Mint is on the IRESS **UAT** endpoint (`webservices-ct`), IRESS quotes are
+test data, so the live app sources prices from Yahoo:
+
+| Var | Value (UAT) | Effect |
+|---|---|---|
+| `IRESS_PRICE_OVERLAY` | `0` (Vercel) | App ignores IRESS quotes (analysis, board, ticker) and shows Yahoo. |
+| `YAHOO_FUNDAMENTALS_WRITE` | `1` (Vercel) | The `/api/cron/yahoo-fundamentals` cron writes `securities_c` (incl. last_price + change during UAT). |
+| `CRON_SECRET` | random (Vercel) | Authenticates the scheduled cron. |
+| `IRESS_RETAIL_DRY_RUN` | `1` (Railway) | Worker does not write IRESS test prices to the retail DB. |
+
+The cron is scheduled in `vercel.json` (`*/30` on JSE weekdays). At the production
+cutover, set `IRESS_PRICE_OVERLAY=1` (or unset) and `IRESS_RETAIL_DRY_RUN=0` so
+IRESS becomes the live price source and owns `last_price` again.
+
+> Vercel env-var changes only take effect on a REDEPLOY. After changing any of the
+> above, push to `main` or use Vercel -> Redeploy.
+
 ### IRESS_MODE=mock on Vercel is not mock quotes
 
 Production Vercel should keep **`IRESS_MODE=mock`**: the Railway `iress-ingest`
