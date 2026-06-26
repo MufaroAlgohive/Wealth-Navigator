@@ -101,10 +101,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ code: st
         { status: 500 },
       );
     }
-    const points = ((rows ?? []) as IndexIntradayRow[]).map((r) => ({
-      t: new Date(r.timestamp).getTime(),
-      v: Number(r.value),
-    }));
+    // Dedup by timestamp (last value wins). The worker's index_intraday_c write
+    // is a plain INSERT against a table with no unique key and re-fetches a
+    // multi-day window each cycle, so once the index feed is enabled the same
+    // (index_code, timestamp) can appear many times; without this the chart
+    // would render stacked/repeated points. Rows arrive ascending by timestamp.
+    const byTs = new Map<number, number>();
+    for (const r of (rows ?? []) as IndexIntradayRow[]) {
+      byTs.set(new Date(r.timestamp).getTime(), Number(r.value));
+    }
+    const points = Array.from(byTs, ([t, v]) => ({ t, v })).sort((a, b) => a.t - b.t);
     if (points.length === 0) {
       // IRESS index feed is empty (UAT: DataSource not yet confirmed). Fall back
       // to Yahoo for the codes it covers (e.g. J203 → ^J203.JO) so the panel
@@ -114,7 +120,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ code: st
       if (ySym) {
         const yPoints = await fetchYahooIndexIntraday(ySym, windowKey);
         if (yPoints.length >= 2) {
-          return Response.json({ code, points: yPoints, source: "yahoo" });
+          return Response.json({ code, points: yPoints, source: "yahoo", asOf: yPoints[yPoints.length - 1]?.t ?? null });
         }
       }
       return Response.json({

@@ -20,7 +20,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
-import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
+import { iressPriceOverlayEnabled, iressQuoteMaxAgeMs, IRESS_DIVERGENCE } from "@/lib/iress/overlay-policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,15 +46,6 @@ interface SecurityRow {
 }
 
 const bareCode = (sym: string) => sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
-
-/** IRESS snapshot is considered live only within this window (else stale). */
-function iressMaxAgeMs(): number {
-  const h = Number(process.env.IRESS_QUOTE_MAX_AGE_HOURS);
-  return (Number.isFinite(h) && h > 0 ? h : 48) * 3_600_000;
-}
-
-/** A snapshot diverging more than this from the Yahoo reference is rejected. */
-const IRESS_DIVERGENCE = 0.25;
 
 /**
  * IRESS-first overlay, GUARDED. Prefer the live IRESS `last` + change% (derived
@@ -109,7 +100,7 @@ async function overlayIressQuotes(rows: SecurityRow[]): Promise<number> {
       });
     }
     const now = Date.now();
-    const maxAge = iressMaxAgeMs();
+    const maxAge = iressQuoteMaxAgeMs();
     let n = 0;
     for (const r of rows) {
       // Default to Yahoo; only flip to IRESS once a snapshot clears the guards.

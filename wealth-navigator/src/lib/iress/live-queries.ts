@@ -14,7 +14,7 @@
 import { getIressClient, iressConfig } from "@/lib/iress/index";
 import { iressQueries } from "@/lib/iress/mock";
 import { IressError } from "@/lib/iress/errors";
-import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
+import { iressPriceOverlayEnabled, iressQuoteMaxAgeMs, IRESS_DIVERGENCE } from "@/lib/iress/overlay-policy";
 import { getMintSession, withMintSession, invalidateMintSession } from "@/lib/iress/session-manager";
 import { emptyQuote, isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { initialQuotes, zarGoviCurve } from "@/lib/iress/seed";
@@ -78,7 +78,7 @@ function buildQuoteFromIntraday(
   intraday: IntradayRow,
   symbol: string,
   exchange: string,
-  iress?: { last: number | null; prev: number | null },
+  iress?: { last: number | null; prev: number | null; asOf?: string | null },
 ): Quote {
   const tickCents = Number(intraday.current_price) || 0;
   const metaCents = Number(meta?.last_price) || 0;
@@ -86,16 +86,24 @@ function buildQuoteFromIntraday(
   // sourced from the intraday tick / securities_c (Yahoo), not UAT test prices.
   const iq = iressPriceOverlayEnabled() ? iress : undefined;
   const iressLastCents = iq?.last != null && iq.last > 0 ? iq.last : 0;
-  // Divergence guard: a worker price (intraday tick or IRESS snapshot) that is
-  // more than 25% off the Yahoo reference (securities_c.last_price) is almost
-  // certainly CT/test/stale data, so ignore it and fall back to Yahoo. Same
-  // guard the board and the Analysis tab use. This is what stops CT values
-  // (e.g. NPN at R820 +35%) leaking into the ticker and live quote consumers.
-  const DIVERGE = 0.25;
+  // Freshness gate: a worker tick or IRESS snapshot older than the shared
+  // max-age window (worker stopped, weekend, CT backfill) is stale and must not
+  // be shown as the live price. Same window as iress.ts and /api/equities.
+  const maxAge = iressQuoteMaxAgeMs();
+  const tickTs = new Date(intraday.timestamp).getTime();
+  const tickFresh = Number.isFinite(tickTs) && Date.now() - tickTs <= maxAge;
+  const iressTs = iq?.asOf ? new Date(iq.asOf).getTime() : NaN;
+  const iressFresh = Number.isFinite(iressTs) && Date.now() - iressTs <= maxAge;
+  // Divergence guard: a worker price more than IRESS_DIVERGENCE off the Yahoo
+  // reference (securities_c.last_price) is almost certainly CT/test/stale data,
+  // so ignore it and fall back to Yahoo. This stops CT values (e.g. NPN at R820
+  // +35%) leaking into the ticker. When there is no Yahoo reference (metaCents
+  // <=0) the freshness gate is the only backstop, so a stale value is still
+  // rejected via tickFresh/iressFresh below.
   const agreesWithYahoo = (cents: number) =>
-    metaCents <= 0 || (cents > 0 && Math.abs(cents - metaCents) / metaCents <= DIVERGE);
-  const tickOk = tickCents > 0 && agreesWithYahoo(tickCents);
-  const iressOk = iressLastCents > 0 && agreesWithYahoo(iressLastCents);
+    metaCents <= 0 || (cents > 0 && Math.abs(cents - metaCents) / metaCents <= IRESS_DIVERGENCE);
+  const tickOk = tickCents > 0 && tickFresh && agreesWithYahoo(tickCents);
+  const iressOk = iressLastCents > 0 && iressFresh && agreesWithYahoo(iressLastCents);
   const priceCents = tickOk
     ? tickCents
     : iressOk
@@ -116,7 +124,11 @@ function buildQuoteFromIntraday(
     prev = changePct !== 0 ? last / (1 + changePct / 100) : last;
   }
   const change = last - prev;
-  const ts = new Date(intraday.timestamp).getTime();
+  // Timestamp the quote with the source actually shown: the fresh tick / IRESS
+  // time when used, else now (the Yahoo securities_c fallback is cron-fresh and
+  // carries no per-row timestamp). Never stamp a stale tick time onto a Yahoo
+  // price.
+  const ts = tickOk ? tickTs : iressOk ? iressTs : Date.now();
   return {
     symbol,
     last,
@@ -145,20 +157,30 @@ function buildQuoteFromIntraday(
 async function fetchIressSnapshot(
   bareSymbols: string[],
   exchange: string,
-): Promise<Map<string, { last: number | null; prev: number | null }>> {
-  const map = new Map<string, { last: number | null; prev: number | null }>();
+): Promise<Map<string, { last: number | null; prev: number | null; asOf: string | null }>> {
+  const map = new Map<string, { last: number | null; prev: number | null; asOf: string | null }>();
   if (!isSupabaseConfigured() || bareSymbols.length === 0) return map;
   try {
     const inst = createServiceRoleClient();
     const codes = Array.from(new Set(bareSymbols.map((s) => s.toUpperCase())));
     const { data, error } = await inst
       .from("quote_snapshot_c")
-      .select("security_code,exchange,last,prev_close")
+      .select("security_code,exchange,last,prev_close,as_of,updated_at")
       .eq("exchange", exchange)
       .in("security_code", codes);
     if (error || !data) return map;
-    for (const r of data as Array<{ security_code: string; last: number | null; prev_close: number | null }>) {
-      map.set(String(r.security_code).toUpperCase(), { last: r.last, prev: r.prev_close });
+    for (const r of data as Array<{
+      security_code: string;
+      last: number | null;
+      prev_close: number | null;
+      as_of: string | null;
+      updated_at: string | null;
+    }>) {
+      map.set(String(r.security_code).toUpperCase(), {
+        last: r.last,
+        prev: r.prev_close,
+        asOf: r.as_of ?? r.updated_at,
+      });
     }
   } catch {
     /* leave map empty → Yahoo fallback */

@@ -13,14 +13,8 @@
  */
 
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
-import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
+import { iressPriceOverlayEnabled, iressQuoteMaxAgeMs, IRESS_DIVERGENCE } from "@/lib/iress/overlay-policy";
 import type { CompanyAnalysis, CompanyDeep } from "./yahoo";
-
-/** IRESS snapshot is considered live only within this window (else stale). */
-function iressMaxAgeMs(): number {
-  const h = Number(process.env.IRESS_QUOTE_MAX_AGE_HOURS);
-  return (Number.isFinite(h) && h > 0 ? h : 48) * 3_600_000;
-}
 
 const bareCode = (sym: string) => sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
 
@@ -55,14 +49,14 @@ export async function overlayIressPrice(analysis: CompanyAnalysis): Promise<Comp
     // price (Yahoo) rather than ship a wrong IRESS number.
     const tsRaw = (data.as_of ?? data.updated_at) as string | null;
     const ts = tsRaw ? Date.parse(tsRaw) : NaN;
-    if (!Number.isFinite(ts) || Date.now() - ts > iressMaxAgeMs()) return analysis;
+    if (!Number.isFinite(ts) || Date.now() - ts > iressQuoteMaxAgeMs()) return analysis;
 
     const last = lastCents / 100;
     // Sanity: if the IRESS snapshot diverges materially from the live market
     // (the Yahoo price already on `analysis`), it is almost certainly a stale or
     // test CT value (e.g. a 2023 close) -> keep the market price, not a wrong one.
     const yLast = analysis.price.last;
-    if (yLast != null && yLast > 0 && Math.abs(last - yLast) / yLast > 0.25) return analysis;
+    if (yLast != null && yLast > 0 && Math.abs(last - yLast) / yLast > IRESS_DIVERGENCE) return analysis;
     const prevCents = data.prev_close == null ? null : Number(data.prev_close);
     const prev = prevCents != null && prevCents > 0 ? prevCents / 100 : null;
     const change = prev != null ? last - prev : analysis.price.change;
@@ -99,10 +93,10 @@ export async function overlayIressDeep(deep: CompanyDeep): Promise<CompanyDeep> 
     if (error || !data || lastCents == null || !(lastCents > 0)) return deep;
     const tsRaw = (data.as_of ?? data.updated_at) as string | null;
     const ts = tsRaw ? Date.parse(tsRaw) : NaN;
-    if (!Number.isFinite(ts) || Date.now() - ts > iressMaxAgeMs()) return deep;
+    if (!Number.isFinite(ts) || Date.now() - ts > iressQuoteMaxAgeMs()) return deep;
     const lastR = lastCents / 100;
     const yLast = deep.research.currentPrice;
-    if (yLast != null && yLast > 0 && Math.abs(lastR - yLast) / yLast > 0.25) return deep;
+    if (yLast != null && yLast > 0 && Math.abs(lastR - yLast) / yLast > IRESS_DIVERGENCE) return deep;
     return { ...deep, research: { ...deep.research, currentPrice: lastR } };
   } catch {
     return deep;

@@ -570,7 +570,7 @@ function emptyQuote(): Quote {
  * reports what the row actually contains, narrow the `str(...)` fallbacks
  * here and remove the entitlement-blocked branches.
  */
-function mapNewsStory(row: Record<string, unknown> | undefined): NewsStory {
+function mapNewsStory(row: Record<string, unknown> | undefined): NewsStory | null {
   const str = (...keys: string[]) => {
     if (!row) return "";
     for (const k of keys) {
@@ -606,13 +606,19 @@ function mapNewsStory(row: Record<string, unknown> | undefined): NewsStory {
       .filter(Boolean);
     if (relatedCodes.length === 0) relatedCodes = undefined;
   }
+  // Honest parsing: if no headline field can be read, the row shape did not
+  // match (the V4 news row schema is not yet pinned on CT), so drop it rather
+  // than fabricate a clean-looking "(untitled) / IRESS" item. Likewise leave
+  // Source empty when absent instead of inventing an attribution.
+  const headline = str("Headline", "Title", "StoryHeadline");
+  if (!headline) return null;
   const storyId =
     str("StoryId", "StoryID", "Id", "NewsId", "ID") ||
     `news-${ts || Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const story: NewsStory = {
     StoryId: storyId,
-    Headline: str("Headline", "Title", "StoryHeadline") || "(untitled)",
-    Source: str("Source", "Vendor", "VendorCode", "Feed", "Provider") || "IRESS",
+    Headline: headline,
+    Source: str("Source", "Vendor", "VendorCode", "Feed", "Provider") || "",
     Timestamp: tsRaw,
     ts,
     Story: (() => {
@@ -1143,7 +1149,9 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       });
       const mapped = mapResponse<NewsStory>({
         header: result.header,
-        dataRows: result.dataRows.map((r) => mapNewsStory(r)),
+        dataRows: result.dataRows
+          .map((r) => mapNewsStory(r))
+          .filter((s): s is NewsStory => s !== null),
       });
       // Surface the raw rows too — same pattern as `PricingQuoteGet`. The
       // mapper above collapses some fields to `null` (story body, related

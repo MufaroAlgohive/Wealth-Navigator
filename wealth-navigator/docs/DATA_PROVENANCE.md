@@ -189,7 +189,7 @@ Production (Vercel): `IRESS_MODE=mock`, `USE_SUPABASE_QUOTES=true`, `NEXT_PUBLIC
 | Money market | /oems/money-market | seed | TimeSeriesGet2 | SEED |
 | Curves | /oems/curves | seed | TimeSeriesGet2 | SEED |
 | Macro | /oems/macro | seed | — | SEED |
-| News + SENS | /oems/news | `/api/iress/news` (Path B, vendor=SENS) OR seed | NewsVendorGet | T5_PASSTHROUGH / SEED |
+| News + SENS | /oems/news | `/api/news` (RSS + `News_articles` wire); SEED only in mock mode | RSS / `News_articles` | EXTERNAL / SEED |
 | Integration health | /oems/integration | seed + `/api/iress/health` | IRESSSessionStart | HYBRID |
 
 ## Infrastructure
@@ -204,7 +204,7 @@ Production (Vercel): `IRESS_MODE=mock`, `USE_SUPABASE_QUOTES=true`, `NEXT_PUBLIC
 | BFF live orders (Path B) | /api/orders/live | reverse-proxies worker `/orders` | OrderPadGetByAccount (worker) | LIVE |
 | BFF integration health (Path B) | /api/integration/health | reverse-proxies worker `/health` | session-manager (worker) | LIVE |
 | BFF orders SSE (Path B) | /api/orders/stream | reverse-proxies worker `/orders/stream` | OrderPadGetByAccount (worker) | LIVE |
-| BFF news (Path B) | /api/iress/news | reverse-proxies worker `/debug/news-vendor-probe` | NewsVendorGet (worker) | T5_PASSTHROUGH |
+| BFF news (Path B) | /api/iress/news | reverse-proxies worker `/debug/news-vendor-probe`; NOT wired to any UI panel (the news panel reads `/api/news`) | NewsVendorGet (worker) | T5_PASSTHROUGH (probe only) |
 | Worker read-only HTTP | worker `:8765/{health,orders,orders/stream,debug/news-vendor-probe}` | `workers/iress-ingest/src/http-api.ts` | (worker-internal) | LIVE |
 | `isWorkerLiveMode()` helper | `@/lib/data-policy` | `USE_SUPABASE_QUOTES` server flag | — | — |
 | `WorkerReadOnlyApi` helper | `@/lib/iress/worker-api` | `fetch` w/ 10s timeout + error envelope | — | — |

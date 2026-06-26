@@ -1,6 +1,6 @@
 # Remaining Data Gaps — Real Data Mandate
 
-Last updated: 2026-06-25. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_PUBLIC_USE_SUPABASE_QUOTES=true` → **no seed/mock prices in UI**. Empty states show `Data feed not configured`. News panel now routes through `/api/iress/news` (Path B) when the worker is live — UI shows `T5_PASSTHROUGH` badge instead of `SEED`.
+Last updated: 2026-06-26. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_PUBLIC_USE_SUPABASE_QUOTES=true` → **no seed/mock prices in UI**. Empty states show `Data feed not configured`. The news panel reads `/api/news` (RSS + the `News_articles` wire), showing SEED only in mock mode; `/api/iress/news` is an unwired Path B probe over the worker `NewsVendorGet`, not the panel's live source.
 
 ## Wired in this session
 
