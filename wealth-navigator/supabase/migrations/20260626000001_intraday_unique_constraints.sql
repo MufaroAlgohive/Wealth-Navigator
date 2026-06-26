@@ -1,4 +1,4 @@
--- REVIEW BEFORE APPLY — LIVE PROJECT nnwzhxfjpjbzujevwzlh (MyMint)
+-- REVIEW BEFORE APPLY: LIVE PROJECT nnwzhxfjpjbzujevwzlh (MyMint)
 -- Make index_intraday_c / sector_intraday_c idempotent on (code, timestamp).
 --
 -- The worker (workers/iress-ingest/src/timeseries.ts) re-fetches a multi-day
