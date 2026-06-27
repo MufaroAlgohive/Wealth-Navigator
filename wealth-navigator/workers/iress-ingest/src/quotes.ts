@@ -164,6 +164,8 @@ async function upsertInstrumentFromQuote(
   env: WorkerEnv,
 ): Promise<void> {
   if (!env.instrumentSync) return;
+  // UAT: never seed a retail securities_c row with an IRESS TEST price.
+  if (env.priceOverlayOff) return;
   if (env.dryRun || !env.allowWrites) {
     console.info(
       JSON.stringify({
@@ -553,7 +555,9 @@ export async function syncWatchlistQuotes(
   // Persist the L1 snapshot (Prev Close / Open / Bid / Ask / Range / Volume) for
   // the Security page. Best-effort + isolated: a failure (e.g. table not yet
   // migrated) must NOT affect the quote / intraday writes above.
-  if (supabase && env.allowWrites && !env.dryRun && snapshotRows.length > 0) {
+  // UAT (IRESS_PRICE_OVERLAY=0): IRESS L1 is test data; do not persist it to the
+  // shared quote_snapshot_c (read-gated today, but a latent leak for any reader).
+  if (supabase && env.allowWrites && !env.dryRun && !env.priceOverlayOff && snapshotRows.length > 0) {
     const { error: snapErr } = await supabase
       .from("quote_snapshot_c")
       .upsert(snapshotRows, { onConflict: "security_code,exchange" });

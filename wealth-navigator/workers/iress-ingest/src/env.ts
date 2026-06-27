@@ -23,6 +23,10 @@ export interface WorkerEnv {
   iressMode: string;
   dryRun: boolean;
   allowWrites: boolean;
+  /** UAT phase: IRESS_PRICE_OVERLAY=0 means IRESS returns TEST prices, so the
+   *  worker must not write IRESS-sourced prices into any table a live consumer
+   *  reads (quote_snapshot_c, securities_c via instrument-sync). True = UAT. */
+  priceOverlayOff: boolean;
   heartbeatSec: number;
   quoteIntervalSec: number;
   orderPollIntervalSec: number;
@@ -159,6 +163,7 @@ export function loadWorkerEnv(): WorkerEnv {
     iressMode: process.env.IRESS_MODE ?? "mock",
     dryRun: parseBool(process.env.IRESS_WORKER_DRY_RUN, true),
     allowWrites: parseBool(process.env.SUPABASE_ALLOW_WRITES, false),
+    priceOverlayOff: process.env.IRESS_PRICE_OVERLAY === "0",
     heartbeatSec: Number(process.env.IRESS_WORKER_HEARTBEAT_SEC ?? "30"),
     quoteIntervalSec: Number(process.env.IRESS_WORKER_QUOTE_INTERVAL_SEC ?? "15"),
     orderPollIntervalSec: Number(process.env.IRESS_WORKER_ORDER_POLL_SEC ?? "60"),

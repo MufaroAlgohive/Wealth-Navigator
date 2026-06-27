@@ -92,6 +92,10 @@ export async function syncRetailPrices(opts: {
   // the worker-wide dryRun/allowWrites that govern the institutional feed. Flip
   // IRESS_RETAIL_DRY_RUN=0 only after the shadow run validates coverage + scaling.
   const writesOn = process.env.IRESS_RETAIL_DRY_RUN === "0" && Boolean(retail);
+  // UAT phase: IRESS returns TEST prices, so do not persist them to the
+  // institutional quote_snapshot_c either (it is read-gated today, but writing
+  // test prices to a shared table is a latent leak for any future reader).
+  const priceOverlayOff = process.env.IRESS_PRICE_OVERLAY === "0";
   const setSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
 
   if (!retail) {
@@ -215,7 +219,11 @@ export async function syncRetailPrices(opts: {
   // Best-effort + isolated: a failure here must NOT affect the retail result.
   // This powers the dashboard's IRESS-first price/change overlay across all 246
   // names (not just the 15s watchlist) and the Security L1 panel for any symbol.
-  if (institutional && snapshotRows.length > 0) {
+  if (institutional && snapshotRows.length > 0 && priceOverlayOff) {
+    console.info(
+      JSON.stringify({ level: "info", event: "quote_snapshot_c_skipped_uat", reason: "IRESS_PRICE_OVERLAY=0", count: snapshotRows.length }),
+    );
+  } else if (institutional && snapshotRows.length > 0) {
     // De-dupe by (security_code, exchange): two securities_c symbols can map to
     // the same bare IRESS code, and Postgres rejects an upsert batch that
     // touches the same ON CONFLICT key twice ("cannot affect row a second
