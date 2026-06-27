@@ -88,8 +88,13 @@ export async function GET(req: Request) {
   const session = await yahooCrumb();
   if (!session) return NextResponse.json({ ok: false, error: "Could not establish a Yahoo session (cookie/crumb)" }, { status: 502 });
 
-  let updated = 0, failed = 0, covered = 0;
+  let updated = 0, failed = 0, covered = 0, ticks = 0;
   const sample: Array<Record<string, unknown>> = [];
+  // One timestamp per run: each cycle writes a fresh stock_intraday_c tick per
+  // security so the LATEST tick (what retail consumers like MINT-LIVE read as
+  // the fill price) is always the current Yahoo price, superseding any stale
+  // IRESS UAT test tick left in the table.
+  const tickTs = new Date().toISOString();
 
   for (const sec of securities ?? []) {
     const sym = String(sec.symbol || "").trim();
@@ -127,11 +132,26 @@ export async function GET(req: Request) {
       // accurate. JSE Yahoo quotes are in ZAc (cents) and securities_c.last_price
       // is cents, so regularMarketPrice is stored directly. In production the
       // IRESS worker owns these fields, so we leave them untouched there.
+      let tickRow:
+        | { security_id: string; symbol: string; current_price: number; "1d_pct": number | null; "1d_abs": number | null; timestamp: string }
+        | null = null;
       if (process.env.IRESS_PRICE_OVERLAY === "0") {
         const px = res.price?.regularMarketPrice?.raw;
-        if (px != null && px > 0) update.last_price = Math.round(px);
         const chg = res.price?.regularMarketChangePercent?.raw;
-        if (chg != null) update.change_percent = Math.round(chg * 10000) / 100;
+        if (px != null && px > 0) {
+          const pxCents = Math.round(px);
+          update.last_price = pxCents;
+          let pct: number | null = null;
+          let abs: number | null = null;
+          if (chg != null) {
+            pct = Math.round(chg * 10000) / 100;
+            update.change_percent = pct;
+            const prevCents = chg !== -100 ? Math.round(pxCents / (1 + chg / 100)) : pxCents;
+            abs = pxCents - prevCents;
+          }
+          // Fresh Yahoo intraday tick for the retail table (see tickTs above).
+          tickRow = { security_id: String(sec.id), symbol: sym, current_price: pxCents, "1d_pct": pct, "1d_abs": abs, timestamp: tickTs };
+        }
       }
 
       if (Object.keys(update).length === 0) { continue; }
@@ -142,6 +162,13 @@ export async function GET(req: Request) {
         const { error: upErr } = await db.from("securities_c").update(update).eq("id", sec.id);
         if (upErr) { failed++; continue; }
         updated++;
+        if (tickRow) {
+          const { error: tickErr } = await db
+            .from("stock_intraday_c")
+            .upsert(tickRow, { onConflict: "symbol,timestamp" });
+          if (tickErr) console.warn(`[yahoo-fundamentals] stock_intraday_c upsert(${sym}) failed: ${tickErr.message}`);
+          else ticks++;
+        }
       }
     } catch {
       failed++;
@@ -156,6 +183,7 @@ export async function GET(req: Request) {
     requested: securities?.length ?? 0,
     covered,
     updated,
+    ticks,
     failed,
     sample,
     note: writesOn ? undefined : "Shadow run — set YAHOO_FUNDAMENTALS_WRITE=1 to write gap fields to securities_c.",
