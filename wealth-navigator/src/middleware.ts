@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 
 import { updateSupabaseSession } from "@/lib/supabase/middleware";
+import { isBlockedForEmail } from "@/lib/platform/access";
 
 /**
  * Route gating uses Supabase Auth session cookies (refreshed here on every
@@ -62,6 +63,16 @@ export async function middleware(req: NextRequest) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.search = `?next=${encodeURIComponent(pathname + search)}`;
+    return NextResponse.redirect(url);
+  }
+
+  // Restricted external accounts (e.g. IRESS integration staff) must not reach
+  // the sensitive business surfaces, even by typing the URL. Bounce them to the
+  // Cockpit. The nav also hides these items (see platform-nav.tsx).
+  if (authed && isBlockedForEmail(user?.email, pathname)) {
+    const url = req.nextUrl.clone();
+    url.pathname = "/oems";
+    url.search = "";
     return NextResponse.redirect(url);
   }
 

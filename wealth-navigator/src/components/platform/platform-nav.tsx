@@ -12,6 +12,9 @@ import { Button } from "@/components/ui/button";
 import { usePersona } from "@/lib/store/session-provider";
 import { useAuth } from "@/lib/auth/store";
 import { PLATFORM_NAV, visibleFor, activeHref, overviewItem, type NavItem } from "@/lib/platform/nav";
+import { isBlockedForEmail } from "@/lib/platform/access";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
 
 /**
  * The one platform sidebar — shared by the desk AND the admin surfaces, grouped
@@ -31,6 +34,25 @@ export function PlatformNav() {
   const { isAuthenticated } = useAuth();
   const [collapsed, setCollapsed] = React.useState(false);
   const [ccCount, setCcCount] = React.useState(0);
+  // Signed-in email, for the per-user restriction (see lib/platform/access.ts).
+  const [email, setEmail] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!isSupabaseAuthConfigured()) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const supabase = createSupabaseBrowserClient();
+        const { data } = await supabase.auth.getSession();
+        if (alive) setEmail(data.session?.user?.email ?? null);
+      } catch {
+        /* leave email null → no restriction applied */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const active = activeHref(pathname);
 
@@ -38,10 +60,14 @@ export function PlatformNav() {
     const overview = { title: "Overview", items: [overviewItem(persona)] };
     const rest = PLATFORM_NAV.map((s) => ({
       ...s,
-      items: s.items.filter((i) => isAuthenticated || visibleFor(persona, i)),
+      // A restricted external account never sees the sensitive business items,
+      // even though authenticated staff otherwise see the full nav.
+      items: s.items.filter(
+        (i) => (isAuthenticated || visibleFor(persona, i)) && !isBlockedForEmail(email, i.href),
+      ),
     })).filter((s) => s.items.length > 0);
     return [overview, ...rest];
-  }, [persona, isAuthenticated]);
+  }, [persona, isAuthenticated, email]);
 
   const showCc = sections.some((s) => s.items.some((i) => i.badge === "cc"));
   React.useEffect(() => {
