@@ -96,23 +96,43 @@ export function SectorTreemap({ data }: { data: SectorDatum[] }) {
     const maxAbs = rows.reduce((m, r) => Math.max(m, Math.abs(r.change || 0)), 0);
     return Math.min(REF_MAX, Math.max(REF_MIN, maxAbs));
   }, [rows]);
-  // Legend scale is REACTIVE to the day's actual spread: the endpoints are the
-  // real worst/best moves and the neutral mark sits where 0% actually falls
-  // between them, instead of a forced symmetric +/-ref split.
-  const { lo, hi } = React.useMemo(() => {
-    let lo = Infinity;
-    let hi = -Infinity;
+  // Market breadth + net bias. Cap-weighted (equal-weighted when caps are
+  // absent) so the bar reads bullish vs bearish at a glance: how much of the
+  // market is green vs red, the net move, and the advance/decline split. A
+  // min/max scale hides this: a symmetric +1.85/-1.85 day still looks balanced
+  // even when 8 of 11 sectors are red.
+  const breadth = React.useMemo(() => {
+    let capSum = 0;
+    for (const r of rows) capSum += Math.max(0, r.weight);
+    const equal = capSum <= 0;
+    let upW = 0;
+    let downW = 0;
+    let flatW = 0;
+    let adv = 0;
+    let dec = 0;
+    let wChg = 0;
+    let denom = 0;
     for (const r of rows) {
+      const w = equal ? 1 : Math.max(0, r.weight);
       const c = r.change || 0;
-      if (c < lo) lo = c;
-      if (c > hi) hi = c;
+      denom += w;
+      wChg += w * c;
+      if (c > NEUTRAL_EPS) {
+        upW += w;
+        adv += 1;
+      } else if (c < -NEUTRAL_EPS) {
+        downW += w;
+        dec += 1;
+      } else {
+        flatW += w;
+      }
     }
-    return Number.isFinite(lo) ? { lo, hi } : { lo: 0, hi: 0 };
+    const net = denom > 0 ? wChg / denom : 0;
+    const toPct = (x: number) => (denom > 0 ? (x / denom) * 100 : 0);
+    return { upPct: toPct(upW), downPct: toPct(downW), flatPct: toPct(flatW), net, adv, dec };
   }, [rows]);
-  const span = hi - lo;
-  const zeroPos = span > 0 ? Math.min(1, Math.max(0, -lo / span)) : 0.5;
-  const zPct = (zeroPos * 100).toFixed(1);
-  const legendGradient = `linear-gradient(90deg, hsl(var(--down)/0.85) 0%, hsl(var(--down)/0.35) ${(zeroPos * 70).toFixed(1)}%, hsl(var(--muted-foreground)/0.25) ${zPct}%, hsl(var(--up)/0.35) ${(zeroPos * 100 + (100 - zeroPos * 100) * 0.3).toFixed(1)}%, hsl(var(--up)/0.85) 100%)`;
+  const sentiment =
+    breadth.net > NEUTRAL_EPS ? "Bullish" : breadth.net < -NEUTRAL_EPS ? "Bearish" : "Mixed";
 
   const totalWeight = React.useMemo(() => rows.reduce((s, r) => s + Math.max(0, r.weight), 0), [rows]);
 
@@ -165,24 +185,26 @@ export function SectorTreemap({ data }: { data: SectorDatum[] }) {
         })}
       </div>
 
-      {/* Legend: diverging scale REACTIVE to the day's actual spread. Endpoints
-          are the real worst/best moves; the tick marks where 0% falls between. */}
-      <div className="flex shrink-0 items-center justify-between gap-2 px-0.5">
-        <span className="font-mono text-[9px] tabular-nums" style={{ color: changeTextColor(lo) }}>
-          {changeText(lo)}
-        </span>
-        <div className="relative h-1.5 flex-1 rounded-full" style={{ background: legendGradient }}>
-          {span > 0 && zeroPos > 0.03 && zeroPos < 0.97 && (
-            <span
-              className="absolute top-1/2 h-2.5 w-px -translate-y-1/2 rounded-full bg-foreground/45"
-              style={{ left: `${zPct}%` }}
-              aria-hidden
-            />
-          )}
+      {/* Market breadth + net bias: cap-weighted share up vs down, the net move,
+          and the advance/decline split. Reads bullish vs bearish at a glance. */}
+      <div className="shrink-0 space-y-1 px-0.5">
+        <div className="flex items-center justify-between text-[10px] font-medium">
+          <span className="tabular-nums" style={{ color: changeTextColor(breadth.net) }}>
+            {sentiment} · {changeText(breadth.net)} avg
+          </span>
+          <span className="font-mono text-[9px] tabular-nums">
+            <span style={{ color: "hsl(var(--up))" }}>{breadth.adv}▲</span>{" "}
+            <span style={{ color: "hsl(var(--down))" }}>{breadth.dec}▼</span>
+          </span>
         </div>
-        <span className="font-mono text-[9px] tabular-nums" style={{ color: changeTextColor(hi) }}>
-          {changeText(hi)}
-        </span>
+        <div
+          className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted-foreground/10"
+          title={`${breadth.upPct.toFixed(0)}% of market cap up · ${breadth.flatPct.toFixed(0)}% flat · ${breadth.downPct.toFixed(0)}% down`}
+        >
+          <div style={{ width: `${breadth.upPct}%`, background: "hsl(var(--up) / 0.8)" }} />
+          <div style={{ width: `${breadth.flatPct}%`, background: "hsl(var(--muted-foreground) / 0.3)" }} />
+          <div style={{ width: `${breadth.downPct}%`, background: "hsl(var(--down) / 0.8)" }} />
+        </div>
       </div>
     </div>
   );
