@@ -96,7 +96,23 @@ export function SectorTreemap({ data }: { data: SectorDatum[] }) {
     const maxAbs = rows.reduce((m, r) => Math.max(m, Math.abs(r.change || 0)), 0);
     return Math.min(REF_MAX, Math.max(REF_MIN, maxAbs));
   }, [rows]);
-  const refLabel = Number.isInteger(ref) ? String(ref) : ref.toFixed(1);
+  // Legend scale is REACTIVE to the day's actual spread: the endpoints are the
+  // real worst/best moves and the neutral mark sits where 0% actually falls
+  // between them, instead of a forced symmetric +/-ref split.
+  const { lo, hi } = React.useMemo(() => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const r of rows) {
+      const c = r.change || 0;
+      if (c < lo) lo = c;
+      if (c > hi) hi = c;
+    }
+    return Number.isFinite(lo) ? { lo, hi } : { lo: 0, hi: 0 };
+  }, [rows]);
+  const span = hi - lo;
+  const zeroPos = span > 0 ? Math.min(1, Math.max(0, -lo / span)) : 0.5;
+  const zPct = (zeroPos * 100).toFixed(1);
+  const legendGradient = `linear-gradient(90deg, hsl(var(--down)/0.85) 0%, hsl(var(--down)/0.35) ${(zeroPos * 70).toFixed(1)}%, hsl(var(--muted-foreground)/0.25) ${zPct}%, hsl(var(--up)/0.35) ${(zeroPos * 100 + (100 - zeroPos * 100) * 0.3).toFixed(1)}%, hsl(var(--up)/0.85) 100%)`;
 
   const totalWeight = React.useMemo(() => rows.reduce((s, r) => s + Math.max(0, r.weight), 0), [rows]);
 
@@ -149,17 +165,24 @@ export function SectorTreemap({ data }: { data: SectorDatum[] }) {
         })}
       </div>
 
-      {/* Legend: diverging scale, range is the adaptive per-day reference. */}
+      {/* Legend: diverging scale REACTIVE to the day's actual spread. Endpoints
+          are the real worst/best moves; the tick marks where 0% falls between. */}
       <div className="flex shrink-0 items-center justify-between gap-2 px-0.5">
-        <span className="font-mono text-[9px] tabular-nums text-muted-foreground">-{refLabel}%</span>
-        <div
-          className="h-1.5 flex-1 rounded-full"
-          style={{
-            background:
-              "linear-gradient(90deg, hsl(var(--down)/0.85) 0%, hsl(var(--down)/0.3) 38%, hsl(var(--muted-foreground)/0.25) 50%, hsl(var(--up)/0.3) 62%, hsl(var(--up)/0.85) 100%)",
-          }}
-        />
-        <span className="font-mono text-[9px] tabular-nums text-muted-foreground">+{refLabel}%</span>
+        <span className="font-mono text-[9px] tabular-nums" style={{ color: changeTextColor(lo) }}>
+          {changeText(lo)}
+        </span>
+        <div className="relative h-1.5 flex-1 rounded-full" style={{ background: legendGradient }}>
+          {span > 0 && zeroPos > 0.03 && zeroPos < 0.97 && (
+            <span
+              className="absolute top-1/2 h-2.5 w-px -translate-y-1/2 rounded-full bg-foreground/45"
+              style={{ left: `${zPct}%` }}
+              aria-hidden
+            />
+          )}
+        </div>
+        <span className="font-mono text-[9px] tabular-nums" style={{ color: changeTextColor(hi) }}>
+          {changeText(hi)}
+        </span>
       </div>
     </div>
   );
