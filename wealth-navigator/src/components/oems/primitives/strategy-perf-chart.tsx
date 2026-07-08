@@ -13,15 +13,17 @@ import {
   YAxis,
 } from "recharts";
 
+import { cn } from "@/lib/cn";
 import { CHART_COLORS, tooltipStyle } from "@/components/research-lab/chart-theme";
 
 /**
- * Normalized strategy-vs-JSE-All-Share performance chart.
+ * Normalized strategy-vs-JSE-All-Share performance chart with time-range filters.
  *
  * Every strategy's daily basket_value series and the J203 benchmark are rebased
- * to 100 on a common start date, so relative performance is comparable
- * regardless of absolute NAV/index scale. Per-series chips toggle each line, and
- * J203 is drawn thicker/dashed as the benchmark.
+ * to 100 on the window's start date, so relative performance is comparable
+ * regardless of absolute NAV/index scale. Ranges anchor to the LATEST available
+ * data date (not "now"), so they stay meaningful even while the returns series
+ * is stale. Per-series chips toggle each line; J203 is drawn thicker/dashed.
  */
 
 interface Pt {
@@ -49,6 +51,17 @@ interface Series {
   dates: string[]; // sorted ascending
 }
 
+type RangeKey = "1D" | "1W" | "1M" | "3M" | "6M" | "1Y" | "ALL";
+const RANGES: Array<{ key: RangeKey; days: number }> = [
+  { key: "1D", days: 1 },
+  { key: "1W", days: 7 },
+  { key: "1M", days: 30 },
+  { key: "3M", days: 91 },
+  { key: "6M", days: 182 },
+  { key: "1Y", days: 365 },
+  { key: "ALL", days: Infinity },
+];
+const DAY_MS = 86_400_000;
 const BENCH_COLOR = "hsl(var(--foreground))";
 const toDate = (t: number): string => new Date(t).toISOString().slice(0, 10);
 
@@ -85,20 +98,21 @@ function buildSeries(data: ApiResponse | undefined): Series[] {
 interface Rebased {
   chartData: Array<Record<string, number | null>>;
   series: Series[];
+  from: string | null;
+  to: string | null;
 }
 
-/** Rebase every series to 100 on the latest of the series' first dates (the
- *  common start), then merge onto one date axis. */
-function rebase(series: Series[]): Rebased {
+/** Rebase every series to 100 at the window start (the later of `windowStart`
+ *  and each series' first date), then merge onto one date axis. `windowStart`
+ *  is "" for the full range. */
+function rebase(series: Series[], windowStart: string): Rebased {
   const usable = series.filter((s) => s.dates.length >= 2);
-  if (usable.length === 0) return { chartData: [], series: [] };
-  // Common start = the latest first-date, so every series has data from there.
-  let commonStart = "";
+  if (usable.length === 0) return { chartData: [], series: [], from: null, to: null };
+  let commonStart = windowStart;
   for (const s of usable) {
     const first = s.dates[0];
     if (first && first > commonStart) commonStart = first;
   }
-  // Per-series base = value at the first date >= commonStart.
   const base = new Map<string, number>();
   const kept: Series[] = [];
   for (const s of usable) {
@@ -109,7 +123,6 @@ function rebase(series: Series[]): Rebased {
       kept.push(s);
     }
   }
-  // Union of dates >= commonStart.
   const dateSet = new Set<string>();
   for (const s of kept) for (const d of s.dates) if (d >= commonStart) dateSet.add(d);
   const dates = [...dateSet].sort();
@@ -122,7 +135,7 @@ function rebase(series: Series[]): Rebased {
     }
     return row;
   });
-  return { chartData, series: kept };
+  return { chartData, series: kept, from: dates[0] ?? null, to: dates[dates.length - 1] ?? null };
 }
 
 const fmtTick = (ts: number): string =>
@@ -141,8 +154,23 @@ export function StrategyPerfChart({ enabled = true }: { enabled?: boolean }) {
   });
 
   const allSeries = React.useMemo(() => buildSeries(q.data), [q.data]);
-  const { chartData, series } = React.useMemo(() => rebase(allSeries), [allSeries]);
+  const [range, setRange] = React.useState<RangeKey>("ALL");
   const [hidden, setHidden] = React.useState<Set<string>>(() => new Set());
+
+  const { chartData, series, from, to } = React.useMemo(() => {
+    // Anchor ranges to the latest available data date, not "now".
+    let endMs = 0;
+    for (const s of allSeries) {
+      const last = s.dates[s.dates.length - 1];
+      if (last) {
+        const t = Date.parse(last);
+        if (t > endMs) endMs = t;
+      }
+    }
+    const days = RANGES.find((r) => r.key === range)?.days ?? Infinity;
+    const windowStart = days === Infinity || endMs === 0 ? "" : toDate(endMs - days * DAY_MS);
+    return rebase(allSeries, windowStart);
+  }, [allSeries, range]);
 
   const toggle = (key: string) =>
     setHidden((prev) => {
@@ -153,9 +181,13 @@ export function StrategyPerfChart({ enabled = true }: { enabled?: boolean }) {
     });
 
   if (q.isLoading) {
-    return <div className="flex h-full items-center justify-center text-caption text-muted-foreground">Loading strategy performance…</div>;
+    return (
+      <div className="flex h-full items-center justify-center text-caption text-muted-foreground">
+        Loading strategy performance…
+      </div>
+    );
   }
-  if (q.isError || series.length === 0) {
+  if (q.isError || allSeries.filter((s) => !s.isBench).length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-1 px-4 text-center">
         <p className="text-caption text-muted-foreground">No strategy performance series available.</p>
@@ -166,65 +198,92 @@ export function StrategyPerfChart({ enabled = true }: { enabled?: boolean }) {
     );
   }
 
-  const range = q.data?.range;
-
   return (
     <div className="flex h-full min-h-0 flex-col gap-1.5">
-      <div className="min-h-0 flex-1">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 6, right: 8, bottom: 0, left: -12 }}>
-            <CartesianGrid stroke="hsl(var(--border) / 0.35)" strokeDasharray="2 4" vertical={false} />
-            <XAxis
-              dataKey="ts"
-              type="number"
-              scale="time"
-              domain={["dataMin", "dataMax"]}
-              tickFormatter={fmtTick}
-              tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
-              minTickGap={40}
-              tickLine={false}
-              axisLine={false}
-            />
-            <YAxis
-              tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
-              tickFormatter={(v: number) => v.toFixed(0)}
-              width={34}
-              domain={["auto", "auto"]}
-              tickLine={false}
-              axisLine={false}
-            />
-            <ReferenceLine y={100} stroke="hsl(var(--muted-foreground) / 0.4)" strokeDasharray="3 3" />
-            <Tooltip
-              contentStyle={tooltipStyle}
-              labelFormatter={(ts) => new Date(Number(ts)).toLocaleDateString("en-ZA", { year: "numeric", month: "short", day: "numeric" })}
-              formatter={(value: number | string, _name, item) => {
-                const n = Number(value);
-                const label = (item as { name?: string })?.name ?? "";
-                return [`${n.toFixed(1)}  (${n - 100 >= 0 ? "+" : ""}${(n - 100).toFixed(1)}%)`, label];
-              }}
-            />
-            {series
-              .filter((s) => !hidden.has(s.key))
-              .map((s) => (
-                <Line
-                  key={s.key}
-                  type="monotone"
-                  dataKey={s.key}
-                  name={s.name}
-                  stroke={s.color}
-                  strokeWidth={s.isBench ? 2.4 : 1.6}
-                  strokeDasharray={s.isBench ? "5 3" : undefined}
-                  dot={false}
-                  connectNulls
-                  isAnimationActive={false}
-                />
-              ))}
-          </LineChart>
-        </ResponsiveContainer>
+      {/* Range filter: windows anchor to the latest available data date. */}
+      <div className="flex shrink-0 items-center gap-0.5">
+        {RANGES.map((r) => (
+          <button
+            key={r.key}
+            type="button"
+            onClick={() => setRange(r.key)}
+            className={cn(
+              "rounded px-1.5 py-0.5 text-[9.5px] font-medium tabular-nums transition-colors",
+              range === r.key ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {r.key}
+          </button>
+        ))}
+        {from && to && (
+          <span className="ml-auto font-mono text-[9px] tabular-nums text-muted-foreground/70">
+            {from} → {to} · rebased 100
+          </span>
+        )}
       </div>
 
-      {/* Filter chips: click to show/hide each series. Rebased to 100 at the
-          common start ({range}); values read as index points (100 = start). */}
+      <div className="min-h-0 flex-1">
+        {chartData.length < 2 ? (
+          <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">
+            Not enough data points in this window.
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 6, right: 8, bottom: 0, left: -12 }}>
+              <CartesianGrid stroke="hsl(var(--border) / 0.35)" strokeDasharray="2 4" vertical={false} />
+              <XAxis
+                dataKey="ts"
+                type="number"
+                scale="time"
+                domain={["dataMin", "dataMax"]}
+                tickFormatter={fmtTick}
+                tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                minTickGap={40}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis
+                tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                tickFormatter={(v: number) => v.toFixed(0)}
+                width={34}
+                domain={["auto", "auto"]}
+                tickLine={false}
+                axisLine={false}
+              />
+              <ReferenceLine y={100} stroke="hsl(var(--muted-foreground) / 0.4)" strokeDasharray="3 3" />
+              <Tooltip
+                contentStyle={tooltipStyle}
+                labelFormatter={(ts) =>
+                  new Date(Number(ts)).toLocaleDateString("en-ZA", { year: "numeric", month: "short", day: "numeric" })
+                }
+                formatter={(value: number | string, _name, item) => {
+                  const n = Number(value);
+                  const label = (item as { name?: string })?.name ?? "";
+                  return [`${n.toFixed(1)}  (${n - 100 >= 0 ? "+" : ""}${(n - 100).toFixed(1)}%)`, label];
+                }}
+              />
+              {series
+                .filter((s) => !hidden.has(s.key))
+                .map((s) => (
+                  <Line
+                    key={s.key}
+                    type="monotone"
+                    dataKey={s.key}
+                    name={s.name}
+                    stroke={s.color}
+                    strokeWidth={s.isBench ? 2.4 : 1.6}
+                    strokeDasharray={s.isBench ? "5 3" : undefined}
+                    dot={false}
+                    connectNulls
+                    isAnimationActive={false}
+                  />
+                ))}
+            </LineChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      {/* Filter chips: click to show/hide each series. */}
       <div className="flex shrink-0 flex-wrap items-center gap-1">
         {series.map((s) => {
           const off = hidden.has(s.key);
@@ -250,11 +309,6 @@ export function StrategyPerfChart({ enabled = true }: { enabled?: boolean }) {
             </button>
           );
         })}
-        {range && (
-          <span className="ml-auto font-mono text-[9px] tabular-nums text-muted-foreground/70">
-            {range.from} → {range.to} · rebased 100
-          </span>
-        )}
       </div>
     </div>
   );
