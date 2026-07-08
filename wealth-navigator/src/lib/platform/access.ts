@@ -24,6 +24,7 @@ export const SENSITIVE_PATHS: readonly string[] = [
   "/admin/clients", // Clients
   "/admin/investors", // Investors
   "/admin/studio", // Client View Studio
+  "/api/strategies/returns", // strategy performance series (cockpit Strategies view)
 ];
 
 export function isRestrictedEmail(email: string | null | undefined): boolean {

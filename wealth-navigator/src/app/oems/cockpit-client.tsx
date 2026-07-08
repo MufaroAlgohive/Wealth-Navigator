@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer,
@@ -21,6 +21,10 @@ import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge"
 import { Pill } from "@/components/oems/primitives/pill";
 import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { SectorTreemap } from "@/components/oems/primitives/sector-treemap";
+import { StrategyPerfChart } from "@/components/oems/primitives/strategy-perf-chart";
+import { isRestrictedEmail } from "@/lib/platform/access";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
 import { CockpitNewsFlow, type NewsFlowItem } from "@/components/oems/primitives/cockpit-news-flow";
 import { CockpitPortfolioAccounts, type PortfolioAccountRow, type AccountsHorizon } from "@/components/oems/primitives/cockpit-portfolio-accounts";
 import { PanelSkeleton, KpiTileSkeleton, PanelErrorShell } from "@/components/oems/primitives/panel-skeleton";
@@ -338,6 +342,28 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // Portfolio Accounts horizon — investor-snippet performance window.
   // Defaults to YTD per Lonwabo (1D / MTD / YTD).
   const [accountsHorizon, setAccountsHorizon] = useState<AccountsHorizon>("YTD");
+  // JSE All Share panel view: intraday tape vs normalized strategy performance.
+  const [alsiView, setAlsiView] = useState<"intraday" | "strategies">("intraday");
+  // Restricted external accounts (e.g. IRESS) must not see strategy data, so
+  // the Strategies toggle is hidden for them (the endpoint is blocked too).
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isSupabaseAuthConfigured()) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const supabase = createSupabaseBrowserClient();
+        const { data: sess } = await supabase.auth.getSession();
+        if (alive) setUserEmail(sess.session?.user?.email ?? null);
+      } catch {
+        /* leave null → no restriction */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const canSeeStrategies = !isRestrictedEmail(userEmail);
   const globalMoversQ = useQuery({
     queryKey: ["bff-global-movers", heatmapMarket],
     queryFn: () =>
@@ -1348,31 +1374,58 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             </GlassSection>
           ) : alsiBffQ.data && alsiBffQ.data.points.length > 0 ? (
             <GlassSection
-              title="JSE All Share · Intraday"
-              endpoint="GET /api/indices/J203"
-              db="institutional"
-              dataSource={alsiBffQ.data.source === "seed-fallback" ? "seed" : alsiBffQ.data.source === "supabase" ? "supabase" : alsiBffQ.data.source === "yahoo" ? "yahoo" : "blocked-external"}
+              title={alsiView === "strategies" ? "JSE All Share · Strategies" : "JSE All Share · Intraday"}
+              endpoint={alsiView === "strategies" ? "GET /api/strategies/returns" : "GET /api/indices/J203"}
+              db={alsiView === "strategies" ? "retail" : "institutional"}
+              dataSource={alsiView === "strategies" ? "supabase" : alsiBffQ.data.source === "seed-fallback" ? "seed" : alsiBffQ.data.source === "supabase" ? "supabase" : alsiBffQ.data.source === "yahoo" ? "yahoo" : "blocked-external"}
               className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
-              right={(() => {
-                const pts = alsiBffQ.data.points;
-                if (pts.length === 0) return null;
-                const last = pts[pts.length - 1];
-                const first = pts[0];
-                if (!last || !first) return null;
-                const change = last.v - first.v;
-                const changePct = first.v > 0 ? (change / first.v) * 100 : 0;
-                return (
-                  <div className="font-mono text-right">
-                    <span className="text-sm font-semibold">
-                      {last.v.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}
-                    </span>
-                    <span className={cn("ml-2 text-xs", changePct >= 0 ? "text-up" : "text-down")}>
-                      {changePct >= 0 ? "+" : ""}{change.toFixed(2)} ({formatPct(changePct)})
-                    </span>
-                  </div>
-                );
-              })()}
+              right={
+                <div className="flex items-center gap-2">
+                  {alsiView === "intraday" &&
+                    (() => {
+                      const pts = alsiBffQ.data.points;
+                      if (pts.length === 0) return null;
+                      const last = pts[pts.length - 1];
+                      const first = pts[0];
+                      if (!last || !first) return null;
+                      const change = last.v - first.v;
+                      const changePct = first.v > 0 ? (change / first.v) * 100 : 0;
+                      return (
+                        <div className="font-mono text-right">
+                          <span className="text-sm font-semibold">
+                            {last.v.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}
+                          </span>
+                          <span className={cn("ml-2 text-xs", changePct >= 0 ? "text-up" : "text-down")}>
+                            {changePct >= 0 ? "+" : ""}{change.toFixed(2)} ({formatPct(changePct)})
+                          </span>
+                        </div>
+                      );
+                    })()}
+                  {canSeeStrategies && (
+                    <div className="glass-inset inline-flex overflow-hidden rounded-md p-0.5">
+                      {(["intraday", "strategies"] as const).map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => setAlsiView(v)}
+                          className={cn(
+                            "rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
+                            alsiView === v ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {v === "intraday" ? "Intraday" : "Strategies"}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              }
             >
+              {alsiView === "strategies" ? (
+                <div className="glass-inset min-h-0 flex-1 p-3">
+                  <StrategyPerfChart enabled={alsiView === "strategies"} />
+                </div>
+              ) : (
               <div className="glass-inset min-h-0 flex-1 p-3">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={alsiBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
@@ -1401,6 +1454,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 </AreaChart>
               </ResponsiveContainer>
               </div>
+              )}
             </GlassSection>
           ) : (
             <GlassSection
