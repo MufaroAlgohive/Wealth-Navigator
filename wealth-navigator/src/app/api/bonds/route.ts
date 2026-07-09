@@ -1,3 +1,5 @@
+import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 /**
  * GET /api/bonds
  *
@@ -8,8 +10,6 @@
  * means the worker's first bond snapshot hasn't landed yet.
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
-import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
-import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -89,10 +89,7 @@ export async function GET() {
     );
   }
   const supabase = createServiceRoleClient();
-  const { data, error } = await supabase
-    .from("bonds_c")
-    .select("*")
-    .order("ytm_pct", { ascending: false });
+  const { data, error } = await supabase.from("bonds_c").select("*").order("ytm_pct", { ascending: false });
   if (error) {
     return Response.json(
       {

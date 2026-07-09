@@ -1,3 +1,5 @@
+import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 /**
  * GET /api/money-market
  *
@@ -7,8 +9,6 @@
  * empty state until a vendor or IRESS entitlement is wired in.
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
-import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
-import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -83,15 +83,8 @@ export async function GET() {
   }
   const supabase = createServiceRoleClient();
   const [instRes, jibarRes] = await Promise.all([
-    supabase
-      .from("money_market_instrument_c")
-      .select("*")
-      .order("yield_pct", { ascending: false }),
-    supabase
-      .from("jibar_fixing_c")
-      .select("*")
-      .order("rate_date", { ascending: false })
-      .limit(60),
+    supabase.from("money_market_instrument_c").select("*").order("yield_pct", { ascending: false }),
+    supabase.from("jibar_fixing_c").select("*").order("rate_date", { ascending: false }).limit(60),
   ]);
   if (instRes.error || jibarRes.error) {
     const firstErr = instRes.error ?? jibarRes.error;

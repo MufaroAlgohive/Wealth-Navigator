@@ -1,0 +1,509 @@
+{
+  "generatedAt": "2026-07-09T09:53:04.871Z",
+  "baseUrl": "http://localhost:3000",
+  "tolerancePct": 0.5,
+  "symbols": [
+    "NPN",
+    "AGL",
+    "FSR",
+    "MTN",
+    "SBK",
+    "BHG",
+    "SOL",
+    "ANG",
+    "PRX",
+    "CFR",
+    "BIL",
+    "SHP",
+    "VOD",
+    "AMS",
+    "GFI",
+    "REM",
+    "SLM",
+    "NED",
+    "INP",
+    "EXX"
+  ],
+  "providers": {
+    "iress": {
+      "name": "iress",
+      "reachable": true,
+      "ok": true
+    },
+    "yahoo": {
+      "name": "yahoo",
+      "reachable": true,
+      "ok": true
+    }
+  },
+  "rows": [
+    {
+      "symbol": "NPN",
+      "iress": {
+        "last": 4180.55,
+        "prevClose": 4176.36945,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "AGL",
+      "iress": {
+        "last": 552.1,
+        "prevClose": 551.5479,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "FSR",
+      "iress": {
+        "last": 78.42,
+        "prevClose": 78.34158000000001,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "MTN",
+      "iress": {
+        "last": 108.65,
+        "prevClose": 108.54135000000001,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "SBK",
+      "iress": {
+        "last": 226.75,
+        "prevClose": 226.52325,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "BHG",
+      "iress": {
+        "last": 528.4,
+        "prevClose": 527.8716,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "SOL",
+      "iress": {
+        "last": 162.8,
+        "prevClose": 162.6372,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "ANG",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "PRX",
+      "iress": {
+        "last": 2295.1,
+        "prevClose": 2292.8049,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "CFR",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "BIL",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "SHP",
+      "iress": {
+        "last": 281.3,
+        "prevClose": 281.0187,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "VOD",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "AMS",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "GFI",
+      "iress": {
+        "last": 414.2,
+        "prevClose": 413.7858,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "yahoo last missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "REM",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "SLM",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "NED",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "INP",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    },
+    {
+      "symbol": "EXX",
+      "iress": {
+        "last": null,
+        "prevClose": null,
+        "source": "mock"
+      },
+      "yahoo": {
+        "last": null,
+        "prevClose": null,
+        "source": "yahoo",
+        "error": "Yahoo quote 401"
+      },
+      "lastDeltaPct": null,
+      "prevCloseDeltaPct": null,
+      "withinTolerance": true,
+      "notes": [
+        "yahoo: Yahoo quote 401",
+        "iress last missing",
+        "yahoo last missing",
+        "iress prevClose missing",
+        "yahoo prevClose missing"
+      ]
+    }
+  ],
+  "summary": {
+    "total": 20,
+    "matched": 20,
+    "outsideTolerance": 0,
+    "iressUnavailable": 10,
+    "yahooUnavailable": 20
+  },
+  "notes": []
+}

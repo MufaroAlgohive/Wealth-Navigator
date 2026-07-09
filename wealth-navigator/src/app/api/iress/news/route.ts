@@ -1,9 +1,6 @@
-import { callWorker } from "@/lib/iress/worker-api";
+import { isIressWorkerConfigured, isWorkerLiveMode } from "@/lib/data-policy";
 import { iressConfig } from "@/lib/iress";
-import {
-  isIressWorkerConfigured,
-  isWorkerLiveMode,
-} from "@/lib/data-policy";
+import { callWorker } from "@/lib/iress/worker-api";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -106,13 +103,9 @@ export async function GET(req: Request) {
     );
   }
   const pageSizeRaw = Number(url.searchParams.get("pageSize") ?? "50");
-  const pageSize = Number.isFinite(pageSizeRaw)
-    ? Math.min(1000, Math.max(1, Math.trunc(pageSizeRaw)))
-    : 50;
+  const pageSize = Number.isFinite(pageSizeRaw) ? Math.min(1000, Math.max(1, Math.trunc(pageSizeRaw))) : 50;
   const timeoutRaw = Number(url.searchParams.get("timeout") ?? "25");
-  const timeout = Number.isFinite(timeoutRaw)
-    ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw)))
-    : 25;
+  const timeout = Number.isFinite(timeoutRaw) ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw))) : 25;
   const includeBody = url.searchParams.get("includeBody") === "1";
 
   // Forward to the worker probe. The worker is the only process that

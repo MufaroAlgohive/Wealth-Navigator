@@ -13,8 +13,8 @@
  */
 import { XMLParser } from "fast-xml-parser";
 
-import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
+import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,7 +52,11 @@ const RSS_FEEDS: Array<{ url: string; publisher: string }> = [
 const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
 
 function stripHtml(s: string): string {
-  return s.replace(/<[^>]*>/g, "").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
+  return s
+    .replace(/<[^>]*>/g, "")
+    .replace(/&[a-z#0-9]+;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function wireToItem(r: NewsRow): NewsItem {
@@ -85,7 +89,7 @@ async function fetchRss(url: string, publisher: string): Promise<NewsItem[]> {
       const i = it as Record<string, unknown>;
       const title = stripHtml(String(i.title ?? ""));
       const link = typeof i.link === "string" ? i.link : String(i.link ?? "");
-      const pub = typeof i.pubDate === "string" ? Date.parse(i.pubDate) : NaN;
+      const pub = typeof i.pubDate === "string" ? Date.parse(i.pubDate) : Number.NaN;
       const ts = Number.isFinite(pub) ? pub : Date.now();
       return {
         id: `rss-${publisher}-${idx}-${link}`,
@@ -113,9 +117,21 @@ export async function GET(req: Request) {
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 200);
   const category = url.searchParams.get("category") ?? undefined;
 
-  // SENS = official regulatory announcements (paid web feed); we have no data.
+  // SENS = official regulatory announcements (paid IRESS NewsVendorGet).
+  // Return a `blocked-vendor` empty state so the UI renders the honest badge
+  // (see `cockpit-news-flow.tsx` / `data-source-badge.tsx`) instead of
+  // pretending the feed is broken. Unblock requires Charles/IRESS to flip
+  // the NewsVendorGet entitlement for SENS on DFM@Mint — see
+  // `docs/VENDOR_ENTITLEMENT_STATUS.md`.
   if (category && category.toUpperCase() === "SENS") {
-    return Response.json({ items: [], source: "unavailable", count: 0, reason: "empty" });
+    return Response.json({
+      items: [],
+      source: "blocked-vendor",
+      count: 0,
+      reason: "sens_entitlement_pending",
+      message:
+        "JSE SENS regulatory announcements require the IRESS NewsVendorGet entitlement on DFM@Mint — Charles/IRESS to flip the access.",
+    });
   }
 
   // 1) Live RSS — always (no Supabase dependency).
@@ -151,7 +167,14 @@ export async function GET(req: Request) {
     })
     .slice(0, limit);
 
-  const source = rssItems.length && wireItems.length ? "rss+wire" : rssItems.length ? "rss" : wireItems.length ? "supabase" : "unavailable";
+  const source =
+    rssItems.length && wireItems.length
+      ? "rss+wire"
+      : rssItems.length
+        ? "rss"
+        : wireItems.length
+          ? "supabase"
+          : "unavailable";
   return Response.json({
     items,
     count: items.length,

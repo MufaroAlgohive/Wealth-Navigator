@@ -1,9 +1,12 @@
+import { type ProviderName, getProvider } from "@/lib/data/providers";
 import { iressConfig } from "@/lib/iress";
-import { fetchQuotesSafe, type QuoteWithSource } from "@/lib/iress/live-queries";
+import { type QuoteWithSource, fetchQuotesSafe } from "@/lib/iress/live-queries";
 import { isRetailSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const VALID_PROVIDERS: ReadonlySet<ProviderName> = new Set(["iress", "yahoo", "mock", "iris"]);
 
 /**
  * BFF quote endpoint — DB-first when `USE_SUPABASE_QUOTES=true`, otherwise
@@ -35,10 +38,58 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const symbolsParam = url.searchParams.get("symbols") ?? "NPN";
   const exchange = url.searchParams.get("exchange") ?? "JSE";
-  const symbols = symbolsParam.split(",").map((s) => s.trim()).filter(Boolean);
+  const symbols = symbolsParam
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   if (symbols.length === 0) {
     return Response.json({ error: "symbols query param required" }, { status: 400 });
+  }
+
+  // Provider-override path: when the caller names a specific provider, run
+  // the request through `getProvider(name).fetchQuotes(...)` and surface the
+  // provider-shaped rows directly. This skips the DB-first path so the
+  // parity scan (`scripts/scan-provider-parity.ts`) gets a fair IRESS-vs-Yahoo
+  // comparison instead of IRESS-via-DB vs Yahoo-via-DB.
+  const requestedProvider = url.searchParams.get("provider")?.toLowerCase() as ProviderName | null;
+  if (requestedProvider) {
+    if (!VALID_PROVIDERS.has(requestedProvider)) {
+      return Response.json(
+        {
+          ok: false,
+          error: `unknown provider "${requestedProvider}"; expected one of: ${[...VALID_PROVIDERS].join(", ")}`,
+        },
+        { status: 400 },
+      );
+    }
+    const provider = getProvider(requestedProvider);
+    const rows = await provider.fetchQuotes(symbols);
+    return Response.json({
+      ok: true,
+      mode: provider.name,
+      useSupabase: false,
+      provider: provider.name,
+      providerOverride: requestedProvider,
+      quotes: rows.map((r) => ({
+        symbol: r.symbol,
+        last_price: r.last,
+        prev_close: r.prevClose,
+        bid: r.bid,
+        ask: r.ask,
+        change: null,
+        change_pct: null,
+        ts: r.timestamp,
+        source: r.source,
+        ...(r.error ? { error: r.error } : {}),
+      })),
+      liveCount: rows.filter((r) => r.source === "iress").length,
+      fallbackCount: 0,
+      mockCount: rows.filter((r) => r.source === "mock").length,
+      supabaseCount: rows.filter((r) => r.source === "supabase").length,
+      yahooCount: rows.filter((r) => r.source === "yahoo").length,
+      unavailableCount: rows.filter((r) => r.last == null).length,
+    });
   }
 
   const useSupabase = isUseSupabaseQuotesEnabled();

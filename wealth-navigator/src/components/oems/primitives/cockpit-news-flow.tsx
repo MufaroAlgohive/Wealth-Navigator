@@ -1,19 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import { ExternalLink } from "lucide-react";
+import { useMemo, useState } from "react";
 
-import { GlassSection } from "@/components/oems/primitives/glass";
 import type { DbName } from "@/components/oems/primitives/data-source-badge";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
+import { GlassSection } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/cn";
 import { formatTime } from "@/lib/format";
 
@@ -153,7 +147,11 @@ export function CockpitNewsFlow({
                           {n.wire === "SENS" ? "SENS" : "Alliance"}
                         </Pill>
                         <span className="text-muted-foreground/70">{n.source}</span>
-                        {n.regulatory && <Pill tone="destructive" size="xs">REG</Pill>}
+                        {n.regulatory && (
+                          <Pill tone="destructive" size="xs">
+                            REG
+                          </Pill>
+                        )}
                         {(n.tickers ?? []).slice(0, 3).map((t) => (
                           <span key={t} className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
                             {t}
@@ -178,31 +176,36 @@ export function CockpitNewsFlow({
                   <Pill tone={active.wire === "SENS" ? "primary" : "neutral"} size="xs">
                     {active.wire === "SENS" ? "SENS" : "Alliance"}
                   </Pill>
-                  {active.regulatory && <Pill tone="destructive" size="xs">REG</Pill>}
+                  {active.regulatory && (
+                    <Pill tone="destructive" size="xs">
+                      REG
+                    </Pill>
+                  )}
                   {active.category && (
-                    <Pill tone="neutral" size="xs">{active.category}</Pill>
+                    <Pill tone="neutral" size="xs">
+                      {active.category}
+                    </Pill>
                   )}
                   <span className="ml-auto font-mono text-[10px] text-muted-foreground">
                     {formatTime(active.ts)}
                   </span>
                 </div>
                 <DialogTitle className="mt-2 pr-6 leading-snug">{active.headline}</DialogTitle>
-                <DialogDescription className="font-mono text-[11px]">
-                  {active.source}
-                </DialogDescription>
+                <DialogDescription className="font-mono text-[11px]">{active.source}</DialogDescription>
               </DialogHeader>
 
               <div className="space-y-3">
                 <p className="text-sm leading-relaxed text-foreground/90">
-                  {active.body && active.body.trim().length > 0
-                    ? active.body
-                    : active.headline}
+                  {active.body && active.body.trim().length > 0 ? active.body : active.headline}
                 </p>
 
                 {(active.tickers ?? []).length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     {(active.tickers ?? []).map((t) => (
-                      <span key={t} className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] text-primary">
+                      <span
+                        key={t}
+                        className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] text-primary"
+                      >
                         {t}
                       </span>
                     ))}
@@ -213,8 +216,7 @@ export function CockpitNewsFlow({
                     the wire feed only carries a headline for most items. */}
                 {!active.body && (
                   <p className="text-[11px] text-muted-foreground">
-                    Full article text wires in the data phase — the wire currently
-                    delivers headlines only.
+                    Full article text wires in the data phase — the wire currently delivers headlines only.
                   </p>
                 )}
 

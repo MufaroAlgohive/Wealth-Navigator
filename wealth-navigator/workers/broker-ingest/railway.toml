@@ -1,0 +1,9 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "workers/broker-ingest/Dockerfile"
+
+[deploy]
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+healthcheckPath = "/health"
+healthcheckTimeout = 300
