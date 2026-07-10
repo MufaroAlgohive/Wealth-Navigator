@@ -23,7 +23,7 @@ import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } f
  * Returns: { ok, orderAuditId, orderId, bookId, mode, iressOrderNumber?, status?, error? }
  *
  * Gated: admin + orderbook.send_to_market, and IRESS_UAT_MODE=true (never
- * touches the production account — the worker enforces the UAT account).
+ * touches the production account; the worker enforces the UAT account).
  */
 
 export const dynamic = "force-dynamic";
@@ -141,7 +141,7 @@ export async function POST(req: Request) {
       orderId,
       bookId: BOOK_ID,
       mode: "audit-only",
-      notice: "IRESS_WORKER_URL not configured on Vercel — order recorded, not sent to IRESS.",
+      notice: "IRESS_WORKER_URL not configured on Vercel; order recorded, not sent to IRESS.",
     });
   }
 

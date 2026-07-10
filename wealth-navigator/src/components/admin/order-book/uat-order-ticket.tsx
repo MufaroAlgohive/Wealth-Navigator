@@ -92,8 +92,8 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
       if (d.ok) {
         toast.success(
           d.mode === "uat"
-            ? `Order sent to IRESS UAT — #${d.iressOrderNumber ?? "?"} (${d.status ?? "working"})`
-            : "Order recorded (audit-only — worker not configured)",
+            ? `Order sent to IRESS UAT: #${d.iressOrderNumber ?? "?"} (${d.status ?? "working"})`
+            : "Order recorded (audit-only, worker not configured)",
         );
         onPlaced?.();
       } else {
@@ -185,7 +185,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
         {/* Price */}
         <div>
           <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Price (R) <span className="normal-case text-muted-foreground/60">— blank = market</span>
+            Price (R) <span className="normal-case text-muted-foreground/60">(blank = market)</span>
           </label>
           <Input type="number" min={0} step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="market" className="h-8" />
         </div>
@@ -195,7 +195,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
         <div className="text-xs text-muted-foreground">
           Order value:{" "}
           <span className="font-mono font-semibold text-foreground">{value != null ? R(value) : "—"}</span>
-          {price.trim() === "" && <span className="ml-2 text-[10px]">(market order — value settles at fill)</span>}
+          {price.trim() === "" && <span className="ml-2 text-[10px]">(market order, value settles at fill)</span>}
         </div>
         <Button size="sm" onClick={submit} disabled={!canSubmit}>
           {busy ? "Placing…" : `Place ${side.toUpperCase()} order`}
@@ -213,7 +213,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
             <span>
               {result.mode === "uat" ? (
                 <>
-                  Sent to IRESS UAT — order <span className="font-mono font-semibold">#{result.iressOrderNumber ?? "?"}</span>,
+                  Sent to IRESS UAT: order <span className="font-mono font-semibold">#{result.iressOrderNumber ?? "?"}</span>,
                   status <span className="font-semibold">{result.status ?? "working"}</span>. Track it in the table below.
                 </>
               ) : (

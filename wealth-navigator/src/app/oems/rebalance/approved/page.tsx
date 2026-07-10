@@ -39,7 +39,7 @@ interface RequestResponse {
   notice?: string;
 }
 
-export default function Page() {
+function ApprovedRebalanceView() {
   const sp = useSearchParams();
   const requestId = sp.get("request_id");
 
@@ -218,5 +218,15 @@ export default function Page() {
         </>
       )}
     </ResearchLabCanvas>
+  );
+}
+
+export default function Page() {
+  // useSearchParams() must sit under a Suspense boundary or the static export
+  // bails out ("missing-suspense-with-csr-bailout"), which fails the build.
+  return (
+    <React.Suspense fallback={<ResearchLabCanvas><PanelSkeleton rows={4} /></ResearchLabCanvas>}>
+      <ApprovedRebalanceView />
+    </React.Suspense>
   );
 }

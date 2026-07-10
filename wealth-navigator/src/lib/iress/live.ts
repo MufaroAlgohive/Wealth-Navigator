@@ -1263,17 +1263,23 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           waitForResponse: true,
         }),
         parameters: {
+          // IRESS OrderCreate3 field contract (confirmed by the provider):
+          //   SideCode="Buy"/"Sell", OrderVolume, OrderPrice, PricingInstructions
+          //   ="LIMIT"/"MARKET", LifeTime="DAY", Destination, Exchange, AccountCode,
+          //   SecurityCode. The typed NewOrder keeps friendly names (BuySell 1|2,
+          //   OrderType MKT|LMT, Volume, Price, TimeInForce); we translate here.
           Order: {
             AccountCode: order.AccountCode,
             SecurityCode: order.SecurityCode,
             Exchange: order.Exchange,
-            BuySell: order.BuySell,
-            OrderType: order.OrderType,
-            Volume: order.Volume,
-            Price: order.Price,
+            SideCode: order.BuySell === 2 ? "Sell" : "Buy",
+            PricingInstructions: order.OrderType === "MKT" ? "MARKET" : "LIMIT",
+            OrderVolume: order.Volume,
+            // Market orders carry no price; a limit sends OrderPrice in major units.
+            OrderPrice: order.OrderType === "MKT" ? undefined : order.Price,
             TriggerPrice: order.TriggerPrice,
             Destination: order.Destination,
-            TimeInForce: order.TimeInForce,
+            LifeTime: order.TimeInForce ?? "DAY",
             ExpiryDate: order.ExpiryDate,
           },
           OrderTag: req.OrderTag,
