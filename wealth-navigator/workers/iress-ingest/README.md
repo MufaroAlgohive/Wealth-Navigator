@@ -68,6 +68,69 @@ A dedicated heartbeat loop writes to `integration_worker_health` every `IRESS_WO
 
 A read-only `OrderPadGetByAccount` poll runs every `IRESS_WORKER_ORDER_POLL_SEC` seconds (default 60) for each `IRESS_ACCOUNT_CODE` entry (comma-separated). Observed orders are upserted into `oems_order_audit` keyed by `order_id`. The stub is **dry-run safe** — when `IRESS_WORKER_DRY_RUN=1` or `SUPABASE_ALLOW_WRITES=0` it logs the would-be upsert and never touches Supabase. The worker never POSTs orders in v1; the blotter stays on the Vercel BFF.
 
+## UAT mode (`src/order-poller.ts`, `/uat/*` HTTP routes)
+
+UAT mode (Mint OEM Finalisation Phase UAT) lets the desk exercise the full order pipeline — `OrderCreate3` → `OrderPadGetByAccount` → fill writes → SSE — against the MINT_CT IOS seat **without** touching real client books. Andre Pietersen (IRESS) confirmed `OrderCreate3` works on the seat on 2026-07-09; the UAT loop is the path UAT users use to give feedback on the entire execution loop.
+
+### Enable
+
+Set on Railway:
+
+```
+IRESS_UAT_MODE=1
+IRESS_UAT_ACCOUNT_CODE=<separate broker account — must differ from IRESS_ACCOUNT_CODE>
+IRESS_UAT_ORDER_POLL_SEC=30     # default 30s
+```
+
+The startup log will print:
+
+```
+{"event":"starting","uatMode":true,"uatAccountCode":"...","uatOrderPollSec":30}
+[iress-ingest] UAT order poll ENABLED → account=... interval=30s
+```
+
+Refuse-conditions surfaced at boot (and on every request):
+
+- `IRESS_UAT_MODE=1` but `IRESS_UAT_ACCOUNT_CODE` empty → `/uat/send-to-market` returns 503 `uat_account_not_configured` and the order poll loop logs a warning.
+- `account_code` passed in the body matches `IRESS_ACCOUNT_CODE` (production) → 400 `wrong_account` so a misconfiguration cannot route UAT orders to a real client book.
+
+### Endpoints (added to the existing `node:http` server)
+
+| Method | Path                       | Purpose                                                                  | Auth                          |
+| ------ | -------------------------- | ------------------------------------------------------------------------ | ----------------------------- |
+| POST   | `/uat/send-to-market`      | Reads an `oems_order_audit` row, calls IRESS `OrderCreate3` on the UAT account, stamps the broker `OrderNumber` back onto the row. | `WORKER_HTTP_TOKEN` if set    |
+| GET    | `/uat/execution-stream`    | SSE stream — pushes `{order_audit_id, state, filled, avg_fill_price_cents, …}` deltas to subscribed UIs. | `WORKER_HTTP_TOKEN` if set    |
+| GET    | `/uat/status`              | UAT mode status snapshot (used by the BFF `/api/admin/orderbook/uat-status`). | `WORKER_HTTP_TOKEN` if set    |
+
+### BFF fanout (Vercel)
+
+The Vercel BFF reverse-proxies these via:
+
+- `POST /api/admin/orderbook/send-to-market` — when `body.uat_test === true` AND `IRESS_UAT_MODE === "true"` on Vercel, fans out to the worker's `/uat/send-to-market` AFTER writing the audit rows. Existing audit-only path is preserved bit-for-bit.
+- `GET /api/admin/orderbook/uat-status` — proxies worker `/uat/status` for the UI banner.
+- `GET /api/admin/orderbook/stream` — SSE forwarder to `/uat/execution-stream` for the live fill indicators on `ExecutionView`.
+
+### Safety
+
+- UAT orders are stamped `payload.uat_test = true` and `result_payload.uat_test = true` in `oems_order_audit`, with `source = OB_SEND_TO_MARKET_UAT`. Filter them out of production reports with `SELECT * FROM oems_order_audit WHERE payload->>'uat_test' = 'true'`.
+- The `UatExecutionHub` (in-process pub/sub) only fires on a state OR filled change, so the SSE stream doesn't spam subscribers with no-op updates.
+- The UAT order poll never writes to `oems_position_c` (the production `pollAccountsForOrders` derives positions from the full book; the UAT loop is fill-only).
+- `worker.tearDown` honours the same `LICENSE_RELEASE_DELAY_MS` for the UAT session — there's no separate seat.
+- `IRESS_UAT_MODE=0` (default) keeps the worker in production mode: the new endpoints return 403 `uat_mode_disabled`, the UAT poll loop is a no-op, and the existing `orders.ts` order poll continues to mirror the production `IRESS_ACCOUNT_CODE`.
+
+### End-to-end UAT flow
+
+1. Operator clicks **Send to Market** in `/oems/order-book` with `UAT test` checked → BFF writes `oems_order_audit` rows tagged `uat_test=true`.
+2. BFF fans out to worker `POST /uat/send-to-market` per row.
+3. Worker calls IRESS `OrderCreate3` on the UAT IOS service session, stamps `payload.iress_order_number` + `payload.uatOrderTag` (UUID idempotency) back on the row.
+4. Worker's UAT poll loop (`order-poller.ts`, every `IRESS_UAT_ORDER_POLL_SEC`) calls `OrderPadGetByAccount(IRESS_UAT_ACCOUNT_CODE, OrderFilter=WORKING)`, matches observed orders to audit rows by `order_id`, and updates `payload.filled` + `result_payload.avgFillPrice` + `status` (working → partial → filled).
+5. Each poll cycle that finds a state or fill change publishes to the in-process `UatExecutionHub`; the `/uat/execution-stream` SSE endpoint forwards to the BFF `/api/admin/orderbook/stream`; the UI updates `ExecutionView` in place with a pulsing "LIVE" badge.
+6. BFF `GET /api/admin/orderbook/execution?book_id=...` (the existing 30s poll) keeps the table hydrated even when SSE is offline.
+
+### Disabling for production
+
+Set `IRESS_UAT_MODE=0` on Railway and redeploy. The endpoints go 403, the loop is a no-op, the UI banner + test runner are self-gated off (`UatBanner` returns `null` when `/api/admin/orderbook/uat-status` reports `uat_mode: false`; same for `UatTestRunner`).
+
 ## Tables touched
 
 | Table | Operation | Source file |

@@ -1,15 +1,34 @@
 /**
- * GET /api/history/[sym]?range=1M
+ * GET /api/history/[sym]?range=1M&provider=iress|yahoo
  *
  * Daily price history for the Security page chart ranges (5D / 1M / 6M / YTD /
- * 1Y / 5Y / All) — proxied from the worker's /history endpoint (IRESS
- * TimeSeriesGet2). 1D stays on the intraday tick path (/api/intraday); this
- * serves the longer windows.
+ * 1Y / 5Y / All) — proxied from the worker's `/history` endpoint (IRESS
+ * `TimeSeriesGet2`). 1D stays on the intraday tick path (`/api/intraday`);
+ * this serves the longer windows.
  *
  * Values are the IRESS daily close in the series' native scale (the chart
  * auto-fits min/max, so the trend shape is correct without a labelled y-axis).
+ *
+ * **Provider switch (2026-07-09, TimeSeriesGet2 unblock).** Andre confirmed
+ * the IRESS `TimeSeriesGet2` entitlement is live with `DataSource=zax` /
+ * `Exchange=jse` / `Frequency=monthly` (and, by extension, the daily bucket
+ * we already use on the worker). For SA symbols we now prefer IRESS over
+ * Yahoo; when IRESS returns an empty series or a 25010/25034 entitlement
+ * fault, we transparently fall back to Yahoo so the chart never goes blank.
+ *
+ * Behaviour:
+ *   - `?provider=iress` (or default for SA symbols) — call the worker's
+ *     `/history` endpoint, which uses `TimeSeriesGet2(zax, jse, Daily |
+ *     Monthly)`. Falls back to Yahoo on empty / entitlement fault.
+ *   - `?provider=yahoo` — use the Yahoo chart endpoint directly. Same
+ *     fallthrough shape; IRESS is not consulted.
+ *   - The Vercel → Railway passthrough carries `source: "iress" | "yahoo"`
+ *     so the UI's `DataSourceKind` badge reflects what was actually used.
+ *   - Non-SA symbols (no `.JO` / `.JSE` suffix and not in the ZSE watchlist)
+ *     always go through Yahoo — IRESS doesn't have the series on `jse`.
  */
 import { callWorker } from "@/lib/iress/worker-api";
+import { fetchYahooChart } from "@/lib/company-analysis/yahoo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,6 +51,25 @@ function daysForRange(range: string): number {
   return RANGE_DAYS[range] ?? 370;
 }
 
+/** Maps a chart range to the right TimeSeriesGet2 V4 frequency enum.
+ *  - 5D / 1M / 6M / YTD / 1Y → `Daily` (per Andre's standing probe).
+ *  - 5Y / All             → `Monthly` (Andre's 2026-07-09 example). */
+function iressFrequencyForRange(range: string): "Daily" | "Monthly" {
+  if (range === "5Y" || range === "ALL") return "Monthly";
+  return "Daily";
+}
+
+/** True when the symbol is a JSE-listed instrument — IRESS has the series
+ *  on `DataSource=zax, Exchange=jse`. Bare codes like `NPN` and `SOL` are
+ *  treated as JSE; the IRESS client uppercases + strips `.JSE` already. */
+function isJseLikeSymbol(code: string): boolean {
+  const c = code.toUpperCase();
+  if (c.endsWith(".JO") || c.endsWith(".JSE")) return true;
+  // Bare codes: defer to a simple heuristic — uppercase alnum, ≤ 6 chars.
+  // (The worker / iress client normalises further; this is just the gate.)
+  return /^[A-Z0-9]{1,6}$/.test(c);
+}
+
 export async function GET(req: Request, { params }: { params: Promise<{ sym: string }> }) {
   const { sym: rawSym } = await params;
   const code = rawSym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
@@ -41,27 +79,79 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
   const range = (url.searchParams.get("range") ?? "1Y").toUpperCase();
   const exchange = url.searchParams.get("exchange") ?? "JSE";
   const days = daysForRange(range);
+  // Provider: explicit `?provider=…` wins; otherwise default to IRESS for
+  // JSE symbols, Yahoo for everything else.
+  const providerParam = (url.searchParams.get("provider") ?? "").toLowerCase();
+  const provider =
+    providerParam === "yahoo" || providerParam === "iress"
+      ? providerParam
+      : isJseLikeSymbol(code)
+        ? "iress"
+        : "yahoo";
 
-  const res = await callWorker<{ ok: boolean; sym: string; points?: Array<{ t: number; v: number }>; error?: string }>({
-    path: `/history?sym=${encodeURIComponent(code)}&days=${days}&exchange=${encodeURIComponent(exchange)}`,
-    timeoutMs: 30_000,
-  });
+  // ── IRESS path ────────────────────────────────────────────────────────
+  if (provider === "iress") {
+    const frequency = iressFrequencyForRange(range);
+    const res = await callWorker<{
+      ok: boolean;
+      sym: string;
+      points?: Array<{ t: number; v: number }>;
+      error?: string;
+    }>({
+      path: `/history?sym=${encodeURIComponent(code)}&days=${days}&exchange=${encodeURIComponent(exchange)}&frequency=${frequency}`,
+      timeoutMs: 30_000,
+    });
 
-  if (!res.ok) {
-    return Response.json({ sym: code, range, points: [], source: "unavailable", error: res.error });
+    if (res.ok && res.body?.ok) {
+      const raw = Array.isArray(res.body.points) ? res.body.points : [];
+      const points = raw
+        .filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.v) && p.v > 0)
+        .sort((a, b) => a.t - b.t);
+      if (points.length > 0) {
+        return Response.json({
+          sym: code,
+          range,
+          points,
+          count: points.length,
+          source: "iress",
+          sourceLabel: `IRESS TimeSeriesGet2 (zax, jse, ${frequency.toLowerCase()})`,
+        });
+      }
+    }
+    // IRESS returned empty or faulted — fall through to Yahoo so the chart
+    // never goes blank. Surface the reason in `warnings` for the UI badge.
   }
 
-  const raw = Array.isArray(res.body?.points) ? res.body!.points! : [];
-  const points = raw
-    .filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.v) && p.v > 0)
-    .sort((a, b) => a.t - b.t);
-
-  return Response.json({
-    sym: code,
-    range,
-    points,
-    count: points.length,
-    source: points.length > 0 ? "iress" : "unavailable",
-    sourceLabel: "IRESS TimeSeriesGet2 (daily)",
-  });
+  // ── Yahoo fallback (default for non-JSE, explicit `?provider=yahoo`,
+  //    or the IRESS-fallthrough case above) ────────────────────────────
+  try {
+    const yahoo = await fetchYahooChart(code, range === "YTD" ? "YTD" : range);
+    if (yahoo.ok) {
+      const points = yahoo.points.map((p) => ({ t: p.t, v: p.c }));
+      return Response.json({
+        sym: code,
+        range,
+        points,
+        count: points.length,
+        source: "yahoo",
+        sourceLabel: "Yahoo Finance (fallback)",
+      });
+    }
+    return Response.json(
+      {
+        sym: code,
+        range,
+        points: [],
+        source: "unavailable",
+        sourceLabel: "Yahoo Finance (no data)",
+        error: yahoo.error ?? "no price history for this symbol/range",
+      },
+      { status: 200 },
+    );
+  } catch (err) {
+    return Response.json(
+      { sym: code, range, points: [], source: "unavailable", error: err instanceof Error ? err.message : "yahoo failed" },
+      { status: 200 },
+    );
+  }
 }

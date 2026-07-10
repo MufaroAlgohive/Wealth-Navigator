@@ -968,17 +968,24 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       requireSessionKey(req.Header, "TimeSeriesGet2");
       require(req.Code, "Code", "TimeSeriesGet2");
       // Wire shape CONFIRMED against the live CT server from Andre's working
-      // SOAP (IRESS, 2026-06-16). The published V4 WSDL sample is wrong for this
-      // build — the date fields in particular. The accepted shape is:
-      //   <SecurityCode>…</SecurityCode><Exchange>…</Exchange>
-      //   <DataSource>JSED</DataSource>            ← required; our account's feed
-      //   <Frequency>Daily</Frequency>             ← string enum, NOT <Interval>
+      // SOAP (IRESS, 2026-06-16; entitlement unblocked 2026-07-09). The
+      // published V4 WSDL sample is wrong for this build — the date fields
+      // in particular. The accepted shape is:
+      //   <SecurityCode>…</SecurityCode><Exchange>jse</Exchange>
+      //   <DataSource>zax</DataSource>             ← Andre's unblock, 2026-07-09
+      //   <Frequency>Monthly</Frequency>           ← string enum, NOT <Interval> Long
       //   <TimeSeriesFromDate>YYYY-MM-DD</…>       ← NOT <DateFrom> (that element
       //   <TimeSeriesToDate>YYYY-MM-DD</…>            is never read → "Invalid DateFrom")
       // Response rows carry OpenPrice/HighPrice/LowPrice/ClosePrice/TotalVolume/
       //   TotalValue/TradeCount/AdjustmentFactor/TimeSeriesDate/MarketVWAP (Rands).
-      // `DataSource` is env-overridable for prod (delayed vs real-time feed);
-      // IRESS's admin source `zax` returns "Invalid access" for DFM@Mint, `JSED` works.
+      // `DataSource` is exchange-specific:
+      //   - SA equities (JSE/JSEI) → `zax` (Andre, 2026-07-09)
+      //   - SA bonds/curves (YFX)   → `yfxd` (still required; sending `zax`
+      //                              for a YFX bond returns "Invalid access")
+      // Per-call `req.DataSource` wins; per-call `req.Exchange` wins; env
+      // `IRESS_TS_DATASOURCE` is the per-process fallback for the SA-equity
+      // default. When the caller omits both, the new defaults (`zax` / `jse`)
+      // apply so the OEMS history route works without per-call boilerplate.
       const frequency =
         typeof req.Interval === "string" && req.Interval.trim() !== ""
           ? req.Interval.trim()
@@ -992,14 +999,15 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           "TimeSeriesGet2: missing required field — supply `Interval` (string enum, e.g. 'Daily')",
         );
       }
-      // DataSource is exchange-specific (CONFIRMED live 2026-06-16): JSE
-      // equities → JSED, YFX bonds/curve/GOVI → YFXD. Per-call `req.DataSource`
-      // wins; env `IRESS_TS_DATASOURCE` is the fallback for the equity default.
+      const isYfx = (req.Exchange ?? "").trim().toUpperCase() === "YFX";
       const dataSource =
-        (req.DataSource ?? process.env.IRESS_TS_DATASOURCE ?? "JSED").trim() || "JSED";
+        (req.DataSource ??
+          (isYfx ? "yfxd" : (process.env.IRESS_TS_DATASOURCE ?? "zax"))).trim() ||
+        (isYfx ? "yfxd" : "zax");
+      const exchange = (req.Exchange ?? "jse").trim() || "jse";
       const parameters: Record<string, unknown> = {
         SecurityCode: req.Code,
-        Exchange: req.Exchange,
+        Exchange: exchange,
         DataSource: dataSource,
         Frequency: frequency,
       };
@@ -1012,21 +1020,47 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         if (req.From) parameters["TimeSeriesFromDate"] = req.From;
         if (req.To) parameters["TimeSeriesToDate"] = req.To;
       }
-      const result = await transport.call({
-        method: "TimeSeriesGet2",
-        header: makeHeader({
-          sessionKey: req.Header.SessionKey,
-          requestID: req.Header.RequestID,
-          updates: req.Header.Updates,
-          timeout: req.Header.Timeout ?? 25,
-          pageSize: req.Header.PageSize ?? 1000,
-          pagingBookmark: req.Header.PagingBookmark,
-          pagingDirection: req.Header.PagingDirection,
-          waitForResponse: req.Header.WaitForResponse ?? true,
-        }),
-        parameters,
-      });
-      return mapResponse<{ t: number; v: number }>({
+      let result;
+      try {
+        result = await transport.call({
+          method: "TimeSeriesGet2",
+          header: makeHeader({
+            sessionKey: req.Header.SessionKey,
+            requestID: req.Header.RequestID,
+            updates: req.Header.Updates,
+            timeout: req.Header.Timeout ?? 25,
+            pageSize: req.Header.PageSize ?? 1000,
+            pagingBookmark: req.Header.PagingBookmark,
+            pagingDirection: req.Header.PagingDirection,
+            waitForResponse: req.Header.WaitForResponse ?? true,
+          }),
+          parameters,
+        });
+      } catch (err) {
+        // Entitlement failures bubble as IressError(25010 / 25034) from the
+        // transport. Surface a structured log event so the integration page
+        // and the worker's event log both see "TimeSeriesGet2 was refused
+        // by the entitlement check" rather than a generic 5xx. The caller
+        // still gets the IressError — this is observability, not a swallow.
+        if (err instanceof IressError && (err.code === 25010 || err.code === 25034)) {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              event: "time_series_entitlement_failure",
+              source: "iress-live",
+              method: "TimeSeriesGet2",
+              code: req.Code,
+              exchange,
+              dataSource,
+              frequency,
+              iressErrorCode: err.code,
+              iressErrorMessage: err.message,
+            }),
+          );
+        }
+        throw err;
+      }
+      const mapped = mapResponse<{ t: number; v: number }>({
         header: result.header,
         dataRows: result.dataRows.map((r) => ({
           t:
@@ -1040,6 +1074,39 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           v: Number(r["ClosePrice"] ?? r["Close"] ?? r["v"] ?? r["Value"] ?? 0),
         })),
       });
+      // Same fault-as-OK-with-ErrorNumber trap as PricingQuoteGet /
+      // NewsVendorGet: when the entitlement is missing the server
+      // returns 200 with `ErrorNumber=25010` and an empty `DataRows`.
+      // Without this check, the caller would silently treat that as
+      // "no data" and the BFF would render an empty chart with no
+      // actionable error. Surface it as IressError so the history
+      // route's fallback path (Yahoo) takes over and the integration
+      // page surfaces the entitlement event.
+      if (mapped.Header.ErrorNumber !== 0) {
+        if (mapped.Header.ErrorNumber === 25010 || mapped.Header.ErrorNumber === 25034) {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              event: "time_series_entitlement_failure",
+              source: "iress-live",
+              method: "TimeSeriesGet2",
+              code: req.Code,
+              exchange,
+              dataSource,
+              frequency,
+              iressErrorCode: mapped.Header.ErrorNumber,
+              iressErrorMessage: mapped.Header.ErrorDescription ?? null,
+            }),
+          );
+        }
+        throw new IressError(
+          mapped.Header.ErrorNumber,
+          "TimeSeriesGet2",
+          mapped.Header.ErrorDescription ??
+            `TimeSeriesGet2 error ${mapped.Header.ErrorNumber}`,
+        );
+      }
+      return mapped;
     },
 
     async timeSeriesGet2Updates(req: { RequestID: string }): Promise<IressResponse<{ t: number; v: number }>> {

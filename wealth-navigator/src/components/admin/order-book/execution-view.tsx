@@ -10,16 +10,18 @@
  *
  * Columns: Order ID | Timestamp | Strategy | Side | Symbol | Qty | % Filled
  *          | Limit | Last | VWAP | Slip / Day-1 P&L | Venue | TIF | Sent by
- *          | State.
+ *          | State | LIVE? (UAT only).
  *
  * Slip / Day-1 P&L = limit − actual fill (in cents). GREEN when fill < client
  * limit (positive slippage for a buy). Updates automatically as quotes tick.
  *
- * Stops polling while the tab is hidden (A8.3 carry-over — `usePolling`'s
- * `onlyWhenVisible` defaults to true).
+ * Phase UAT: when `uatMode=true` (Vercel + worker both), subscribes to
+ * `/api/admin/orderbook/stream` for live fill deltas. Updates the matching
+ * audit row in place and shows a pulsing "LIVE" badge for orders tracked
+ * via SSE. Stops polling while the tab is hidden.
  */
 
-import { Loader2 } from "lucide-react";
+import { Loader2, Radio } from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -61,6 +63,26 @@ interface QuotesPayload {
   quotes?: Array<{ symbol: string; last_price: number | null; source?: string }>;
 }
 
+interface UatStatus {
+  ok: boolean;
+  uat_mode: boolean;
+  worker_configured: boolean;
+  worker_uat_mode: boolean | null;
+}
+
+interface UatDelta {
+  order_audit_id: string | null;
+  iress_order_number: string;
+  state: string;
+  filled: number;
+  avg_fill_price_cents: number | null;
+  symbol: string;
+  side: string;
+  qty: number;
+  book_id: string | null;
+  timestamp: string;
+}
+
 const RANDS = new Intl.NumberFormat("en-ZA", {
   style: "currency",
   currency: "ZAR",
@@ -97,6 +119,85 @@ function slipColor(slipCents: number | null): string {
   return "text-muted-foreground";
 }
 
+function stateUppercaseToDb(state: string): ExecutionRow["state"] {
+  const u = state.toUpperCase();
+  if (u === "WORKING" || u === "PARTIAL" || u === "FILLED" || u === "CANCELLED" || u === "REJECTED") {
+    return u;
+  }
+  return "WORKING";
+}
+
+function timeSince(iso: string): string {
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  const delta = Date.now() - t;
+  if (delta < 0) return "just now";
+  if (delta < 60_000) return `${Math.floor(delta / 1000)}s ago`;
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+  return `${Math.floor(delta / 3_600_000)}h ago`;
+}
+
+/**
+ * Tiny SSE client that re-opens the stream on `retry:` or on error.
+ * Returns the last delta timestamp so the UI can show "live updates paused".
+ */
+function useUatStream(
+  uatEnabled: boolean,
+  onDelta: (d: UatDelta) => void,
+): {
+  connected: boolean;
+  lastEventAt: string | null;
+} {
+  const [connected, setConnected] = React.useState(false);
+  const [lastEventAt, setLastEventAt] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!uatEnabled) return undefined;
+    if (typeof EventSource === "undefined") return undefined;
+    let es: EventSource | null = null;
+    let closed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    const open = (): void => {
+      if (closed) return;
+      es = new EventSource("/api/admin/orderbook/stream", { withCredentials: false });
+      es.addEventListener("status", () => {
+        setConnected(true);
+      });
+      es.addEventListener("delta", (evt) => {
+        setConnected(true);
+        setLastEventAt(new Date().toISOString());
+        try {
+          const data = JSON.parse((evt as MessageEvent).data) as UatDelta;
+          onDelta(data);
+        } catch {
+          /* ignore malformed */
+        }
+      });
+      es.onerror = () => {
+        setConnected(false);
+        if (es) {
+          es.close();
+          es = null;
+        }
+        if (!closed) {
+          // SSE auto-reconnects on transient errors, but if the connection
+          // is fully torn down (worker down, route 503) we re-open on a
+          // backoff so a misbehaving worker can't loop the BFF.
+          reconnectTimer = setTimeout(open, 5_000);
+        }
+      };
+    };
+    open();
+    return () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (es) es.close();
+    };
+  }, [uatEnabled, onDelta]);
+
+  return { connected, lastEventAt };
+}
+
 export function ExecutionView({ bookId }: { bookId: string }) {
   // Pull execution rows. Refresh whenever the book id changes.
   const executions = usePolling<ExecutionPayload>(
@@ -104,7 +205,89 @@ export function ExecutionView({ bookId }: { bookId: string }) {
     { interval: 30_000, deps: [bookId] },
   );
 
-  const rows = executions.data?.rows ?? [];
+  // Local override layer so SSE deltas update instantly without waiting for
+  // the 30s poll. Keyed by audit row id.
+  const [liveOverrides, setLiveOverrides] = React.useState<Record<string, ExecutionRow>>({});
+  const [lastEventAt, setLastEventAt] = React.useState<string | null>(null);
+  const [uatEnabled, setUatEnabled] = React.useState(false);
+
+  // Probe UAT mode once on mount. When UAT is off we skip the SSE
+  // subscription entirely (avoids 503 noise in production).
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch("/api/admin/orderbook/uat-status", { cache: "no-store" })
+      .then((r) => r.json() as Promise<UatStatus>)
+      .then((body) => {
+        if (!cancelled) {
+          setUatEnabled(body.ok && body.uat_mode && body.worker_configured && body.worker_uat_mode === true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setUatEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const applyDelta = React.useCallback((d: UatDelta) => {
+    setLastEventAt(new Date().toISOString());
+    if (!d.order_audit_id) return;
+    setLiveOverrides((prev) => {
+      const existing = prev[d.order_audit_id as string];
+      const qty = d.qty > 0 ? d.qty : (existing?.qty ?? 0);
+      const filled = d.filled;
+      const filledPct = qty > 0 ? Math.min(100, (filled / qty) * 100) : 0;
+      const avgFill =
+        d.avg_fill_price_cents != null ? d.avg_fill_price_cents / 100 : (existing?.avg_fill_price ?? null);
+      const auditId = d.order_audit_id as string;
+      const newRow: ExecutionRow = {
+        id: auditId,
+        order_id: d.iress_order_number || existing?.order_id || auditId,
+        ts: d.timestamp,
+        strategy: existing?.strategy ?? d.book_id ?? null,
+        side: (d.side ?? existing?.side ?? "BUY").toUpperCase(),
+        symbol: d.symbol || existing?.symbol || "—",
+        isin: existing?.isin ?? null,
+        qty,
+        filled,
+        filled_pct: Number(filledPct.toFixed(1)),
+        limit_price: existing?.limit_price ?? null,
+        avg_fill_price: avgFill,
+        vwap: avgFill ?? existing?.vwap ?? null,
+        slippage_cents:
+          existing?.limit_price != null && avgFill != null
+            ? Math.round((existing.limit_price - avgFill) * 100)
+            : null,
+        day1_pnl_cents:
+          existing?.limit_price != null && avgFill != null
+            ? Math.round((existing.limit_price - avgFill) * 100) * filled
+            : null,
+        venue: existing?.venue ?? "JSE",
+        tif: existing?.tif ?? "DAY",
+        sent_by: existing?.sent_by ?? null,
+        state: stateUppercaseToDb(d.state),
+        broker: existing?.broker ?? "LONGMARK CARE",
+      };
+      return { ...prev, [d.order_audit_id as string]: newRow };
+    });
+  }, []);
+
+  const stream = useUatStream(uatEnabled, applyDelta);
+
+  // Merge polled rows with live overrides. Live overrides win on the
+  // matching id so the UI reflects SSE updates without waiting for the
+  // next poll cycle.
+  const polledRows = executions.data?.rows ?? [];
+  const rows = React.useMemo(() => {
+    if (Object.keys(liveOverrides).length === 0) return polledRows;
+    const merged = polledRows.map((r) => liveOverrides[r.id] ?? r);
+    // Add any live-only rows the poll hasn't surfaced yet.
+    const polledIds = new Set(polledRows.map((r) => r.id));
+    const extra = Object.values(liveOverrides).filter((r) => !polledIds.has(r.id));
+    return [...extra, ...merged];
+  }, [polledRows, liveOverrides]);
+
   const symbols = React.useMemo(() => rows.map((r) => r.symbol).filter(Boolean), [rows]);
 
   // Live tick: poll `/api/quotes` for the symbols on screen every 30s. We
@@ -127,6 +310,10 @@ export function ExecutionView({ bookId }: { bookId: string }) {
     return m;
   }, [quotes.data]);
 
+  // Track which audit rows have ever received an SSE delta so we can show
+  // a "LIVE" badge next to them.
+  const liveIds = React.useMemo(() => new Set(Object.keys(liveOverrides)), [liveOverrides]);
+
   const showLoading = executions.loading && rows.length === 0;
   const hasNotice = !!executions.data?.notice;
 
@@ -141,6 +328,22 @@ export function ExecutionView({ bookId }: { bookId: string }) {
             {executions.data?.count ?? rows.length}
           </Badge>
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">book {bookId}</span>
+          {uatEnabled ? (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+                stream.connected ? "bg-success/15 text-success" : "bg-muted text-muted-foreground",
+              )}
+              title={
+                stream.connected
+                  ? `Live fill deltas via SSE. Last event ${lastEventAt ? timeSince(lastEventAt) : "—"}`
+                  : "SSE disconnected — fill deltas paused. The 30s poll still updates fills."
+              }
+            >
+              <Radio className={cn("h-3 w-3", stream.connected && "animate-pulse")} />
+              {stream.connected ? "LIVE" : "OFFLINE"}
+            </span>
+          ) : null}
         </div>
         <div className="flex items-center gap-2">
           {executions.loading && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
@@ -182,6 +385,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                 "TIF",
                 "Sent by",
                 "State",
+                "Tracking",
               ].map((h) => (
                 <th
                   key={h}
@@ -195,13 +399,13 @@ export function ExecutionView({ bookId }: { bookId: string }) {
           <tbody>
             {showLoading ? (
               <tr>
-                <td colSpan={15} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={16} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   Loading executions…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={15} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={16} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   No execution rows for this book yet — click <em>Send to Market</em> to dispatch.
                 </td>
               </tr>
@@ -218,6 +422,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                   liveSlipCents == null
                     ? "—"
                     : `${liveSlipCents > 0 ? "+" : ""}${(liveSlipCents / 100).toFixed(2)}`;
+                const tracked = liveIds.has(r.id);
                 return (
                   <tr key={r.id} className="border-b border-border/40 hover:bg-accent/10">
                     <td className="px-3 py-1.5 font-mono text-[11px] text-foreground whitespace-nowrap">
@@ -269,6 +474,19 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
                       <Badge variant={STATE_VARIANT[r.state] ?? "outline"}>{r.state}</Badge>
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      {tracked ? (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success"
+                          title={`Last fill ${r.ts ? timeSince(r.ts) : "—"}`}
+                        >
+                          <Radio className="h-2.5 w-2.5 animate-pulse" />
+                          live
+                        </span>
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
+                      )}
                     </td>
                   </tr>
                 );

@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { isIressWorkerConfigured } from "@/lib/data-policy";
+import { callWorker } from "@/lib/iress/worker-api";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -15,7 +17,7 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  * confirmation.
  *
  * Body: { book_id: string, broker: string, order_type: "limit" | "market" }
- * Returns: { ok, execution_ids, rebalance_id?, notice? }
+ * Returns: { ok, execution_ids, rebalance_id?, notice?, mode?, uat?: ... }
  *
  * Business rule (Lonwabo): limit must be > 0. If the book contains ISINs
  * without a recorded `expectedFill` and the order_type is "limit", we reject
@@ -25,6 +27,14 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  * The handler treats a 42P01 as a soft failure and still writes the
  * `oems_order_audit` rows so the desk can dispatch. The response carries
  * `rebalance_id: null` and a `notice` describing the fallback.
+ *
+ * Phase UAT (Mint OEM Finalisation): when `IRESS_UAT_MODE=true` AND the
+ * Railway worker is configured (`IRESS_WORKER_URL` set), the handler
+ * fans out to the worker's `POST /uat/send-to-market` AFTER writing the
+ * audit rows. The worker calls IRESS `OrderCreate3` on the MINT_CT IOS
+ * seat and stamps the broker `OrderNumber` back onto each row. The
+ * audit-write path is the source of truth either way — the worker
+ * call is additive (`mode: "uat"` vs `mode: "audit-only"`).
  */
 
 export const dynamic = "force-dynamic";
@@ -61,6 +71,17 @@ function openInstitutional(): SupabaseClient | null {
   }
 }
 
+interface WorkerUatResponse {
+  ok: boolean;
+  iressOrderNumber?: string;
+  status?: string;
+  orderAuditId?: string;
+  accountCode?: string;
+  brokerDestination?: string;
+  errorNumber?: number;
+  errorDescription?: string;
+}
+
 export async function POST(req: Request) {
   const auth = await getAdminContext();
   if (auth.status === "no-session") {
@@ -77,6 +98,10 @@ export async function POST(req: Request) {
   const bookId = typeof body.book_id === "string" ? body.book_id.trim() : "";
   const broker = typeof body.broker === "string" ? body.broker.trim() : "";
   const orderType = body.order_type === "market" ? "market" : "limit";
+  // UAT escape hatch — only honoured when IRESS_UAT_MODE is set on Vercel.
+  // When false, the audit rows are still written but the worker is never
+  // called (existing audit-only path is preserved bit-for-bit).
+  const uatTest = body.uat_test === true && process.env.IRESS_UAT_MODE === "true";
 
   if (!bookId) return NextResponse.json({ ok: false, error: "book_id is required" }, { status: 400 });
   if (!broker) return NextResponse.json({ ok: false, error: "broker is required" }, { status: 400 });
@@ -170,7 +195,7 @@ export async function POST(req: Request) {
       quantity: Number(h.quantity) || 0,
       price_cents: orderType === "limit" ? Math.round(limitRands * 100) : null,
       status: "working",
-      source: `OB_SEND_TO_MARKET:${broker}`,
+      source: uatTest ? "OB_SEND_TO_MARKET_UAT" : `OB_SEND_TO_MARKET:${broker}`,
       payload: {
         book_id: bookId,
         broker,
@@ -183,12 +208,14 @@ export async function POST(req: Request) {
         sent_at: new Date().toISOString(),
         holding_id: h.id,
         trader: auth.ctx.email,
+        uat_test: uatTest,
       },
       result_payload: {
         broker,
         venue: "JSE",
         tif: "DAY",
         arrivalMid: sec?.last_price != null ? Number(sec.last_price) / 100 : null,
+        uat_test: uatTest,
       },
     };
   });
@@ -243,6 +270,83 @@ export async function POST(req: Request) {
     rebalanceNotice = `rebalance_request_c insert failed: ${(e as Error).message}`;
   }
 
+  // ── UAT worker fanout ─────────────────────────────────────────────
+  // Gated by: (a) `IRESS_UAT_MODE=true` on Vercel, (b) `IRESS_WORKER_URL`
+  // set, and (c) the caller set `uat_test: true` in the body. When all
+  // three are true the worker calls OrderCreate3 on MINT_CT for each
+  // execution row and stamps the broker OrderNumber back onto the audit
+  // table. When any gate is off we return `mode: "audit-only"` and the
+  // desk falls back to the existing /fills POST (manual Excel upload).
+  const uatFanout: {
+    attempted: boolean;
+    mode: "uat" | "audit-only";
+    ok: boolean;
+    sent: number;
+    failed: number;
+    notice: string | null;
+  } = {
+    attempted: false,
+    mode: "audit-only",
+    ok: true,
+    sent: 0,
+    failed: 0,
+    notice: null,
+  };
+
+  if (uatTest && isIressWorkerConfigured()) {
+    uatFanout.attempted = true;
+    uatFanout.mode = "uat";
+    const insertedRows = (inserted ?? []) as Array<{ id: string; order_id: string }>;
+    const results: Array<{ id: string; ok: boolean; error?: string; iressOrderNumber?: string }> = [];
+    // Sequential (not Promise.all) to avoid hammering the worker's single
+    // IRESS license seat; UAT runs are small and clarity beats throughput.
+    for (const row of insertedRows) {
+      const res = await callWorker<WorkerUatResponse>({
+        method: "POST",
+        path: "/uat/send-to-market",
+        body: { order_audit_id: row.id, broker_destination: broker },
+        timeoutMs: 15_000,
+      });
+      if (res.ok && res.body?.ok) {
+        results.push({ id: row.id, ok: true, iressOrderNumber: res.body.iressOrderNumber });
+        uatFanout.sent += 1;
+      } else {
+        const errMsg = res.ok
+          ? (res.body?.errorDescription ?? res.body?.errorNumber?.toString() ?? "unknown worker error")
+          : res.error;
+        results.push({ id: row.id, ok: false, error: errMsg });
+        uatFanout.failed += 1;
+      }
+    }
+    uatFanout.ok = uatFanout.failed === 0;
+    if (uatFanout.failed > 0) {
+      uatFanout.notice = `${uatFanout.failed} of ${insertedRows.length} UAT orders could not be sent to IRESS — audit rows are intact; see uat_results for per-row detail.`;
+    }
+    return NextResponse.json({
+      ok: uatFanout.ok,
+      execution_ids: insertedRows.map((r) => r.id),
+      order_ids: insertedRows.map((r) => r.order_id),
+      rebalance_id: rebalanceId,
+      notice: rebalanceNotice,
+      count: executionRows.length,
+      mode: uatFanout.mode,
+      uat: {
+        attempted: uatFanout.attempted,
+        sent: uatFanout.sent,
+        failed: uatFanout.failed,
+        notice: uatFanout.notice,
+        results,
+      },
+    });
+  }
+
+  if (uatTest && !isIressWorkerConfigured()) {
+    // Caller asked for UAT but the worker URL is unset — keep audit rows
+    // and surface a clear notice so the desk knows the live fanout didn't fire.
+    uatFanout.notice =
+      "uat_test=true but IRESS_WORKER_URL is not configured on Vercel — audit rows written in audit-only mode.";
+  }
+
   return NextResponse.json({
     ok: true,
     execution_ids: (inserted ?? []).map((r) => r.id),
@@ -250,5 +354,12 @@ export async function POST(req: Request) {
     rebalance_id: rebalanceId,
     notice: rebalanceNotice,
     count: executionRows.length,
+    mode: uatFanout.mode,
+    uat: {
+      attempted: uatFanout.attempted,
+      sent: uatFanout.sent,
+      failed: uatFanout.failed,
+      notice: uatFanout.notice,
+    },
   });
 }

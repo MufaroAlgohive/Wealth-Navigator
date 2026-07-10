@@ -283,9 +283,14 @@ describe("validation — every method throws IressError on bad input", () => {
   });
 
   it("timeSeriesGet2 — sends the CT-confirmed shape (SecurityCode/DataSource/Frequency/TimeSeriesFromDate)", async () => {
-    // Confirmed against the live CT server from Andre's working SOAP (2026-06-16):
-    //   <SecurityCode>, <Exchange>, <DataSource>JSED</DataSource>,
-    //   <Frequency>Daily</Frequency>, <TimeSeriesFromDate>/<TimeSeriesToDate>.
+    // Confirmed against the live CT server from Andre's working SOAP:
+    //   - 2026-06-16: <DataSource>JSED</DataSource> worked when the entitlement
+    //     was constrained to that one feed.
+    //   - 2026-07-09: Andre unblocked the entitlement; his example used
+    //     <DataSource>zax</DataSource>, <Exchange>jse</Exchange>,
+    //     <Frequency>Monthly</Frequency>. The new defaults for SA equities
+    //     are `zax` (DataSource) + `jse` (Exchange) — caller can still
+    //     override either per-call.
     // The published WSDL's <Code>/<Interval>/<DateFrom> are WRONG for this build
     // (<DateFrom> is never read → "Invalid DateFrom").
     const call = vi.fn().mockResolvedValueOnce({
@@ -307,7 +312,8 @@ describe("validation — every method throws IressError on bad input", () => {
       .parameters;
     expect(params["SecurityCode"]).toBe("SOL");
     expect(params["Exchange"]).toBe("JSE");
-    expect(params["DataSource"]).toBe("JSED");
+    // SA-equity default since Andre's 2026-07-09 unblock.
+    expect(params["DataSource"]).toBe("zax");
     expect(params["Frequency"]).toBe("Daily");
     expect(params["TimeSeriesFromDate"]).toBe("2026-06-01");
     expect(params["TimeSeriesToDate"]).toBe("2026-06-15");
@@ -318,8 +324,36 @@ describe("validation — every method throws IressError on bad input", () => {
     expect(params["DateTo"]).toBeUndefined();
   });
 
+  it("timeSeriesGet2 — Exchange=jse is the SA-equity default when caller omits Exchange", async () => {
+    // Per Andre's 2026-07-09 unblock email, `Exchange=jse` is the working
+    // shape for SA equities. When the caller omits `req.Exchange`, the
+    // client must default to `jse` (NOT undefined, NOT empty) so the
+    // V4 server gets the field it expects on the wire.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    await client.timeSeriesGet2({
+      Header: { SessionKey: "k", RequestID: "r1" },
+      Code: "NPN",
+      From: "2026-06-01",
+      To: "2026-06-15",
+      Interval: "Monthly",
+    });
+    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> })
+      .parameters;
+    expect(params["Exchange"]).toBe("jse");
+    expect(params["DataSource"]).toBe("zax");
+    expect(params["Frequency"]).toBe("Monthly");
+  });
+
   it("timeSeriesGet2 — DataSource is overridable via IRESS_TS_DATASOURCE", async () => {
-    // Prod may use a different feed (e.g. real-time vs delayed). Default JSED.
+    // Prod may use a different feed (e.g. real-time vs delayed). SA-equity
+    // default since 2026-07-09 is `zax`; the env var can override that
+    // without a code change.
     const call = vi.fn().mockResolvedValueOnce({
       result: {},
       header: { ErrorNumber: 0 },
@@ -347,7 +381,11 @@ describe("validation — every method throws IressError on bad input", () => {
 
   it("timeSeriesGet2 — per-call DataSource (YFXD for YFX bonds) wins over the env default", async () => {
     // CONFIRMED live (2026-06-16): YFX bonds/curve/GOVI need DataSource=YFXD;
-    // sending JSED returns error 5. The per-call value must override the env.
+    // sending zax / JSED for a YFX instrument returns error 5. The per-call
+    // value must override the env. After Andre's 2026-07-09 unblock, the
+    // SA-equity default is still overridable to YFXD for the bond path —
+    // the YFX exchange hint makes the client default to yfxd automatically
+    // if the caller omits both per-call DataSource and the env.
     const call = vi.fn().mockResolvedValueOnce({
       result: {},
       header: { ErrorNumber: 0 },
@@ -355,7 +393,7 @@ describe("validation — every method throws IressError on bad input", () => {
     });
     const transport: SoapTransport = { call } as unknown as SoapTransport;
     const client = createLiveIressClient({ transport });
-    process.env.IRESS_TS_DATASOURCE = "JSED"; // equity default in env
+    process.env.IRESS_TS_DATASOURCE = "zax"; // equity default in env
     try {
       await client.timeSeriesGet2({
         Header: { SessionKey: "k", RequestID: "r1" },
@@ -373,6 +411,59 @@ describe("validation — every method throws IressError on bad input", () => {
     expect(params["DataSource"]).toBe("YFXD");
     expect(params["Exchange"]).toBe("YFX");
     expect(params["SecurityCode"]).toBe("R2030");
+  });
+
+  it("timeSeriesGet2 — YFX bond path defaults to yfxd when caller omits per-call DataSource", async () => {
+    // The YFX bond path is a known different feed (yfxd). When the caller
+    // asks for Exchange=YFX without specifying DataSource, the client must
+    // default to yfxd (NOT zax) so the bond curves don't 25010/25034 on
+    // an entitlement / access check. Equity paths default to zax.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 0 },
+      dataRows: [],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    await client.timeSeriesGet2({
+      Header: { SessionKey: "k", RequestID: "r1" },
+      Code: "R2030",
+      Exchange: "YFX",
+      From: "2026-06-01",
+      To: "2026-06-15",
+      Interval: "Daily",
+    });
+    const params = (call.mock.calls[0]![0] as { parameters: Record<string, unknown> }).parameters;
+    expect(params["Exchange"]).toBe("YFX");
+    expect(params["DataSource"]).toBe("yfxd");
+  });
+
+  it("timeSeriesGet2 — entitlement fault (ErrorNumber=25010) throws IressError so BFF can fall back", async () => {
+    // V4 returns 200 with `ErrorNumber=25010` and empty DataRows when the
+    // entitlement is missing. The client must surface that as IressError
+    // (NOT a successful empty response) so `/api/history/[sym]` can
+    // transparently fall back to Yahoo rather than rendering an empty
+    // chart with no actionable error.
+    const call = vi.fn().mockResolvedValueOnce({
+      result: {},
+      header: { ErrorNumber: 25010, ErrorDescription: "Method not entitled" },
+      dataRows: [],
+    });
+    const transport: SoapTransport = { call } as unknown as SoapTransport;
+    const client = createLiveIressClient({ transport });
+    await expect(
+      client.timeSeriesGet2({
+        Header: { SessionKey: "k", RequestID: "r1" },
+        Code: "SOL",
+        Exchange: "JSE",
+        From: "2026-06-01",
+        To: "2026-06-15",
+        Interval: "Daily",
+      }),
+    ).rejects.toMatchObject({
+      code: 25010,
+      method: "TimeSeriesGet2",
+    });
   });
 
   it("timeSeriesGet2Updates — missing RequestID", async () => {

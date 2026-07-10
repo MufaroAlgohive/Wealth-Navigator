@@ -30,18 +30,20 @@
  *     for shared deployments.
  */
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { randomUUID } from "node:crypto";
+import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
+import { getIressClient } from "../../../src/lib/iress/index";
+import { createSoapTransport, makeHeader } from "../../../src/lib/iress/transport";
+import type { IressService, Order } from "../../../src/types/iress";
 import { loadWorkerEnv } from "./env";
 import type { WorkerEnv } from "./env";
-import { writeHeartbeat, type WorkerSupabase } from "./supabase";
-import { WorkerSessionManager, type WorkerMintSession } from "./session";
-import { getIressClient } from "../../../src/lib/iress/index";
-import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
-import { createSoapTransport, makeHeader } from "../../../src/lib/iress/transport";
-import type { Order, IressService } from "../../../src/types/iress";
+import { type UatExecutionDelta, getLastUatPollAt, uatExecutionHub } from "./order-poller";
 import { fetchLiveQuote } from "./quotes";
+import type { WorkerMintSession, WorkerSessionManager } from "./session";
+import { type WorkerSupabase, writeHeartbeat } from "./supabase";
 
 /** Services whose service-session state `/debug/ips-session` surfaces. */
 const KNOWN_SERVICE_SESSIONS: ReadonlyArray<IressService> = ["IOSPlus", "IPS", "FIXPlus"];
@@ -84,14 +86,21 @@ function checkAuth(req: IncomingMessage, expected: string | undefined): boolean 
 function send(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
   const json = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(status, {
-    "content-type": typeof body === "string" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
+    "content-type":
+      typeof body === "string" ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
     "cache-control": "no-store",
     ...(headers ?? {}),
   });
   res.end(json);
 }
 
-function sendError(res: ServerResponse, status: number, code: string, message: string, extra?: Record<string, unknown>): void {
+function sendError(
+  res: ServerResponse,
+  status: number,
+  code: string,
+  message: string,
+  extra?: Record<string, unknown>,
+): void {
   send(res, status, { ok: false, status, code, error: message, ...extra });
 }
 
@@ -258,7 +267,9 @@ async function probeTimeSeriesInterval(
       Exchange: exchange,
       // Caller-overridable so date FORMAT can be probed live; `noDates` omits
       // the range entirely (to test the NumberOfPoints path).
-      From: noDates ? undefined : (dateFrom ?? new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10)),
+      From: noDates
+        ? undefined
+        : (dateFrom ?? new Date(Date.now() - 14 * 86400_000).toISOString().slice(0, 10)),
       To: noDates ? undefined : (dateTo ?? new Date().toISOString().slice(0, 10)),
       ...(typeof date === "string" && date.trim() !== "" ? { Date: date.trim() } : {}),
       ...(typeof numberOfPoints === "number" ? { NumberOfPoints: numberOfPoints } : {}),
@@ -544,25 +555,36 @@ async function probeIressMethods(deps: HttpApiDeps): Promise<{
   const client = getIressClient("live");
 
   if (session?.iressSessionKey) {
-    methods.push({ method: "IRESSSessionStart", service: "Iress", status: "ok", detail: "Iress session established" });
+    methods.push({
+      method: "IRESSSessionStart",
+      service: "Iress",
+      status: "ok",
+      detail: "Iress session established",
+    });
   }
   methods.push({
     method: "ServiceSessionStart(IOSPlus)",
     service: "IOS+",
     status: hasIOS ? "ok" : "fault",
-    detail: hasIOS ? "session key present" : "no IOS+ session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
+    detail: hasIOS
+      ? "session key present"
+      : "no IOS+ session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
   });
   methods.push({
     method: "ServiceSessionStart(IPS)",
     service: "IPS",
     status: hasIPS ? "ok" : "fault",
-    detail: hasIPS ? "session key present" : "no IPS session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
+    detail: hasIPS
+      ? "session key present"
+      : "no IPS session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
   });
   methods.push({
     method: "ServiceSessionStart(FIXPlus)",
     service: "FIX+",
     status: hasFIX ? "ok" : "fault",
-    detail: hasFIX ? "session key present" : "no FIX+ session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
+    detail: hasFIX
+      ? "session key present"
+      : "no FIX+ session — ServiceSessionStart failed (HTTP 500 / not entitled / wrong Server name)",
   });
 
   if (session) {
@@ -577,7 +599,12 @@ async function probeIressMethods(deps: HttpApiDeps): Promise<{
         detail: `NPN outcome=${q.outcome} last=${q.row?.last ?? "—"} state=${q.row?.marketState ?? "—"}`,
       });
     } catch (err) {
-      methods.push({ method: "PricingQuoteGet", service: "Iress", status: "fault", detail: err instanceof Error ? err.message : String(err) });
+      methods.push({
+        method: "PricingQuoteGet",
+        service: "Iress",
+        status: "fault",
+        detail: err instanceof Error ? err.message : String(err),
+      });
     }
 
     const exGet = (client as unknown as { pricingQuoteExGet?: unknown }).pricingQuoteExGet;
@@ -589,13 +616,32 @@ async function probeIressMethods(deps: HttpApiDeps): Promise<{
           Exchange: "JSE",
         })) as { DataRows?: unknown[] };
         const n = r.DataRows?.length ?? 0;
-        methods.push({ method: "PricingQuoteExGet (L2)", service: "Iress", status: n > 0 ? "ok" : "fault", detail: `returned ${n} rows` });
+        methods.push({
+          method: "PricingQuoteExGet (L2)",
+          service: "Iress",
+          status: n > 0 ? "ok" : "fault",
+          detail: `returned ${n} rows`,
+        });
       } catch (err) {
         const code = err instanceof IressError ? err.code : null;
-        methods.push({ method: "PricingQuoteExGet (L2)", service: "Iress", status: "fault", detail: code ? `${code}: ${err instanceof Error ? err.message : ""}` : err instanceof Error ? err.message : String(err) });
+        methods.push({
+          method: "PricingQuoteExGet (L2)",
+          service: "Iress",
+          status: "fault",
+          detail: code
+            ? `${code}: ${err instanceof Error ? err.message : ""}`
+            : err instanceof Error
+              ? err.message
+              : String(err),
+        });
       }
     } else {
-      methods.push({ method: "PricingQuoteExGet (L2)", service: "Iress", status: "not-implemented", detail: "L2 depth not wired in the client — confirm with IRESS whether L2 is exposed in V4" });
+      methods.push({
+        method: "PricingQuoteExGet (L2)",
+        service: "Iress",
+        status: "not-implemented",
+        detail: "L2 depth not wired in the client — confirm with IRESS whether L2 is exposed in V4",
+      });
     }
 
     const ts = await probeTimeSeriesInterval(deps, "J203", "JSE", "Daily", null);
@@ -613,7 +659,9 @@ async function probeIressMethods(deps: HttpApiDeps): Promise<{
       method,
       service,
       status: has ? "ok" : "blocked",
-      detail: has ? `${service} session present — callable` : `blocked: requires ${service} service session (currently unavailable)`,
+      detail: has
+        ? `${service} session present — callable`
+        : `blocked: requires ${service} service session (currently unavailable)`,
     });
   };
   gated("OrderPadGetByAccount", "IOS+", hasIOS);
@@ -755,10 +803,7 @@ async function cancelLiveOrder(
     const session = await deps.sessions.getSession();
     const iosKey = session.serviceKeys.IOSPlus;
     if (!iosKey) {
-      return baseError(
-        "ios_unavailable",
-        "IOSPlus service session not available; order pad not entitled",
-      );
+      return baseError("ios_unavailable", "IOSPlus service session not available; order pad not entitled");
     }
     const client = getIressClient("live");
     // OrderDelete signature is the V4 minimum: session key + the
@@ -922,7 +967,8 @@ export async function handleRequest(
   }
 
   if (req.method === "GET" && path === "/orders") {
-    const account = url.searchParams.get("account")?.trim() || deps.env.iressAccountCode.split(",")[0]?.trim() || "";
+    const account =
+      url.searchParams.get("account")?.trim() || deps.env.iressAccountCode.split(",")[0]?.trim() || "";
     if (!account) {
       sendError(
         res,
@@ -934,9 +980,9 @@ export async function handleRequest(
       return;
     }
     const filterParam = Number(url.searchParams.get("filter") ?? "1");
-    const filter: OrderFilter = (VALID_FILTERS.has(filterParam as OrderFilter)
-      ? filterParam
-      : 1) as OrderFilter;
+    const filter: OrderFilter = (
+      VALID_FILTERS.has(filterParam as OrderFilter) ? filterParam : 1
+    ) as OrderFilter;
     const result = await fetchLiveOrders(deps, account, filter);
     // 200 with ok=false when the worker has an answer but it's "no
     // orders" / "mock mode" / "session not ready" — those are real
@@ -954,14 +1000,22 @@ export async function handleRequest(
       sendError(res, 503, "iress_mode_not_live", `Cannot fetch history in iressMode=${deps.env.iressMode}`);
       return;
     }
-    const sym = (url.searchParams.get("sym") ?? "").trim().toUpperCase().replace(/\.(JO|JSE)$/i, "");
+    const sym = (url.searchParams.get("sym") ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/\.(JO|JSE)$/i, "");
     if (!sym) {
       sendError(res, 400, "bad_request", "sym query param required (e.g. ?sym=NPN)");
       return;
     }
     const days = Math.min(3700, Math.max(5, Number(url.searchParams.get("days") ?? "365")));
     const exchange = (url.searchParams.get("exchange") ?? "JSE").trim() || "JSE";
-    const dataSource = (url.searchParams.get("ds") ?? process.env.IRESS_TS_DATASOURCE ?? "JSED").trim() || "JSED";
+    const dataSource =
+      (url.searchParams.get("ds") ?? process.env.IRESS_TS_DATASOURCE ?? "zax").trim() || "zax";
+    // Frequency: caller-overridable via ?frequency=Daily|IntraDay|Tick|...
+    // Default is Daily for the /history route. The per-symbol intraday path
+    // (/intraday below) tries Tick / IntraDay / 1-Minute in order.
+    const frequency = (url.searchParams.get("frequency") ?? "Daily").trim() || "Daily";
     const from = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
     const to = new Date().toISOString().slice(0, 10);
     const started = Date.now();
@@ -975,13 +1029,14 @@ export async function handleRequest(
         DataSource: dataSource,
         From: from,
         To: to,
-        Interval: "Daily",
+        Interval: frequency,
       });
       send(res, 200, {
         ok: res2.Header.ErrorNumber === 0,
         sym,
         exchange,
         dataSource,
+        frequency,
         points: res2.DataRows, // [{ t: ms, v: close }]
         count: res2.DataRows.length,
         elapsedMs: Date.now() - started,
@@ -989,6 +1044,140 @@ export async function handleRequest(
     } catch (err) {
       if (isIressSessionDeadError(err)) deps.sessions.invalidate();
       send(res, 200, { ok: false, sym, points: [], error: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
+
+  if (req.method === "GET" && path === "/intraday") {
+    // Intraday-tick time series via IRESS TimeSeriesGet2. Andre's 2026-07-09
+    // unblock email proved the entitlement is live for `DataSource=zax,
+    // Exchange=jse, Frequency=Monthly`; per-symbol intraday (Tick / 1-Minute)
+    // is NOT yet proven — see wealth-navigator/docs/TIMESERIES_UNBLOCK_PLAN.md.
+    //
+    // This endpoint tries the candidate intraday frequencies in order and
+    // returns the first one that returns data. If all candidates fault
+    // (25010/25034 entitlement missing, or "Invalid Parameter Value"), the
+    // response is `ok=false` with the last fault in `error` so the BFF
+    // can fall back to the Supabase `stock_intraday_c` path.
+    //
+    // Candidate list — Andre's email is silent on the exact V4 string for
+    // intraday, so we try the documented enum values in the order most
+    // likely to be accepted: `IntraDay` (the V4 WSDL canonical), then
+    // `1-Minute` (the more common IRESS alias), then `Tick` (the JSE
+    // sub-second feed). Operator can pin the right one via the probe.
+    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+    if (!isLive) {
+      sendError(res, 503, "iress_mode_not_live", `Cannot fetch intraday in iressMode=${deps.env.iressMode}`);
+      return;
+    }
+    const sym = (url.searchParams.get("sym") ?? "")
+      .trim()
+      .toUpperCase()
+      .replace(/\.(JO|JSE)$/i, "");
+    if (!sym) {
+      sendError(res, 400, "bad_request", "sym query param required (e.g. ?sym=NPN)");
+      return;
+    }
+    const days = Math.min(30, Math.max(1, Number(url.searchParams.get("days") ?? "5")));
+    const exchange = (url.searchParams.get("exchange") ?? "JSE").trim() || "JSE";
+    // Per-call DataSource override for non-JSE bond/curve paths. Default
+    // to the new SA-equity default (`zax`) so a JSE symbol with no override
+    // works against Andre's unblock.
+    const dataSource = (url.searchParams.get("ds") ?? "zax").trim() || "zax";
+    // Candidate frequencies — caller can pin one via ?frequency=… for the
+    // probe; otherwise we walk the list.
+    const requestedFrequency = (url.searchParams.get("frequency") ?? "").trim();
+    const candidates = requestedFrequency ? [requestedFrequency] : ["IntraDay", "1-Minute", "Tick"];
+    const from = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+    const to = new Date().toISOString().slice(0, 10);
+    const started = Date.now();
+    let lastError: string | null = null;
+    let lastFault: {
+      frequency: string;
+      errorNumber: number | null;
+      errorDescription: string | null;
+      rawFault: string | null;
+    } | null = null;
+    try {
+      const session = await deps.sessions.getSession();
+      const client = getIressClient("live");
+      for (const frequency of candidates) {
+        try {
+          const r = await client.timeSeriesGet2({
+            Header: {
+              SessionKey: session.iressSessionKey,
+              RequestID: newRequestID(`intra-${sym}-${frequency}`),
+              Timeout: 30,
+            },
+            Code: sym,
+            Exchange: exchange,
+            DataSource: dataSource,
+            From: from,
+            To: to,
+            Interval: frequency,
+          });
+          if (r.Header.ErrorNumber === 0 && r.DataRows.length > 0) {
+            send(res, 200, {
+              ok: true,
+              sym,
+              exchange,
+              dataSource,
+              frequency,
+              points: r.DataRows, // [{ t: ms, v: close }]
+              count: r.DataRows.length,
+              attemptedFrequencies: candidates,
+              elapsedMs: Date.now() - started,
+            });
+            return;
+          }
+          // Empty / faulted — record and try the next candidate.
+          lastFault = {
+            frequency,
+            errorNumber: r.Header.ErrorNumber ?? null,
+            errorDescription: r.Header.ErrorDescription ?? null,
+            rawFault: null,
+          };
+          lastError = r.Header.ErrorDescription ?? `TimeSeriesGet2(${frequency}) returned 0 points`;
+        } catch (candErr) {
+          // 25010 / 25034 entitlement faults (and any other IressError) get
+          // captured here; we keep walking the candidate list. Other errors
+          // (session death, transport) bubble out.
+          if (candErr instanceof IressError && (candErr.code === 25010 || candErr.code === 25034)) {
+            lastFault = {
+              frequency,
+              errorNumber: candErr.code,
+              errorDescription: candErr.message,
+              rawFault: candErr.message,
+            };
+            lastError = `${frequency}: ${candErr.code} ${candErr.message}`;
+            continue;
+          }
+          if (isIressSessionDeadError(candErr)) deps.sessions.invalidate();
+          throw candErr;
+        }
+      }
+      // All candidates exhausted — surface the last fault as the failure.
+      send(res, 200, {
+        ok: false,
+        sym,
+        exchange,
+        dataSource,
+        attemptedFrequencies: candidates,
+        lastFault,
+        points: [],
+        count: 0,
+        error: lastError,
+        elapsedMs: Date.now() - started,
+      });
+    } catch (err) {
+      if (isIressSessionDeadError(err)) deps.sessions.invalidate();
+      send(res, 200, {
+        ok: false,
+        sym,
+        points: [],
+        attemptedFrequencies: candidates,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     return;
   }
@@ -1068,7 +1257,7 @@ export async function handleRequest(
       if (Number.isFinite(n)) frequency = Math.trunc(n);
     }
     if (!code) {
-      sendError(res, 400, "bad_request", "`code` is required (e.g. \"J203\")");
+      sendError(res, 400, "bad_request", '`code` is required (e.g. "J203")');
       return;
     }
     // Precedence: `frequency` wins over `interval` when both are supplied.
@@ -1078,7 +1267,7 @@ export async function handleRequest(
         res,
         400,
         "bad_request",
-        "Supply one of: `frequency` (Long, e.g. 5) or `interval` (V4 string, e.g. \"Daily\"). `frequency` wins if both are present.",
+        'Supply one of: `frequency` (Long, e.g. 5) or `interval` (V4 string, e.g. "Daily"). `frequency` wins if both are present.',
       );
       return;
     }
@@ -1176,13 +1365,9 @@ export async function handleRequest(
       return;
     }
     const pageSizeRaw = Number(url.searchParams.get("pageSize") ?? "50");
-    const pageSize = Number.isFinite(pageSizeRaw)
-      ? Math.min(1000, Math.max(1, Math.trunc(pageSizeRaw)))
-      : 50;
+    const pageSize = Number.isFinite(pageSizeRaw) ? Math.min(1000, Math.max(1, Math.trunc(pageSizeRaw))) : 50;
     const timeoutRaw = Number(url.searchParams.get("timeout") ?? "25");
-    const timeout = Number.isFinite(timeoutRaw)
-      ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw)))
-      : 25;
+    const timeout = Number.isFinite(timeoutRaw) ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw))) : 25;
     const includeBody = url.searchParams.get("includeBody") === "1";
     const result = await probeNewsVendor(deps, vendor, pageSize, timeout, includeBody);
     send(res, 200, result);
@@ -1214,10 +1399,16 @@ export async function handleRequest(
     // methods unless explicitly allowed, so it can never place/cancel orders or
     // tear down the worker's session once IOS+ is live. Read/probe methods
     // (TimeSeriesGet2, PricingQuoteGet, ServiceSessionStart, …) stay open.
-    if (/order(create|amend|delete|cancel)|sessionend|sessionrequestend|ipsupload/i.test(method) &&
-        process.env.IRESS_ALLOW_MUTATIONS !== "1") {
-      sendError(res, 403, "mutation_blocked",
-        `Mutating method "${method}" is blocked on /debug/soap-raw (set IRESS_ALLOW_MUTATIONS=1 to override)`);
+    if (
+      /order(create|amend|delete|cancel)|sessionend|sessionrequestend|ipsupload/i.test(method) &&
+      process.env.IRESS_ALLOW_MUTATIONS !== "1"
+    ) {
+      sendError(
+        res,
+        403,
+        "mutation_blocked",
+        `Mutating method "${method}" is blocked on /debug/soap-raw (set IRESS_ALLOW_MUTATIONS=1 to override)`,
+      );
       return;
     }
     const parameters =
@@ -1226,7 +1417,9 @@ export async function handleRequest(
         : {};
     const headerKind = b["headerKind"] === "service" ? "service" : "iress";
     const timeout =
-      typeof b["timeout"] === "number" && Number.isFinite(b["timeout"]) ? Math.trunc(b["timeout"] as number) : 20;
+      typeof b["timeout"] === "number" && Number.isFinite(b["timeout"])
+        ? Math.trunc(b["timeout"] as number)
+        : 20;
     const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
     if (!isLive) {
       sendError(res, 503, "iress_mode_not_live", `Cannot probe in iressMode=${deps.env.iressMode}`);
@@ -1256,7 +1449,12 @@ export async function handleRequest(
       const header = makeHeader(
         headerKind === "service"
           ? { serviceSessionKey: serviceKey, requestID: newRequestID("raw"), timeout, waitForResponse: true }
-          : { sessionKey: session.iressSessionKey, requestID: newRequestID("raw"), timeout, waitForResponse: true },
+          : {
+              sessionKey: session.iressSessionKey,
+              requestID: newRequestID("raw"),
+              timeout,
+              waitForResponse: true,
+            },
       );
       const result = await transport.call({ method, header, parameters });
       const headerRow = (result.header ?? {}) as Record<string, unknown>;
@@ -1296,7 +1494,12 @@ export async function handleRequest(
       return;
     }
     if (!body || typeof body !== "object") {
-      sendError(res, 400, "bad_request", "Body must be JSON with `symbols` (string[]) and optional `exchange`");
+      sendError(
+        res,
+        400,
+        "bad_request",
+        "Body must be JSON with `symbols` (string[]) and optional `exchange`",
+      );
       return;
     }
     const b = body as Record<string, unknown>;
@@ -1307,18 +1510,30 @@ export async function handleRequest(
     }
     const symbols = rawSymbols.map((s) => String(s).trim()).filter(Boolean);
     if (symbols.length > 80) {
-      sendError(res, 400, "too_many", "Send at most 80 symbols per request (batch the rest) to avoid SOAP timeout", {
-        max: 80,
-        got: symbols.length,
-      });
+      sendError(
+        res,
+        400,
+        "too_many",
+        "Send at most 80 symbols per request (batch the rest) to avoid SOAP timeout",
+        {
+          max: 80,
+          got: symbols.length,
+        },
+      );
       return;
     }
     const exchange = typeof b["exchange"] === "string" ? b["exchange"].trim().toUpperCase() : "JSE";
     const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
     if (!isLive) {
-      sendError(res, 503, "iress_mode_not_live", `Cannot probe coverage in iressMode=${deps.env.iressMode}; switch the worker to live`, {
-        iressMode: deps.env.iressMode,
-      });
+      sendError(
+        res,
+        503,
+        "iress_mode_not_live",
+        `Cannot probe coverage in iressMode=${deps.env.iressMode}; switch the worker to live`,
+        {
+          iressMode: deps.env.iressMode,
+        },
+      );
       return;
     }
     const result = await probeCoverage(deps, symbols, exchange);
@@ -1336,6 +1551,130 @@ export async function handleRequest(
     }
     const result = await probeIressMethods(deps);
     send(res, 200, result);
+    return;
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // UAT mode — Mint OEM Finalisation Phase UAT.
+  //
+  // Two endpoints, both gated on `IRESS_UAT_MODE=1`:
+  //   POST /uat/send-to-market   — call IRESS OrderCreate3 on the UAT
+  //                                account and stamp the OrderNumber back
+  //                                onto the matching oems_order_audit row
+  //   GET  /uat/execution-stream — SSE stream of execution deltas from
+  //                                the UAT order poll loop (see
+  //                                `./order-poller.ts`)
+  //
+  // UAT orders go to `IRESS_UAT_ACCOUNT_CODE` — a *separate* IRESS
+  // AccountCode, not the production `IRESS_ACCOUNT_CODE`. This is what
+  // lets UAT users exercise the full order pipeline without touching
+  // real client books.
+  // ──────────────────────────────────────────────────────────────────
+
+  if (path === "/uat/send-to-market" || path === "/uat/execution-stream" || path === "/uat/status") {
+    if (!deps.env.uatMode) {
+      sendError(
+        res,
+        403,
+        "uat_mode_disabled",
+        "UAT mode is not enabled on this worker (set IRESS_UAT_MODE=1)",
+        { uatMode: false },
+      );
+      return;
+    }
+  }
+
+  if (req.method === "POST" && path === "/uat/send-to-market") {
+    if (!deps.env.uatAccountCode) {
+      sendError(
+        res,
+        503,
+        "uat_account_not_configured",
+        "IRESS_UAT_ACCOUNT_CODE is not set; refusing to send orders without an explicit UAT account",
+        { hint: "Set IRESS_UAT_ACCOUNT_CODE on the worker (must differ from IRESS_ACCOUNT_CODE)" },
+      );
+      return;
+    }
+    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+    if (!isLive) {
+      sendError(
+        res,
+        503,
+        "iress_mode_not_live",
+        `Cannot place UAT orders in iressMode=${deps.env.iressMode}`,
+        {
+          iressMode: deps.env.iressMode,
+          hint: "Set IRESS_MODE=live on the worker (requires IRESS_USERNAME/PASSWORD/COMPANY_NAME)",
+        },
+      );
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    if (!body || typeof body !== "object") {
+      sendError(
+        res,
+        400,
+        "bad_request",
+        "Body must be JSON with `order_audit_id` and (optionally) `account_code` and `broker_destination`",
+      );
+      return;
+    }
+    const b = body as Record<string, unknown>;
+    const orderAuditId =
+      typeof b["order_audit_id"] === "string" ? (b["order_audit_id"] as string).trim() : "";
+    if (!orderAuditId) {
+      sendError(res, 400, "bad_request", "`order_audit_id` is required");
+      return;
+    }
+    const accountCode =
+      (typeof b["account_code"] === "string" && (b["account_code"] as string).trim()) ||
+      deps.env.uatAccountCode;
+    // Refuse to send to the production account by accident.
+    if (accountCode === deps.env.iressAccountCode && deps.env.iressAccountCode) {
+      sendError(
+        res,
+        400,
+        "wrong_account",
+        "UAT orders must target IRESS_UAT_ACCOUNT_CODE, not the production IRESS_ACCOUNT_CODE",
+        { accountCode, productionAccount: deps.env.iressAccountCode },
+      );
+      return;
+    }
+    const brokerDestination =
+      (typeof b["broker_destination"] === "string" && (b["broker_destination"] as string).trim()) ||
+      "LONGMARK CARE";
+
+    const result = await uatSendToMarket(deps, orderAuditId, accountCode, brokerDestination);
+    if (!result.ok) {
+      sendError(res, result.status, result.code, result.message, result.extra);
+      return;
+    }
+    send(res, 200, result.body);
+    return;
+  }
+
+  if (req.method === "GET" && path === "/uat/status") {
+    send(res, 200, {
+      ok: true,
+      uatMode: deps.env.uatMode,
+      uatAccountCode: deps.env.uatAccountCode || null,
+      productionAccountCode: deps.env.iressAccountCode || null,
+      iressMode: deps.env.iressMode,
+      lastPollAt: getLastUatPollAt() ?? null,
+      pollIntervalSec: deps.env.uatOrderPollSec,
+      workerId: deps.env.workerId,
+    });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/uat/execution-stream") {
+    await streamUatExecution(req, res, deps);
     return;
   }
 
@@ -1369,9 +1708,7 @@ export function startHttpApi(
     server.listen(port, host, () => {
       const addr = server.address() as AddressInfo;
       const url = `http://${host}:${addr.port}`;
-      console.info(
-        `[iress-ingest] http api listening on ${url} (auth=${authToken ? "on" : "off"})`,
-      );
+      console.info(`[iress-ingest] http api listening on ${url} (auth=${authToken ? "on" : "off"})`);
       resolve({
         port: addr.port,
         url,
@@ -1391,7 +1728,8 @@ async function streamOrders(
   getLastQuoteSyncAt: () => string | undefined,
   url: URL,
 ): Promise<void> {
-  const account = url.searchParams.get("account")?.trim() || deps.env.iressAccountCode.split(",")[0]?.trim() || "";
+  const account =
+    url.searchParams.get("account")?.trim() || deps.env.iressAccountCode.split(",")[0]?.trim() || "";
   if (!account) {
     sendError(
       res,
@@ -1402,15 +1740,15 @@ async function streamOrders(
     return;
   }
   const filterParam = Number(url.searchParams.get("filter") ?? "1");
-  const filter: OrderFilter = (VALID_FILTERS.has(filterParam as OrderFilter)
-    ? filterParam
-    : 1) as OrderFilter;
+  const filter: OrderFilter = (
+    VALID_FILTERS.has(filterParam as OrderFilter) ? filterParam : 1
+  ) as OrderFilter;
   const intervalSec = Math.max(2, Number(url.searchParams.get("interval") ?? "5"));
 
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store, no-transform",
-    "connection": "keep-alive",
+    connection: "keep-alive",
     "x-accel-buffering": "no",
   });
   res.write(`retry: 5000\n\n`);
@@ -1442,5 +1780,393 @@ async function streamOrders(
     const next = await fetchLiveOrders(deps, account, filter);
     push("update", { ...next, lastQuoteSyncAt: getLastQuoteSyncAt() ?? null });
   }
+  res.end();
+}
+
+// ──────────────────────────────────────────────────────────────────
+// UAT mode helpers
+// ──────────────────────────────────────────────────────────────────
+
+interface UatAuditRow {
+  id: string;
+  order_id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  price_cents: number | null;
+  status: string;
+  payload: Record<string, unknown>;
+  result_payload: Record<string, unknown>;
+}
+
+interface UatSendOkBody {
+  ok: true;
+  iressOrderNumber: string;
+  status: "working" | "rejected";
+  orderAuditId: string;
+  accountCode: string;
+  brokerDestination: string;
+  iressMode: string;
+  errorNumber?: number;
+  errorDescription?: string;
+}
+
+type UatSendResult =
+  | { ok: true; body: UatSendOkBody; status: 200; code?: never; message?: never; extra?: undefined }
+  | {
+      ok: false;
+      status: number;
+      code: string;
+      message: string;
+      extra?: Record<string, unknown>;
+      body?: never;
+    };
+
+function asNumber(v: unknown): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Read the audit row, build the IRESS `OrderCreate3` request from the
+ * payload, dispatch via the cached IOSPlus service session, and stamp the
+ * broker-assigned `OrderNumber` back onto the audit row.
+ *
+ * Falls back to `orderNoGetByOrderTag` if the SOAP call itself fails with
+ * a transport-level error (HTTP 500, timeout, TCP RST) — IRESS may have
+ * accepted the order but the response was lost. The tag is the UUID we
+ * generated at send-to-market time (stored in payload.uatOrderTag).
+ */
+async function uatSendToMarket(
+  deps: HttpApiDeps,
+  orderAuditId: string,
+  accountCode: string,
+  brokerDestination: string,
+): Promise<UatSendResult> {
+  const db = deps.supabase;
+  if (!db) {
+    return {
+      ok: false,
+      status: 503,
+      code: "supabase_not_configured",
+      message: "Worker has no Supabase client",
+    };
+  }
+
+  // Read the audit row the BFF wrote at /api/admin/orderbook/send-to-market.
+  const { data: row, error: readErr } = await db
+    .from("oems_order_audit")
+    .select("id, order_id, symbol, side, quantity, price_cents, status, payload, result_payload")
+    .eq("id", orderAuditId)
+    .maybeSingle();
+
+  if (readErr) {
+    return { ok: false, status: 500, code: "audit_read_failed", message: readErr.message };
+  }
+  if (!row) {
+    return {
+      ok: false,
+      status: 404,
+      code: "audit_not_found",
+      message: `No oems_order_audit row for id=${orderAuditId}`,
+    };
+  }
+  const audit = row as UatAuditRow;
+
+  if (audit.payload && (audit.payload as { iress_order_number?: string }).iress_order_number) {
+    // Already sent to IRESS — return the existing assignment as idempotent.
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        ok: true,
+        iressOrderNumber: (audit.payload as { iress_order_number: string }).iress_order_number,
+        status: "working",
+        orderAuditId: audit.id,
+        accountCode,
+        brokerDestination,
+        iressMode: deps.env.iressMode,
+      },
+    };
+  }
+
+  // Build the IRESS NewOrder from the audit row.
+  const qty = Number(audit.quantity) || 0;
+  if (qty <= 0) {
+    return { ok: false, status: 400, code: "invalid_quantity", message: "Audit row has no usable quantity" };
+  }
+  const symbol = (audit.symbol ?? "").trim();
+  if (!symbol) {
+    return { ok: false, status: 400, code: "invalid_symbol", message: "Audit row has no symbol" };
+  }
+  const side = (audit.side ?? "buy").toLowerCase() === "sell" ? 2 : 1; // 1=BUY, 2=SELL
+  const orderType = audit.price_cents != null ? "LMT" : "MKT";
+  const priceRands = audit.price_cents != null ? Number(audit.price_cents) / 100 : undefined;
+  const exchange = "JSE";
+  const tif = "DAY";
+
+  // IDEMPOTENCY: re-use any pre-existing tag from the audit payload, else mint a UUID.
+  const payloadObj = audit.payload ?? {};
+  const existingTag =
+    typeof payloadObj.uatOrderTag === "string" && (payloadObj.uatOrderTag as string).length > 0
+      ? (payloadObj.uatOrderTag as string)
+      : randomUUID();
+
+  const order = {
+    AccountCode: accountCode,
+    SecurityCode: symbol,
+    Exchange: exchange,
+    BuySell: side as 1 | 2,
+    OrderType: orderType as "MKT" | "LMT",
+    Volume: qty,
+    ...(priceRands != null ? { Price: priceRands } : {}),
+    Destination: brokerDestination,
+    TimeInForce: tif as "DAY",
+  };
+
+  let iressOrderNumber: string | null = null;
+  let errorNumber: number | undefined;
+  let errorDescription: string | undefined;
+  let orderCreateStatus: "working" | "rejected" = "working";
+
+  try {
+    const session = await deps.sessions.getSession();
+    const iosKey = session.serviceKeys.IOSPlus;
+    if (!iosKey) {
+      return {
+        ok: false,
+        status: 503,
+        code: "ios_unavailable",
+        message: "IOSPlus service session not available; cannot place UAT orders",
+        extra: { hint: "Check /debug/ips-session — ServiceSessionStart(IOSPlus) failed" },
+      };
+    }
+    const client = getIressClient("live");
+    const res = await client.orderCreate3({
+      ServiceSessionKey: iosKey,
+      Order: order,
+      OrderTag: existingTag,
+    });
+    if (res.ErrorNumber && res.ErrorNumber !== 0) {
+      errorNumber = res.ErrorNumber;
+      errorDescription = res.ErrorDescription ?? "OrderCreate3 returned non-zero error";
+      orderCreateStatus = "rejected";
+    }
+    iressOrderNumber = res.OrderNumber || null;
+    if (!iressOrderNumber) {
+      return {
+        ok: false,
+        status: 502,
+        code: "no_order_number",
+        message: "OrderCreate3 returned no OrderNumber",
+        extra: { errorNumber, errorDescription },
+      };
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = err instanceof IressError ? err.code : null;
+    if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
+      deps.sessions.invalidate();
+    }
+    // Try to recover via the OrderTag (in case IRESS accepted but the response
+    // got dropped in transit).
+    try {
+      const session = await deps.sessions.getSession();
+      const iosKey = session.serviceKeys.IOSPlus;
+      if (iosKey) {
+        const client = getIressClient("live");
+        const lookup = await client.orderNoGetByOrderTag({
+          ServiceSessionKey: iosKey,
+          OrderTag: existingTag,
+        });
+        if (lookup.OrderNumber) {
+          iressOrderNumber = lookup.OrderNumber;
+        }
+      }
+    } catch {
+      /* fall through to the error */
+    }
+    if (!iressOrderNumber) {
+      return {
+        ok: false,
+        status: 502,
+        code: code ? `iress_${code}` : "order_create_failed",
+        message: `OrderCreate3 failed: ${msg}`,
+        extra: { orderTag: existingTag },
+      };
+    }
+  }
+
+  // Stamp the broker-assigned OrderNumber back onto the audit row.
+  const stampedAt = new Date().toISOString();
+  const newPayload: Record<string, unknown> = {
+    ...(audit.payload ?? {}),
+    uat: true,
+    uatOrderTag: existingTag,
+    uatAccountCode: accountCode,
+    broker_destination: brokerDestination,
+    uatSentAt: stampedAt,
+    iress_order_number: iressOrderNumber,
+  };
+  const newResult: Record<string, unknown> = {
+    ...(audit.result_payload ?? {}),
+    broker: brokerDestination,
+    venue: exchange,
+    tif,
+    orderTag: existingTag,
+    uatAccountCode: accountCode,
+    iress_order_number: iressOrderNumber,
+  };
+  if (errorNumber != null) {
+    newResult.uatErrorNumber = errorNumber;
+    newResult.uatErrorDescription = errorDescription;
+  }
+
+  const { error: writeErr } = await db
+    .from("oems_order_audit")
+    .update({
+      payload: newPayload,
+      result_payload: newResult,
+      status: orderCreateStatus === "rejected" ? "rejected" : "working",
+      updated_at: stampedAt,
+    })
+    .eq("id", audit.id);
+
+  if (writeErr) {
+    return {
+      ok: false,
+      status: 500,
+      code: "audit_stamp_failed",
+      message: `Order placed but audit stamp failed: ${writeErr.message}`,
+      extra: { iressOrderNumber, orderAuditId: audit.id },
+    };
+  }
+
+  // Tell the SSE hub about the new working order so subscribed UIs
+  // immediately render a row, even before the next poll cycle.
+  uatExecutionHub.publish({
+    iressOrderNumber: iressOrderNumber ?? "",
+    orderAuditId: audit.id,
+    state: "working",
+    filled: 0,
+    avgFillPrice: priceRands ?? null,
+    lastFillTimestamp: stampedAt,
+    raw: {
+      id: iressOrderNumber ?? "",
+      account: accountCode,
+      strategy: typeof payloadObj.strategy === "string" ? (payloadObj.strategy as string) : "",
+      side: side === 1 ? "BUY" : "SELL",
+      symbol,
+      isin: typeof payloadObj.isin === "string" ? (payloadObj.isin as string) : "",
+      type: orderType as "MKT" | "LMT",
+      tif: tif as "DAY",
+      destination: brokerDestination as "JSE" | "OTC" | "DARK",
+      qty,
+      filled: 0,
+      limit: priceRands ?? null,
+      stop: null,
+      avgPx: null,
+      vwap: null,
+      trader: typeof payloadObj.sent_by === "string" ? (payloadObj.sent_by as string) : "",
+      ts: Date.now(),
+      state: "WORKING",
+      orderTag: existingTag,
+      slippageBps: null,
+      arrivalMid: 0,
+    },
+    bookId: typeof payloadObj.book_id === "string" ? (payloadObj.book_id as string) : null,
+    observedAt: stampedAt,
+  });
+
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      ok: true,
+      iressOrderNumber: iressOrderNumber ?? "",
+      status: orderCreateStatus,
+      orderAuditId: audit.id,
+      accountCode,
+      brokerDestination,
+      iressMode: deps.env.iressMode,
+      ...(errorNumber != null ? { errorNumber } : {}),
+      ...(errorDescription != null ? { errorDescription } : {}),
+    },
+  };
+}
+
+async function streamUatExecution(
+  req: IncomingMessage,
+  res: ServerResponse,
+  deps: HttpApiDeps,
+): Promise<void> {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+  });
+  res.write(`retry: 5000\n\n`);
+
+  let closed = false;
+  const onClose = () => {
+    closed = true;
+  };
+  req.on("close", onClose);
+  req.on("aborted", onClose);
+
+  const push = (event: string, data: unknown) => {
+    if (closed) return;
+    try {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch {
+      closed = true;
+    }
+  };
+
+  // Initial status frame so the client knows the stream is live.
+  push("status", {
+    uatMode: deps.env.uatMode,
+    uatAccountCode: deps.env.uatAccountCode || null,
+    lastPollAt: getLastUatPollAt() ?? null,
+    pollIntervalSec: deps.env.uatOrderPollSec,
+    timestamp: new Date().toISOString(),
+  });
+
+  // Keepalive ping every 25s — IRESS brokers tend to kill idle SSEs.
+  const ping = setInterval(() => {
+    if (closed) return;
+    try {
+      res.write(`: keepalive ${Date.now()}\n\n`);
+    } catch {
+      closed = true;
+    }
+  }, 25_000);
+
+  const unsubscribe = uatExecutionHub.subscribe((delta: UatExecutionDelta) => {
+    if (closed) return;
+    push("delta", {
+      order_audit_id: delta.orderAuditId,
+      iress_order_number: delta.iressOrderNumber,
+      state: delta.state,
+      filled: delta.filled,
+      avg_fill_price_cents: delta.avgFillPrice != null ? Math.round(delta.avgFillPrice * 100) : null,
+      symbol: delta.raw.symbol,
+      side: delta.raw.side,
+      qty: delta.raw.qty,
+      book_id: delta.bookId,
+      timestamp: delta.observedAt,
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    req.on("close", () => resolve());
+    req.on("aborted", () => resolve());
+  });
+
+  clearInterval(ping);
+  unsubscribe();
   res.end();
 }

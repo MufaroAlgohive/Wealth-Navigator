@@ -5,17 +5,18 @@
  *   bun run workers/iress-ingest/src/main.ts
  */
 
-import { loadWorkerEnv } from "./env";
-import { syncWatchlistQuotes } from "./quotes";
-import { WorkerSessionManager, LICENSE_RELEASE_DELAY_MS } from "./session";
-import { createInstitutionalSupabase, createRetailSupabase, writeHeartbeat } from "./supabase";
-import { runHealthLoop, gracefulStop } from "./health";
-import { pollAccountsForOrders } from "./orders";
-import { startHttpApi } from "./http-api";
-import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
 import { syncBondUniverse } from "./bonds";
+import { loadWorkerEnv } from "./env";
+import { gracefulStop, runHealthLoop } from "./health";
+import { startHttpApi } from "./http-api";
 import { loadIpsConfig, syncIps } from "./ips";
+import { pollUatForFills, stampLastUatPollAt } from "./order-poller";
+import { pollAccountsForOrders } from "./orders";
+import { syncWatchlistQuotes } from "./quotes";
 import { syncRetailPrices } from "./retail-ingest";
+import { LICENSE_RELEASE_DELAY_MS, WorkerSessionManager } from "./session";
+import { createInstitutionalSupabase, createRetailSupabase, writeHeartbeat } from "./supabase";
+import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
 
 const env = loadWorkerEnv();
 
@@ -26,9 +27,7 @@ if (env.iressMode === "live") {
     !process.env.IRESS_COMPANY_NAME && "IRESS_COMPANY_NAME",
   ].filter(Boolean) as string[];
   if (missing.length > 0) {
-    console.error(
-      `[iress-ingest] refusing to start: IRESS_MODE=live but missing ${missing.join(", ")}`,
-    );
+    console.error(`[iress-ingest] refusing to start: IRESS_MODE=live but missing ${missing.join(", ")}`);
     process.exit(1);
   }
 }
@@ -52,17 +51,14 @@ const supabase = createInstitutionalSupabase(env);
 const retailSupabase = createRetailSupabase(env);
 const retailIngestEnabled =
   process.env.IRESS_RETAIL_INGEST === "1" && Boolean(process.env.RETAIL_SUPABASE_URL);
-const retailIngestIntervalSec = Math.max(
-  60,
-  Number(process.env.IRESS_RETAIL_INGEST_INTERVAL_SEC ?? "300"),
-);
+const retailIngestIntervalSec = Math.max(60, Number(process.env.IRESS_RETAIL_INGEST_INTERVAL_SEC ?? "300"));
 
 // Rebind supabase on the session manager now that it exists (worker_session_metadata is institutional).
 (sessions as unknown as { deps: { supabase: typeof supabase } }).deps.supabase = supabase;
 
 let shuttingDown = false;
 let lastQuoteSyncAt: string | undefined;
-let lastAccountCode = env.iressAccountCode;
+const lastAccountCode = env.iressAccountCode;
 const timeSeriesConfig = loadTimeSeriesConfig(env);
 const ipsConfig = loadIpsConfig(env);
 
@@ -80,11 +76,19 @@ function logStartup(): void {
       quoteIntervalSec: env.quoteIntervalSec,
       orderPollSec: env.orderPollIntervalSec,
       instrumentSync: env.instrumentSync,
+      uatMode: env.uatMode,
+      uatAccountCode: env.uatAccountCode || null,
+      uatOrderPollSec: env.uatOrderPollSec,
     }),
   );
   if (!env.dryRun && env.allowWrites) {
     console.warn(
       "[iress-ingest] WRITES ENABLED — TARGETING LIVE SUPABASE. Press Ctrl+C within 10s to abort.",
+    );
+  }
+  if (env.uatMode && !env.uatAccountCode) {
+    console.warn(
+      "[iress-ingest] IRESS_UAT_MODE=1 but IRESS_UAT_ACCOUNT_CODE is unset — UAT order routing will return 503. Set the UAT account to enable send-to-market.",
     );
   }
 }
@@ -146,6 +150,39 @@ async function orderLoop(): Promise<void> {
       console.warn(`[iress-ingest] order poll error: ${msg}`);
     }
     await sleep(env.orderPollIntervalSec * 1000);
+  }
+}
+
+async function uatOrderLoop(): Promise<void> {
+  // UAT mode is opt-in. When on, polls the worker-configured
+  // `IRESS_UAT_ACCOUNT_CODE` (separate broker account) and writes fills back
+  // to `oems_order_audit` for the OEMS Order Book UI. Off in production.
+  if (!env.uatMode) return;
+  if (!env.uatAccountCode) {
+    console.warn(
+      "[iress-ingest] UAT mode is on but IRESS_UAT_ACCOUNT_CODE is empty — UAT order poll loop disabled",
+    );
+    return;
+  }
+  console.info(
+    `[iress-ingest] UAT order poll ENABLED → account=${env.uatAccountCode} interval=${env.uatOrderPollSec}s`,
+  );
+  while (!shuttingDown) {
+    try {
+      stampLastUatPollAt();
+      const r = await pollUatForFills({ env, sessions, supabase });
+      if (r.updated > 0 || r.published > 0) {
+        console.info(
+          `[iress-ingest] uat order poll: updated=${r.updated} published=${r.published} skip=${r.skipReason ?? "—"} elapsedMs=${r.elapsedMs}`,
+        );
+      } else if (r.skipReason && r.skipReason !== "uat_mode_disabled") {
+        console.info(`[iress-ingest] uat order poll: skip=${r.skipReason}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] uat order poll error: ${msg}`);
+    }
+    await sleep(env.uatOrderPollSec * 1000);
   }
 }
 
@@ -299,6 +336,7 @@ void runHealthLoop({
 });
 void quoteLoop();
 void orderLoop();
+void uatOrderLoop();
 void timeSeriesLoop();
 // IPS is parked (IRESS scope = market data + IOS+). The loop only errors every
 // cycle without an IPS service session — re-enable with IRESS_ENABLE_IPS=1.
@@ -315,10 +353,7 @@ if (retailIngestEnabled) {
 // reverse-proxies /orders, /orders/stream, and /health from these handlers
 // so Next.js never holds the IRESS license seat.
 if (process.env.WORKER_HTTP_DISABLED !== "1") {
-  startHttpApi(
-    { env, sessions, supabase },
-    () => lastQuoteSyncAt,
-  ).catch((err) => {
+  startHttpApi({ env, sessions, supabase }, () => lastQuoteSyncAt).catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[iress-ingest] http api failed to start: ${message}`);
   });

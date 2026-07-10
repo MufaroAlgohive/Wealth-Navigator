@@ -1,4 +1,8 @@
-import { JSE_RATE_CODES, JSE_TRACKED_UNIVERSE, type UniverseEntry as SharedUniverseEntry } from "../../../src/lib/iress/universe";
+import {
+  JSE_RATE_CODES,
+  JSE_TRACKED_UNIVERSE,
+  type UniverseEntry as SharedUniverseEntry,
+} from "../../../src/lib/iress/universe";
 
 /**
  * A symbol on the worker watchlist. `exchange` lets us mix JSE equities with
@@ -43,6 +47,18 @@ export interface WorkerEnv {
   institutionalSupabaseUrl: string;
   institutionalSupabaseKey: string;
   iressAccountCode: string;
+  /**
+   * UAT phase (Mint OEM Finalisation): a separate broker AccountCode that the
+   * worker uses when `uatMode=true`. Lets UAT users exercise the full order
+   * pipeline against the MINT_CT IOS seat without touching real client books.
+   * When unset and `uatMode=true`, the worker rejects `/uat/send-to-market` so
+   * a missed config can never default to the production account.
+   */
+  uatAccountCode: string;
+  /** When true, `/uat/send-to-market` + the UAT order poll loop are enabled. */
+  uatMode: boolean;
+  /** Cadence (seconds) of the UAT order-pad fill poll. Default 30. */
+  uatOrderPollSec: number;
   applicationLabel: string;
   /** Default exchange passed to PricingQuoteGet (default "JSE"). */
   defaultExchange: string;
@@ -66,7 +82,10 @@ function parseBool(value: string | undefined, defaultValue: boolean): boolean {
 }
 
 function parseList(value: string | undefined, fallback: string[]): string[] {
-  const raw = (value ?? "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  const raw = (value ?? "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
   return raw.length > 0 ? raw : fallback;
 }
 
@@ -125,8 +144,7 @@ export function loadWorkerEnv(): WorkerEnv {
   // everything else → INSTITUTIONAL prod (nnwz…). Both fall back to the legacy
   // single pair, so behaviour is unchanged until the split vars are set on Railway.
   const institutionalSupabaseUrl = process.env.INSTITUTIONAL_SUPABASE_URL ?? supabaseUrl;
-  const institutionalSupabaseKey =
-    process.env.INSTITUTIONAL_SUPABASE_SERVICE_ROLE_KEY ?? supabaseServiceKey;
+  const institutionalSupabaseKey = process.env.INSTITUTIONAL_SUPABASE_SERVICE_ROLE_KEY ?? supabaseServiceKey;
   const retailSupabaseUrl = process.env.RETAIL_SUPABASE_URL ?? supabaseUrl;
   const retailSupabaseKey = process.env.RETAIL_SUPABASE_SERVICE_ROLE_KEY ?? supabaseServiceKey;
   const defaultExchange = (process.env.IRESS_DEFAULT_EXCHANGE ?? "JSE").toUpperCase().trim();
@@ -139,7 +157,10 @@ export function loadWorkerEnv(): WorkerEnv {
   const overridesRaw = process.env.IRESS_WATCHLIST_SYMBOLS;
   const baseEntries: WatchlistEntry[] = (() => {
     if (!overridesRaw) return DEFAULT_WATCHLIST;
-    const list = parseList(overridesRaw, DEFAULT_WATCHLIST.map((e) => e.symbol));
+    const list = parseList(
+      overridesRaw,
+      DEFAULT_WATCHLIST.map((e) => e.symbol),
+    );
     return list.map<WatchlistEntry>((sym) => {
       const def = DEFAULT_WATCHLIST.find((d) => d.symbol === sym);
       return def ?? { symbol: sym, kind: "equity" };
@@ -178,6 +199,13 @@ export function loadWorkerEnv(): WorkerEnv {
     institutionalSupabaseUrl,
     institutionalSupabaseKey,
     iressAccountCode: process.env.IRESS_ACCOUNT_CODE ?? "",
+    // UAT mode: when IRESS_UAT_MODE=1, the worker accepts /uat/send-to-market
+    // and the UAT order poll loop. Orders tagged uat_test=true go to the
+    // UAT account (different IRESS AccountCode), keeping real client books
+    // untouched. The gate is opt-in: missing UAT_ACCOUNT_CODE + UAT mode = 503.
+    uatAccountCode: process.env.IRESS_UAT_ACCOUNT_CODE ?? "",
+    uatMode: parseBool(process.env.IRESS_UAT_MODE, false),
+    uatOrderPollSec: Math.max(5, Number(process.env.IRESS_UAT_ORDER_POLL_SEC ?? "30")),
     applicationLabel: process.env.IRESS_APPLICATION_LABEL ?? "Mint-OEMS-Worker",
     defaultExchange: defaultExchange || "JSE",
     fxExchange: fxExchange || "FX",

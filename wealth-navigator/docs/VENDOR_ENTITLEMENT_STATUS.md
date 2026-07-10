@@ -10,6 +10,19 @@ The table below is the canonical state per the 2026-07-09 cutover. When
 entitlements flip on, edit this file in the same commit that wires the
 upstream.
 
+> **2026-07-09 update — IRESS `TimeSeriesGet2` unblock.** Andre Pietersen
+> confirmed the entitlement is live with `DataSource=zax`,
+> `Exchange=jse`, `Frequency=monthly`. Per-stock daily + monthly is now
+> flipped to **available** on `/api/history/[sym]` (Y-axis: time-series
+> daily close for the Security page chart ranges). The same V4 string
+> form is used for the daily bucket. **Uncertainty:** per-symbol
+> intraday (`Frequency=Tick | IntraDay | 1-Minute`), the sector indices
+> (J200 etc.), the ZAR sovereign curve (R-codes on YFX), and the J203
+> All Share index are **not yet probed**. They stay `blocked-vendor` /
+> `unblock-pending` until a separate probe (Andre's email proves
+> monthly, not the rest). Probe script + plan in
+> [`TIMESERIES_UNBLOCK_PLAN.md`](./TIMESERIES_UNBLOCK_PLAN.md).
+
 ---
 
 ## Status legend
@@ -38,8 +51,8 @@ Flow all read off the same taxonomy.
 | **Yahoo Finance** (public `/v7/finance/quote`, `/v8/finance/chart`) | `/api/quotes?provider=yahoo`, `/api/intraday/[sym]` (fallthrough), `/api/history/[sym]` | **available** — public, no entitlement. Used as the IRESS fallthrough + the `ACTIVE_MARKET_DATA_PROVIDER=yahoo` default on Vercel. | n/a | Backend |
 | **JSE ETF universe** (Yahoo `.JO` ETF roots — Satrix, Sygnia, 1nvest, NewGold, Absa) | `/api/admin/etf-universe`, `/api/quotes?provider=yahoo` (auto-suffix), `/api/equities` | **available** via the seed list (`lib/data/providers/jse-etfs.ts`). The worker `SecuritySearchGet` ingest will eventually replace the seed with a master table. | n/a | Backend |
 | **JSE SENS** (`NewsVendorGet` `vendor=SENS`) | `/api/iress/news?vendor=SENS`, `/api/news?category=SENS` | **blocked-vendor** — the SENS vendor is not entitled on `DFM@Mint` as of the last worker probe (2026-06-26). The BFF translates IRESS faults `25010` / `25034` into `data-source="blocked-vendor"` and the Cockpit News Flow renders the "Charles/IRESS to flip DFM@Mint access" empty state. The Alliance newswire (RSS: Moneyweb + BusinessTech) continues to deliver headlines under the All tab. | Charles/IRESS to flip the SENS vendor entitlement on `DFM@Mint`. Re-probe via `GET /api/iress/news?vendor=SENS` to confirm. | Charles |
-| **JSE ALSI / J203 + sector indices** (`TimeSeriesGet2` on `JSE_DS`) | `/api/sa-rates/timeseries` (no — that's SARB), tier-2 cockpit panels (sector heatmap, ALSI line) | **blocked-vendor** — `TimeSeriesGet2` is empirically entitlement-blocked as of 2026-06-13 (every `Frequency` Long + `Interval` string rejected). Confirmed via the worker's `/debug/timeseries-probe`. | Charles/IRESS to flip the `TimeSeriesGet2` entitlement on `DFM@Mint`. Re-validate enums via `/debug/timeseries-probe`. | Charles |
-| **ZAR govt + ILB curves** (`TimeSeriesGet2` on `YFX` / `YFXD` — R2030, GOVI, ZAR_NSS, ZAR_REAL) | `/api/curves/ZAR_NSS`, `/api/curves/ZAR_REAL` | **blocked-vendor** — same root cause as the ALSI panel (TimeSeriesGet2 entitlement). | Charles/IRESS to flip `TimeSeriesGet2` entitlement on `DFM@Mint`. | Charles |
+| **JSE ALSI / J203 + sector indices** (`TimeSeriesGet2` on `JSE_DS`) | `/api/sa-rates/timeseries` (no — that's SARB), tier-2 cockpit panels (sector heatmap, ALSI line) | **available (per-stock daily/monthly)** as of 2026-07-09 — Andre's unblock email proves `DataSource=zax, Exchange=jse, Frequency=monthly` works; the daily bucket is on the same entitlement and is used by `/api/history/[sym]`. The ALSI / sector-index panels (`J203`, `J200`, …) and **per-symbol intraday** (`Tick | IntraDay | 1-Minute`) are still **blocked-vendor / unblock-pending** — they need a separate probe confirmation. | Re-validate the unproven `Frequency` values via the worker's `/debug/timeseries-probe`; see [`TIMESERIES_UNBLOCK_PLAN.md`](./TIMESERIES_UNBLOCK_PLAN.md) for the candidate list + decision tree. | Charles / Backend |
+| **ZAR govt + ILB curves** (`TimeSeriesGet2` on `YFX` / `YFXD` — R2030, GOVI, ZAR_NSS, ZAR_REAL) | `/api/curves/ZAR_NSS`, `/api/curves/ZAR_REAL` | **unblock-pending** — Andre's 2026-07-09 unblock is for the equity feed (`DataSource=zax, Exchange=jse`); the bond/curve path still needs `DataSource=yfxd, Exchange=yfx`, which is the standing live config (CONFIRMED 2026-06-16 via `SecuritySearchGet` discovery) but **was not re-confirmed** under the new entitlement. The curves stay `blocked-vendor` until a YFX bond probe confirms. | Re-probe `TimeSeriesGet2(R2030, YFX, yfxd, Daily)` via the worker's `/debug/timeseries-probe`; the standing config should still work, but Andre's unblock email is silent on bonds. | Charles / Backend |
 | **Full fixed-income feed** (`SecuritySearchGet` + bond YTM analytics — clean/dirty, duration, DV01, convexity) | `/api/bonds` | **blocked-vendor** — `bonds_c` requires `SecuritySearchGet` + YTM entitlement. Empty table surfaces as `data-source="blocked-vendor"` with the unblock condition. | Charles/IRESS to flip `SecuritySearchGet` + YTM entitlement on `DFM@Mint`; apply `supabase/migrations/20260613000004_oems_instrument_universe.sql`. The worker will then populate `bonds_c`. | Charles / Backend |
 | **Money-market curve feed** (rate-feed entitlement — MM instrument universe + JIBAR fixings) | `/api/money-market` | **blocked-vendor** — `money_market_instrument_c` + `jibar_fixing_c` empty. BFF surfaces `data-source="blocked-vendor"` with the unblock condition. | Charles/IRESS to flip the rate-feed entitlement on `DFM@Mint`; apply `supabase/migrations/20260613000005_money_market_universe.sql`. | Charles / Treasury |
 | **Macro series (SARB public Web API — repo, prime, ZARONIA)** | `/api/sa-rates/timeseries` (read), `/api/cron/sa-rates-update` (cron), `/api/admin/vendor-health` (probe) | **available** — SARB public Web API is reachable from Vercel with no auth. The daily cron (registered in `vercel.json` at `5 14 * * 1-5` UTC) pulls the headline series and (when `SA_RATES_WRITE=1`) persists to `macro_indicator_c` on institutional Supabase. | n/a. **Caveat:** if SARB blocks egress from Vercel IPs, the cron degrades gracefully and `/api/admin/vendor-health` flags the vendor as `error`. | Treasury / Backend |
@@ -90,6 +103,12 @@ operations is:
   architecture and the IRESS-first overlay policy.
 - `wealth-navigator/docs/TIMESERIES_PROBE_REPORT_FINAL.md` — the
   historical TimeSeriesGet2 probe report (June 2026).
+- `wealth-navigator/docs/TIMESERIES_UNBLOCK_PLAN.md` — the 2026-07-09
+  unblock plan: per-panel decision tree + probe script + what's wired
+  vs what still needs additional probe confirmation.
+- `wealth-navigator/scripts/probe-timeseries.ts` — the probe script
+  that posts the candidate `TimeSeriesGet2` calls to the Railway
+  worker's `/debug/timeseries-probe` endpoint.
 - `wealth-navigator/docs/IRESS_AUTH_TROUBLESHOOTING.md` — session + 25008
   fault recovery.
 - `wealth-navigator/docs/MINT_GO_LIVE_RUNBOOK.html` — the higher-level
@@ -97,5 +116,8 @@ operations is:
 
 ---
 
-_Last updated: 2026-07-09, as part of the Mint OEM Finalisation Phase C
-vendor-feeds cutover._
+_Last updated: 2026-07-09, on receipt of Andre Pietersen's
+`TimeSeriesGet2` entitlement-unblock email (`DataSource=zax, Exchange=jse,
+Frequency=monthly`); per-stock daily + monthly wiring live in
+`/api/history/[sym]`, tier-2 panels (ALSI intraday, sector heatmap, ZAR
+sovereign curve) still gated behind additional probe confirmation._

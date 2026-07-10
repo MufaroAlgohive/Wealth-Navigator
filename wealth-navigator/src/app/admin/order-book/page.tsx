@@ -9,6 +9,10 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
+import { UatBanner } from "@/components/admin/order-book/uat-banner";
+import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
+import { UatTestRunner } from "@/components/admin/order-book/uat-test-runner";
+import { ExecutionView } from "@/components/admin/order-book/execution-view";
 
 interface Row {
   id: string; email: string; client: string; instrument: string; ticker: string; isin: string;
@@ -50,6 +54,7 @@ export default function OrderBookPage() {
   const [rows, setRows] = React.useState<Row[] | null>(null);
   const [search, setSearch] = React.useState("");
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+  const [uatRefresh, setUatRefresh] = React.useState(0);
 
   const load = React.useCallback(async () => {
     setRows(null);
@@ -103,6 +108,8 @@ export default function OrderBookPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
+      {tab !== "uat-testing" && (
+      <>
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex gap-1 rounded-lg bg-muted p-0.5">
@@ -121,12 +128,23 @@ export default function OrderBookPage() {
         <div className="rounded-xl border border-border bg-card px-4 py-2.5"><div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Client P&L (shown)</div><div className={cn("text-lg font-bold", pnlCls(totalClientPnl))}>{R(totalClientPnl)}</div></div>
         <div className="rounded-xl border border-border bg-card px-4 py-2.5"><div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">MINT P&L (shown)</div><div className="text-lg font-bold text-foreground">{R(totalMintPnl)}</div></div>
       </div>
+      </>
+      )}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="active">Active Orderbook</TabsTrigger>
           <TabsTrigger value="closed">Closed Books</TabsTrigger>
+          <TabsTrigger value="uat-testing">UAT Order Testing</TabsTrigger>
         </TabsList>
+        {tab === "uat-testing" ? (
+          <TabsContent value="uat-testing" className="mt-3 space-y-3">
+            <UatBanner />
+            <UatOrderTicket onPlaced={() => setUatRefresh((n) => n + 1)} />
+            <UatTestRunner />
+            <ExecutionView key={uatRefresh} bookId="UAT-ADHOC" />
+          </TabsContent>
+        ) : (
         <TabsContent value={tab} className="mt-3">
           <div className="overflow-x-auto rounded-xl border border-border">
             <table className="w-full border-collapse">
@@ -188,6 +206,7 @@ export default function OrderBookPage() {
             </table>
           </div>
         </TabsContent>
+        )}
       </Tabs>
     </div>
   );
