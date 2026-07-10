@@ -82,7 +82,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     return NextResponse.json({ ok: false, error: reqErr.message }, { status: 500 });
   }
-  if (!request) return NextResponse.json({ ok: false, error: "rebalance request not found" }, { status: 404 });
+  if (!request)
+    return NextResponse.json({ ok: false, error: "rebalance request not found" }, { status: 404 });
 
   const from = request.status as string;
   const allowed = ALLOWED[from] ?? [];
@@ -97,7 +98,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // cancelled can be done by the requester (or dev) to withdraw their own proposal.
   const isRequester = auth.ctx.email.toLowerCase() === String(request.requested_by ?? "").toLowerCase();
   const isDev = auth.ctx.approverTier === "dev";
-  if ((toStatus === "ic_approved" || toStatus === "rejected") && !can(auth.ctx, "rebalance", "approve_rebalance")) {
+  if (
+    (toStatus === "ic_approved" || toStatus === "rejected") &&
+    !can(auth.ctx, "rebalance", "approve_rebalance")
+  ) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   if (toStatus === "cancelled" && !isRequester && !isDev) {

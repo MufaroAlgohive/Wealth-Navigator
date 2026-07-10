@@ -8,12 +8,12 @@
  * / text-primary utilities and glass CSS variables.
  */
 
-import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { Minus, TrendingDown, TrendingUp } from "lucide-react";
+import * as React from "react";
 
 import { cn } from "@/lib/cn";
-import type { Rating, NoteStatus, Esg, CompAction, Peer, Quote } from "./types";
+import type { CompAction, Esg, NoteStatus, Peer, Quote, Rating } from "./types";
 
 // ── formatters ─────────────────────────────────────────────────────────────
 export function moneyR(v: number | null | undefined, dp = 2): string {
@@ -35,14 +35,20 @@ export function weightPct(v: number | null | undefined, dp = 1): string {
 }
 export function initialsOf(name: string | null | undefined): string {
   if (!name) return "—";
-  const parts = name.replace(/@.*/, "").split(/[\s.]+/).filter(Boolean);
+  const parts = name
+    .replace(/@.*/, "")
+    .split(/[\s.]+/)
+    .filter(Boolean);
   if (parts.length === 0) return name.slice(0, 2).toUpperCase();
-  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
-  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
+  const first = parts[0] ?? "";
+  if (parts.length === 1) return first.slice(0, 2).toUpperCase();
+  const last = parts[parts.length - 1] ?? "";
+  return ((first[0] ?? "") + (last[0] ?? "")).toUpperCase();
 }
 
 // ── badges ───────────────────────────────────────────────────────────────
-const PILL = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide";
+const PILL =
+  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide";
 
 export function RatingBadge({ rating }: { rating?: Rating | null }) {
   if (!rating) return null;
@@ -59,7 +65,10 @@ const STATUS_META: Record<NoteStatus, { label: string; cls: string }> = {
   approved: { label: "APPROVED", cls: "border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.12)] text-up" },
   ic_pending: { label: "IC PENDING", cls: "border-primary/35 bg-primary/12 text-primary" },
   in_review: { label: "IN REVIEW", cls: "border-amber-400/40 bg-amber-400/12 text-amber-500" },
-  draft: { label: "DRAFT", cls: "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] text-muted-foreground" },
+  draft: {
+    label: "DRAFT",
+    cls: "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] text-muted-foreground",
+  },
   rejected: { label: "REJECTED", cls: "border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.12)] text-down" },
 };
 export function StatusChip({ status }: { status: NoteStatus }) {
@@ -112,13 +121,17 @@ export function TrendArrow({ trend }: { trend?: "up" | "down" | "flat" }) {
 // ── live data hooks ────────────────────────────────────────────────────────
 /** Batch live quotes keyed by uppercased symbol. Falls back to an empty map. */
 export function useQuotes(symbols: string[]) {
-  const key = Array.from(new Set(symbols.map((s) => s.toUpperCase()).filter(Boolean))).sort().join(",");
+  const key = Array.from(new Set(symbols.map((s) => s.toUpperCase()).filter(Boolean)))
+    .sort()
+    .join(",");
   return useQuery<Record<string, Quote>>({
     queryKey: ["ric-quotes", key],
     enabled: key.length > 0,
     refetchInterval: 30_000,
     queryFn: async () => {
-      const res = await fetch(`/api/quotes?symbols=${encodeURIComponent(key)}&exchange=JSE`, { cache: "no-store" });
+      const res = await fetch(`/api/quotes?symbols=${encodeURIComponent(key)}&exchange=JSE`, {
+        cache: "no-store",
+      });
       const json = (await res.json().catch(() => ({}))) as { quotes?: Array<Record<string, unknown>> };
       const map: Record<string, Quote> = {};
       for (const q of json.quotes ?? []) {
@@ -146,7 +159,9 @@ export function useIntradaySeries(symbol: string | null) {
     queryKey: ["ric-intraday", symbol],
     enabled: !!symbol,
     queryFn: async () => {
-      const res = await fetch(`/api/intraday/${encodeURIComponent(symbol!)}?limit=90`, { cache: "no-store" });
+      const res = await fetch(`/api/intraday/${encodeURIComponent(symbol ?? "")}?limit=90`, {
+        cache: "no-store",
+      });
       const json = (await res.json().catch(() => ({}))) as {
         points?: { t: number; v: number }[];
         prevClose?: number | null;
@@ -185,10 +200,14 @@ export function PriceTriggerChart({
 
   const trigPrices = triggers.map((t) => t.price).filter((n) => Number.isFinite(n));
   const pricePts = points.map((p) => p.v).filter((n) => Number.isFinite(n) && n > 0);
-  const allV = [...pricePts, ...trigPrices, ...(current != null ? [current] : [])].filter((n) => Number.isFinite(n));
+  const allV = [...pricePts, ...trigPrices, ...(current != null ? [current] : [])].filter((n) =>
+    Number.isFinite(n),
+  );
   if (allV.length === 0) {
     return (
-      <div className="flex h-full w-full items-center justify-center text-caption">No price or trigger data.</div>
+      <div className="flex h-full w-full items-center justify-center text-caption">
+        No price or trigger data.
+      </div>
     );
   }
   const lo = Math.min(...allV);
@@ -198,12 +217,21 @@ export function PriceTriggerChart({
   const span = max - min || 1;
   const x = (i: number) => padL + (points.length > 1 ? (i / (points.length - 1)) * (W - padL - padR) : 0);
   const y = (v: number) => padT + (1 - (v - min) / span) * (H - padT - padB);
-  const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ");
+  const path = points
+    .map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`)
+    .join(" ");
   const toneClass = (t: ChartTrigger["tone"]) =>
     t === "buy" ? "text-up" : t === "sell" ? "text-down" : "text-muted-foreground";
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-full w-full">
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="none"
+      className="h-full w-full"
+      role="img"
+      aria-label="Price history with trigger levels"
+    >
+      <title>Price history with trigger levels</title>
       {/* trigger levels */}
       {triggers.map((t) => {
         const yy = y(t.price);
@@ -229,7 +257,15 @@ export function PriceTriggerChart({
       {/* current price marker */}
       {current != null && Number.isFinite(y(current)) && (
         <g className="text-foreground">
-          <line x1={padL} x2={W - padR} y1={y(current)} y2={y(current)} stroke="currentColor" strokeWidth={1} opacity={0.25} />
+          <line
+            x1={padL}
+            x2={W - padR}
+            y1={y(current)}
+            y2={y(current)}
+            stroke="currentColor"
+            strokeWidth={1}
+            opacity={0.25}
+          />
         </g>
       )}
       {/* price line */}
@@ -250,11 +286,15 @@ export function PeerPeBars({
   subjectName?: string;
 }) {
   const bars: { name: string; pe: number; me: boolean }[] = [
-    ...(subjectPe != null && Number.isFinite(subjectPe) ? [{ name: subjectName, pe: subjectPe, me: true }] : []),
+    ...(subjectPe != null && Number.isFinite(subjectPe)
+      ? [{ name: subjectName, pe: subjectPe, me: true }]
+      : []),
     ...peers.filter((p) => Number.isFinite(p.pe)).map((p) => ({ name: p.name, pe: p.pe, me: false })),
   ];
   if (bars.length === 0) {
-    return <div className="flex h-full items-center justify-center text-caption">No peer valuation data.</div>;
+    return (
+      <div className="flex h-full items-center justify-center text-caption">No peer valuation data.</div>
+    );
   }
   const max = Math.max(...bars.map((b) => b.pe)) * 1.1 || 1;
   return (
@@ -263,7 +303,10 @@ export function PeerPeBars({
         <div key={b.name} className="flex min-w-0 flex-1 flex-col items-center justify-end gap-1">
           <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{b.pe.toFixed(1)}</span>
           <div
-            className={cn("w-full max-w-[46px] rounded-t-md", b.me ? "bg-primary" : "bg-[hsl(var(--foreground)/0.18)]")}
+            className={cn(
+              "w-full max-w-[46px] rounded-t-md",
+              b.me ? "bg-primary" : "bg-[hsl(var(--foreground)/0.18)]",
+            )}
             style={{ height: `${Math.max((b.pe / max) * 100, 3)}%` }}
           />
           <span className="truncate text-center text-[10px] text-muted-foreground" title={b.name}>

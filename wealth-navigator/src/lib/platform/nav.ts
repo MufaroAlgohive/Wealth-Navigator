@@ -1,8 +1,31 @@
 import {
-  LayoutDashboard, TrendingUp, LineChart, Banknote, Globe2, Layers, FileText,
-  ClipboardList, Users, MonitorSmartphone, BookOpen, Mail, Sunrise, Newspaper,
-  ShieldCheck, Shield, Cable, SlidersHorizontal, Settings, Landmark,
-  Activity, Search, Library, Scale, Vote, CalendarClock, type LucideIcon,
+  Activity,
+  Banknote,
+  BookOpen,
+  Cable,
+  CalendarClock,
+  ClipboardList,
+  FileText,
+  Globe2,
+  Landmark,
+  Layers,
+  LayoutDashboard,
+  Library,
+  LineChart,
+  type LucideIcon,
+  Mail,
+  MonitorSmartphone,
+  Newspaper,
+  Scale,
+  Search,
+  Settings,
+  Shield,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sunrise,
+  TrendingUp,
+  Users,
+  Vote,
 } from "lucide-react";
 
 import type { Persona } from "@/lib/store/session-provider";
@@ -39,12 +62,12 @@ const OPS: Persona = "funeral_cover";
  * persona switcher lands. Keep in sync with PERSONA_LABEL.home in top-bar.tsx.
  */
 export const PERSONA_HOME: Record<Persona, { label: string; href: string }> = {
-  oems:           { label: "Cockpit",         href: "/oems" },
-  admin:          { label: "Cockpit",         href: "/oems" },
-  strategist:     { label: "Strategist Desk", href: "/strategist" },
-  wealth_manager: { label: "My Book",         href: "/wm" },
-  business:       { label: "House View",      href: "/business" },
-  funeral_cover:  { label: "Cover Overview",  href: "/fc/overview" },
+  oems: { label: "Cockpit", href: "/oems" },
+  admin: { label: "Cockpit", href: "/oems" },
+  strategist: { label: "Strategist Desk", href: "/strategist" },
+  wealth_manager: { label: "My Book", href: "/wm" },
+  business: { label: "House View", href: "/business" },
+  funeral_cover: { label: "Cover Overview", href: "/fc/overview" },
 };
 
 /** The role-aware "Overview" item rendered at the top of the sidebar. */
@@ -115,7 +138,13 @@ export const PLATFORM_NAV: NavSection[] = [
     title: "Governance & Platform",
     items: [
       { label: "Approvals & Compliance", href: "/compliance", icon: Shield, roles: [] },
-      { label: "Cyber Compliance", href: "/admin/cyber-compliance", icon: ShieldCheck, roles: [], badge: "cc" },
+      {
+        label: "Cyber Compliance",
+        href: "/admin/cyber-compliance",
+        icon: ShieldCheck,
+        roles: [],
+        badge: "cc",
+      },
       { label: "Integration", href: "/oems/integration", icon: Cable, roles: [DESK] },
       { label: "Team & Access", href: "/admin/team", icon: Users, roles: [] },
       { label: "App Settings", href: "/admin/app-settings", icon: SlidersHorizontal, roles: [] },

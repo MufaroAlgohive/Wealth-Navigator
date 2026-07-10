@@ -7,16 +7,16 @@
  * /api/research/notes (institutional DB); CURRENT/UPSIDE are live.
  */
 
-import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, ChevronRight, Search } from "lucide-react";
+import { ChevronRight, Plus, Search } from "lucide-react";
+import * as React from "react";
 
+import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
-import { ResearchLabCanvas, GlassSection } from "@/components/oems/primitives/glass";
-import type { ResearchNote, NoteStatus, ResearchPerms } from "./types";
 import { NoteDetail } from "./note-detail";
 import { NoteEditor } from "./note-editor";
-import { RatingBadge, StatusChip, STATUS_FILTERS, signedPct, useQuotes } from "./ui";
+import type { NoteStatus, ResearchNote, ResearchPerms } from "./types";
+import { RatingBadge, STATUS_FILTERS, StatusChip, signedPct, useQuotes } from "./ui";
 
 type Mode = { kind: "view" } | { kind: "edit"; note: ResearchNote } | { kind: "new" };
 
@@ -99,13 +99,21 @@ export function ResearchLibraryPage({
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1">
           <h1 className="text-xl font-semibold tracking-tight">Research Library</h1>
-          <p className="text-caption">Institutional-grade notes · thesis, valuation, triggers &amp; IC log for every position.</p>
+          <p className="text-caption">
+            Institutional-grade notes · thesis, valuation, triggers &amp; IC log for every position.
+          </p>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <span><b className="text-foreground">{notes.length}</b> notes</span>
-            <span><b className="text-up">{approvedCount}</b> approved</span>
-            <span><b className="text-primary">{inFlight}</b> in flight</span>
+            <span>
+              <b className="text-foreground">{notes.length}</b> notes
+            </span>
+            <span>
+              <b className="text-up">{approvedCount}</b> approved
+            </span>
+            <span>
+              <b className="text-primary">{inFlight}</b> in flight
+            </span>
           </div>
           <button
             type="button"
@@ -126,7 +134,10 @@ export function ResearchLibraryPage({
 
       <div className="grid gap-5 lg:grid-cols-[360px_1fr]">
         {/* library list */}
-        <GlassSection title="Library" right={<span className="font-mono text-xs text-muted-foreground">{filtered.length}</span>}>
+        <GlassSection
+          title="Library"
+          right={<span className="font-mono text-xs text-muted-foreground">{filtered.length}</span>}
+        >
           <div className="space-y-3">
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
@@ -157,7 +168,9 @@ export function ResearchLibraryPage({
 
             <div className="max-h-[620px] space-y-1.5 overflow-y-auto pr-1">
               {notesQuery.isLoading && <p className="text-caption">Loading notes…</p>}
-              {!notesQuery.isLoading && filtered.length === 0 && <p className="text-caption">No notes match.</p>}
+              {!notesQuery.isLoading && filtered.length === 0 && (
+                <p className="text-caption">No notes match.</p>
+              )}
               {filtered.map((n) => {
                 const up = upsideFor(n);
                 const active = n.id === selectedId && mode.kind === "view";
