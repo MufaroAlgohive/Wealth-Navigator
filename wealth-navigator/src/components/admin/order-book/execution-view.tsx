@@ -371,13 +371,16 @@ export function ExecutionView({ bookId }: { bookId: string }) {
             <tr className="border-b border-border bg-card/60 text-left">
               {[
                 "Order ID",
-                "Time",
+                "Timestamp",
                 "Strategy",
                 "Side",
                 "Symbol",
                 "Qty",
+                "Order Value",
                 "% Filled",
+                "Remaining",
                 "Limit",
+                "Avg Price",
                 "Last",
                 "VWAP",
                 "Slip / Day-1 P&L",
@@ -399,13 +402,13 @@ export function ExecutionView({ bookId }: { bookId: string }) {
           <tbody>
             {showLoading ? (
               <tr>
-                <td colSpan={16} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={19} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   Loading executions…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={16} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={19} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   No execution rows for this book yet — click <em>Send to Market</em> to dispatch.
                 </td>
               </tr>
@@ -443,11 +446,23 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       {fmtQty(r.qty)}
                     </td>
+                    <td className="px-3 py-1.5 text-[12px] font-medium text-foreground whitespace-nowrap">
+                      {(() => {
+                        const px = r.limit_price ?? r.avg_fill_price;
+                        return px != null ? fmtMoney(px * r.qty) : "—";
+                      })()}
+                    </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       {fmtPct(r.filled_pct)}
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
+                      {fmtQty(Math.max(0, r.qty - r.filled))}
+                    </td>
+                    <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       {fmtMoney(r.limit_price)}
+                    </td>
+                    <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
+                      {fmtMoney(r.avg_fill_price)}
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
