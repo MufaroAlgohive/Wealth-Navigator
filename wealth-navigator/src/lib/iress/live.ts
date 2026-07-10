@@ -1270,7 +1270,9 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           //   OrderType MKT|LMT, Volume, Price, TimeInForce); we translate here.
           Order: {
             AccountCode: order.AccountCode,
-            SecurityCode: order.SecurityCode,
+            // IRESS wants the BARE JSE code (e.g. "AME"), with Exchange separate.
+            // securities_c stores the ".JO" (Yahoo) form, so strip it here.
+            SecurityCode: order.SecurityCode.replace(/\.(JO|JSE)$/i, ""),
             Exchange: order.Exchange,
             SideCode: order.BuySell === 2 ? "Sell" : "Buy",
             PricingInstructions: order.OrderType === "MKT" ? "MARKET" : "LIMIT",
