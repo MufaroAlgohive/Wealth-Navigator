@@ -71,7 +71,7 @@ const SCENARIOS: Scenario[] = [
     description: "Submit one SOL buy 400 @ 177 Limit. Verify ExecutionView updates working → filled.",
     symbol: "SOL",
     qty: 400,
-    limit: 177,
+    limit: 17_700, // cents (R177), consistent with the other scenarios' cents limits
     side: "buy",
   },
   {

@@ -98,12 +98,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
   }
 
-  // Resolve security_id from symbol.
-  const { data: sec, error: secErr } = await retail
+  // Resolve security_id from symbol. RETAIL securities_c stores JSE symbols in
+  // the ".JO" form (e.g. "SOL.JO"), but the scenarios pass the bare code
+  // ("SOL"), so try both forms. This is what previously 404'd the seed.
+  const symbolCandidates = symbol.includes(".") ? [symbol] : [symbol, `${symbol}.JO`];
+  const { data: secRows, error: secErr } = await retail
     .from("securities_c")
     .select("id, symbol")
-    .eq("symbol", symbol)
-    .maybeSingle();
+    .in("symbol", symbolCandidates)
+    .limit(1);
 
   if (secErr) {
     if (isSupabaseSchemaMissing(secErr)) {
@@ -111,13 +114,14 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ ok: false, error: secErr.message }, { status: 500 });
   }
+  const sec = Array.isArray(secRows) ? (secRows[0] as Security | undefined) : undefined;
   if (!sec) {
     return NextResponse.json(
-      { ok: false, error: `symbol ${symbol} not found in securities_c` },
+      { ok: false, error: `symbol ${symbol} not found in securities_c (tried ${symbolCandidates.join(", ")})` },
       { status: 404 },
     );
   }
-  const securityId = (sec as Security).id;
+  const securityId = sec.id;
 
   // Resolve a user to own the holding. Reuse the admin's profile if it
   // exists; otherwise create one. For UAT scope we want a real user_id

@@ -1535,6 +1535,12 @@ export async function handleRequest(
       typeof b["timeout"] === "number" && Number.isFinite(b["timeout"])
         ? Math.trunc(b["timeout"] as number)
         : 20;
+    // How many DataRows to echo back in `sampleRows` (default 3, cap 200) so a
+    // probe can inspect list results like DestinationGet / AttributeGetByUser.
+    const sampleLimit =
+      typeof b["rows"] === "number" && Number.isFinite(b["rows"])
+        ? Math.min(200, Math.max(1, Math.trunc(b["rows"] as number)))
+        : 3;
     const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
     if (!isLive) {
       sendError(res, 503, "iress_mode_not_live", `Cannot probe in iressMode=${deps.env.iressMode}`);
@@ -1582,7 +1588,7 @@ export async function handleRequest(
         headerRow,
         dataRowCount: Array.isArray(result.dataRows) ? result.dataRows.length : 0,
         firstRow: result.firstRow ?? (Array.isArray(result.dataRows) ? (result.dataRows[0] ?? null) : null),
-        sampleRows: Array.isArray(result.dataRows) ? result.dataRows.slice(0, 3) : [],
+        sampleRows: Array.isArray(result.dataRows) ? result.dataRows.slice(0, sampleLimit) : [],
         elapsedMs: Date.now() - started,
         build: PROBE_BUILD,
       });
