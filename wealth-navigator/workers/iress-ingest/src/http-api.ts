@@ -1635,13 +1635,18 @@ export async function handleRequest(
     const accountCode =
       (typeof b["account_code"] === "string" && (b["account_code"] as string).trim()) ||
       deps.env.uatAccountCode;
-    // Refuse to send to the production account by accident.
-    if (accountCode === deps.env.iressAccountCode && deps.env.iressAccountCode) {
+    // Refuse to send to the production account by accident, but ONLY on the
+    // production endpoint. On the CT test endpoint (webservices-ct) the trading
+    // account IS the test account (MINT_CT, no real money), so single-account
+    // UAT testing is allowed. "webservices.iress" (no -ct) = prod.
+    const iressBaseUrl = process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4";
+    const onProdEndpoint = /webservices\.iress/.test(iressBaseUrl);
+    if (onProdEndpoint && accountCode === deps.env.iressAccountCode && deps.env.iressAccountCode) {
       sendError(
         res,
         400,
         "wrong_account",
-        "UAT orders must target IRESS_UAT_ACCOUNT_CODE, not the production IRESS_ACCOUNT_CODE",
+        "On the production endpoint, UAT orders must target IRESS_UAT_ACCOUNT_CODE, not IRESS_ACCOUNT_CODE",
         { accountCode, productionAccount: deps.env.iressAccountCode },
       );
       return;

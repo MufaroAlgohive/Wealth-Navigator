@@ -200,10 +200,11 @@ export function loadWorkerEnv(): WorkerEnv {
     institutionalSupabaseKey,
     iressAccountCode: process.env.IRESS_ACCOUNT_CODE ?? "",
     // UAT mode: when IRESS_UAT_MODE=1, the worker accepts /uat/send-to-market
-    // and the UAT order poll loop. Orders tagged uat_test=true go to the
-    // UAT account (different IRESS AccountCode), keeping real client books
-    // untouched. The gate is opt-in: missing UAT_ACCOUNT_CODE + UAT mode = 503.
-    uatAccountCode: process.env.IRESS_UAT_ACCOUNT_CODE ?? "",
+    // and the UAT order poll loop. Orders tagged uat_test=true go to the UAT
+    // account. On a prod deployment this should be a SEPARATE account from
+    // IRESS_ACCOUNT_CODE; on the CT test endpoint (webservices-ct) the whole
+    // environment is UAT, so it defaults to the trading account when unset.
+    uatAccountCode: process.env.IRESS_UAT_ACCOUNT_CODE?.trim() || process.env.IRESS_ACCOUNT_CODE || "",
     uatMode: parseBool(process.env.IRESS_UAT_MODE, false),
     uatOrderPollSec: Math.max(5, Number(process.env.IRESS_UAT_ORDER_POLL_SEC ?? "30")),
     applicationLabel: process.env.IRESS_APPLICATION_LABEL ?? "Mint-OEMS-Worker",
