@@ -1263,25 +1263,28 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           waitForResponse: true,
         }),
         parameters: {
-          // IRESS OrderCreate3 field contract (confirmed by the provider):
-          //   SideCode="Buy"/"Sell", OrderVolume, OrderPrice, PricingInstructions
-          //   ="LIMIT"/"MARKET", LifeTime="DAY", Destination, Exchange, AccountCode,
-          //   SecurityCode. The typed NewOrder keeps friendly names (BuySell 1|2,
-          //   OrderType MKT|LMT, Volume, Price, TimeInForce); we translate here.
+          // CT IOS+ OrderCreate3 field contract — CONFIRMED against the live CT
+          // server (same vocabulary the OrderPad read side uses, see mapOrder):
+          //   BuyOrSell="B"/"S", OrderVolume, OrderPrice, PricingInstructions
+          //   ="LIMIT"/"MARKET", Lifetime="DAY", Destination, Exchange,
+          //   AccountCode, SecurityCode (BARE JSE code). The published generic V4
+          //   doc (BuySell 1|2 / OrderType / Volume / Price / TimeInForce) does
+          //   NOT match this build. The typed NewOrder keeps the generic names;
+          //   we translate to the CT names here.
           Order: {
             AccountCode: order.AccountCode,
             // IRESS wants the BARE JSE code (e.g. "AME"), with Exchange separate.
             // securities_c stores the ".JO" (Yahoo) form, so strip it here.
             SecurityCode: order.SecurityCode.replace(/\.(JO|JSE)$/i, ""),
             Exchange: order.Exchange,
-            SideCode: order.BuySell === 2 ? "Sell" : "Buy",
+            BuyOrSell: order.BuySell === 2 ? "S" : "B",
             PricingInstructions: order.OrderType === "MKT" ? "MARKET" : "LIMIT",
             OrderVolume: order.Volume,
             // Market orders carry no price; a limit sends OrderPrice in major units.
             OrderPrice: order.OrderType === "MKT" ? undefined : order.Price,
             TriggerPrice: order.TriggerPrice,
             Destination: order.Destination,
-            LifeTime: order.TimeInForce ?? "DAY",
+            Lifetime: order.TimeInForce ?? "DAY",
             ExpiryDate: order.ExpiryDate,
           },
           OrderTag: req.OrderTag,
