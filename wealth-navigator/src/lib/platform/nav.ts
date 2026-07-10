@@ -1,8 +1,8 @@
 import {
   LayoutDashboard, TrendingUp, LineChart, Banknote, Globe2, Layers, FileText,
   ClipboardList, Users, MonitorSmartphone, BookOpen, Mail, Sunrise, Newspaper,
-  FlaskConical, ShieldCheck, Shield, Cable, SlidersHorizontal, Settings, Landmark,
-  Activity, Search, type LucideIcon,
+  ShieldCheck, Shield, Cable, SlidersHorizontal, Settings, Landmark,
+  Activity, Search, Library, Scale, Vote, CalendarClock, type LucideIcon,
 } from "lucide-react";
 
 import type { Persona } from "@/lib/store/session-provider";
@@ -93,10 +93,20 @@ export const PLATFORM_NAV: NavSection[] = [
     ],
   },
   {
+    // The Research → IC → Rebalance workflow (institutional desk). Mirrors the
+    // "RESEARCH & IC" group in the OEMS design: one route per surface.
+    title: "Research & IC",
+    items: [
+      { label: "Research Library", href: "/oems/research", icon: Library, roles: [DESK, STRAT] },
+      { label: "Rebalance Builder", href: "/oems/rebalance", icon: Scale, roles: [DESK, STRAT] },
+      { label: "Investment Cmte.", href: "/oems/committee", icon: Vote, roles: [DESK, STRAT] },
+      { label: "Desk Rhythm", href: "/oems/rhythm", icon: CalendarClock, roles: [DESK, STRAT] },
+    ],
+  },
+  {
     title: "Intelligence & Comms",
     items: [
       { label: "News & SENS", href: "/oems/news", icon: Newspaper },
-      { label: "Research Lab", href: "/oems/research-lab", icon: FlaskConical, roles: [DESK, STRAT] },
       { label: "Mint Mornings", href: "/admin/mint-mornings", icon: Sunrise, roles: [BIZ] },
       { label: "Emailers & Triggers", href: "/admin/emailers", icon: Mail, roles: [BIZ] },
     ],

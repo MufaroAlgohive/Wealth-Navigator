@@ -11,8 +11,12 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  *
  *   draft        → in_review         (author or dev)
  *   in_review    → ic_pending        (author or dev)
- *   ic_pending   → approved | rejected  (requires `research.approve_note`)
- *   approved     → executed          (requires `research.execute_note`)
+ *   ic_pending   → approved | rejected  (requires `research-lab.approve_note`)
+ *
+ * `approved` is the terminal state for a research note (a note is never
+ * "executed" — execution lives on `rebalance_request_c`, which has its own
+ * status machine + `executed_at`). `research_note_c.status` CHECK only allows
+ * draft/in_review/ic_pending/approved/rejected.
  *
  * Updates timestamp columns and (when moving into `ic_pending`) lets the
  * caller attach an IC session.
@@ -29,9 +33,8 @@ const ALLOWED: Record<string, ReadonlyArray<string>> = {
   draft: ["in_review"],
   in_review: ["ic_pending"],
   ic_pending: ["approved", "rejected"],
-  approved: ["executed"],
+  approved: [],
   rejected: [],
-  executed: [],
 };
 
 async function openDb() {
@@ -65,7 +68,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const { data: note, error: noteErr } = await db
     .from("research_note_c")
-    .select("id, status, author_email")
+    .select("id, status, author_email, thesis")
     .eq("id", id)
     .maybeSingle();
 
@@ -98,13 +101,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const isAuthor = auth.ctx.email.toLowerCase() === String(note.author_email ?? "").toLowerCase();
   const isDev = auth.ctx.approverTier === "dev";
   const needsApprovalPerm = toStatus === "approved" || toStatus === "rejected";
-  const needsExecutePerm = toStatus === "executed";
   const fromStatusNeedsReview = from === "draft" || from === "in_review";
 
-  if (needsApprovalPerm && !can(auth.ctx, "research", "approve_note")) {
-    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
-  }
-  if (needsExecutePerm && !can(auth.ctx, "research", "execute_note")) {
+  if (needsApprovalPerm && !can(auth.ctx, "research-lab", "approve_note")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   if (fromStatusNeedsReview && !isAuthor && !isDev) {
@@ -127,15 +126,32 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const sid = body.ic_session_id;
     if (typeof sid === "string" && sid.length > 0) update.ic_session_id = sid;
   }
-  if (toStatus === "approved") {
-    update.approved_at = now;
-    if (typeof body.reason === "string" && body.reason.length > 0) {
-      // Merge reason into the thesis JSONB so the audit trail travels with the note.
-      update.thesis = { _resolution: { reason: body.reason, by: auth.ctx.email, at: now } };
-    }
-  }
-  if (toStatus === "executed") {
-    update.executed_at = now;
+  if (toStatus === "approved" || toStatus === "rejected") {
+    if (toStatus === "approved") update.approved_at = now;
+    // Merge the IC resolution into the thesis JSONB WITHOUT clobbering the
+    // analyst's thesis/fundamentals/triggers. We spread the existing thesis
+    // and append an ic_log entry so the decision travels with the note.
+    const existing =
+      note.thesis && typeof note.thesis === "object" && !Array.isArray(note.thesis)
+        ? (note.thesis as Record<string, unknown>)
+        : {};
+    const reason = typeof body.reason === "string" ? body.reason : "";
+    const prevLog = Array.isArray((existing as { ic_log?: unknown }).ic_log)
+      ? ((existing as { ic_log?: unknown[] }).ic_log as unknown[])
+      : [];
+    update.thesis = {
+      ...existing,
+      _resolution: { status: toStatus, reason, by: auth.ctx.email, at: now },
+      ic_log: [
+        {
+          actor: auth.ctx.fullName ?? auth.ctx.email,
+          action: toStatus === "approved" ? "APPROVED" : "REJECTED",
+          at: now,
+          note: reason || undefined,
+        },
+        ...prevLog,
+      ],
+    };
   }
 
   const { data, error } = await db.from("research_note_c").update(update).eq("id", id).select().maybeSingle();

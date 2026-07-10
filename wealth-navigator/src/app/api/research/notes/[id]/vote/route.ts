@@ -36,7 +36,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!can(auth.ctx, "research", "cast_vote")) {
+  if (!can(auth.ctx, "research-lab", "cast_vote")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 

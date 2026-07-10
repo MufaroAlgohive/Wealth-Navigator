@@ -102,7 +102,7 @@ export async function POST(req: Request) {
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!can(auth.ctx, "research", "create_note")) {
+  if (!can(auth.ctx, "research-lab", "create_research_note")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 

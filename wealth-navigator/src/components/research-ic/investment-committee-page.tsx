@@ -1,0 +1,401 @@
+"use client";
+
+/**
+ * Investment Committee — the IC gate. Agenda pulls live from the pipeline:
+ * rebalance proposals awaiting approval (rebalance_request_c status=pending) and
+ * research notes submitted for a decision (research_note_c status=ic_pending).
+ * Votes are cast on research notes (research_vote_c); the IC decision then
+ * transitions the note (approved/rejected) and promotes rebalance proposals to
+ * ic_approved, after which they can be released to the order book.
+ *
+ * Committee members, charter/quorum and the session-prep checklist are the
+ * desk's standing config (static), matching the OEMS design.
+ */
+
+import * as React from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ThumbsUp, ThumbsDown, MinusCircle, Check, X, Rocket, Calendar } from "lucide-react";
+
+import { cn } from "@/lib/cn";
+import { ResearchLabCanvas, GlassSection } from "@/components/oems/primitives/glass";
+import type { ResearchNote, RebalanceRequest, ResearchPerms, ProposedHolding } from "./types";
+import { RatingBadge, ActionBadge, moneyR, signedPct, weightPct, useQuotes } from "./ui";
+
+const MEMBERS = [
+  { initials: "YO", name: "You", title: "Fund Manager / CIO", role: "CHAIR" },
+  { initials: "TM", name: "T. Molefe", title: "Chief Operating Officer", role: "VOTING" },
+  { initials: "LN", name: "L. Ndlovu", title: "Junior Analyst", role: "OBSERVER" },
+];
+const CHARTER = [
+  ["Quorum", "2 of 3 members. Chair has casting vote on tie."],
+  ["Pre-read", "analyst circulates research note ≥ 24h before session."],
+  ["Rebalance gate", "IC approval required before any change flows to the Rebalance Engine."],
+  ["Cadence", "Tue & Thu 14:00 SAST · 60 min · minutes filed in Committee log."],
+];
+const CHECKLIST = [
+  "All pending research notes uploaded",
+  "Proposals within mandate & tracking-error budget",
+  "Pre-trade compliance flags reviewed",
+  "Cash & liquidity impact modelled",
+  "Investor-communication draft prepared (if material)",
+];
+
+export function InvestmentCommitteePage({
+  perms,
+  viewerEmail,
+  viewerName,
+}: {
+  perms: ResearchPerms;
+  viewerEmail: string | null;
+  viewerName: string | null;
+}) {
+  void viewerName;
+  const qc = useQueryClient();
+
+  const notesQ = useQuery<{ notes: ResearchNote[] }>({
+    queryKey: ["ric-notes-all"],
+    refetchInterval: 30_000,
+    queryFn: async () => (await (await fetch("/api/research/notes", { cache: "no-store" })).json().catch(() => ({ notes: [] }))) as { notes: ResearchNote[] },
+  });
+  const reqQ = useQuery<{ requests: RebalanceRequest[] }>({
+    queryKey: ["ric-rebalance-requests"],
+    refetchInterval: 30_000,
+    queryFn: async () => (await (await fetch("/api/rebalance/requests", { cache: "no-store" })).json().catch(() => ({ requests: [] }))) as { requests: RebalanceRequest[] },
+  });
+
+  const notes = notesQ.data?.notes ?? [];
+  const requests = reqQ.data?.requests ?? [];
+  const agendaNotes = notes.filter((n) => n.status === "ic_pending");
+  const pendingReqs = requests.filter((r) => r.status === "pending");
+  const approvedReqs = requests.filter((r) => r.status === "ic_approved");
+  const recent = [
+    ...notes.filter((n) => n.status === "approved" || n.status === "rejected").map((n) => ({
+      id: n.id, when: n.approved_at ?? n.updated_at, label: `${n.symbol} research note`, status: n.status,
+    })),
+    ...requests.filter((r) => r.status === "executed").map((r) => ({
+      id: r.id, when: r.executed_at ?? r.updated_at, label: `${r.strategy_id} rebalance`, status: "executed",
+    })),
+  ].sort((a, b) => new Date(b.when).getTime() - new Date(a.when).getTime()).slice(0, 6);
+
+  const agendaCount = agendaNotes.length + pendingReqs.length;
+  const [checks, setChecks] = React.useState<boolean[]>(CHECKLIST.map((_, i) => i < 3));
+
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["ric-notes-all"] });
+    qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+  };
+
+  return (
+    <ResearchLabCanvas>
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="text-xl font-semibold tracking-tight">Investment Committee</h1>
+          <p className="text-caption">Tuesdays &amp; Thursdays · 14:00 SAST · chaired by Fund Manager.</p>
+        </div>
+        <span className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs text-muted-foreground">
+          <Calendar className="h-3.5 w-3.5" /> Next session · Tuesday, 14 Jul
+        </span>
+      </header>
+
+      <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
+        <div className="space-y-5">
+          <GlassSection title={`Agenda · ${agendaCount} item${agendaCount === 1 ? "" : "s"}`}>
+            {agendaCount === 0 ? (
+              <p className="text-caption">Nothing on the agenda. Submitted proposals and notes appear here.</p>
+            ) : (
+              <div className="space-y-4">
+                {pendingReqs.map((r) => (
+                  <RebalanceAgendaItem key={r.id} req={r} canApprove={perms.approveRebalance} onChanged={refresh} />
+                ))}
+                {agendaNotes.map((n) => (
+                  <ResearchAgendaItem key={n.id} note={n} perms={perms} viewerEmail={viewerEmail} onChanged={refresh} />
+                ))}
+              </div>
+            )}
+          </GlassSection>
+
+          <GlassSection title={`Approved — ready for order book · ${approvedReqs.length}`}>
+            {approvedReqs.length === 0 ? (
+              <p className="text-caption">No approved proposals waiting.</p>
+            ) : (
+              <div className="space-y-4">
+                {approvedReqs.map((r) => (
+                  <ApprovedItem key={r.id} req={r} canPush={perms.pushRebalance} onChanged={refresh} />
+                ))}
+              </div>
+            )}
+          </GlassSection>
+
+          <GlassSection title="Recent decisions">
+            {recent.length === 0 ? (
+              <p className="text-caption">No decisions logged yet.</p>
+            ) : (
+              <ul className="space-y-2">
+                {recent.map((d) => (
+                  <li key={d.id} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="truncate text-foreground/85">{d.label}</span>
+                    <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
+                      d.status === "rejected" ? "border-[hsl(var(--down)/0.35)] text-down" : "border-[hsl(var(--up)/0.35)] text-up")}>
+                      {d.status}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </GlassSection>
+        </div>
+
+        {/* right rail — standing config */}
+        <div className="space-y-5">
+          <GlassSection title="Committee members">
+            <div className="space-y-3">
+              {MEMBERS.map((m) => (
+                <div key={m.initials} className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.06)] text-[10px] font-semibold text-muted-foreground">{m.initials}</span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{m.name}</p>
+                      <p className="truncate text-caption">{m.title}</p>
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded-full border border-[hsl(var(--glass-border))] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">{m.role}</span>
+                </div>
+              ))}
+            </div>
+          </GlassSection>
+
+          <GlassSection title="Charter · quorum & voting">
+            <dl className="space-y-2.5">
+              {CHARTER.map(([term, desc]) => (
+                <div key={term}>
+                  <dt className="text-[11px] font-semibold text-foreground">{term}</dt>
+                  <dd className="text-caption">{desc}</dd>
+                </div>
+              ))}
+            </dl>
+          </GlassSection>
+
+          <GlassSection title="Session prep checklist">
+            <ul className="space-y-2">
+              {CHECKLIST.map((item, i) => (
+                <li key={item}>
+                  <label className="flex cursor-pointer items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={checks[i] ?? false}
+                      onChange={(e) => setChecks((prev) => prev.map((c, idx) => (idx === i ? e.target.checked : c)))}
+                      className="mt-0.5 h-4 w-4 rounded border-[hsl(var(--glass-border))]"
+                    />
+                    <span className={cn(checks[i] ? "text-foreground/70 line-through" : "text-foreground/85")}>{item}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </GlassSection>
+        </div>
+      </div>
+    </ResearchLabCanvas>
+  );
+}
+
+// ── action table shared by rebalance agenda + approved items ────────────────
+function CompositionTable({ rows }: { rows: ProposedHolding[] }) {
+  const changed = rows.filter((r) => r.action && r.action !== "hold");
+  const show = changed.length ? changed : rows;
+  return (
+    <div className="overflow-x-auto rounded-lg border border-[hsl(var(--glass-border))]">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+            <th className="px-3 py-2 font-medium">Action</th>
+            <th className="px-3 py-2 font-medium">Ticker</th>
+            <th className="px-3 py-2 text-right font-medium">Weight</th>
+            <th className="px-3 py-2 font-medium">Research</th>
+            <th className="px-3 py-2 font-medium">Rationale</th>
+          </tr>
+        </thead>
+        <tbody>
+          {show.map((h, i) => (
+            <tr key={`${h.ticker}-${i}`} className="border-b border-[hsl(var(--glass-border))] last:border-0">
+              <td className="px-3 py-2"><ActionBadge action={h.action} /></td>
+              <td className="px-3 py-2"><span className="font-semibold text-primary">{h.ticker}</span> <span className="text-muted-foreground">{h.name}</span></td>
+              <td className="px-3 py-2 text-right font-mono tabular-nums">
+                {h.fromWeight != null && h.toWeight != null
+                  ? `${weightPct(h.fromWeight)} → ${weightPct(h.toWeight)}`
+                  : h.weight != null
+                    ? weightPct(h.weight)
+                    : "—"}
+              </td>
+              <td className="px-3 py-2">
+                {h.researchRef ? <span className="font-mono text-[11px] text-primary">{h.researchRef}</span> : <span className="text-muted-foreground">—</span>}
+                {h.rating ? <span className="ml-1"><RatingBadge rating={h.rating} /></span> : null}
+              </td>
+              <td className="px-3 py-2 text-caption">{h.rationale ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function useTransition(kind: "note" | "rebalance") {
+  const [busy, setBusy] = React.useState<string | null>(null);
+  const go = async (id: string, to_status: string, onChanged: () => void, reason?: string) => {
+    setBusy(to_status);
+    try {
+      const url = kind === "note" ? `/api/research/notes/${id}/transition` : `/api/rebalance/requests/${id}/transition`;
+      await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ to_status, reason }) });
+      onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
+  return { busy, go };
+}
+
+function rebalanceCode(r: RebalanceRequest): string {
+  const year = new Date(r.created_at).getFullYear() || 2026;
+  return `REB-${year}-${r.id.slice(0, 4).toUpperCase()}`;
+}
+
+function RebalanceAgendaItem({ req, canApprove, onChanged }: { req: RebalanceRequest; canApprove: boolean; onChanged: () => void }) {
+  const { busy, go } = useTransition("rebalance");
+  const rows = Array.isArray(req.proposed_composition) ? req.proposed_composition : [];
+  const changes = rows.filter((r) => r.action && r.action !== "hold").length;
+  return (
+    <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-primary/35 bg-primary/12 px-2 py-0.5 text-[10px] font-semibold uppercase text-primary">Rebalance</span>
+          <span className="font-mono text-xs text-muted-foreground">{rebalanceCode(req)}</span>
+          <span className="text-sm font-medium">{req.strategy_id}</span>
+          <span className="rounded border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[10px] text-muted-foreground">{changes} chg</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" disabled={!canApprove || busy != null} onClick={() => go(req.id, "rejected", onChanged)}
+            className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50">
+            <X className="h-3.5 w-3.5" /> Reject
+          </button>
+          <button type="button" disabled={!canApprove || busy != null} onClick={() => go(req.id, "ic_approved", onChanged)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50">
+            <Check className="h-3.5 w-3.5" /> Approve
+          </button>
+        </div>
+      </div>
+      <CompositionTable rows={rows} />
+    </div>
+  );
+}
+
+function ApprovedItem({ req, canPush, onChanged }: { req: RebalanceRequest; canPush: boolean; onChanged: () => void }) {
+  const [busy, setBusy] = React.useState(false);
+  const rows = Array.isArray(req.proposed_composition) ? req.proposed_composition : [];
+  async function release() {
+    setBusy(true);
+    try {
+      await fetch(`/api/rebalance/requests/${req.id}/push`, { method: "POST" });
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="rounded-xl border border-[hsl(var(--up)/0.25)] bg-[hsl(var(--up)/0.04)] p-4">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.12)] px-2 py-0.5 text-[10px] font-semibold uppercase text-up">Approved</span>
+          <span className="font-mono text-xs text-muted-foreground">{rebalanceCode(req)}</span>
+          <span className="text-sm font-medium">{req.strategy_id}</span>
+        </div>
+        <button type="button" disabled={!canPush || busy} onClick={release}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50">
+          <Rocket className="h-3.5 w-3.5" /> {busy ? "Releasing…" : "Release to Order Book"}
+        </button>
+      </div>
+      <CompositionTable rows={rows} />
+    </div>
+  );
+}
+
+function ResearchAgendaItem({
+  note,
+  perms,
+  viewerEmail,
+  onChanged,
+}: {
+  note: ResearchNote;
+  perms: ResearchPerms;
+  viewerEmail: string | null;
+  onChanged: () => void;
+}) {
+  const qc = useQueryClient();
+  const { busy, go } = useTransition("note");
+  const [voting, setVoting] = React.useState<string | null>(null);
+  const th = note.thesis ?? {};
+  const quotes = useQuotes([note.symbol]);
+  const current = quotes.data?.[note.symbol.toUpperCase()]?.last ?? null;
+  const target = th.targetPrice ?? null;
+  const upside = current != null && target != null && current > 0 ? ((target - current) / current) * 100 : null;
+
+  const sumQ = useQuery<{ tally: { yes: number; no: number; abstain: number; total: number } }>({
+    queryKey: ["ric-ic-summary", note.id],
+    refetchInterval: 20_000,
+    queryFn: async () => (await (await fetch(`/api/research/notes/${note.id}/ic-summary`, { cache: "no-store" })).json().catch(() => ({ tally: { yes: 0, no: 0, abstain: 0, total: 0 } }))) as { tally: { yes: number; no: number; abstain: number; total: number } },
+  });
+  const tally = sumQ.data?.tally ?? { yes: 0, no: 0, abstain: 0, total: 0 };
+  const QUORUM = 2;
+
+  async function vote(v: "yes" | "no" | "abstain") {
+    setVoting(v);
+    try {
+      await fetch(`/api/research/notes/${note.id}/vote`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ vote: v }),
+      });
+      await qc.invalidateQueries({ queryKey: ["ric-ic-summary", note.id] });
+    } finally {
+      setVoting(null);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-amber-400/40 bg-amber-400/12 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-500">Research init</span>
+          <span className="text-sm font-semibold">{note.symbol}</span>
+          <RatingBadge rating={th.rating} />
+        </div>
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          {target != null && <span>TP {moneyR(target, 0)}</span>}
+          {upside != null && <span className={upside >= 0 ? "text-up" : "text-down"}>Upside {signedPct(upside)}</span>}
+          {th.analystName && <span>Analyst {th.analystName}</span>}
+          {th.horizon && <span>Horizon {th.horizon}</span>}
+        </div>
+      </div>
+      {th.bull && <p className="mt-2 text-xs leading-relaxed text-foreground/80">{th.bull}</p>}
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--glass-border))] pt-3">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-muted-foreground">Vote:</span>
+          <button type="button" disabled={!perms.castVote || voting != null} onClick={() => vote("yes")} className="rounded-md border border-[hsl(var(--glass-border))] p-1.5 text-muted-foreground hover:text-up disabled:opacity-50"><ThumbsUp className="h-3.5 w-3.5" /></button>
+          <button type="button" disabled={!perms.castVote || voting != null} onClick={() => vote("abstain")} className="rounded-md border border-[hsl(var(--glass-border))] p-1.5 text-muted-foreground hover:text-foreground disabled:opacity-50"><MinusCircle className="h-3.5 w-3.5" /></button>
+          <button type="button" disabled={!perms.castVote || voting != null} onClick={() => vote("no")} className="rounded-md border border-[hsl(var(--glass-border))] p-1.5 text-muted-foreground hover:text-down disabled:opacity-50"><ThumbsDown className="h-3.5 w-3.5" /></button>
+          <span className="ml-1 font-mono text-[11px] tabular-nums text-muted-foreground">{tally.yes} for / {tally.no} against · quorum {QUORUM}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" disabled={!perms.approveNote || busy != null} onClick={() => go(note.id, "rejected", onChanged, "IC rejected")}
+            className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50">
+            <X className="h-3.5 w-3.5" /> Reject
+          </button>
+          <button type="button" disabled={!perms.approveNote || busy != null} onClick={() => go(note.id, "approved", onChanged, "IC approved")}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50">
+            <Check className="h-3.5 w-3.5" /> Approve to Rebalance
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -76,7 +76,10 @@ export type RbacButtonKey =
   | "research-lab/create_research_note"
   | "research-lab/submit_to_ic"
   | "research-lab/cast_vote"
+  | "research-lab/approve_note"
   // Rebalance builder (A4)
+  | "rebalance/raise_rebalance"
+  | "rebalance/approve_rebalance"
   | "rebalance/push_rebalance"
   // Approvals banner (A4)
   | "approvals/resolve_action_items";
@@ -108,6 +111,9 @@ export const RBAC_BUTTON_KEYS: ReadonlySet<RbacButtonKey> = new Set<RbacButtonKe
   "research-lab/create_research_note",
   "research-lab/submit_to_ic",
   "research-lab/cast_vote",
+  "research-lab/approve_note",
+  "rebalance/raise_rebalance",
+  "rebalance/approve_rebalance",
   "rebalance/push_rebalance",
   "approvals/resolve_action_items",
 ]);

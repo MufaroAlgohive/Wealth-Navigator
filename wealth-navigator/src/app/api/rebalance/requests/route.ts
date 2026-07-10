@@ -91,7 +91,7 @@ export async function POST(req: Request) {
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!can(auth.ctx, "research", "raise_rebalance")) {
+  if (!can(auth.ctx, "rebalance", "raise_rebalance")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 
