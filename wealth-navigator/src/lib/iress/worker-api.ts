@@ -67,8 +67,25 @@ export interface WorkerApiOptions {
   headers?: Record<string, string>;
 }
 
+/**
+ * Normalize a possibly-misconfigured worker base URL. Railway shows the public
+ * domain and the internal port ("Port 8765") on separate lines; the public URL
+ * is HTTPS on 443 with no port, so the common paste mistakes are a missing
+ * scheme and a stray " Port 8765" suffix. This repairs both so a slightly-wrong
+ * IRESS_WORKER_URL still resolves. Returns "" when unset.
+ */
+function resolvedBase(): string {
+  let base = (getIressWorkerUrl() ?? "").trim();
+  if (!base) return "";
+  base = base.replace(/\s+port\s+\d+/gi, ""); // drop a stray " Port 8765"
+  base = base.replace(/\s+/g, ""); // a URL never contains whitespace
+  if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
+  base = base.replace(/\/+$/, ""); // no trailing slash
+  return base;
+}
+
 function buildUrl(path: string | undefined): string {
-  const base = getIressWorkerUrl();
+  const base = resolvedBase();
   if (!base) return "";
   if (!path) return base;
   if (path.startsWith("?")) return `${base}${path}`;
@@ -145,7 +162,7 @@ function upstreamError(
 export async function callWorker<T = unknown>(
   opts: WorkerApiOptions = {},
 ): Promise<WorkerApiResult<T>> {
-  const base = getIressWorkerUrl();
+  const base = resolvedBase();
   if (!base) return notConfigured();
   const url = buildUrl(opts.path);
   const timeoutMs = opts.timeoutMs ?? WORKER_API_TIMEOUT_MS;
@@ -223,7 +240,7 @@ export function streamWorkerSse(opts: {
   signal?: AbortSignal;
   timeoutMs?: number;
 }): { url: string; headers: Record<string, string> } | null {
-  const base = getIressWorkerUrl();
+  const base = resolvedBase();
   if (!base) return null;
   return {
     url: buildUrl(opts.path),
@@ -236,5 +253,5 @@ export function streamWorkerSse(opts: {
  * for diagnostic endpoints. Never expose to clients.
  */
 export function debugResolvedWorkerUrl(): string {
-  return getIressWorkerUrl();
+  return resolvedBase();
 }
