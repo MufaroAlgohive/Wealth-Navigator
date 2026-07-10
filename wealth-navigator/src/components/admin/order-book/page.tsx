@@ -88,7 +88,7 @@ export function OrderBookPage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           book_id: bookId,
-          broker: "LONGMARK CARE",
+          broker: "JSE",
           order_type: "limit",
           uat_test: uatTest,
         }),

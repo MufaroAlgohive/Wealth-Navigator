@@ -29,7 +29,10 @@ import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } f
 export const dynamic = "force-dynamic";
 
 const BOOK_ID = "UAT-ADHOC";
-const BROKER = "LONGMARK CARE";
+// The UAT external-broker gateway (LONGMARK CARE -> EXT_BROKERTI) is offline,
+// so route to the JSE market destination (works during JSE hours).
+// IRESS_UAT_DESTINATION overrides without a redeploy.
+const BROKER = process.env.IRESS_UAT_DESTINATION?.trim() || "JSE";
 
 interface Security {
   id: string;

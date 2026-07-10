@@ -267,7 +267,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
         tif: existing?.tif ?? "DAY",
         sent_by: existing?.sent_by ?? null,
         state: stateUppercaseToDb(d.state),
-        broker: existing?.broker ?? "LONGMARK CARE",
+        broker: existing?.broker ?? "JSE",
       };
       return { ...prev, [d.order_audit_id as string]: newRow };
     });

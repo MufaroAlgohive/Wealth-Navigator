@@ -1772,9 +1772,16 @@ export async function handleRequest(
       );
       return;
     }
+    // In UAT the external-broker gateway (EXT_BROKERTI, reached via the
+    // "LONGMARK CARE" destination) is offline, so orders sent there sit
+    // ACTIVE but "Not Worked" (destination unavailable). Default to the JSE
+    // market destination, which routes during JSE trading hours.
+    // IRESS_UAT_DESTINATION overrides centrally (e.g. to try LONGMARK CARE
+    // once that gateway is up) without a redeploy.
     const brokerDestination =
+      process.env.IRESS_UAT_DESTINATION?.trim() ||
       (typeof b["broker_destination"] === "string" && (b["broker_destination"] as string).trim()) ||
-      "LONGMARK CARE";
+      "JSE";
 
     const result = await uatSendToMarket(deps, orderAuditId, accountCode, brokerDestination);
     if (!result.ok) {
