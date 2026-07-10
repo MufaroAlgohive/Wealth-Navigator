@@ -426,6 +426,17 @@ export class WorkerSessionManager {
   }
 
   /**
+   * Force `getSession()` to back off (throw 25008) for `ms`, so the worker's
+   * background loops do not re-grab the single IRESS licence seat. Used only by
+   * the `/debug/method-ref?freeSeat=1` route to release the seat long enough to
+   * generate the authoritative WSDL / Method Reference (which does its own
+   * transient login). The worker rebuilds its session once the window expires.
+   */
+  pauseAcquisition(ms: number): void {
+    this.licenseBackoffUntil = Date.now() + Math.max(0, ms);
+  }
+
+  /**
    * Non-async accessor for the current session (no SOAP call, no expiry
    * check). Used by the HTTP API health endpoint to surface session
    * metadata without triggering an IRESS login.

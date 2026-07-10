@@ -1393,6 +1393,11 @@ export async function handleRequest(
     const server =
       (url.searchParams.get("server") ?? process.env.IRESS_IOS_SERVER ?? "MINT_CT").trim() || "MINT_CT";
     const methodFilter = (url.searchParams.get("method") ?? "OrderCreate3").trim();
+    // freeSeat: briefly release the worker's IRESS seat so the form's own login
+    // succeeds (the single licence is otherwise held by the worker). Gated by
+    // IRESS_ALLOW_MUTATIONS since it interrupts the live worker session.
+    const freeSeat = url.searchParams.get("freeSeat") === "1" && process.env.IRESS_ALLOW_MUTATIONS === "1";
+    const pauseMs = Math.min(180000, Math.max(30000, Number(url.searchParams.get("pauseMs") ?? "90000")));
     const base = (process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4").replace(/\/+$/, "");
     const aspx = docKind === "wsdl" ? "WSDLForm.aspx" : "Documentation/MethodReference.aspx";
     const formUrl = `${base}/${aspx}`;
@@ -1403,9 +1408,16 @@ export async function handleRequest(
         .replaceAll("&gt;", ">")
         .replaceAll("&quot;", '"')
         .replaceAll("&#39;", "'");
+    let seatFreed = false;
     try {
       const creds = getIressCredentialsFromEnv();
       const ua = { "User-Agent": "Mozilla/5.0 (mint-worker method-ref probe)" };
+      if (freeSeat) {
+        // Pause the worker's re-acquisition, then end its wire session so the
+        // licence is free for the form's transient login.
+        deps.sessions.pauseAcquisition(pauseMs);
+        seatFreed = await deps.sessions.tearDown();
+      }
       // 1) GET the form to harvest hidden fields, cookies, and control names.
       const getRes = await fetch(formUrl, { headers: ua, signal: AbortSignal.timeout(20000) });
       const getHtml = await getRes.text();
@@ -1473,6 +1485,7 @@ export async function handleRequest(
       res.writeHead(postRes.status, { "content-type": "text/plain; charset=utf-8" });
       res.end(
         `# form=${aspx} service=${service} server=${server} method=${methodFilter} ` +
+          `freeSeat=${freeSeat} seatFreed=${seatFreed} ` +
           `httpStatus=${postRes.status} fieldsFound=[server:${Boolean(serverName)} user:${Boolean(userName)} ` +
           `company:${Boolean(companyName)} pw:${Boolean(passwordName)} filter:${Boolean(filterName)} ` +
           `service:${Boolean(selName)} submit:${Boolean(submitName)}]\n\n${text.slice(0, 500000)}`,
