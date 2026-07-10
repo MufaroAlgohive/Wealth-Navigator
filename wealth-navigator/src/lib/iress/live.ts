@@ -1254,6 +1254,28 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       // idempotency for free. Loosen if the integration tests show that the
       // server generates its own.
       require(req.OrderTag, "OrderTag", "OrderCreate3");
+      // CT IOS+ OrderCreate3: CONFIRMED working against the live CT server
+      // (2026-07-10, OrderNumbers 1300020-1300022). The order fields are FLAT
+      // directly under <Parameters>, NOT wrapped in <Order>; the generic V4
+      // doc's <Order> wrapper is what made every attempt fail with
+      // "Could not process request". Field names are the generic ones
+      // (BuySell 1|2 / OrderType MKT|LMT / Volume / Price / StopPrice /
+      // TimeInForce), SecurityCode is the BARE JSE code (securities_c stores
+      // ".JO"). Undefined fields are OMITTED (an empty element is rejected).
+      const orderParams: Record<string, unknown> = {
+        AccountCode: order.AccountCode,
+        SecurityCode: order.SecurityCode.replace(/\.(JO|JSE)$/i, ""),
+        Exchange: order.Exchange,
+        BuySell: order.BuySell,
+        OrderType: order.OrderType,
+        Volume: order.Volume,
+        Destination: order.Destination,
+        TimeInForce: order.TimeInForce ?? "DAY",
+        OrderTag: req.OrderTag,
+      };
+      if (order.OrderType !== "MKT" && order.Price != null) orderParams.Price = order.Price;
+      if (order.TriggerPrice != null) orderParams.StopPrice = order.TriggerPrice;
+      if (order.ExpiryDate) orderParams.ExpiryDate = order.ExpiryDate;
       const result = await transport.call({
         method: "OrderCreate3",
         header: makeHeader({
@@ -1262,33 +1284,7 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           timeout: 25,
           waitForResponse: true,
         }),
-        parameters: {
-          // CT IOS+ OrderCreate3 field contract — CONFIRMED against the live CT
-          // server (same vocabulary the OrderPad read side uses, see mapOrder):
-          //   BuyOrSell="B"/"S", OrderVolume, OrderPrice, PricingInstructions
-          //   ="LIMIT"/"MARKET", Lifetime="DAY", Destination, Exchange,
-          //   AccountCode, SecurityCode (BARE JSE code). The published generic V4
-          //   doc (BuySell 1|2 / OrderType / Volume / Price / TimeInForce) does
-          //   NOT match this build. The typed NewOrder keeps the generic names;
-          //   we translate to the CT names here.
-          Order: {
-            AccountCode: order.AccountCode,
-            // IRESS wants the BARE JSE code (e.g. "AME"), with Exchange separate.
-            // securities_c stores the ".JO" (Yahoo) form, so strip it here.
-            SecurityCode: order.SecurityCode.replace(/\.(JO|JSE)$/i, ""),
-            Exchange: order.Exchange,
-            BuyOrSell: order.BuySell === 2 ? "S" : "B",
-            PricingInstructions: order.OrderType === "MKT" ? "MARKET" : "LIMIT",
-            OrderVolume: order.Volume,
-            // Market orders carry no price; a limit sends OrderPrice in major units.
-            OrderPrice: order.OrderType === "MKT" ? undefined : order.Price,
-            TriggerPrice: order.TriggerPrice,
-            Destination: order.Destination,
-            Lifetime: order.TimeInForce ?? "DAY",
-            ExpiryDate: order.ExpiryDate,
-          },
-          OrderTag: req.OrderTag,
-        },
+        parameters: orderParams,
       });
       const first = result.firstRow ?? {};
       const status = String(first["Status"] ?? "WORKING").toUpperCase() === "REJECTED" ? "REJECTED" : "WORKING";
