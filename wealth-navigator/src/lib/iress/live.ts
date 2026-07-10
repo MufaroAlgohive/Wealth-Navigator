@@ -1254,28 +1254,55 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       // idempotency for free. Loosen if the integration tests show that the
       // server generates its own.
       require(req.OrderTag, "OrderTag", "OrderCreate3");
-      // CT IOS+ OrderCreate3: CONFIRMED working against the live CT server
-      // (2026-07-10, OrderNumbers 1300020-1300022). The order fields are FLAT
-      // directly under <Parameters>, NOT wrapped in <Order>; the generic V4
-      // doc's <Order> wrapper is what made every attempt fail with
-      // "Could not process request". Field names are the generic ones
-      // (BuySell 1|2 / OrderType MKT|LMT / Volume / Price / StopPrice /
-      // TimeInForce), SecurityCode is the BARE JSE code (securities_c stores
-      // ".JO"). Undefined fields are OMITTED (an empty element is rejected).
+      // CT IOS+ OrderCreate3 wire contract, confirmed 2026-07-10 against this
+      // build's authoritative WSDL + Method Reference (OrderNumbers 1300075 and
+      // 1300086+ accepted with per-row ErrorNumber 0). This CT build does NOT
+      // use the generic-doc field names. The order fields go FLAT under
+      // <Parameters> with these EXACT names:
+      //   SideCode            string, "1"=Buy / "2"=Long Sell (from
+      //                       OrderSideGet). NOT BuySell 1|2, and NOT the words
+      //                       "Buy"/"Sell" (a leading "B"/"C" is read as a
+      //                       multi-leg leg side, hence the old bogus
+      //                       "multi-leg security code" rejection).
+      //   OrderVolume         quantity (NOT Volume).
+      //   OrderPrice          price in CENTS (PriceMultiplier 0.01); omitted for
+      //                       Market. NewOrder.Price is in rands, so x100.
+      //   PricingInstructions "Market" | "Limit" (NOT OrderType MKT|LMT).
+      //   Lifetime            "End Of Day"=DAY (also the omitted default),
+      //                       "Good Till Cancelled"=GTC, "Fill or Kill"=IOC/FOK,
+      //                       "Good Till Date"=GTD (needs ExpiryDateTime).
+      //   Destination         required; SecurityCode is the BARE JSE code.
+      if (order.OrderType === "STP" || order.OrderType === "STP_LMT") {
+        throw new IressError(
+          400,
+          "OrderCreate3",
+          "Stop orders are not yet mapped to this CT build's attribute model",
+        );
+      }
+      const lifetime =
+        order.TimeInForce === "GTC"
+          ? "Good Till Cancelled"
+          : order.TimeInForce === "IOC" || order.TimeInForce === "FOK"
+            ? "Fill or Kill"
+            : order.ExpiryDate
+              ? "Good Till Date"
+              : "End Of Day";
       const orderParams: Record<string, unknown> = {
+        SideCode: order.BuySell === 1 ? "1" : "2",
         AccountCode: order.AccountCode,
         SecurityCode: order.SecurityCode.replace(/\.(JO|JSE)$/i, ""),
         Exchange: order.Exchange,
-        BuySell: order.BuySell,
-        OrderType: order.OrderType,
-        Volume: order.Volume,
         Destination: order.Destination,
-        TimeInForce: order.TimeInForce ?? "DAY",
+        OrderVolume: order.Volume,
+        PricingInstructions: order.OrderType === "MKT" ? "Market" : "Limit",
+        Lifetime: lifetime,
         OrderTag: req.OrderTag,
       };
-      if (order.OrderType !== "MKT" && order.Price != null) orderParams.Price = order.Price;
-      if (order.TriggerPrice != null) orderParams.StopPrice = order.TriggerPrice;
-      if (order.ExpiryDate) orderParams.ExpiryDate = order.ExpiryDate;
+      if (order.OrderType !== "MKT" && order.Price != null) {
+        // NewOrder.Price is in rands; the CT wire wants integer cents.
+        orderParams.OrderPrice = Math.round(order.Price * 100);
+      }
+      if (order.ExpiryDate) orderParams.ExpiryDateTime = order.ExpiryDate;
       const result = await transport.call({
         method: "OrderCreate3",
         header: makeHeader({
@@ -1287,20 +1314,33 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         parameters: orderParams,
       });
       const first = result.firstRow ?? {};
-      const status = String(first["Status"] ?? "WORKING").toUpperCase() === "REJECTED" ? "REJECTED" : "WORKING";
-      const errorNumber = first["ErrorNumber"] !== undefined ? Number(first["ErrorNumber"]) : undefined;
-      const errorDescription = first["ErrorDescription"] !== undefined ? String(first["ErrorDescription"]) : undefined;
-      if (status === "REJECTED" && errorNumber) {
-        throw new IressError(errorNumber, "OrderCreate3", errorDescription ?? "Order rejected");
+      // OrderCreate3 returns TWO error layers: the envelope header ErrorNumber
+      // (0 on any well-formed request) and the per-order firstRow.ErrorNumber
+      // (the REAL verdict). Always read firstRow; the field is ErrorMessage.
+      // A well-formed but business-rejected order still carries an OrderNumber,
+      // so a non-zero firstRow.ErrorNumber MUST throw (do not report success).
+      const errorNumber = first["ErrorNumber"] !== undefined ? Number(first["ErrorNumber"]) : 0;
+      const errorMessage =
+        first["ErrorMessage"] !== undefined
+          ? String(first["ErrorMessage"])
+          : first["ErrorDescription"] !== undefined
+            ? String(first["ErrorDescription"])
+            : undefined;
+      if (errorNumber !== 0) {
+        throw new IressError(
+          errorNumber,
+          "OrderCreate3",
+          errorMessage ?? `OrderCreate3 rejected (error ${errorNumber})`,
+        );
       }
       if (!first["OrderNumber"]) {
         throw new IressError(666, "OrderCreate3", "No OrderNumber in response");
       }
       return {
         OrderNumber: String(first["OrderNumber"]),
-        Status: status,
+        Status: "WORKING",
         ErrorNumber: errorNumber,
-        ErrorDescription: errorDescription,
+        ErrorDescription: errorMessage,
       };
     },
 

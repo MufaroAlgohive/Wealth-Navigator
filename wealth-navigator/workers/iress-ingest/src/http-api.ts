@@ -2089,23 +2089,29 @@ async function uatSendToMarket(
     if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
       deps.sessions.invalidate();
     }
-    // Try to recover via the OrderTag (in case IRESS accepted but the response
-    // got dropped in transit).
-    try {
-      const session = await deps.sessions.getSession();
-      const iosKey = session.serviceKeys.IOSPlus;
-      if (iosKey) {
-        const client = getIressClient("live");
-        const lookup = await client.orderNoGetByOrderTag({
-          ServiceSessionKey: iosKey,
-          OrderTag: existingTag,
-        });
-        if (lookup.OrderNumber) {
-          iressOrderNumber = lookup.OrderNumber;
+    // A business rejection (IRESS order-validation error, code 20xxx) means the
+    // server RESPONDED with a rejection, so there is nothing to recover: report
+    // it as failed. The OrderTag recovery below is only for transport-level
+    // failures (HTTP 500, timeout, TCP RST) where IRESS may have accepted the
+    // order but the response was lost.
+    const businessReject = err instanceof IressError && err.code >= 20000 && err.code < 25000;
+    if (!businessReject) {
+      try {
+        const session = await deps.sessions.getSession();
+        const iosKey = session.serviceKeys.IOSPlus;
+        if (iosKey) {
+          const client = getIressClient("live");
+          const lookup = await client.orderNoGetByOrderTag({
+            ServiceSessionKey: iosKey,
+            OrderTag: existingTag,
+          });
+          if (lookup.OrderNumber) {
+            iressOrderNumber = lookup.OrderNumber;
+          }
         }
+      } catch {
+        /* fall through to the error */
       }
-    } catch {
-      /* fall through to the error */
     }
     if (!iressOrderNumber) {
       return {
