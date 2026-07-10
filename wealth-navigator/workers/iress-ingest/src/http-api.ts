@@ -34,6 +34,7 @@ import { type IncomingMessage, type ServerResponse, createServer } from "node:ht
 import type { AddressInfo } from "node:net";
 
 import { randomUUID } from "node:crypto";
+import { getIressCredentialsFromEnv } from "../../../src/lib/iress/config";
 import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { getIressClient } from "../../../src/lib/iress/index";
 import { createSoapTransport, makeHeader } from "../../../src/lib/iress/transport";
@@ -1381,6 +1382,107 @@ export async function handleRequest(
   //   Body: { method: "TimeSeriesGet2", parameters: {...}, headerKind?: "iress"|"service", service?: "IOSPlus", timeout?: 20 }
   // The response is 1:1 with the IRESS reply (header row + sample data rows) or
   // the raw fault string — no mapping, no fabrication.
+  if (req.method === "GET" && path === "/debug/method-ref") {
+    // Read-only: drive the IRESS "Method Reference" / "WSDL" ASP.NET WebForm
+    // server-side, using the worker's own env credentials, to fetch the
+    // authoritative schema for a method on THIS CT build (the reconstructed
+    // docs do not match it). Never echoes the password. Uses the IRESS licence
+    // transiently (like any WSDL pull); the worker's session self-recovers.
+    const docKind = (url.searchParams.get("doc") ?? "reference").toLowerCase();
+    const service = (url.searchParams.get("service") ?? "IOSPlus").trim() || "IOSPlus";
+    const server =
+      (url.searchParams.get("server") ?? process.env.IRESS_IOS_SERVER ?? "MINT_CT").trim() || "MINT_CT";
+    const methodFilter = (url.searchParams.get("method") ?? "OrderCreate3").trim();
+    const base = (process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4").replace(/\/+$/, "");
+    const aspx = docKind === "wsdl" ? "WSDLForm.aspx" : "Documentation/MethodReference.aspx";
+    const formUrl = `${base}/${aspx}`;
+    const decodeEntities = (s: string): string =>
+      s
+        .replaceAll("&amp;", "&")
+        .replaceAll("&lt;", "<")
+        .replaceAll("&gt;", ">")
+        .replaceAll("&quot;", '"')
+        .replaceAll("&#39;", "'");
+    try {
+      const creds = getIressCredentialsFromEnv();
+      const ua = { "User-Agent": "Mozilla/5.0 (mint-worker method-ref probe)" };
+      // 1) GET the form to harvest hidden fields, cookies, and control names.
+      const getRes = await fetch(formUrl, { headers: ua, signal: AbortSignal.timeout(20000) });
+      const getHtml = await getRes.text();
+      const setCookies =
+        typeof (getRes.headers as { getSetCookie?: () => string[] }).getSetCookie === "function"
+          ? (getRes.headers as { getSetCookie: () => string[] }).getSetCookie()
+          : ((getRes.headers.get("set-cookie") ?? "").split(/,(?=[^;]+=)/) as string[]);
+      const cookie = setCookies
+        .map((c) => c.split(";")[0]?.trim())
+        .filter(Boolean)
+        .join("; ");
+      const body = new URLSearchParams();
+      const attrOf = (t: string, a: string): string | undefined =>
+        (t.match(new RegExp(`${a}="([^"]*)"`, "i")) ?? [])[1];
+      let serverName: string | undefined;
+      let userName: string | undefined;
+      let companyName: string | undefined;
+      let passwordName: string | undefined;
+      let filterName: string | undefined;
+      let submitName: string | undefined;
+      let submitVal = "Submit";
+      for (const m of getHtml.matchAll(/<input\b[^>]*>/gi)) {
+        const t = m[0];
+        const name = attrOf(t, "name");
+        if (!name) continue;
+        const type = (attrOf(t, "type") ?? "text").toLowerCase();
+        const value = decodeEntities(attrOf(t, "value") ?? "");
+        if (type === "hidden") {
+          body.set(name, value);
+          continue;
+        }
+        const low = name.toLowerCase();
+        if (low.includes("textboxserver")) serverName = name;
+        else if (low.includes("textboxusername")) userName = name;
+        else if (low.includes("textboxcompany")) companyName = name;
+        else if (low.includes("textboxpassword")) passwordName = name;
+        else if (low.includes("textboxmethodfilter")) filterName = name;
+        else if (type === "submit") {
+          submitName = name;
+          submitVal = attrOf(t, "value") ?? "Submit";
+        }
+      }
+      const selName = (getHtml.match(/<select[^>]*name="([^"]*DropDownListService[^"]*)"/i) ?? [])[1];
+      body.set("__EVENTTARGET", "");
+      body.set("__EVENTARGUMENT", "");
+      if (selName) body.set(selName, service);
+      if (serverName) body.set(serverName, server);
+      if (userName) body.set(userName, creds.userName);
+      if (companyName) body.set(companyName, creds.company);
+      if (passwordName) body.set(passwordName, creds.password);
+      if (filterName) body.set(filterName, methodFilter);
+      if (submitName) body.set(submitName, submitVal);
+      // 2) POST the filled form and return the raw response text (the schema).
+      const postRes = await fetch(formUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          ...ua,
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+        body: body.toString(),
+        signal: AbortSignal.timeout(35000),
+      });
+      const text = await postRes.text();
+      res.writeHead(postRes.status, { "content-type": "text/plain; charset=utf-8" });
+      res.end(
+        `# form=${aspx} service=${service} server=${server} method=${methodFilter} ` +
+          `httpStatus=${postRes.status} fieldsFound=[server:${Boolean(serverName)} user:${Boolean(userName)} ` +
+          `company:${Boolean(companyName)} pw:${Boolean(passwordName)} filter:${Boolean(filterName)} ` +
+          `service:${Boolean(selName)} submit:${Boolean(submitName)}]\n\n${text.slice(0, 500000)}`,
+      );
+    } catch (err) {
+      sendError(res, 502, "method_ref_failed", err instanceof Error ? err.message : String(err));
+    }
+    return;
+  }
+
   if (req.method === "POST" && path === "/debug/soap-raw") {
     let body: unknown;
     try {
