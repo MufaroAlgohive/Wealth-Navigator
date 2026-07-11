@@ -31,10 +31,27 @@ let cache: { session: MarketDataSession; expiresAt: number } | null = null;
 let inflight: Promise<MarketDataSession | null> | null = null;
 let backoffUntil = 0;
 
-/** True when the prod market-data split is switched on. */
+/**
+ * True when the prod market-data split is switched on AND safe to run.
+ *
+ * SAFETY (single-seat protection): opening a prod market-data session on the
+ * SAME IRESS login as the UAT orders session (DFM@Mint) pulls that login's data
+ * server (IDS) to production and knocks out the CT/UAT session with "No IDS is
+ * online" - which kills order placement. IRESS confirmed one login cannot hold
+ * an IDS in prod and CT at once. So the split activates ONLY when a DISTINCT
+ * prod market-data login (its own seat) is configured via IRESS_PROD_USERNAME.
+ * With a single shared seat, leave IRESS_PROD_USERNAME unset and the seat stays
+ * on orders. To force the shared-login behaviour anyway (knowing it takes UAT
+ * orders offline), set IRESS_MARKET_DATA_PROD_ALLOW_SHARED_SEAT=1.
+ */
 export function marketDataProdEnabled(): boolean {
   const v = (process.env.IRESS_MARKET_DATA_PROD ?? "").trim().toLowerCase();
-  return v === "1" || v === "true";
+  if (v !== "1" && v !== "true") return false;
+  if ((process.env.IRESS_MARKET_DATA_PROD_ALLOW_SHARED_SEAT ?? "").trim() === "1") return true;
+  const prodUser = (process.env.IRESS_PROD_USERNAME ?? "").trim();
+  const ordersUser = (process.env.IRESS_USERNAME ?? "").trim();
+  // Needs its own login (second seat), distinct from the orders login.
+  return prodUser.length > 0 && prodUser.toLowerCase() !== ordersUser.toLowerCase();
 }
 
 /** Prod market-data endpoint (defaults to iressConfig.prodUrl = webservices.iress.co.za). */
