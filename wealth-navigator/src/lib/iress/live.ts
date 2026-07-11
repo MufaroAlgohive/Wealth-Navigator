@@ -1254,24 +1254,24 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       // idempotency for free. Loosen if the integration tests show that the
       // server generates its own.
       require(req.OrderTag, "OrderTag", "OrderCreate3");
-      // CT IOS+ OrderCreate3 wire contract, confirmed 2026-07-10 against this
-      // build's authoritative WSDL + Method Reference (OrderNumbers 1300075 and
-      // 1300086+ accepted with per-row ErrorNumber 0). This CT build does NOT
-      // use the generic-doc field names. The order fields go FLAT under
-      // <Parameters> with these EXACT names:
-      //   SideCode            string, "1"=Buy / "2"=Long Sell (from
-      //                       OrderSideGet). NOT BuySell 1|2, and NOT the words
-      //                       "Buy"/"Sell" (a leading "B"/"C" is read as a
-      //                       multi-leg leg side, hence the old bogus
-      //                       "multi-leg security code" rejection).
-      //   OrderVolume         quantity (NOT Volume).
-      //   OrderPrice          price in CENTS (PriceMultiplier 0.01); omitted for
-      //                       Market. NewOrder.Price is in rands, so x100.
-      //   PricingInstructions "Market" | "Limit" (NOT OrderType MKT|LMT).
-      //   Lifetime            "End Of Day"=DAY (also the omitted default),
-      //                       "Good Till Cancelled"=GTC, "Fill or Kill"=IOC/FOK,
-      //                       "Good Till Date"=GTD (needs ExpiryDateTime).
-      //   Destination         required; SecurityCode is the BARE JSE code.
+      // OrderCreate3 wire contract, confirmed against IRESS's own authoritative
+      // sample (2026-07-11: SOL 400 @ 177 Limit -> order created) and this
+      // build's WSDL. TWO rules:
+      //  1. STRUCTURE: OrderCreate3 is a BULK method. Every parameter is wrapped
+      //     in an <XxxArray><Xxx>value</Xxx></XxxArray> element (one order = one
+      //     value per array), in IRESS's documented sequence.
+      //  2. FIELDS + VALUES (from IRESS's sample):
+      //       SideCode            numeric: 1=Buy, 2=Long Sell, 5=Short Sell
+      //                           (OrderSideGet). NewOrder.BuySell already 1|2.
+      //       OrderVolume         quantity.
+      //       OrderPrice          price in RANDS / MAJOR UNITS (IRESS sent 177 for
+      //                           a ~R177 stock, NOT 17700). NewOrder.Price is
+      //                           already rands, so pass it through. Omit for MKT.
+      //       PricingInstructions "Market" | "Limit".
+      //       Lifetime            0 = Day (IRESS's sample value). "Good Till
+      //                           Cancelled"/"Fill or Kill"/"Good Till Date" for
+      //                           the rest.
+      //       Destination         required; SecurityCode is the BARE JSE code.
       if (order.OrderType === "STP" || order.OrderType === "STP_LMT") {
         throw new IressError(
           400,
@@ -1279,30 +1279,36 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           "Stop orders are not yet mapped to this CT build's attribute model",
         );
       }
-      const lifetime =
+      const lifetime: string | number =
         order.TimeInForce === "GTC"
           ? "Good Till Cancelled"
           : order.TimeInForce === "IOC" || order.TimeInForce === "FOK"
             ? "Fill or Kill"
             : order.ExpiryDate
               ? "Good Till Date"
-              : "End Of Day";
+              : 0; // Day (IRESS authoritative numeric code)
+      const bareSecurityCode = order.SecurityCode.replace(/\.(JO|JSE)$/i, "");
+      // Fields in IRESS's documented sequence, each wrapped in its own *Array.
       const orderParams: Record<string, unknown> = {
-        SideCode: order.BuySell === 1 ? "1" : "2",
-        AccountCode: order.AccountCode,
-        SecurityCode: order.SecurityCode.replace(/\.(JO|JSE)$/i, ""),
-        Exchange: order.Exchange,
-        Destination: order.Destination,
-        OrderVolume: order.Volume,
-        PricingInstructions: order.OrderType === "MKT" ? "Market" : "Limit",
-        Lifetime: lifetime,
-        OrderTag: req.OrderTag,
+        SideCodeArray: { SideCode: order.BuySell },
+        AccountCodeArray: { AccountCode: order.AccountCode },
+        SecurityCodeArray: { SecurityCode: bareSecurityCode },
+        ExchangeArray: { Exchange: order.Exchange },
+        DestinationArray: { Destination: order.Destination },
+        OrderVolumeArray: { OrderVolume: order.Volume },
       };
       if (order.OrderType !== "MKT" && order.Price != null) {
-        // NewOrder.Price is in rands; the CT wire wants integer cents.
-        orderParams.OrderPrice = Math.round(order.Price * 100);
+        // NewOrder.Price is in RANDS; IRESS OrderPrice is rands/major units.
+        orderParams.OrderPriceArray = { OrderPrice: order.Price };
       }
-      if (order.ExpiryDate) orderParams.ExpiryDateTime = order.ExpiryDate;
+      orderParams.PricingInstructionsArray = {
+        PricingInstructions: order.OrderType === "MKT" ? "Market" : "Limit",
+      };
+      orderParams.LifetimeArray = { Lifetime: lifetime };
+      if (order.ExpiryDate) {
+        orderParams.ExpiryDateTimeArray = { ExpiryDateTime: order.ExpiryDate };
+      }
+      orderParams.OrderTagArray = { OrderTag: req.OrderTag };
       const result = await transport.call({
         method: "OrderCreate3",
         header: makeHeader({
