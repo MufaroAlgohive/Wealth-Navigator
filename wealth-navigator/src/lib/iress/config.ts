@@ -56,3 +56,22 @@ export function getIressCredentialsFromEnv(): IressCredentials {
     password: process.env.IRESS_PASSWORD ?? "",
   };
 }
+
+/**
+ * Credentials for the PRODUCTION market-data session. Prefer the dedicated
+ * `IRESS_PROD_*` login when set (in case prod uses a different credential),
+ * otherwise reuse the shared `IRESS_*` login. Used only by the isolated prod
+ * market-data session; the UAT orders session always uses the shared login.
+ */
+export function getIressProdCredentialsFromEnv(): IressCredentials {
+  const rawUserName = process.env.IRESS_PROD_USERNAME ?? "";
+  if (rawUserName.trim()) {
+    const { userName, company } = parseIressUserCode(rawUserName, process.env.IRESS_PROD_COMPANY_NAME);
+    return {
+      userName,
+      company,
+      password: process.env.IRESS_PROD_PASSWORD ?? process.env.IRESS_PASSWORD ?? "",
+    };
+  }
+  return getIressCredentialsFromEnv();
+}

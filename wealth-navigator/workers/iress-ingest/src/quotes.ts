@@ -11,6 +11,7 @@ import type { WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
+import { getMarketDataSession, noteMarketDataError } from "./market-data";
 import { chooseDisplayCents } from "./scale";
 
 function newRequestID(prefix: string): string {
@@ -41,17 +42,27 @@ export async function fetchLiveQuote(
   symbol: string,
   exchange: string,
 ): Promise<FetchLiveResult> {
-  const client = getIressClient("live");
+  // Market-data reads route to the PROD market-data session when the split is
+  // enabled (IRESS_MARKET_DATA_PROD=1); otherwise the passed UAT session. The
+  // order path never uses this. Falls back to UAT when prod is unavailable.
+  const md = await getMarketDataSession();
+  const client = md ? md.client : getIressClient("live");
+  const sessionKey = md ? md.sessionKey : session.iressSessionKey;
   const stripped = normaliseSymbol(symbol);
-  const res = await client.pricingQuoteGet({
-    Header: {
-      SessionKey: session.iressSessionKey,
-      RequestID: newRequestID(`w-q-${stripped}`),
-      Timeout: 25,
-    },
-    SecurityCode: stripped,
-    Exchange: exchange,
-  });
+  const res = await client
+    .pricingQuoteGet({
+      Header: {
+        SessionKey: sessionKey,
+        RequestID: newRequestID(`w-q-${stripped}`),
+        Timeout: 25,
+      },
+      SecurityCode: stripped,
+      Exchange: exchange,
+    })
+    .catch((err) => {
+      if (md) noteMarketDataError(err);
+      throw err;
+    });
   const row = res.DataRows[0];
   const rawRow = res.RawDataRows?.[0] ?? null;
   if (!row) {

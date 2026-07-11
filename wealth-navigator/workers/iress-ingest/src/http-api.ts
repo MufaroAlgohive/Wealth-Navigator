@@ -42,6 +42,7 @@ import type { IressService, Order } from "../../../src/types/iress";
 import { loadWorkerEnv } from "./env";
 import type { WorkerEnv } from "./env";
 import { type UatExecutionDelta, getLastUatPollAt, uatExecutionHub } from "./order-poller";
+import { getMarketDataSession, marketDataBaseUrl, marketDataProdEnabled } from "./market-data";
 import { fetchLiveQuote } from "./quotes";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import { type WorkerSupabase, writeHeartbeat } from "./supabase";
@@ -343,10 +344,13 @@ async function probeNewsVendor(
   const started = Date.now();
   try {
     const session = await deps.sessions.getSession();
-    const client = getIressClient("live");
+    // News is market data: use the PROD market-data session when the split is
+    // on, else the UAT session.
+    const md = await getMarketDataSession();
+    const client = md ? md.client : getIressClient("live");
     const res = await client.newsVendorGet({
       Header: {
-        SessionKey: session.iressSessionKey,
+        SessionKey: md ? md.sessionKey : session.iressSessionKey,
         RequestID: newRequestID(`news-${vendor}`),
         WaitForResponse: true,
         Updates: false,
@@ -1403,6 +1407,47 @@ export async function handleRequest(
   //   Body: { method: "TimeSeriesGet2", parameters: {...}, headerKind?: "iress"|"service", service?: "IOSPlus", timeout?: 20 }
   // The response is 1:1 with the IRESS reply (header row + sample data rows) or
   // the raw fault string — no mapping, no fabrication.
+  if (req.method === "GET" && path === "/debug/market-data") {
+    // Reports the prod-market-data / UAT-orders split status so the operator can
+    // confirm it before trusting prod prices. `?live=1&sym=AGL` also fetches a
+    // live quote from the PROD session to prove the feed is real market data.
+    const enabled = marketDataProdEnabled();
+    const ordersEndpoint = process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4";
+    const mdEndpoint = enabled ? marketDataBaseUrl() : ordersEndpoint;
+    let sessionUp = false;
+    let sessionKeyPrefix: string | null = null;
+    let liveQuote: { sym: string; last: number | null } | null = null;
+    let error: string | null = null;
+    try {
+      const md = await getMarketDataSession();
+      sessionUp = Boolean(md);
+      sessionKeyPrefix = md ? md.sessionKey.slice(0, 8) : null;
+      if (md && url.searchParams.get("live") === "1") {
+        const sym = (url.searchParams.get("sym") ?? "AGL").trim().replace(/\.(JO|JSE)$/i, "") || "AGL";
+        const q = await md.client.pricingQuoteGet({
+          Header: { SessionKey: md.sessionKey, RequestID: newRequestID("md-check"), Timeout: 20 },
+          SecurityCode: sym,
+          Exchange: "JSE",
+        });
+        liveQuote = { sym, last: q.DataRows[0]?.last ?? null };
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+    send(res, 200, {
+      ok: true,
+      marketDataProdEnabled: enabled,
+      marketDataEndpoint: mdEndpoint,
+      ordersEndpoint,
+      split: enabled ? "market data = PROD, orders = UAT" : "single endpoint (both on IRESS_BASE_URL)",
+      prodSession: { up: sessionUp, keyPrefix: sessionKeyPrefix, error },
+      liveQuote,
+      hint:
+        "Set IRESS_MARKET_DATA_PROD=1 (and optionally IRESS_MARKETDATA_BASE_URL / IRESS_PROD_USERNAME+PASSWORD) on the worker to enable. If prodSession.up is false, the prod login failed (no seat / not entitled) and market data safely stays on Yahoo; orders are unaffected.",
+    });
+    return;
+  }
+
   if (req.method === "GET" && path === "/debug/method-ref") {
     // Read-only: drive the IRESS "Method Reference" / "WSDL" ASP.NET WebForm
     // server-side, using the worker's own env credentials, to fetch the

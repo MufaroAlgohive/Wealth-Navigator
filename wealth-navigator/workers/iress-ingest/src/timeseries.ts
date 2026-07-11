@@ -44,6 +44,7 @@ import type { WorkerEnv } from "./env";
 import type { WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
+import { getMarketDataSession } from "./market-data";
 
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -292,10 +293,12 @@ async function fetchSeries(
   let points: Array<{ t: number; v: number }> = [];
   try {
     await sessions.withSession(async (session) => {
-      const client = getIressClient("live");
+      // Prod market-data session when the split is on; else the UAT session.
+      const md = await getMarketDataSession();
+      const client = md ? md.client : getIressClient("live");
       const res = await client.timeSeriesGet2({
         Header: {
-          SessionKey: session.iressSessionKey,
+          SessionKey: md ? md.sessionKey : session.iressSessionKey,
           RequestID: newRequestID(`ts-${code}`),
           Timeout: 30,
         },
