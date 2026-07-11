@@ -11,7 +11,7 @@ import type { WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
-import { getMarketDataSession, noteMarketDataError } from "./market-data";
+import { getMarketDataSession, marketDataProdEnabled, noteMarketDataError } from "./market-data";
 import { chooseDisplayCents } from "./scale";
 
 function newRequestID(prefix: string): string {
@@ -44,8 +44,14 @@ export async function fetchLiveQuote(
 ): Promise<FetchLiveResult> {
   // Market-data reads route to the PROD market-data session when the split is
   // enabled (IRESS_MARKET_DATA_PROD=1); otherwise the passed UAT session. The
-  // order path never uses this. Falls back to UAT when prod is unavailable.
+  // order path never uses this.
   const md = await getMarketDataSession();
+  if (!md && marketDataProdEnabled()) {
+    // Split is on but the prod session is momentarily unavailable. Do NOT fall
+    // back to the UAT/CT endpoint (it has no live market-data IDS -> "No IDS is
+    // online"); return no-row so the caller keeps its Yahoo reference.
+    return { row: null, rowKeys: "<md-prod-unavailable>", outcome: "no-row", rawRow: null };
+  }
   const client = md ? md.client : getIressClient("live");
   const sessionKey = md ? md.sessionKey : session.iressSessionKey;
   const stripped = normaliseSymbol(symbol);

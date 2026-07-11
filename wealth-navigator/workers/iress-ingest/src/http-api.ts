@@ -347,6 +347,25 @@ async function probeNewsVendor(
     // News is market data: use the PROD market-data session when the split is
     // on, else the UAT session.
     const md = await getMarketDataSession();
+    if (!md && marketDataProdEnabled()) {
+      // Split on but prod momentarily down: skip UAT (no market-data IDS there).
+      return {
+        ok: false,
+        vendor,
+        pageSize,
+        timeout,
+        errorNumber: null,
+        errorDescription: "Prod market-data session unavailable; news skipped (UAT has no market-data IDS).",
+        rawFault: null,
+        dataRowCount: 0,
+        firstRow: null,
+        headlines: [],
+        iressMode: deps.env.iressMode,
+        elapsedMs: Date.now() - started,
+        probedAt: new Date().toISOString(),
+        build: PROBE_BUILD,
+      };
+    }
     const client = md ? md.client : getIressClient("live");
     const res = await client.newsVendorGet({
       Header: {

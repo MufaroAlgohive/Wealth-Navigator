@@ -44,7 +44,7 @@ import type { WorkerEnv } from "./env";
 import type { WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
-import { getMarketDataSession } from "./market-data";
+import { getMarketDataSession, marketDataProdEnabled } from "./market-data";
 
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -295,6 +295,9 @@ async function fetchSeries(
     await sessions.withSession(async (session) => {
       // Prod market-data session when the split is on; else the UAT session.
       const md = await getMarketDataSession();
+      // Split on but prod momentarily down: skip UAT (no market-data IDS there),
+      // leaving points empty so the caller keeps its Yahoo fallback.
+      if (!md && marketDataProdEnabled()) return;
       const client = md ? md.client : getIressClient("live");
       const res = await client.timeSeriesGet2({
         Header: {
