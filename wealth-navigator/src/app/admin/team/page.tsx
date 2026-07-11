@@ -81,6 +81,22 @@ const PERMISSION_MATRIX: PermSection[] = [
     key: "factsheets", label: "Factsheets", icon: "📄",
     fields: [{ key: "upload_factsheets", label: "Upload Factsheets", desc: "Upload strategy factsheet PDFs", type: "toggle" }],
   },
+  {
+    key: "research-lab", label: "Research & IC", icon: "🔬",
+    fields: [
+      { key: "create_research_note", label: "Create / Edit Research Notes", desc: "Author and edit notes in the Research Library", type: "toggle" },
+      { key: "cast_vote", label: "Cast IC Vote", desc: "Vote yes / no / abstain on notes at the Investment Committee", type: "toggle" },
+      { key: "approve_note", label: "Approve / Reject Notes", desc: "Record the IC decision on a submitted research note", type: "toggle" },
+    ],
+  },
+  {
+    key: "rebalance", label: "Rebalance", icon: "⚖️",
+    fields: [
+      { key: "raise_rebalance", label: "Raise Rebalance Proposal", desc: "Submit a proposed basket change to the Investment Committee", type: "toggle" },
+      { key: "approve_rebalance", label: "Approve Rebalance", desc: "IC approval that promotes a proposal to ready-for-order-book", type: "toggle" },
+      { key: "push_rebalance", label: "Send to Order Book", desc: "Release an IC-approved rebalance into the order book", type: "toggle" },
+    ],
+  },
 ];
 
 const APPROVAL_TYPE_LABELS: Record<string, string> = {
