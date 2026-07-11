@@ -814,11 +814,32 @@ async function cancelLiveOrder(
       ServiceSessionKey: iosKey,
       OrderNumber: orderId,
     });
+    const cancelledAt = new Date().toISOString();
+    // Reflect the cancel in the audit trail so the UI stops showing WORKING.
+    // The order-poller only polls WORKING orders, so once an order goes
+    // INACTIVE it can never observe the transition; stamp it here. Match both
+    // representations: the poller's source=IRESS mirror row (order_id = the
+    // IRESS number) and the BFF/ticket row (payload.iress_order_number). This
+    // is best-effort; the OrderDelete already succeeded.
+    if (deps.supabase) {
+      try {
+        await deps.supabase
+          .from("oems_order_audit")
+          .update({ status: "cancelled" })
+          .eq("order_id", orderId);
+        await deps.supabase
+          .from("oems_order_audit")
+          .update({ status: "cancelled" })
+          .eq("payload->>iress_order_number", orderId);
+      } catch {
+        /* audit stamp is best-effort; the broker cancel already succeeded */
+      }
+    }
     return {
       ok: true,
       orderId,
       account,
-      cancelledAt: new Date().toISOString(),
+      cancelledAt,
       workerId: deps.env.workerId,
       iressMode: deps.env.iressMode,
     };
