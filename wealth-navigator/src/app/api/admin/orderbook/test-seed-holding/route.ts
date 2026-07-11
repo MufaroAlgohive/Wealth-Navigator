@@ -123,25 +123,37 @@ export async function POST(req: Request) {
   }
   const securityId = sec.id;
 
-  // Resolve a user to own the holding. Reuse the admin's profile if it
-  // exists; otherwise create one. For UAT scope we want a real user_id
-  // (the schema FKs) — using the admin's keeps it tied to the test runner
-  // operator.
+  // Resolve a user to own the holding. Prefer the admin's own RETAIL profile;
+  // fall back to ANY profile, since a UAT test holding (cleaned up after the
+  // run) only needs a valid user_id FK, not a specific owner. This keeps the
+  // seed working even when the signed-in admin email has no RETAIL profile
+  // (e.g. juan@stratosphere.vip is not a retail customer).
   const { data: prof, error: profErr } = await retail
     .from("profiles")
     .select("id, email")
     .ilike("email", auth.ctx.email)
+    .limit(1)
     .maybeSingle();
 
   if (profErr) {
     return NextResponse.json({ ok: false, error: profErr.message }, { status: 500 });
   }
-  const profile = prof as Profile | null;
+  let profile = prof as Profile | null;
+  if (!profile?.id) {
+    const { data: anyProf, error: anyErr } = await retail
+      .from("profiles")
+      .select("id, email")
+      .limit(1);
+    if (anyErr) {
+      return NextResponse.json({ ok: false, error: anyErr.message }, { status: 500 });
+    }
+    profile = Array.isArray(anyProf) ? ((anyProf[0] as Profile) ?? null) : null;
+  }
   if (!profile?.id) {
     return NextResponse.json(
       {
         ok: false,
-        error: `No profiles row found for ${auth.ctx.email}. UAT test seed requires a real RETAIL profile; create one in Supabase before running scenarios.`,
+        error: "No RETAIL profiles exist to own the UAT test holding. Create at least one profile first.",
       },
       { status: 422 },
     );
