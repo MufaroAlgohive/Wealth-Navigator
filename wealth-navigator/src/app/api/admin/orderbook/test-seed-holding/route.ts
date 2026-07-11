@@ -156,7 +156,9 @@ export async function POST(req: Request) {
       quantity: qty,
       avg_fill: 0,
       Expected_fill: limitCents,
-      trade_side: side,
+      // stock_holdings_c has a CHECK constraint requiring UPPERCASE trade_side
+      // ("BUY"/"SELL"); a lowercase value fails with 23514 (surfaced as 500).
+      trade_side: side.toUpperCase(),
       strategy_name_snapshot: bookId,
       is_active: true,
       Fill_date: null,
