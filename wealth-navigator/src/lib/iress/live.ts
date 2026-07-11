@@ -1264,9 +1264,13 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       //       SideCode            numeric: 1=Buy, 2=Long Sell, 5=Short Sell
       //                           (OrderSideGet). NewOrder.BuySell already 1|2.
       //       OrderVolume         quantity.
-      //       OrderPrice          price in RANDS / MAJOR UNITS (IRESS sent 177 for
-      //                           a ~R177 stock, NOT 17700). NewOrder.Price is
-      //                           already rands, so pass it through. Omit for MKT.
+      //       OrderPrice          price in WIRE CENTS (PriceMultiplier 0.01:
+      //                           display rands = wire x 0.01, so wire = rands
+      //                           x 100). Order 1300087 read back OrderPrice
+      //                           120000 = R1200 for AGL. IRESS's sample
+      //                           OrderPrice 177 was 177 cents = R1.77, matching
+      //                           SOL's CT test quote (176c), NOT R177. So
+      //                           NewOrder.Price (rands) x 100. Omit for MKT.
       //       PricingInstructions "Market" | "Limit".
       //       Lifetime            0 = Day (IRESS's sample value). "Good Till
       //                           Cancelled"/"Fill or Kill"/"Good Till Date" for
@@ -1298,8 +1302,8 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         OrderVolumeArray: { OrderVolume: order.Volume },
       };
       if (order.OrderType !== "MKT" && order.Price != null) {
-        // NewOrder.Price is in RANDS; IRESS OrderPrice is rands/major units.
-        orderParams.OrderPriceArray = { OrderPrice: order.Price };
+        // NewOrder.Price is in RANDS; the wire OrderPrice is CENTS (x100).
+        orderParams.OrderPriceArray = { OrderPrice: Math.round(order.Price * 100) };
       }
       orderParams.PricingInstructionsArray = {
         PricingInstructions: order.OrderType === "MKT" ? "Market" : "Limit",
