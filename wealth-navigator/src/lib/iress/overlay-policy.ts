@@ -37,3 +37,54 @@ export function iressQuoteMaxAgeMs(): number {
  * use the same threshold.
  */
 export const IRESS_DIVERGENCE = 0.25;
+
+/**
+ * Tight fact-check tolerance: a PAID live feed (IRESS) should track the Yahoo
+ * reference within this fraction intraday. Anything past it is worth a look.
+ * Override with `IRESS_FACTCHECK_TOLERANCE`; defaults to 0.02 (2%).
+ */
+export function iressFactcheckTolerance(): number {
+  const t = Number(process.env.IRESS_FACTCHECK_TOLERANCE);
+  return Number.isFinite(t) && t > 0 ? t : 0.02;
+}
+
+/**
+ * The hard reject line (clearly test/stale/mis-scaled data). Same default as
+ * `IRESS_DIVERGENCE` (0.25) but overridable via `IRESS_DIVERGENCE_PCT`.
+ */
+export function iressDivergenceReject(): number {
+  const r = Number(process.env.IRESS_DIVERGENCE_PCT);
+  return Number.isFinite(r) && r > 0 ? r : IRESS_DIVERGENCE;
+}
+
+export type DivergenceSeverity = "ok" | "watch" | "breach";
+
+export interface DivergenceResult {
+  /** |iress - yahoo| / |yahoo|. */
+  ratio: number;
+  /** ratio as a percentage. */
+  pct: number;
+  severity: DivergenceSeverity;
+  /** true when within the tight fact-check tolerance (or no reference). */
+  withinTolerance: boolean;
+}
+
+/**
+ * Compare an IRESS value against the Yahoo reference (SAME UNIT for both args,
+ * e.g. both in cents). This is the single source of truth for "how far is IRESS
+ * from Yahoo" used by the read-path overlays AND the fact-check layer. It is
+ * SYMMETRIC: a breach may be Yahoo's fault (15-min delay, currency collisions),
+ * so callers must label it "IRESS vs Yahoo mismatch", not "IRESS is wrong".
+ * Returns `withinTolerance: true` when there is no usable reference.
+ */
+export function computeDivergence(iressVal: number, yahooVal: number): DivergenceResult {
+  if (!Number.isFinite(yahooVal) || yahooVal <= 0 || !Number.isFinite(iressVal)) {
+    return { ratio: 0, pct: 0, severity: "ok", withinTolerance: true };
+  }
+  const ratio = Math.abs(iressVal - yahooVal) / Math.abs(yahooVal);
+  const tolerance = iressFactcheckTolerance();
+  const reject = iressDivergenceReject();
+  const severity: DivergenceSeverity =
+    ratio >= reject ? "breach" : ratio >= tolerance ? "watch" : "ok";
+  return { ratio, pct: ratio * 100, severity, withinTolerance: ratio < tolerance };
+}
