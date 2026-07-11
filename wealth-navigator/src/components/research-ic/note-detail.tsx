@@ -78,6 +78,7 @@ export function NoteDetail({
   const quotes = useQuotes([note.symbol]);
   const series = useIntradaySeries(note.symbol);
   const current = quotes.data?.[note.symbol.toUpperCase()]?.last ?? null;
+  const priceLoading = quotes.isLoading;
   const target = typeof th.targetPrice === "number" ? th.targetPrice : null;
   const upside =
     current != null && target != null && current > 0 ? ((target - current) / current) * 100 : null;
@@ -121,11 +122,11 @@ export function NoteDetail({
             </p>
           </div>
           <div className="flex items-center gap-6">
-            <Stat label="Current" value={moneyR(current)} />
+            <Stat label="Current" value={current != null ? moneyR(current) : priceLoading ? "…" : "—"} />
             <Stat label="Target" value={target != null ? moneyR(target) : "—"} />
             <Stat
               label="Upside"
-              value={signedPct(upside)}
+              value={upside != null ? signedPct(upside) : priceLoading ? "…" : "—"}
               accent={upside == null ? undefined : upside >= 0 ? "up" : "down"}
             />
           </div>

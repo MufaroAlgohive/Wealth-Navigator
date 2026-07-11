@@ -204,7 +204,7 @@ export function ResearchLibraryPage({
                           up == null ? "text-muted-foreground" : up >= 0 ? "text-up" : "text-down",
                         )}
                       >
-                        {up == null ? "—" : signedPct(up)}
+                        {up == null ? (quotes.isLoading ? "…" : "—") : signedPct(up)}
                       </span>
                     </div>
                     <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />

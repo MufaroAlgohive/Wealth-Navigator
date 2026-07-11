@@ -16,7 +16,7 @@ import * as React from "react";
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
-import { moneyR, useQuotes, weightPct } from "./ui";
+import { moneyR, rebalanceCodeMap, useQuotes, weightPct } from "./ui";
 
 const STRATEGIES = [
   "MINT SA Equity Alpha",
@@ -356,16 +356,6 @@ export function RebalanceBuilderPage({
   );
 }
 
-function rebalanceCode(reqs: RebalanceRequest[]): Map<string, string> {
-  const asc = [...reqs].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-  const map = new Map<string, string>();
-  asc.forEach((r, i) => {
-    const year = new Date(r.created_at).getFullYear() || 2026;
-    map.set(r.id, `REB-${year}-${String(i + 1).padStart(3, "0")}`);
-  });
-  return map;
-}
-
 function ProposalsList({
   pushingId,
   setPushingId,
@@ -388,7 +378,7 @@ function ProposalsList({
     },
   });
   const requests = q.data?.requests ?? []; // show all; the status chip differentiates
-  const codes = rebalanceCode(requests);
+  const codes = rebalanceCodeMap(requests);
 
   async function push(id: string) {
     setPushingId(id);

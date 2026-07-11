@@ -33,6 +33,17 @@ export function weightPct(v: number | null | undefined, dp = 1): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return `${v.toFixed(dp)}%`;
 }
+/** Stable REB-YYYY-NNN codes for a set of rebalance requests (sequential by created_at).
+ *  Shared so the Rebalance Builder and the IC agenda show the same code per request. */
+export function rebalanceCodeMap(reqs: { id: string; created_at: string }[]): Map<string, string> {
+  const asc = [...reqs].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const map = new Map<string, string>();
+  asc.forEach((r, i) => {
+    const year = new Date(r.created_at).getFullYear() || 2026;
+    map.set(r.id, `REB-${year}-${String(i + 1).padStart(3, "0")}`);
+  });
+  return map;
+}
 export function initialsOf(name: string | null | undefined): string {
   if (!name) return "—";
   const parts = name

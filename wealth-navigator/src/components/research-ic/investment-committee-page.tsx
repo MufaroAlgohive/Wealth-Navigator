@@ -19,7 +19,7 @@ import * as React from "react";
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
 import type { ProposedHolding, RebalanceRequest, ResearchNote, ResearchPerms } from "./types";
-import { ActionBadge, RatingBadge, moneyR, signedPct, useQuotes, weightPct } from "./ui";
+import { ActionBadge, RatingBadge, moneyR, rebalanceCodeMap, signedPct, useQuotes, weightPct } from "./ui";
 
 const MEMBERS = [
   { initials: "YO", name: "You", title: "Fund Manager / CIO", role: "CHAIR" },
@@ -100,6 +100,7 @@ export function InvestmentCommitteePage({
     .slice(0, 6);
 
   const agendaCount = agendaNotes.length + pendingReqs.length;
+  const rebCodes = rebalanceCodeMap(requests);
   const [checks, setChecks] = React.useState<boolean[]>(CHECKLIST.map((_, i) => i < 3));
 
   const refresh = () => {
@@ -132,6 +133,7 @@ export function InvestmentCommitteePage({
                   <RebalanceAgendaItem
                     key={r.id}
                     req={r}
+                    code={rebCodes.get(r.id) ?? "REB"}
                     canApprove={perms.approveRebalance}
                     onChanged={refresh}
                   />
@@ -155,7 +157,13 @@ export function InvestmentCommitteePage({
             ) : (
               <div className="space-y-4">
                 {approvedReqs.map((r) => (
-                  <ApprovedItem key={r.id} req={r} canPush={perms.pushRebalance} onChanged={refresh} />
+                  <ApprovedItem
+                    key={r.id}
+                    req={r}
+                    code={rebCodes.get(r.id) ?? "REB"}
+                    canPush={perms.pushRebalance}
+                    onChanged={refresh}
+                  />
                 ))}
               </div>
             )}
@@ -323,16 +331,12 @@ function useTransition(kind: "note" | "rebalance") {
   return { busy, go };
 }
 
-function rebalanceCode(r: RebalanceRequest): string {
-  const year = new Date(r.created_at).getFullYear() || 2026;
-  return `REB-${year}-${r.id.slice(0, 4).toUpperCase()}`;
-}
-
 function RebalanceAgendaItem({
   req,
+  code,
   canApprove,
   onChanged,
-}: { req: RebalanceRequest; canApprove: boolean; onChanged: () => void }) {
+}: { req: RebalanceRequest; code: string; canApprove: boolean; onChanged: () => void }) {
   const { busy, go } = useTransition("rebalance");
   const rows = Array.isArray(req.proposed_composition) ? req.proposed_composition : [];
   const changes = rows.filter((r) => r.action && r.action !== "hold").length;
@@ -343,7 +347,7 @@ function RebalanceAgendaItem({
           <span className="rounded-full border border-primary/35 bg-primary/12 px-2 py-0.5 text-[10px] font-semibold uppercase text-primary">
             Rebalance
           </span>
-          <span className="font-mono text-xs text-muted-foreground">{rebalanceCode(req)}</span>
+          <span className="font-mono text-xs text-muted-foreground">{code}</span>
           <span className="text-sm font-medium">{req.strategy_id}</span>
           <span className="rounded border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[10px] text-muted-foreground">
             {changes} chg
@@ -375,9 +379,10 @@ function RebalanceAgendaItem({
 
 function ApprovedItem({
   req,
+  code,
   canPush,
   onChanged,
-}: { req: RebalanceRequest; canPush: boolean; onChanged: () => void }) {
+}: { req: RebalanceRequest; code: string; canPush: boolean; onChanged: () => void }) {
   const [busy, setBusy] = React.useState(false);
   const rows = Array.isArray(req.proposed_composition) ? req.proposed_composition : [];
   async function release() {
@@ -396,7 +401,7 @@ function ApprovedItem({
           <span className="rounded-full border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.12)] px-2 py-0.5 text-[10px] font-semibold uppercase text-up">
             Approved
           </span>
-          <span className="font-mono text-xs text-muted-foreground">{rebalanceCode(req)}</span>
+          <span className="font-mono text-xs text-muted-foreground">{code}</span>
           <span className="text-sm font-medium">{req.strategy_id}</span>
         </div>
         <button
