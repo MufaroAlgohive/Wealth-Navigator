@@ -130,7 +130,7 @@ export default function MacroPage() {
         subtitle="SARB repo · prime · inflation · FX"
         endpoint="GET /api/macro"
         db="institutional"
-        dataSource="supabase"
+        dataSource="external"
       >
         {isLoading ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-4">

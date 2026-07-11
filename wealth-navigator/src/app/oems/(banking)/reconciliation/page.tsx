@@ -54,7 +54,7 @@ export default function ReconciliationPage() {
       <GlassSection
         title="Reconciliation"
         subtitle="Today's wallet ↔ bank movement"
-        dataSource="code-gap"
+        dataSource="supabase"
         endpoint="/api/admin/eft?action=today-reconciliation"
         right={
           <Button variant="secondary" size="sm" onClick={load} disabled={loading}>

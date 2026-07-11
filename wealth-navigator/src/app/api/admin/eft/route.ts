@@ -110,6 +110,38 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, children: kids });
   }
 
+  if (action === "today-reconciliation") {
+    // Live rollup of TODAY's wallet_transactions so the desk sees how many
+    // deposits still need a human. Matched = approved (auto-reconciled),
+    // unmatched = pending (manual review); rejected count toward total only.
+    // Full bank-statement <-> wallet matching lands in Phase C.
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const { data: txns, error } = await db
+      .from("wallet_transactions")
+      .select("amount, status, created_at")
+      .gte("created_at", start.toISOString());
+    if (error) {
+      return NextResponse.json({
+        ok: true,
+        stats: { total: 0, matched: 0, unmatched: 0, totalRands: 0 },
+        notice: error.message,
+      });
+    }
+    let total = 0;
+    let matched = 0;
+    let unmatched = 0;
+    let totalRands = 0;
+    for (const t of txns ?? []) {
+      total += 1;
+      totalRands += Number(t.amount) || 0;
+      const s = String(t.status ?? "").toLowerCase();
+      if (s === "pending") unmatched += 1;
+      else if (s === "approved" || s === "completed" || s === "credited") matched += 1;
+    }
+    return NextResponse.json({ ok: true, stats: { total, matched, unmatched, totalRands } });
+  }
+
   return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
 }
 
