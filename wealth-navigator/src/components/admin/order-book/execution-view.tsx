@@ -318,7 +318,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   const hasNotice = !!executions.data?.notice;
 
   return (
-    <div className="rounded-xl border border-border bg-card/40">
+    <div className="rounded-xl border border-border bg-card/40 overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -365,8 +365,8 @@ export function ExecutionView({ bookId }: { bookId: string }) {
         </div>
       )}
 
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse">
+      <div className="w-full overflow-x-auto">
+        <table className="w-full min-w-[1180px] border-collapse">
           <thead>
             <tr className="border-b border-border bg-card/60 text-left">
               {[
