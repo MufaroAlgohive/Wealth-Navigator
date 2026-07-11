@@ -34,15 +34,20 @@ import { type IncomingMessage, type ServerResponse, createServer } from "node:ht
 import type { AddressInfo } from "node:net";
 
 import { randomUUID } from "node:crypto";
-import { getIressCredentialsFromEnv } from "../../../src/lib/iress/config";
+import { getIressCredentialsFromEnv, getIressProdCredentialsFromEnv } from "../../../src/lib/iress/config";
 import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
-import { getIressClient } from "../../../src/lib/iress/index";
+import { createLiveIressClient, getIressClient } from "../../../src/lib/iress/index";
 import { createSoapTransport, makeHeader } from "../../../src/lib/iress/transport";
 import type { IressService, Order } from "../../../src/types/iress";
 import { loadWorkerEnv } from "./env";
 import type { WorkerEnv } from "./env";
 import { type UatExecutionDelta, getLastUatPollAt, uatExecutionHub } from "./order-poller";
-import { getMarketDataSession, marketDataBaseUrl, marketDataProdEnabled } from "./market-data";
+import {
+  getMarketDataSession,
+  invalidateMarketDataSession,
+  marketDataBaseUrl,
+  marketDataProdEnabled,
+} from "./market-data";
 import { fetchLiveQuote } from "./quotes";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import { type WorkerSupabase, writeHeartbeat } from "./supabase";
@@ -1464,6 +1469,70 @@ export async function handleRequest(
       hint:
         "Set IRESS_MARKET_DATA_PROD=1 (and optionally IRESS_MARKETDATA_BASE_URL / IRESS_PROD_USERNAME+PASSWORD) on the worker to enable. If prodSession.up is false, the prod login failed (no seat / not entitled) and market data safely stays on Yahoo; orders are unaffected.",
     });
+    return;
+  }
+
+  if (path === "/debug/release-md-seat") {
+    // RECOVERY: kick + end any lingering PROD market-data session so DFM@Mint's
+    // data server (IDS) releases back to CT/UAT. Needed after the prod split ran
+    // on the shared single seat and left the CT session stuck "No IDS is online":
+    // the old prod session holds the IDS until its ~2h timeout, so orders cannot
+    // place until it is released. This connects to prod with the SAME market-data
+    // ApplicationID, force-kicks that session, then ends the new one immediately
+    // so nothing keeps holding the prod IDS. It touches ONLY the market-data seat
+    // (never orders / positions). Requires ?confirm=release-md-seat so it is not
+    // triggered by accident. Safe to run with the split off.
+    if (url.searchParams.get("confirm") !== "release-md-seat") {
+      send(res, 400, {
+        ok: false,
+        error: "add ?confirm=release-md-seat to run (kicks + ends the lingering prod market-data session so CT/UAT reclaims its IDS)",
+      });
+      return;
+    }
+    const prodUrl = marketDataBaseUrl();
+    try {
+      const creds = getIressProdCredentialsFromEnv();
+      if (!creds.userName || !creds.password) {
+        send(res, 200, { ok: false, error: "no prod credentials in env (IRESS_PROD_USERNAME/PASSWORD or shared IRESS_USERNAME/PASSWORD)" });
+        return;
+      }
+      const client = createLiveIressClient({ baseUrl: prodUrl });
+      const node =
+        (process.env.WORKER_ID ?? process.env.RAILWAY_SERVICE_NAME ?? "railway").trim() || "railway";
+      const applicationId = `Mint-OEMS-MarketData-${node}`;
+      // Force-kick the lingering prod market-data session (same login+app id),
+      // returning a fresh key that now holds the IDS...
+      const started = await client.iressSessionStart({
+        UserName: creds.userName,
+        CompanyName: creds.company,
+        Password: creds.password,
+        ApplicationID: applicationId,
+        ApplicationLabel: "Mint-OEMS-MarketData",
+        SessionNumberToKick: -1,
+        SessionTimeout: 5,
+        Locale: "en-ZA",
+      });
+      // ...then end it right away so the prod IDS is fully released and CT can
+      // reclaim it on the orders session's next start.
+      await client.iressSessionEnd({ IRESSSessionKey: started.IRESSSessionKey });
+      invalidateMarketDataSession();
+      // Nudge the orders session to re-establish now that the IDS should be free.
+      deps.sessions.invalidate();
+      send(res, 200, {
+        ok: true,
+        endpoint: prodUrl,
+        applicationId,
+        message:
+          "Kicked + ended the lingering prod market-data session; CT/UAT should reclaim its IDS on the next orders-session start (watch /debug/ips-session for IOSPlus=up).",
+      });
+    } catch (err) {
+      send(res, 200, {
+        ok: false,
+        endpoint: prodUrl,
+        error: err instanceof Error ? err.message : String(err),
+        note: "If this errors 'No sessions to kick', the prod session already timed out; CT should recover on its own.",
+      });
+    }
     return;
   }
 
