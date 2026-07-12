@@ -34,6 +34,12 @@ export interface SoapCallSpec {
   parameters: Record<string, unknown>;
   /** Override the response element name (default = `${method}Response`). */
   responseElement?: string;
+  /**
+   * Per-call client-abort timeout in ms. Overrides the transport default
+   * (30_000). Used to fail-fast on calls that hang (e.g. a `ServiceSessionStart`
+   * routed to the wrong LB node) so the caller can retry quickly.
+   */
+  timeoutMs?: number;
 }
 
 export interface SoapCallResult {
@@ -280,7 +286,7 @@ export function createSoapTransport(opts: CreateSoapTransportOptions): SoapTrans
       );
     }
     const ctl = new AbortController();
-    const t = setTimeout(() => ctl.abort(), timeoutMs);
+    const t = setTimeout(() => ctl.abort(), spec.timeoutMs ?? timeoutMs);
     let res: Response;
     try {
       res = await fetchImpl(endpoint, {

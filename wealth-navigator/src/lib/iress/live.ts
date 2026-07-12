@@ -853,12 +853,19 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       require(req.IRESSSessionKey, "IRESSSessionKey", "ServiceSessionStart");
       require(req.Service, "Service", "ServiceSessionStart");
       require(req.Server, "Server", "ServiceSessionStart");
+      // Per-call timeout is env-tunable so the worker can fail-fast and retry
+      // when IOS+ ServiceSessionStart hangs (wrong LB node / unresponsive
+      // service). Default is unchanged (30s) so the Next app and any other
+      // caller behave exactly as before unless IRESS_SVC_START_TIMEOUT_MS is set.
+      const svcTimeoutMs = Number(process.env.IRESS_SVC_START_TIMEOUT_MS ?? "") || 30_000;
+      const svcHeaderTimeout = Math.max(5, Math.round(svcTimeoutMs / 1000));
       const result = await transport.call({
         method: "ServiceSessionStart",
+        timeoutMs: svcTimeoutMs,
         header: makeHeader({
           sessionKey: req.IRESSSessionKey,
           requestID: newRequestID("svc-start"),
-          timeout: 30,
+          timeout: svcHeaderTimeout,
           waitForResponse: true,
         }),
         // CONFIRMED against the live CT server (2026-06-16): the build reads the

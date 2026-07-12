@@ -253,18 +253,43 @@ export async function bringUpMintSession(
       servicesToStart.map(({ Service, Server }) => `${Service}=${Server}`).join(" "),
   );
   const serviceKeys: Partial<Record<IressService, string>> = {};
+  // IOS+ ServiceSessionStart must run on the session's home LB node and can hang
+  // (wrong-node routing / unresponsive service). A single attempt then leaves
+  // the whole cycle without IOS+ (orders unavailable). Retry N times (env, each
+  // attempt a fresh LB roll) with a short delay. Default 1 attempt = unchanged.
+  const svcRetries = Math.max(1, Number(process.env.IRESS_SVC_START_RETRIES ?? "") || 1);
+  const svcRetryDelayMs = Math.max(0, Number(process.env.IRESS_SVC_START_RETRY_DELAY_MS ?? "") || 1000);
   for (const { Service, Server } of servicesToStart) {
-    try {
-      const { ServiceSessionKey } = await iress.serviceSessionStart({
-        IRESSSessionKey: iressSession.IRESSSessionKey,
-        Service,
-        Server,
-      });
-      serviceKeys[Service] = ServiceSessionKey;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+    let lastMessage = "";
+    for (let attempt = 1; attempt <= svcRetries; attempt++) {
+      try {
+        const { ServiceSessionKey } = await iress.serviceSessionStart({
+          IRESSSessionKey: iressSession.IRESSSessionKey,
+          Service,
+          Server,
+        });
+        serviceKeys[Service] = ServiceSessionKey;
+        if (attempt > 1) {
+          console.info(
+            `[mint-iress] ServiceSessionStart(${Service}/${Server}) ok on attempt ${attempt}/${svcRetries}`,
+          );
+        }
+        break;
+      } catch (err) {
+        lastMessage = err instanceof Error ? err.message : String(err);
+        if (svcRetries > 1) {
+          console.warn(
+            `[mint-iress] ServiceSessionStart(${Service}/${Server}) attempt ${attempt}/${svcRetries} failed: ${lastMessage}`,
+          );
+        }
+        if (attempt < svcRetries && svcRetryDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, svcRetryDelayMs));
+        }
+      }
+    }
+    if (!serviceKeys[Service]) {
       console.warn(
-        `[mint-iress] ServiceSessionStart(${Service}/${Server}) failed (continuing): ${message}`,
+        `[mint-iress] ServiceSessionStart(${Service}/${Server}) failed after ${svcRetries} attempt(s) (continuing): ${lastMessage}`,
       );
     }
   }
