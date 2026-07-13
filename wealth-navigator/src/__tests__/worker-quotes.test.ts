@@ -32,6 +32,7 @@ function makeEnv(overrides: Partial<WorkerEnv> = {}): WorkerEnv {
     uatAccountCode: "",
     uatMode: false,
     uatOrderPollSec: 30,
+    alertEvalSec: 60,
     applicationLabel: "lbl",
     defaultExchange: "JSE",
     fxExchange: "FX",
@@ -666,5 +667,319 @@ describe("syncWatchlistQuotes quote_hollow_row event", () => {
     const events = recentWorkerEvents();
     const hollow = events.find((e) => e.event === "quote_hollow_row");
     expect(hollow).toBeUndefined();
+  });
+});
+
+/**
+ * FX spot (USDZAR) and money-market (JIBAR_3M) rate codes legitimately
+ * return `marketState=OPEN` with no L1 last / OHLC — PricingQuoteGet is
+ * the wrong method for these instruments. The fix must:
+ *  - skip the misleading "field-name mismatch suspected" diagnostic for
+ *    these symbols, and
+ *  - skip the `quote_hollow_row` "wrong Board/Exchange" diagnostic (which
+ *    is about JSE equity rows), and
+ *  - surface an `info`-level `pricing_quote_get_unsupported_rate_code`
+ *    event naming the right method (TimeSeriesGet2) so the integration
+ *    page can render a targeted unblock hint.
+ */
+describe("syncWatchlistQuotes FX / MM rate-code diagnostics", () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  function makeFxEnv(): WorkerEnv {
+    return makeEnv({
+      watchlistSymbols: ["USDZAR"],
+      watchlistEntries: [{ symbol: "USDZAR", kind: "fx", exchange: "FX" }],
+    });
+  }
+
+  function makeMmEnv(): WorkerEnv {
+    return makeEnv({
+      watchlistSymbols: ["JIBAR_3M"],
+      watchlistEntries: [{ symbol: "JIBAR_3M", kind: "mm", exchange: "MM" }],
+    });
+  }
+
+  function clientReturningOpenRowZero() {
+    // Real IRESS response shape for USDZAR / JIBAR_3M: marketState=OPEN
+    // but every L1 field is empty (no last, no bid, no ask, no OHLC,
+    // no volume). Mapper collapses this to last=0.
+    return {
+      pricingQuoteGet: vi.fn(async () => ({
+        Header: { StatusCode: 2, ErrorNumber: 0 },
+        DataRows: [
+          {
+            symbol: "USDZAR",
+            last: 0,
+            bid: 0,
+            ask: 0,
+            bidSize: 0,
+            askSize: 0,
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+            prevClose: 0,
+            change: 0,
+            changePct: 0,
+            volume: 0,
+            vwap: 0,
+            currency: "ZAR",
+            marketState: "OPEN",
+            ts: Date.now(),
+          },
+        ],
+        RawDataRows: [
+          {
+            SecurityCode: "USDZAR",
+            Exchange: "FX",
+            MarketState: "OPEN",
+            Last: 0,
+            LastPrice: 0,
+            Bid: 0,
+            Ask: 0,
+            Volume: 0,
+          },
+        ],
+      })),
+      pricingQuoteGetUpdates: vi.fn(),
+      timeSeriesGet2: vi.fn(),
+      timeSeriesGet2Updates: vi.fn(),
+      orderCreate3: vi.fn(),
+      orderAmend2: vi.fn(),
+      orderDelete: vi.fn(),
+      orderPadGetByAccount: vi.fn(),
+      orderPadGetByAccountUpdates: vi.fn(),
+      bookingGetByOrganisation2: vi.fn(),
+      ipsTransactionGetByAccount5: vi.fn(),
+      iressSessionStart: vi.fn(),
+      iressSessionEnd: vi.fn(),
+      serviceSessionStart: vi.fn(),
+      serviceSessionEnd: vi.fn(),
+      targetIdGet: vi.fn(),
+      targetIdStatusGet: vi.fn(),
+    };
+  }
+
+  it("emits an info-level pricing_quote_get_unsupported_rate_code event for FX symbols", async () => {
+    const env = makeFxEnv();
+    const client = clientReturningOpenRowZero();
+    const withSession = vi.fn(async (fn) => fn({ iressSessionKey: "k" }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    vi.doMock("../../workers/iress-ingest/src/session", () => ({
+      WorkerSessionManager: class {
+        withSession = withSession;
+      },
+    }));
+    vi.doMock("@/lib/iress/index", () => ({
+      getIressClient: () => client,
+      iressConfig: { mode: "live" },
+      redactSessionKeyForLog: (v: string) => v,
+    }));
+
+    const { syncWatchlistQuotes } = await import("../../workers/iress-ingest/src/quotes");
+    const { recentWorkerEvents, _resetWorkerEventsForTests } = await import(
+      "../../workers/iress-ingest/src/events"
+    );
+    _resetWorkerEventsForTests();
+    const result = await syncWatchlistQuotes(env, { withSession } as never, null);
+    expect(result.empty).toBe(1);
+    expect(result.errors).toBe(0);
+
+    const events = recentWorkerEvents();
+    const rate = events.find((e) => e.event === "pricing_quote_get_unsupported_rate_code");
+    expect(rate).toBeDefined();
+    expect(rate?.level).toBe("info");
+    expect(rate?.msg).toMatch(/TimeSeriesGet2/);
+    expect(rate?.data).toMatchObject({ symbol: "USDZAR", exchange: "FX", kind: "fx" });
+
+    // The misleading "field-name mismatch" warn must NOT fire for FX
+    // instruments — only the new "rate code" tag should appear in the
+    // warn stream.
+    const mismatched = warn.mock.calls.filter((c) =>
+      String(c[0]).includes("[field-name mismatch suspected]"),
+    );
+    expect(mismatched).toHaveLength(0);
+    const rateTag = warn.mock.calls.filter((c) =>
+      String(c[0]).includes("[rate code"),
+    );
+    expect(rateTag.length).toBeGreaterThan(0);
+    warn.mockRestore();
+  });
+
+  it("emits pricing_quote_get_unsupported_rate_code for MM symbols (JIBAR_3M)", async () => {
+    const env = makeMmEnv();
+    const client = {
+      pricingQuoteGet: vi.fn(async () => ({
+        Header: { StatusCode: 2, ErrorNumber: 0 },
+        DataRows: [
+          {
+            symbol: "JIBAR_3M",
+            last: 0,
+            bid: 0,
+            ask: 0,
+            bidSize: 0,
+            askSize: 0,
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+            prevClose: 0,
+            change: 0,
+            changePct: 0,
+            volume: 0,
+            vwap: 0,
+            currency: "ZAR",
+            marketState: "OPEN",
+            ts: Date.now(),
+          },
+        ],
+        RawDataRows: [
+          {
+            SecurityCode: "JIBAR_3M",
+            Exchange: "MM",
+            MarketState: "OPEN",
+            Last: 0,
+            LastPrice: 0,
+          },
+        ],
+      })),
+      pricingQuoteGetUpdates: vi.fn(),
+      timeSeriesGet2: vi.fn(),
+      timeSeriesGet2Updates: vi.fn(),
+      orderCreate3: vi.fn(),
+      orderAmend2: vi.fn(),
+      orderDelete: vi.fn(),
+      orderPadGetByAccount: vi.fn(),
+      orderPadGetByAccountUpdates: vi.fn(),
+      bookingGetByOrganisation2: vi.fn(),
+      ipsTransactionGetByAccount5: vi.fn(),
+      iressSessionStart: vi.fn(),
+      iressSessionEnd: vi.fn(),
+      serviceSessionStart: vi.fn(),
+      serviceSessionEnd: vi.fn(),
+      targetIdGet: vi.fn(),
+      targetIdStatusGet: vi.fn(),
+    };
+    const withSession = vi.fn(async (fn) => fn({ iressSessionKey: "k" }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    vi.doMock("../../workers/iress-ingest/src/session", () => ({
+      WorkerSessionManager: class {
+        withSession = withSession;
+      },
+    }));
+    vi.doMock("@/lib/iress/index", () => ({
+      getIressClient: () => client,
+      iressConfig: { mode: "live" },
+      redactSessionKeyForLog: (v: string) => v,
+    }));
+
+    const { syncWatchlistQuotes } = await import("../../workers/iress-ingest/src/quotes");
+    const { recentWorkerEvents, _resetWorkerEventsForTests } = await import(
+      "../../workers/iress-ingest/src/events"
+    );
+    _resetWorkerEventsForTests();
+    const result = await syncWatchlistQuotes(env, { withSession } as never, null);
+    expect(result.empty).toBe(1);
+
+    const events = recentWorkerEvents();
+    const rate = events.find((e) => e.event === "pricing_quote_get_unsupported_rate_code");
+    expect(rate).toBeDefined();
+    expect(rate?.data).toMatchObject({ symbol: "JIBAR_3M", exchange: "MM", kind: "mm" });
+    // No false-positive diagnostic should appear in the warn stream.
+    const falsePositive = warn.mock.calls.filter(
+      (c) =>
+        String(c[0]).includes("[field-name mismatch suspected]") ||
+        String(c[0]).includes("hollow"),
+    );
+    expect(falsePositive).toHaveLength(0);
+    warn.mockRestore();
+  });
+
+  it("does NOT suppress the hollow-row diagnostic for an EQUITY symbol with kind=equity", async () => {
+    // Regression: make sure the new rate-code carve-out does not turn
+    // off the existing "wrong Board/Exchange" diagnostic that has
+    // already caught real mapping bugs.
+    const env = makeEnv(); // kind=equity by default
+    const client = {
+      pricingQuoteGet: vi.fn(async () => ({
+        Header: { StatusCode: 2, ErrorNumber: 0 },
+        DataRows: [
+          {
+            symbol: "BHG",
+            last: 0,
+            bid: 0,
+            ask: 0,
+            bidSize: 0,
+            askSize: 0,
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+            prevClose: 0,
+            change: 0,
+            changePct: 0,
+            volume: 0,
+            vwap: 0,
+            currency: "ZAR",
+            marketState: "OPEN",
+            ts: Date.now(),
+          },
+        ],
+        RawDataRows: [
+          {
+            SecurityCode: "NPN",
+            Exchange: "JSE",
+            MarketState: "OPEN",
+            Last: 0,
+            LastPrice: 0,
+          },
+        ],
+      })),
+      pricingQuoteGetUpdates: vi.fn(),
+      timeSeriesGet2: vi.fn(),
+      timeSeriesGet2Updates: vi.fn(),
+      orderCreate3: vi.fn(),
+      orderAmend2: vi.fn(),
+      orderDelete: vi.fn(),
+      orderPadGetByAccount: vi.fn(),
+      orderPadGetByAccountUpdates: vi.fn(),
+      bookingGetByOrganisation2: vi.fn(),
+      ipsTransactionGetByAccount5: vi.fn(),
+      iressSessionStart: vi.fn(),
+      iressSessionEnd: vi.fn(),
+      serviceSessionStart: vi.fn(),
+      serviceSessionEnd: vi.fn(),
+      targetIdGet: vi.fn(),
+      targetIdStatusGet: vi.fn(),
+    };
+    const withSession = vi.fn(async (fn) => fn({ iressSessionKey: "k" }));
+
+    vi.doMock("../../workers/iress-ingest/src/session", () => ({
+      WorkerSessionManager: class {
+        withSession = withSession;
+      },
+    }));
+    vi.doMock("@/lib/iress/index", () => ({
+      getIressClient: () => client,
+      iressConfig: { mode: "live" },
+      redactSessionKeyForLog: (v: string) => v,
+    }));
+
+    const { syncWatchlistQuotes } = await import("../../workers/iress-ingest/src/quotes");
+    const { recentWorkerEvents, _resetWorkerEventsForTests } = await import(
+      "../../workers/iress-ingest/src/events"
+    );
+    _resetWorkerEventsForTests();
+    await syncWatchlistQuotes(env, { withSession } as never, null);
+    const events = recentWorkerEvents();
+    const hollow = events.find((e) => e.event === "quote_hollow_row");
+    expect(hollow).toBeDefined(); // equity rows must still surface this
+    const rate = events.find((e) => e.event === "pricing_quote_get_unsupported_rate_code");
+    expect(rate).toBeUndefined(); // and must NOT be misclassified as a rate code
   });
 });

@@ -109,6 +109,7 @@ function buildEnv(overrides: Record<string, string | number | boolean | string[]
     uatAccountCode: "",
     uatMode: false,
     uatOrderPollSec: 30,
+    alertEvalSec: 60,
     applicationLabel: "Mint-OEMS-Worker-test",
     defaultExchange: "JSE",
     ...overrides,

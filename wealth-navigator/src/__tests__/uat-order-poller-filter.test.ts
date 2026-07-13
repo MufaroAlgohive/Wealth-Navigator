@@ -147,6 +147,7 @@ function makeWorkerEnv(overrides: Partial<{ uatMode: boolean; uatAccountCode: st
     uatAccountCode: overrides.uatAccountCode ?? "56378",
     uatMode: overrides.uatMode ?? true,
     uatOrderPollSec: 30,
+    alertEvalSec: 60,
     applicationLabel: "Mint-OEMS-Worker-Test",
     defaultExchange: "JSE",
     ipsServer: "IPSAPI",

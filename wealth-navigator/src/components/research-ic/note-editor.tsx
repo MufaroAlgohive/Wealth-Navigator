@@ -87,6 +87,9 @@ export function NoteEditor({
   const [likes, setLikes] = React.useState(th.likesManagement ?? "");
   const [dislikes, setDislikes] = React.useState(th.dislikesManagement ?? "");
   const [peMultiple, setPeMultiple] = React.useState(val.pe_multiple != null ? String(val.pe_multiple) : "");
+  const [roePct, setRoePct] = React.useState(val.roe_pct != null ? String(val.roe_pct) : "");
+  const [divYieldPct, setDivYieldPct] = React.useState(val.div_yield_pct != null ? String(val.div_yield_pct) : "");
+  const [evEbitda, setEvEbitda] = React.useState(val.ev_ebitda != null ? String(val.ev_ebitda) : "");
 
   const [triggers, setTriggers] = React.useState<Record<TriggerKey, TriggerForm>>({
     buy_below: {
@@ -164,7 +167,10 @@ export function NoteEditor({
     };
     const valuation: NoteValuation = {
       pe_multiple: peMultiple ? Number(peMultiple) : undefined,
-      peers: peers.filter((p) => p.name.trim() && Number.isFinite(p.pe)),
+      roe_pct: roePct ? Number(roePct) : undefined,
+      div_yield_pct: divYieldPct ? Number(divYieldPct) : undefined,
+      ev_ebitda: evEbitda ? Number(evEbitda) : undefined,
+      peers: peers.filter((p) => p.name.trim()),
     };
 
     setBusy(true);
@@ -303,6 +309,30 @@ export function NoteEditor({
               inputMode="decimal"
             />
           </Field>
+          <Field label="EV/EBITDA">
+            <input
+              className={INPUT}
+              value={evEbitda}
+              onChange={(e) => setEvEbitda(e.target.value)}
+              inputMode="decimal"
+            />
+          </Field>
+          <Field label="ROE (%)">
+            <input
+              className={INPUT}
+              value={roePct}
+              onChange={(e) => setRoePct(e.target.value)}
+              inputMode="decimal"
+            />
+          </Field>
+          <Field label="Dividend yield (%)">
+            <input
+              className={INPUT}
+              value={divYieldPct}
+              onChange={(e) => setDivYieldPct(e.target.value)}
+              inputMode="decimal"
+            />
+          </Field>
           <Field label="Linked strategies (comma-sep)" className="sm:col-span-3">
             <input
               className={INPUT}
@@ -393,73 +423,94 @@ export function NoteEditor({
 
         {/* fundamentals */}
         <ListEditor
-          label="Fundamentals"
+          label="Fundamentals (Prior / Current / Y1 / Y2 / Y3 + trend)"
           rows={funds}
           onAdd={() =>
-            setFunds((p) => [...p, { metric: "", prior: "", current: "", forecast: "", trend: "flat" }])
+            setFunds((p) => [
+              ...p,
+              { metric: "", prior: "", current: "", forecast: "", forecastYears: ["", "", ""], trend: "flat" },
+            ])
           }
           onRemove={(i) => setFunds((p) => p.filter((_, idx) => idx !== i))}
-          render={(f, i) => (
-            <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_90px] gap-2">
-              <input
-                className={INPUT}
-                value={f.metric}
-                placeholder="Metric"
-                onChange={(e) =>
-                  setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, metric: e.target.value } : x)))
-                }
-              />
-              <input
-                className={INPUT}
-                value={String(f.prior)}
-                placeholder="Prior"
-                onChange={(e) =>
-                  setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, prior: e.target.value } : x)))
-                }
-              />
-              <input
-                className={INPUT}
-                value={String(f.current)}
-                placeholder="Current"
-                onChange={(e) =>
-                  setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, current: e.target.value } : x)))
-                }
-              />
-              <input
-                className={INPUT}
-                value={String(f.forecast)}
-                placeholder="Forecast"
-                onChange={(e) =>
-                  setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, forecast: e.target.value } : x)))
-                }
-              />
-              <select
-                className={INPUT}
-                value={f.trend ?? "flat"}
-                onChange={(e) =>
-                  setFunds((p) =>
-                    p.map((x, idx) =>
-                      idx === i ? { ...x, trend: e.target.value as Fundamental["trend"] } : x,
-                    ),
-                  )
-                }
-              >
-                <option value="up">up</option>
-                <option value="flat">flat</option>
-                <option value="down">down</option>
-              </select>
-            </div>
-          )}
+          render={(f, i) => {
+            const y = Array.isArray(f.forecastYears) ? f.forecastYears : ["", "", ""];
+            const setY = (idx: 0 | 1 | 2, v: string) => {
+              const next = [...y];
+              next[idx] = v;
+              setFunds((p) => p.map((x, k) => (k === i ? { ...x, forecastYears: next } : x)));
+            };
+            return (
+              <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr_90px] gap-2">
+                <input
+                  className={INPUT}
+                  value={f.metric}
+                  placeholder="Metric"
+                  onChange={(e) =>
+                    setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, metric: e.target.value } : x)))
+                  }
+                />
+                <input
+                  className={INPUT}
+                  value={String(f.prior)}
+                  placeholder="Prior"
+                  onChange={(e) =>
+                    setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, prior: e.target.value } : x)))
+                  }
+                />
+                <input
+                  className={INPUT}
+                  value={String(f.current)}
+                  placeholder="Current"
+                  onChange={(e) =>
+                    setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, current: e.target.value } : x)))
+                  }
+                />
+                <input
+                  className={INPUT}
+                  value={y[0] ?? ""}
+                  placeholder="Year 1"
+                  onChange={(e) => setY(0, e.target.value)}
+                />
+                <input
+                  className={INPUT}
+                  value={y[1] ?? ""}
+                  placeholder="Year 2"
+                  onChange={(e) => setY(1, e.target.value)}
+                />
+                <input
+                  className={INPUT}
+                  value={y[2] ?? ""}
+                  placeholder="Year 3"
+                  onChange={(e) => setY(2, e.target.value)}
+                />
+                <select
+                  className={INPUT}
+                  value={f.trend ?? "flat"}
+                  onChange={(e) =>
+                    setFunds((p) =>
+                      p.map((x, idx) =>
+                        idx === i ? { ...x, trend: e.target.value as Fundamental["trend"] } : x,
+                      ),
+                    )
+                  }
+                >
+                  <option value="up">up</option>
+                  <option value="flat">flat</option>
+                  <option value="down">down</option>
+                </select>
+              </div>
+            );
+          }}
         />
 
         {/* peers */}
         <ListEditor
-          label="Valuation vs peers (P/E)"
+          label="Valuation vs peers (P/E · EV/EBITDA · ROE · Div yield)"
           rows={peers}
           onAdd={() => setPeers((p) => [...p, { name: "", pe: 0 }])}
           onRemove={(i) => setPeers((p) => p.filter((_, idx) => idx !== i))}
           render={(p, i) => (
-            <div className="grid grid-cols-[1fr_120px] gap-2">
+            <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr] gap-2">
               <input
                 className={INPUT}
                 value={p.name}
@@ -470,12 +521,45 @@ export function NoteEditor({
               />
               <input
                 className={INPUT}
-                value={String(p.pe)}
+                value={String(p.pe ?? "")}
                 placeholder="P/E"
                 inputMode="decimal"
                 onChange={(e) =>
                   setPeers((prev) =>
                     prev.map((x, idx) => (idx === i ? { ...x, pe: Number(e.target.value) } : x)),
+                  )
+                }
+              />
+              <input
+                className={INPUT}
+                value={String(p.evEbitda ?? "")}
+                placeholder="EV/EBITDA"
+                inputMode="decimal"
+                onChange={(e) =>
+                  setPeers((prev) =>
+                    prev.map((x, idx) => (idx === i ? { ...x, evEbitda: Number(e.target.value) } : x)),
+                  )
+                }
+              />
+              <input
+                className={INPUT}
+                value={String(p.roe ?? "")}
+                placeholder="ROE %"
+                inputMode="decimal"
+                onChange={(e) =>
+                  setPeers((prev) =>
+                    prev.map((x, idx) => (idx === i ? { ...x, roe: Number(e.target.value) } : x)),
+                  )
+                }
+              />
+              <input
+                className={INPUT}
+                value={String(p.divYield ?? "")}
+                placeholder="Div %"
+                inputMode="decimal"
+                onChange={(e) =>
+                  setPeers((prev) =>
+                    prev.map((x, idx) => (idx === i ? { ...x, divYield: Number(e.target.value) } : x)),
                   )
                 }
               />

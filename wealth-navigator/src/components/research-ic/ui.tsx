@@ -328,3 +328,128 @@ export function PeerPeBars({
     </div>
   );
 }
+
+/**
+ * Median of an array of finite numbers (sorted copy). Returns null if empty.
+ * Used by the peer scorecard to bucket the subject's metric vs the peer group.
+ */
+export function medianOf(xs: Array<number | undefined | null>): number | null {
+  const ys = xs.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+  if (ys.length === 0) return null;
+  const sorted = [...ys].sort((a, b) => a - b);
+  const m = sorted.length / 2;
+  return sorted.length % 2 === 1
+    ? sorted[Math.floor(m)] ?? null
+    : ((sorted[m - 1] ?? 0) + (sorted[m] ?? 0)) / 2;
+}
+
+/**
+ * Bucket a subject metric against the peer median into a green/amber/red
+ * signal. For `lowerIsBetter` metrics (P/E, EV/EBITDA), a subject value below
+ * the median is green; for `higherIsBetter` metrics (ROE, div yield), above
+ * the median is green. The 10% band around the median is amber; outside is
+ * red. Mirrors the Lovable spec's "PE green/amber/red vs median" rule.
+ */
+export function peerTone(
+  subject: number | null | undefined,
+  median: number | null | undefined,
+  kind: "lowerIsBetter" | "higherIsBetter",
+): "up" | "amber" | "down" | "muted" {
+  if (subject == null || !Number.isFinite(subject) || median == null || !Number.isFinite(median) || median === 0)
+    return "muted";
+  const ratio = subject / median;
+  const inside = kind === "lowerIsBetter" ? ratio <= 1 && ratio >= 0.9 : ratio >= 1 && ratio <= 1.1;
+  const better = kind === "lowerIsBetter" ? ratio < 0.9 : ratio > 1.1;
+  if (better) return "up";
+  if (inside) return "amber";
+  return "down";
+}
+
+const TONE_CLS = {
+  up: "border-[hsl(var(--up)/0.45)] bg-[hsl(var(--up)/0.12)] text-up",
+  amber: "border-amber-400/45 bg-amber-400/12 text-amber-500",
+  down: "border-[hsl(var(--down)/0.45)] bg-[hsl(var(--down)/0.12)] text-down",
+  muted: "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] text-muted-foreground",
+} as const;
+
+export interface PeerScorecardMetric {
+  /** Display label, e.g. "P/E". */
+  label: string;
+  /** Subject's value. */
+  subject: number | null | undefined;
+  /** Median of the peer group for this metric. */
+  median: number | null;
+  /** True for P/E / EV/EBITDA, false for ROE / div yield. */
+  kind: "lowerIsBetter" | "higherIsBetter";
+  /** Suffix to render, e.g. "x" or "%". */
+  unit?: string;
+}
+
+export function PeerScorecard({
+  metrics,
+  subjectName = "This",
+}: {
+  metrics: PeerScorecardMetric[];
+  subjectName?: string;
+}) {
+  const usable = metrics.filter((m) => m.subject != null && Number.isFinite(m.subject));
+  if (usable.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-caption">
+        No peer comparison data.
+      </div>
+    );
+  }
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+          <th className="px-4 py-2 font-medium">Metric</th>
+          <th className="px-3 py-2 text-right font-medium">{subjectName}</th>
+          <th className="px-3 py-2 text-right font-medium">Peer median</th>
+          <th className="px-5 py-2 text-right font-medium">Signal</th>
+        </tr>
+      </thead>
+      <tbody>
+        {usable.map((m) => {
+          const tone = peerTone(m.subject, m.median, m.kind);
+          const fmt = (v: number | null | undefined) =>
+            v == null || !Number.isFinite(v) ? "—" : v.toFixed(m.unit === "%" ? 1 : 1);
+          const u = m.unit ?? "";
+          return (
+            <tr key={m.label} className="border-b border-[hsl(var(--glass-border))] last:border-0">
+              <td className="px-4 py-2 font-medium">{m.label}</td>
+              <td className="px-3 py-2 text-right font-mono tabular-nums">
+                {fmt(m.subject)}
+                {u}
+              </td>
+              <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                {fmt(m.median)}
+                {u}
+              </td>
+              <td className="px-5 py-2 text-right">
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                    TONE_CLS[tone],
+                  )}
+                  title={
+                    tone === "up"
+                      ? "Better than median"
+                      : tone === "amber"
+                        ? "In line with median"
+                        : tone === "down"
+                          ? "Worse than median"
+                          : "n/a"
+                  }
+                >
+                  {tone === "up" ? "GREEN" : tone === "amber" ? "AMBER" : tone === "down" ? "RED" : "—"}
+                </span>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}

@@ -14,6 +14,7 @@ import { pollUatForFills, stampLastUatPollAt } from "./order-poller";
 import { pollAccountsForOrders } from "./orders";
 import { syncWatchlistQuotes } from "./quotes";
 import { syncRetailPrices } from "./retail-ingest";
+import { evaluateTriggers } from "./alerts";
 import { LICENSE_RELEASE_DELAY_MS, WorkerSessionManager } from "./session";
 import { createInstitutionalSupabase, createRetailSupabase, writeHeartbeat } from "./supabase";
 import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
@@ -277,6 +278,38 @@ async function ipsLoop(): Promise<void> {
   }
 }
 
+async function alertLoop(): Promise<void> {
+  // Research-trigger evaluator. Pure DB read (no IRESS session) — runs
+  // independently of the quote loop so an IRESS outage doesn't blind the
+  // alert path. `quote_snapshot_c` is the canonical institutional price
+  // table populated by the retailIngestLoop / PricingQuoteGet path.
+  if (env.alertEvalSec <= 0) return;
+  while (!shuttingDown) {
+    try {
+      const r = await evaluateTriggers({ env, supabase });
+      if (r.breached > 0 || r.inserted > 0 || r.errors.length > 0) {
+        console.info(
+          JSON.stringify({
+            level: "info",
+            event: "alert_eval_complete",
+            notes: r.notes,
+            breached: r.breached,
+            inserted: r.inserted,
+            skipped: r.skipped,
+            emailed: r.emailed,
+            email_webhooks_tried: r.emailWebhooksTried,
+            errors: r.errors,
+          }),
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] alert eval error: ${msg}`);
+    }
+    await sleep(env.alertEvalSec * 1000);
+  }
+}
+
 async function retailIngestLoop(): Promise<void> {
   // Dormant unless explicitly enabled (IRESS_RETAIL_INGEST=1 + RETAIL_SUPABASE_URL).
   // This is the only path that writes to the live retail consumer DB, and it
@@ -338,6 +371,7 @@ void quoteLoop();
 void orderLoop();
 void uatOrderLoop();
 void timeSeriesLoop();
+void alertLoop();
 // IPS is parked (IRESS scope = market data + IOS+). The loop only errors every
 // cycle without an IPS service session — re-enable with IRESS_ENABLE_IPS=1.
 if (process.env.IRESS_ENABLE_IPS === "1") void ipsLoop();

@@ -59,6 +59,8 @@ export interface WorkerEnv {
   uatMode: boolean;
   /** Cadence (seconds) of the UAT order-pad fill poll. Default 30. */
   uatOrderPollSec: number;
+  /** Cadence (seconds) of the research-trigger alert evaluator. Default 60. */
+  alertEvalSec: number;
   applicationLabel: string;
   /** Default exchange passed to PricingQuoteGet (default "JSE"). */
   defaultExchange: string;
@@ -207,6 +209,8 @@ export function loadWorkerEnv(): WorkerEnv {
     uatAccountCode: process.env.IRESS_UAT_ACCOUNT_CODE?.trim() || process.env.IRESS_ACCOUNT_CODE || "",
     uatMode: parseBool(process.env.IRESS_UAT_MODE, false),
     uatOrderPollSec: Math.max(5, Number(process.env.IRESS_UAT_ORDER_POLL_SEC ?? "30")),
+  /** Cadence (seconds) of the research-trigger alert evaluator. Default 60. */
+  alertEvalSec: Math.max(15, Number(process.env.IRESS_ALERT_EVAL_SEC ?? "60")),
     applicationLabel: process.env.IRESS_APPLICATION_LABEL ?? "Mint-OEMS-Worker",
     defaultExchange: defaultExchange || "JSE",
     fxExchange: fxExchange || "FX",

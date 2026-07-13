@@ -16,7 +16,7 @@ import * as React from "react";
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
-import { moneyR, rebalanceCodeMap, useQuotes, weightPct } from "./ui";
+import { moneyR, rebalanceCodeMap, useQuotes, weightPct, ActionBadge } from "./ui";
 
 type Holding = { ticker: string; name: string; shares: number };
 type StrategyOpt = { id: string; name: string };
@@ -117,9 +117,23 @@ export function RebalanceBuilderPage({
   const [addOpen, setAddOpen] = React.useState(false);
   const [addTicker, setAddTicker] = React.useState("");
   const [addShares, setAddShares] = React.useState("");
+  // Per-row rationale (freeform one-liner shown in the IC action table) and a
+  // buyer-vs-seller choice when reducing a position. Required by Lonwabo's
+  // meeting rule (transcript 2026-07-13): "you can't submit without saying
+  // what you're buying" — every SELL action must be paired with a BUY action
+  // and each row needs its own rationale text before submit.
+  const [rationaleBySymbol, setRationaleBySymbol] = React.useState<Record<string, string>>({});
+  const setRationale = (sym: string, v: string) =>
+    setRationaleBySymbol((prev) => ({ ...prev, [sym.toUpperCase()]: v }));
   const [submitting, setSubmitting] = React.useState(false);
   const [pushingId, setPushingId] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+
+  // Reset rationale when the basket switches strategies so old text doesn't
+  // leak across strategies.
+  React.useEffect(() => {
+    setRationaleBySymbol({});
+  }, [strategyId]);
 
   React.useEffect(() => {
     setWorking(baseline.map((h) => ({ ...h })));
@@ -152,7 +166,9 @@ export function RebalanceBuilderPage({
     if (!b || b.shares !== w.shares) changedTickers.push(keyOf(w));
   }
   for (const b of baseline) if (!workByKey.has(keyOf(b))) changedTickers.push(keyOf(b));
-  const notesQ = useQuery<{ notes?: Array<{ symbol: string; status: string }> }>({
+  const notesQ = useQuery<{
+    notes?: Array<{ id: string; symbol: string; status: string; updated_at?: string }>;
+  }>({
     queryKey: ["ric-notes"],
     queryFn: async () => (await fetch("/api/research/notes", { cache: "no-store" })).json(),
   });
@@ -160,6 +176,48 @@ export function RebalanceBuilderPage({
     (notesQ.data?.notes ?? []).map((nte) => String(nte.symbol).toUpperCase()),
   );
   const missingResearch = changedTickers.filter((t) => !notedSymbols.has(t));
+  // Pick the "best" research note per symbol: prefer approved, fall back to the
+  // most-recently-updated. Used to build the R-<SYM>-<NN> researchRef code that
+  // shows up in the IC action table and links through to the note.
+  const noteBySymbol = React.useMemo(() => {
+    const m = new Map<
+      string,
+      { id: string; symbol: string; status: string; updated_at?: string }
+    >();
+    for (const n of notesQ.data?.notes ?? []) {
+      const k = String(n.symbol).toUpperCase();
+      const prev = m.get(k);
+      if (!prev) {
+        m.set(k, n);
+        continue;
+      }
+      // Approved wins; otherwise most-recently updated.
+      if (prev.status !== "approved" && n.status === "approved") m.set(k, n);
+      else if (
+        prev.status !== "approved" &&
+        n.status !== "approved" &&
+        new Date(n.updated_at ?? 0).getTime() > new Date(prev.updated_at ?? 0).getTime()
+      )
+        m.set(k, n);
+    }
+    return m;
+  }, [notesQ.data]);
+  // Symbol → R-SYM-NN researchRef code (matches the Lovable spec table). The
+  // numeric suffix is the per-symbol approved-note count (1-based).
+  const researchRefFor = (sym: string): string | undefined => {
+    const k = sym.toUpperCase();
+    const note = noteBySymbol.get(k);
+    if (!note) return undefined;
+    const sameSymbol = (notesQ.data?.notes ?? []).filter(
+      (n) => String(n.symbol).toUpperCase() === k,
+    );
+    // Approved notes count first; otherwise 1 — keeps the code stable across edits.
+    const approvedIdx = sameSymbol
+      .filter((n) => n.status === "approved")
+      .findIndex((n) => n.id === note.id);
+    const num = approvedIdx >= 0 ? approvedIdx + 1 : 1;
+    return `R-${k}-${String(num).padStart(2, "0")}`;
+  };
 
   const setShares = (t: string, delta: number) =>
     setWorking((prev) =>
@@ -187,16 +245,32 @@ export function RebalanceBuilderPage({
   }
 
   // Shared proposed composition (target weights per name). Both Submit to IC and
-  // the investor-impact panel derive from this so they never diverge.
+  // the investor-impact panel derive from this so they never diverge. Each row
+  // carries the BUY/SELL/HOLD action, an R-SYM-NN researchRef for the IC table,
+  // and the analyst's freeform one-liner rationale.
   const proposedComposition: ProposedHolding[] = [
-    ...working.map((h) => ({
-      ticker: h.ticker,
-      name: h.name,
-      shares: h.shares,
-      price: priceOf(h.ticker) ?? undefined,
-      weight: Number(weightOf(h).toFixed(2)),
-      action: actionFor(h),
-    })),
+    ...working.map((h) => {
+      const b = baseByKey.get(keyOf(h));
+      const action = actionFor(h);
+      const ref = researchRefFor(h.ticker);
+      return {
+        ticker: h.ticker,
+        name: h.name,
+        shares: h.shares,
+        price: priceOf(h.ticker) ?? undefined,
+        weight: Number(weightOf(h).toFixed(2)),
+        action,
+        researchRef: ref,
+        rating: (notesQ.data?.notes ?? []).find(
+          (n) => String(n.symbol).toUpperCase() === h.ticker.toUpperCase(),
+        )
+          ? undefined // Rating is in the note thesis; UI only renders the chip
+          : undefined,
+        rationale: rationaleBySymbol[h.ticker.toUpperCase()] || undefined,
+        fromWeight: b ? Number(((priceOf(b.ticker) ?? 0) * b.shares / Math.max(working.reduce((s, hh) => s + (priceOf(hh.ticker) ?? 0) * hh.shares, 0), 1)) * 100).toFixed(2) : undefined,
+        toWeight: Number(weightOf(h).toFixed(2)),
+      };
+    }),
     ...baseline
       .filter((b) => !workByKey.has(keyOf(b)))
       .map((b) => ({
@@ -205,8 +279,26 @@ export function RebalanceBuilderPage({
         shares: 0,
         weight: 0,
         action: "remove" as CompAction,
+        researchRef: researchRefFor(b.ticker),
+        rationale: rationaleBySymbol[b.ticker.toUpperCase()] || undefined,
       })),
   ];
+
+  // Per-row gate flags surfaced in the table + Submit button:
+  //  • every changed name needs a research note (already enforced above)
+  //  • every changed row needs a rationale (Lonwabo: "write a buy note")
+  //  • basket-level: a SELL action requires at least one BUY action and at least
+  //    one ADD/INCREASE with shares>0 — otherwise the cash can't land anywhere
+  const rationalesMissing = changedTickers.filter(
+    (t) => !(rationaleBySymbol[t] ?? "").trim(),
+  );
+  const sellActions = proposedComposition.filter(
+    (p) => p.action === "remove" || p.action === "decrease",
+  );
+  const buyActions = proposedComposition.filter(
+    (p) => (p.action === "add" || p.action === "increase") && (p.shares ?? 0) > 0,
+  );
+  const sellWithoutBuy = sellActions.length > 0 && buyActions.length === 0;
 
   // Investor impact — read-only, TEST CLIENTS ONLY (the server enforces is_test
   // and never reads a real client). Re-modelled whenever the proposed weights
@@ -231,9 +323,29 @@ export function RebalanceBuilderPage({
 
   async function submitToIc() {
     setError(null);
+    // Gates — short-circuit before opening the network tab.
     if (missingResearch.length) {
       setError(
         `Research required before submitting: ${missingResearch.join(", ")}. Add a note in the Research Library.`,
+      );
+      return;
+    }
+    if (rationalesMissing.length) {
+      setError(
+        `One-line rationale required for: ${rationalesMissing.join(", ")}. Tell the IC why.`,
+      );
+      return;
+    }
+    if (sellWithoutBuy) {
+      setError(
+        "You have a SELL action with no matching BUY. Specify what the proceeds are funding, or park the cash.",
+      );
+      return;
+    }
+    // Basket-level cash-availability gate: any per-investor shortfall blocks submit.
+    if (impactQ.data?.totals && impactQ.data.totals.cashOk === false) {
+      setError(
+        "Insufficient cash across one or more investors. Trim something else or reduce the buy size.",
       );
       return;
     }
@@ -300,6 +412,21 @@ export function RebalanceBuilderPage({
           .
         </p>
       )}
+      {rationalesMissing.length > 0 && changes > 0 && missingResearch.length === 0 && (
+        <p className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+          One-line rationale required for {rationalesMissing.join(", ")} before this can go to the IC.
+        </p>
+      )}
+      {sellWithoutBuy && changes > 0 && (
+        <p className="rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-3 py-2 text-xs text-down">
+          A SELL is present with no matching BUY. Specify what the proceeds fund or park the cash.
+        </p>
+      )}
+      {impactQ.data?.totals && impactQ.data.totals.cashOk === false && changes > 0 && (
+        <p className="rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-3 py-2 text-xs text-down">
+          Insufficient cash for one or more investors in this basket — trim something else or reduce the buy.
+        </p>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-2">
         {/* working / current basket */}
@@ -347,57 +474,82 @@ export function RebalanceBuilderPage({
                   <th className="px-5 py-2 font-medium">Ticker</th>
                   <th className="px-3 py-2 font-medium">Name</th>
                   <th className="px-3 py-2 text-right font-medium">Units</th>
+                  <th className="px-3 py-2 text-right font-medium">Δ shares</th>
                   <th className="px-3 py-2 text-right font-medium">Price</th>
                   <th className="px-3 py-2 text-right font-medium">Weight</th>
-                  <th className="px-5 py-2 text-right font-medium">Action</th>
+                  <th className="px-3 py-2 font-medium">Action</th>
+                  <th className="px-5 py-2 text-right font-medium">Edit</th>
                 </tr>
               </thead>
               <tbody>
                 {working.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-5 py-6 text-center text-caption">
+                    <td colSpan={8} className="px-5 py-6 text-center text-caption">
                       {compQ.isLoading
                         ? "Loading current basket…"
                         : "No holdings for this strategy yet. Add stocks to build a proposal."}
                     </td>
                   </tr>
                 )}
-                {working.map((h) => (
-                  <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
-                    <td className="px-5 py-2 font-semibold text-primary">{h.ticker}</td>
-                    <td className="px-3 py-2 text-foreground/85">{h.name}</td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                      {moneyR(priceOf(h.ticker))}
-                    </td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums">{weightPct(weightOf(h))}</td>
-                    <td className="px-5 py-2">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={() => setShares(keyOf(h), +1)}
-                          className="rounded p-1 text-muted-foreground hover:text-up"
-                        >
-                          <ArrowUp className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShares(keyOf(h), -1)}
-                          className="rounded p-1 text-muted-foreground hover:text-down"
-                        >
-                          <ArrowDown className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => removeHolding(keyOf(h))}
-                          className="rounded p-1 text-muted-foreground hover:text-down"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {working.map((h) => {
+                  const b = baseByKey.get(keyOf(h));
+                  const delta = (b?.shares ?? 0) === 0 ? h.shares : h.shares - (b?.shares ?? 0);
+                  const a = actionFor(h);
+                  return (
+                    <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
+                      <td className="px-5 py-2 font-semibold text-primary">{h.ticker}</td>
+                      <td className="px-3 py-2 text-foreground/85">{h.name}</td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
+                      <td
+                        className={cn(
+                          "px-3 py-2 text-right font-mono tabular-nums",
+                          delta === 0
+                            ? "text-muted-foreground"
+                            : delta > 0
+                              ? "text-up"
+                              : "text-down",
+                        )}
+                      >
+                        {delta > 0 ? `+${delta}` : delta}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                        {moneyR(priceOf(h.ticker))}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums">{weightPct(weightOf(h))}</td>
+                      <td className="px-3 py-2">
+                        <ActionBadge action={a} />
+                      </td>
+                      <td className="px-5 py-2">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setShares(keyOf(h), +1)}
+                            className="rounded p-1 text-muted-foreground hover:text-up"
+                            title="+1 share"
+                          >
+                            <ArrowUp className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setShares(keyOf(h), -1)}
+                            className="rounded p-1 text-muted-foreground hover:text-down"
+                            title="-1 share"
+                          >
+                            <ArrowDown className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeHolding(keyOf(h))}
+                            className="rounded p-1 text-muted-foreground hover:text-down"
+                            title="Remove from basket"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -415,7 +567,26 @@ export function RebalanceBuilderPage({
             <button
               type="button"
               onClick={submitToIc}
-              disabled={submitting || changes === 0 || missingResearch.length > 0 || !perms.raiseRebalance}
+              disabled={
+                submitting ||
+                changes === 0 ||
+                missingResearch.length > 0 ||
+                rationalesMissing.length > 0 ||
+                sellWithoutBuy ||
+                (impactQ.data?.totals && impactQ.data.totals.cashOk === false) ||
+                !perms.raiseRebalance
+              }
+              title={
+                missingResearch.length > 0
+                  ? "Research missing for one or more changes"
+                  : rationalesMissing.length > 0
+                    ? "Rationale required for one or more changes"
+                    : sellWithoutBuy
+                      ? "SELL without a matching BUY"
+                      : impactQ.data?.totals?.cashOk === false
+                        ? "Insufficient cash for one or more investors"
+                        : undefined
+              }
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
               <Send className="h-3.5 w-3.5" /> {submitting ? "Submitting…" : "Submit to IC"}
@@ -430,30 +601,59 @@ export function RebalanceBuilderPage({
                   <th className="px-5 py-2 font-medium">Ticker</th>
                   <th className="px-3 py-2 font-medium">Name</th>
                   <th className="px-3 py-2 text-right font-medium">Units</th>
-                  <th className="px-3 py-2 text-right font-medium">Price</th>
-                  <th className="px-5 py-2 text-right font-medium">Weight</th>
+                  <th className="px-3 py-2 font-medium">Action</th>
+                  <th className="px-3 py-2 font-medium">Research</th>
+                  <th className="px-5 py-2 font-medium">Rationale</th>
                 </tr>
               </thead>
               <tbody>
                 {working.map((h) => {
                   const b = baseByKey.get(keyOf(h));
                   const changed = !b || b.shares !== h.shares;
+                  const a = actionFor(h);
+                  const ref = researchRefFor(h.ticker);
                   return (
                     <tr
                       key={keyOf(h)}
                       className={cn(
-                        "border-b border-[hsl(var(--glass-border))] last:border-0",
+                        "border-b border-[hsl(var(--glass-border))] last:border-0 align-top",
                         changed && "bg-primary/5",
                       )}
                     >
                       <td className="px-5 py-2 font-semibold text-primary">{h.ticker}</td>
                       <td className="px-3 py-2 text-foreground/85">{h.name}</td>
                       <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                        {moneyR(priceOf(h.ticker))}
+                      <td className="px-3 py-2">
+                        <ActionBadge action={a} />
                       </td>
-                      <td className="px-5 py-2 text-right font-mono tabular-nums">
-                        {weightPct(weightOf(h))}
+                      <td className="px-3 py-2">
+                        {ref ? (
+                          <Link
+                            href="/oems/research"
+                            className="font-mono text-[11px] font-semibold text-primary hover:underline"
+                            title="Open research note"
+                          >
+                            {ref}
+                          </Link>
+                        ) : (
+                          <span className="text-caption">—</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-2">
+                        {changed ? (
+                          <input
+                            value={rationaleBySymbol[h.ticker.toUpperCase()] ?? ""}
+                            onChange={(e) => setRationale(h.ticker, e.target.value)}
+                            placeholder={
+                              a === "decrease" || a === "remove"
+                                ? "What are the proceeds funding?"
+                                : "Thesis / target / horizon…"
+                            }
+                            className="w-full min-w-[220px] rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none focus:border-primary/50"
+                          />
+                        ) : (
+                          <span className="text-caption">—</span>
+                        )}
                       </td>
                     </tr>
                   );

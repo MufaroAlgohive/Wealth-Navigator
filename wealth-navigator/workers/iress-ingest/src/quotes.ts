@@ -293,7 +293,18 @@ export async function syncWatchlistQuotes(
               // no anchor to salvage.
               emptyCount += 1;
               const state = row?.marketState ?? "?";
-              const looksLikeFieldMismatch = state === "OPEN" && rowKeys !== "<empty row>";
+              // FX spot (USDZAR) and money-market rate codes (JIBAR_3M)
+              // return a row but no L1 last/OHLC — PricingQuoteGet is
+              // the wrong method for these instruments. Their fixings
+              // come from TimeSeriesGet2 once Charles flips the FX/MM
+              // entitlement on DFM@Mint. Suppress the "field-name
+              // mismatch" / "hollow row" diagnostics so the noise from
+              // these two instruments does not bury a real mapping bug
+              // for an equity watchlist name.
+              const kind = entry.kind ?? "equity";
+              const isRateCode = kind === "fx" || kind === "mm";
+              const looksLikeFieldMismatch =
+                !isRateCode && state === "OPEN" && rowKeys !== "<empty row>";
               const looksLikeBogusLast =
                 state === "CLOSED" && rowKeys.includes("Last") && !rowKeys.includes("Close");
               // "Hollow row" — the IRESS V4 server is saying the market is
@@ -309,17 +320,35 @@ export async function syncWatchlistQuotes(
               // board/exchange. Surface the full raw row so the next
               // probe can compare against the V4 doc field list.
               const rawHasPriceData = rawRow ? quoteRawRowHasPriceData(rawRow) : null;
-              const isHollow = state === "OPEN" && rawHasPriceData === false;
+              const isHollow =
+                !isRateCode && state === "OPEN" && rawHasPriceData === false;
+              const tag = isRateCode
+                ? " [rate code — PricingQuoteGet not the right method; use TimeSeriesGet2 once entitlement flips]"
+                : looksLikeFieldMismatch
+                  ? " [field-name mismatch suspected]"
+                  : looksLikeBogusLast
+                    ? " [bogus Last skipped — no Close/OHLC anchor]"
+                    : "";
+              const reason = isRateCode
+                ? `rate instrument (kind=${kind}) on ${exchange} — PricingQuoteGet does not carry L1 for ${kind === "fx" ? "FX" : "MM"}; expected until TimeSeriesGet2 entitlement is flipped`
+                : state === "OPEN"
+                  ? "mid-session zero — check row keys vs mapQuote"
+                  : "pre-open/halt/closed";
               console.warn(
-                `[iress-ingest] PricingQuoteGet(${symbol}) returned no trade (marketState=${state} last=0)${looksLikeFieldMismatch ? " [field-name mismatch suspected]" : looksLikeBogusLast ? " [bogus Last skipped — no Close/OHLC anchor]" : ""} — ${state === "OPEN" ? "mid-session zero — check row keys vs mapQuote" : "pre-open/halt/closed"}; rowKeys=${rowKeys}`,
+                `[iress-ingest] PricingQuoteGet(${symbol}) returned no trade (marketState=${state} last=0)${tag} — ${reason}; rowKeys=${rowKeys}`,
               );
               recordWorkerEvent({
-                level: "warn",
-                event: "pricing_quote_get_no_trade",
-                msg: `PricingQuoteGet(${symbol}) no trade (marketState=${state})`,
+                level: isRateCode ? "info" : "warn",
+                event: isRateCode
+                  ? "pricing_quote_get_unsupported_rate_code"
+                  : "pricing_quote_get_no_trade",
+                msg: isRateCode
+                  ? `PricingQuoteGet(${symbol}) is not supported for ${kind} instruments — switch to TimeSeriesGet2 once entitlement flips`
+                  : `PricingQuoteGet(${symbol}) no trade (marketState=${state})`,
                 data: {
                   symbol,
                   exchange,
+                  kind,
                   marketState: state,
                   fieldMismatchSuspected: looksLikeFieldMismatch,
                   bogusLastSuspected: looksLikeBogusLast,

@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
+import type { Route } from "next";
 
 import { GlassSection } from "@/components/oems/primitives/glass";
 import type { DbName } from "@/components/oems/primitives/data-source-badge";
@@ -8,6 +10,7 @@ import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Pill } from "@/components/oems/primitives/pill";
 import { cn } from "@/lib/cn";
 import { formatPct, formatZAR } from "@/lib/format";
+import { ArrowUpRight } from "lucide-react";
 
 /**
  * Time horizon for the investor performance column. Lonwabo asked for a
@@ -34,6 +37,20 @@ export interface PortfolioAccountRow {
   holdings: number | null;
   /** Performance % for the selected horizon. `null` ⇒ deferred / unavailable. */
   perf: number | null;
+  /**
+   * Optional stable id (strategy id for stand-in rows; investor id once the
+   * client-book detail is wired). Used as the React key and as the query
+   * parameter the Rebalance CTA links to.
+   */
+  id?: string;
+  /**
+   * Optional deep-link to the Rebalance Builder pre-selected for this
+   * strategy. OEM meeting (2026-07-13) asked for the Cockpit's per-row
+   * "Rebalance" CTA to take the trader straight to `/oems/rebalance`
+   * pre-loaded with the strategy. The Cockpit populates this in mock mode
+   * from the strategy seed (`/oems/rebalance?strategy=<id>&name=<name>`).
+   */
+  rebalanceHref?: string;
 }
 
 /**
@@ -141,7 +158,7 @@ export function CockpitPortfolioAccounts({
                 const down = perf != null && perf < 0;
                 return (
                   <li
-                    key={`${r.name}-${r.sublabel ?? ""}`}
+                    key={r.id ?? `${r.name}-${r.sublabel ?? ""}`}
                     className="flex items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-muted/30"
                   >
                     <div className="min-w-0 flex-1">
@@ -174,6 +191,16 @@ export function CockpitPortfolioAccounts({
                     >
                       {perf != null ? formatPct(perf) : "—"}
                     </span>
+                    {r.rebalanceHref ? (
+                      <Link
+                        href={r.rebalanceHref as Route}
+                        aria-label={`Open Rebalance Builder for ${r.name}`}
+                        className="ml-1 inline-flex shrink-0 items-center gap-1 rounded border border-primary/30 bg-primary/10 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-primary transition-colors hover:bg-primary/20"
+                      >
+                        Rebalance
+                        <ArrowUpRight className="h-3 w-3" />
+                      </Link>
+                    ) : null}
                   </li>
                 );
               })}

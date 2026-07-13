@@ -27,6 +27,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
 import { CockpitNewsFlow, type NewsFlowItem } from "@/components/oems/primitives/cockpit-news-flow";
 import { CockpitPortfolioAccounts, type PortfolioAccountRow, type AccountsHorizon } from "@/components/oems/primitives/cockpit-portfolio-accounts";
+import { AlertBanner } from "@/components/oems/cockpit/alert-banner";
 import { PanelSkeleton, KpiTileSkeleton, PanelErrorShell } from "@/components/oems/primitives/panel-skeleton";
 import { Badge } from "@/components/ui/badge";
 // Tabs/TabsList/TabsTrigger were removed with the non-functional range
@@ -36,6 +37,7 @@ import { useIress } from "@/lib/iress/provider";
 import { formatPct, formatTime, formatZAR } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import Link from "next/link";
+import type { Route } from "next";
 import { Button } from "@/components/ui/button";
 import { queryOpts } from "@/lib/store/query-provider";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
@@ -140,6 +142,7 @@ function CockpitKpi({
   sub,
   live,
   accent = "default",
+  action,
 }: {
   icon?: React.ReactNode;
   label: string;
@@ -147,6 +150,12 @@ function CockpitKpi({
   sub?: React.ReactNode;
   live?: { sym: string; fallback: number; decimals?: number; prefix?: boolean; suffix?: string; showChange?: boolean };
   accent?: CockpitKpiAccent;
+  /**
+   * Optional CTA rendered below the sub-line. Used by the "Rebalance Locked"
+   * tile to link straight into the Rebalance Builder pre-loaded with the
+   * highlighted strategy.
+   */
+  action?: { href: Route; label: string };
 }) {
   return (
     <div className="glass-kpi group relative">
@@ -203,6 +212,15 @@ function CockpitKpi({
           {sub}
         </p>
       )}
+      {action ? (
+        <Link
+          href={action.href}
+          className="mt-1.5 inline-flex items-center gap-1 text-caption font-medium text-primary hover:underline"
+        >
+          {action.label}
+          <ArrowUpRight className="h-3 w-3" />
+        </Link>
+      ) : null}
       <div
         className={cn(
           "pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100",
@@ -590,6 +608,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const livePnl = strategies.reduce((s, x) => s + x.dayPnl, 0);
   const liveStrats = strategies.filter((s) => s.status === "live").length;
   const blocked = strategies.filter((s) => s.investorCount === 0 || s.status === "halted").length;
+  // First live equity strategy — the default target for the Cockpit's
+  // primary "Rebalance" CTA. Falls back to any equity strategy, then to the
+  // first strategy regardless of kind. `undefined` only when strategies
+  // is empty (mock disabled / not yet loaded).
+  const firstEquityStrategy =
+    strategies.find((s) => s.kind === "equity" && s.status === "live") ??
+    strategies.find((s) => s.kind === "equity") ??
+    strategies[0];
   const openOrders = orders.filter((o) => o.state === "WORKING" || o.state === "PARTIAL");
   const rejected = orders.filter((o) => o.state === "REJECTED").length;
 
@@ -649,6 +675,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // seed field yet → null ("—"). The genuine per-investor list (≈3,000
   // investors with their own holdings + returns) wires in the data phase.
   const mockAccountRows = useMemo<PortfolioAccountRow[]>(() => {
+    // Per-row Rebalance CTA → /oems/rebalance?strategy=<id>&name=<name>
+    // The Rebalance Builder accepts those query params (see
+    // src/app/oems/rebalance/page.tsx) and pre-selects the matching strategy.
     return strategies.map((s) => {
       const perf =
         accountsHorizon === "YTD"
@@ -658,11 +687,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               ? (s.dayPnl / s.aum) * 100
               : null
             : null; // MTD — no month-to-date field on the seed yet
+      const href =
+        s.kind === "equity"
+          ? `/oems/rebalance?strategy=${encodeURIComponent(s.id)}&name=${encodeURIComponent(s.name)}`
+          : undefined; // Money-market strategies don't share the equity rebalance engine
       return {
+        id: s.id,
         name: s.name,
         sublabel: `${s.manager} · ${s.investorCount} investors`,
         holdings: s.aum,
         perf,
+        rebalanceHref: href,
       };
     });
   }, [strategies, accountsHorizon]);
@@ -747,6 +782,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
   return (
     <ResearchLabCanvas>
+      {/* Research-trigger alert banner — surfaces breached alerts above the
+          masthead so the FM / COO sees them on every cockpit load. */}
+      <AlertBanner />
       {/* Hero masthead */}
       <header className="glass-panel relative overflow-hidden p-6 md:p-8">
         <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
@@ -828,6 +866,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     ? "warning"
                     : "positive"
                   : "default"
+              }
+              action={
+                firstEquityStrategy
+                  ? {
+                      href: `/oems/rebalance?strategy=${encodeURIComponent(firstEquityStrategy.id)}&name=${encodeURIComponent(firstEquityStrategy.name)}` as Route,
+                      label: "Open Rebalance Builder",
+                    }
+                  : undefined
               }
             />
             <CockpitKpi

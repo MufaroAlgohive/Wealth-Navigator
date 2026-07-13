@@ -18,11 +18,13 @@ import {
   ConvictionBadge,
   EsgBadge,
   PeerPeBars,
+  PeerScorecard,
   PriceTriggerChart,
   RatingBadge,
   StatusChip,
   TrendArrow,
   initialsOf,
+  medianOf,
   moneyR,
   signedPct,
   useIntradaySeries,
@@ -262,7 +264,14 @@ export function NoteDetail({
 
       {/* fundamentals + peers */}
       <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
-        <GlassSection title="Fundamentals · latest vs forecast" noPadding>
+        <GlassSection
+          title={
+            fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0)
+              ? "Fundamentals · multi-year (Year 1 / Year 2 / Year 3)"
+              : "Fundamentals · latest vs forecast"
+          }
+          noPadding
+        >
           {fundamentals.length ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -271,33 +280,61 @@ export function NoteDetail({
                     <th className="px-5 py-2 font-medium">Metric</th>
                     <th className="px-3 py-2 text-right font-medium">Prior</th>
                     <th className="px-3 py-2 text-right font-medium">Current</th>
-                    <th className="px-3 py-2 text-right font-medium">Forecast</th>
+                    {fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0) ? (
+                      <>
+                        <th className="px-3 py-2 text-right font-medium">Year 1</th>
+                        <th className="px-3 py-2 text-right font-medium">Year 2</th>
+                        <th className="px-3 py-2 text-right font-medium">Year 3</th>
+                      </>
+                    ) : (
+                      <th className="px-3 py-2 text-right font-medium">Forecast</th>
+                    )}
                     <th className="px-5 py-2 text-right font-medium">Trend</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {fundamentals.map((f) => (
-                    <tr key={f.metric} className="border-b border-[hsl(var(--glass-border))] last:border-0">
-                      <td className="px-5 py-2 text-foreground/85">
-                        {f.metric}
-                        {f.unit ? ` (${f.unit})` : ""}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                        {f.prior}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
-                        {f.current}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                        {f.forecast}
-                      </td>
-                      <td className="px-5 py-2">
-                        <span className="flex justify-end">
-                          <TrendArrow trend={f.trend} />
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                  {fundamentals.map((f) => {
+                    const years = Array.isArray(f.forecastYears) ? f.forecastYears : [];
+                    return (
+                      <tr
+                        key={f.metric}
+                        className="border-b border-[hsl(var(--glass-border))] last:border-0"
+                      >
+                        <td className="px-5 py-2 text-foreground/85">
+                          {f.metric}
+                          {f.unit ? ` (${f.unit})` : ""}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                          {f.prior}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
+                          {f.current}
+                        </td>
+                        {years.length > 0 ? (
+                          <>
+                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                              {years[0] !== undefined && years[0] !== "" ? String(years[0]) : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                              {years[1] !== undefined && years[1] !== "" ? String(years[1]) : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                              {years[2] !== undefined && years[2] !== "" ? String(years[2]) : "—"}
+                            </td>
+                          </>
+                        ) : (
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            {f.forecast}
+                          </td>
+                        )}
+                        <td className="px-5 py-2">
+                          <span className="flex justify-end">
+                            <TrendArrow trend={f.trend} />
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -305,13 +342,55 @@ export function NoteDetail({
             <p className="p-5 text-caption">No fundamentals captured.</p>
           )}
         </GlassSection>
-        <GlassSection title="Valuation vs peers · P/E" className="flex h-[260px] flex-col">
-          <div className="min-h-0 flex-1">
-            <PeerPeBars
-              peers={peers}
-              subjectPe={note.valuation?.pe_multiple ?? null}
-              subjectName={note.symbol}
-            />
+        <GlassSection
+          title="Valuation vs peers · scorecard"
+          subtitle="GREEN/AMBER/RED vs peer median (Lovable spec)"
+          noPadding
+        >
+          <PeerScorecard
+            subjectName={note.symbol}
+            metrics={[
+              {
+                label: "P/E",
+                subject: note.valuation?.pe_multiple ?? null,
+                median: medianOf(peers.map((p) => p.pe)),
+                kind: "lowerIsBetter",
+                unit: "x",
+              },
+              {
+                label: "EV/EBITDA",
+                subject: note.valuation?.ev_ebitda ?? null,
+                median: medianOf(peers.map((p) => p.evEbitda)),
+                kind: "lowerIsBetter",
+                unit: "x",
+              },
+              {
+                label: "ROE",
+                subject: note.valuation?.roe_pct ?? null,
+                median: medianOf(peers.map((p) => p.roe)),
+                kind: "higherIsBetter",
+                unit: "%",
+              },
+              {
+                label: "Div yield",
+                subject: note.valuation?.div_yield_pct ?? null,
+                median: medianOf(peers.map((p) => p.divYield)),
+                kind: "higherIsBetter",
+                unit: "%",
+              },
+            ]}
+          />
+          <div className="border-t border-[hsl(var(--glass-border))] p-5">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              P/E bars
+            </p>
+            <div className="mt-2 h-[140px]">
+              <PeerPeBars
+                peers={peers}
+                subjectPe={note.valuation?.pe_multiple ?? null}
+                subjectName={note.symbol}
+              />
+            </div>
           </div>
         </GlassSection>
       </div>

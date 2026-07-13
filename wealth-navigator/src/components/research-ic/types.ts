@@ -16,6 +16,12 @@ export interface Fundamental {
   prior: number | string;
   current: number | string;
   forecast: number | string;
+  /** Optional multi-year forecast (Year 1 / Year 2 / Year 3). When present,
+   * the note-detail fundamentals table renders three columns instead of a
+   * single Forecast column (Lethabo's ask: "year, year, year"). Stored as
+   * strings in the editor (so empty cells don't coerce to 0); the API and
+   * the note-detail renderer normalise to numbers when computing trends. */
+  forecastYears?: Array<number | string> | null;
   /** Direction hint for the trend arrow. */
   trend?: "up" | "down" | "flat";
   unit?: string;
@@ -23,8 +29,21 @@ export interface Fundamental {
 
 export interface Peer {
   name: string;
+  /** Price-to-earnings multiple. */
   pe: number;
+  /** Return on equity (percent, e.g. 18.5 for 18.5%). Optional. */
+  roe?: number;
+  /** Dividend yield (percent, e.g. 3.2 for 3.2%). Optional. */
+  divYield?: number;
+  /** EV/EBITDA multiple. Optional. */
+  evEbitda?: number;
 }
+/**
+ * Direction convention for a peer's metric — higher-is-better (e.g. ROE,
+ * dividend yield) vs lower-is-better (e.g. P/E, EV/EBITDA). Drives the
+ * green/amber/red signal in the note-detail peer scorecard.
+ */
+export type PeerMetricKind = "pe" | "roe" | "divYield" | "evEbitda";
 
 export interface Trigger {
   price: number;
@@ -95,7 +114,14 @@ export interface NoteTriggers {
 }
 
 export interface NoteValuation {
+  /** Subject company's own P/E. */
   pe_multiple?: number;
+  /** Subject company's own ROE (percent). */
+  roe_pct?: number;
+  /** Subject company's own dividend yield (percent). */
+  div_yield_pct?: number;
+  /** Subject company's own EV/EBITDA multiple. */
+  ev_ebitda?: number;
   peers?: Peer[];
 }
 

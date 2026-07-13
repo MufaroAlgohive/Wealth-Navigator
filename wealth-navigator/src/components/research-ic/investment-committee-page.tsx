@@ -369,6 +369,7 @@ function RebalanceAgendaItem({
 }) {
   const { busy, go } = useTransition("rebalance");
   const vote = useVote();
+  const [open, setOpen] = React.useState(false);
   const rows = Array.isArray(req.proposed_composition) ? req.proposed_composition : [];
   const changes = rows.filter((r) => r.action && r.action !== "hold").length;
 
@@ -380,26 +381,49 @@ function RebalanceAgendaItem({
     : null;
   const busyAny = busy != null || vote.busy != null;
 
-  const voteBtn = (
-    value: "yes" | "no" | "abstain",
-    label: string,
-    Icon: typeof ThumbsUp,
-    activeClass: string,
-  ) => (
-    <button
-      type="button"
-      disabled={!canVote || busyAny}
-      onClick={() => vote.cast(req.id, value, onChanged)}
-      className={cn(
-        "inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs transition disabled:opacity-50",
-        myVote === value
-          ? activeClass
-          : "border-[hsl(var(--glass-border))] hover:bg-[hsl(var(--foreground)/0.05)]",
-      )}
-    >
-      <Icon className="h-3.5 w-3.5" /> {label}
-    </button>
-  );
+  // Per-member vote state for the committee-member pills (matches the Lovable
+  // spec's "YO TM LN" row under the Vote: heading). The viewer's own pill is
+  // clickable to cast a vote; the rest are read-only indicators.
+  function pillFor(initials: string) {
+    const v = votes.find(
+      (vt) => vt.voter_email.toLowerCase().startsWith(initials.toLowerCase() + "@") ||
+        vt.voter_email.toLowerCase().includes(initials.toLowerCase()),
+    );
+    const isMe = viewerEmail
+      ? viewerEmail.toLowerCase().startsWith(initials.toLowerCase() + "@") ||
+        viewerEmail.toLowerCase().includes(initials.toLowerCase())
+      : false;
+    let tone = "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.04)] text-muted-foreground";
+    let label = initials;
+    if (v?.vote === "yes") {
+      tone = "border-[hsl(var(--up)/0.45)] bg-[hsl(var(--up)/0.18)] text-up";
+      label = `${initials} ✓`;
+    } else if (v?.vote === "no") {
+      tone = "border-[hsl(var(--down)/0.45)] bg-[hsl(var(--down)/0.18)] text-down";
+      label = `${initials} ✗`;
+    } else if (v?.vote === "abstain") {
+      tone = "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.1)] text-muted-foreground";
+      label = `${initials} —`;
+    }
+    const baseCls = cn(
+      "inline-flex h-7 w-9 items-center justify-center rounded-full border text-[10px] font-semibold",
+      tone,
+      isMe && canVote && "cursor-pointer hover:ring-1 hover:ring-primary/40",
+    );
+    if (!isMe || !canVote) return <span className={baseCls}>{label}</span>;
+    const next = myVote === "yes" ? "no" : myVote === "no" ? "abstain" : "yes";
+    return (
+      <button
+        type="button"
+        disabled={busyAny}
+        onClick={() => vote.cast(req.id, next, onChanged)}
+        className={cn(baseCls, "disabled:opacity-50")}
+        title={`Click to vote ${next}`}
+      >
+        {label}
+      </button>
+    );
+  }
 
   return (
     <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
@@ -414,10 +438,14 @@ function RebalanceAgendaItem({
             {changes} chg
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          {voteBtn("yes", "Yes", ThumbsUp, "border-[hsl(var(--up)/0.5)] bg-[hsl(var(--up)/0.12)] text-[hsl(var(--up))]")}
-          {voteBtn("no", "No", ThumbsDown, "border-[hsl(var(--down)/0.5)] bg-[hsl(var(--down)/0.12)] text-[hsl(var(--down))]")}
-          {voteBtn("abstain", "Abstain", MinusCircle, "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.06)]")}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+          >
+            {open ? "Hide" : "Open"} ▾
+          </button>
           <button
             type="button"
             disabled={!canApprove || busyAny}
@@ -428,6 +456,24 @@ function RebalanceAgendaItem({
             <X className="h-3.5 w-3.5" /> Reject
           </button>
         </div>
+      </div>
+
+      {/* Vote: row with member pills (Lovable spec). */}
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Vote:
+        </span>
+        <div className="flex items-center gap-1.5">{pillFor("YO")}</div>
+        <div className="flex items-center gap-1.5">{pillFor("TM")}</div>
+        <div className="flex items-center gap-1.5">{pillFor("LN")}</div>
+        <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
+          {Math.round(tally.ratio * 100)}% for ·{" "}
+          {tally.passed ? (
+            <span className="text-up">passed</span>
+          ) : (
+            <span>needs {Math.round(tally.threshold * 100)}% ({tally.requiredYes} of {tally.quorum})</span>
+          )}
+        </span>
       </div>
 
       {/* 60% vote gate — a proposal is promoted to the order-book lane once YES
@@ -462,7 +508,20 @@ function RebalanceAgendaItem({
         </div>
       </div>
 
-      <CompositionTable rows={rows} />
+      {open && (
+        <div className="space-y-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Composition drill-down
+          </p>
+          <CompositionTable rows={rows} />
+          {changes > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              Each change references an approved research note via the Research column above. Open
+              the note from the Research Library to view the thesis, valuation & triggers.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
