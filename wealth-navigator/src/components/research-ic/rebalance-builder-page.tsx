@@ -9,7 +9,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Plus, Rocket, Send, X } from "lucide-react";
+import { ArrowDown, ArrowUp, FlaskConical, Plus, Rocket, Send, X } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
@@ -20,6 +20,45 @@ import { moneyR, rebalanceCodeMap, useQuotes, weightPct } from "./ui";
 
 type Holding = { ticker: string; name: string; shares: number };
 type StrategyOpt = { id: string; name: string };
+
+type ImpactLine = {
+  symbol: string;
+  action: string;
+  currentQty: number;
+  targetQty: number;
+  deltaQty: number;
+  side: "buy" | "sell";
+  priceCents: number;
+  valueCents: number;
+};
+type ImpactInvestor = {
+  user_id: string;
+  name: string;
+  basketCents: number;
+  walletCents: number;
+  buyCents: number;
+  sellCents: number;
+  netCashCents: number;
+  walletAfterCents: number;
+  shortfall: boolean;
+  lines: ImpactLine[];
+};
+type ImpactTotals = {
+  investorCount: number;
+  buyCents: number;
+  sellCents: number;
+  walletCents: number;
+  walletAfterCents: number;
+  cashOk: boolean;
+};
+type ImpactResponse = {
+  ok?: boolean;
+  scope?: string;
+  investors?: ImpactInvestor[];
+  totals?: ImpactTotals | null;
+  notice?: string;
+  error?: string;
+};
 
 function keyOf(h: Holding) {
   return h.ticker.toUpperCase();
@@ -147,6 +186,49 @@ export function RebalanceBuilderPage({
     return "hold";
   }
 
+  // Shared proposed composition (target weights per name). Both Submit to IC and
+  // the investor-impact panel derive from this so they never diverge.
+  const proposedComposition: ProposedHolding[] = [
+    ...working.map((h) => ({
+      ticker: h.ticker,
+      name: h.name,
+      shares: h.shares,
+      price: priceOf(h.ticker) ?? undefined,
+      weight: Number(weightOf(h).toFixed(2)),
+      action: actionFor(h),
+    })),
+    ...baseline
+      .filter((b) => !workByKey.has(keyOf(b)))
+      .map((b) => ({
+        ticker: b.ticker,
+        name: b.name,
+        shares: 0,
+        weight: 0,
+        action: "remove" as CompAction,
+      })),
+  ];
+
+  // Investor impact — read-only, TEST CLIENTS ONLY (the server enforces is_test
+  // and never reads a real client). Re-modelled whenever the proposed weights
+  // change. This is the meeting's "affected investors / cash availability" gate.
+  const impactSig = JSON.stringify(proposedComposition.map((p) => [p.ticker, p.action, p.weight]));
+  const impactQ = useQuery<ImpactResponse>({
+    queryKey: ["ric-impact", strategyId, impactSig],
+    enabled: !!strategyId && changes > 0,
+    queryFn: async () => {
+      const res = await fetch("/api/rebalance/impact", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          strategy_id: strategyId,
+          strategy_name: strategyName,
+          proposed: proposedComposition,
+        }),
+      });
+      return (await res.json().catch(() => ({ ok: false }))) as ImpactResponse;
+    },
+  });
+
   async function submitToIc() {
     setError(null);
     if (missingResearch.length) {
@@ -163,25 +245,7 @@ export function RebalanceBuilderPage({
         shares: b.shares,
         price: priceOf(b.ticker) ?? undefined,
       }));
-      const proposed_composition: ProposedHolding[] = [
-        ...working.map((h) => ({
-          ticker: h.ticker,
-          name: h.name,
-          shares: h.shares,
-          price: priceOf(h.ticker) ?? undefined,
-          weight: Number(weightOf(h).toFixed(2)),
-          action: actionFor(h),
-        })),
-        ...baseline
-          .filter((b) => !workByKey.has(keyOf(b)))
-          .map((b) => ({
-            ticker: b.ticker,
-            name: b.name,
-            shares: 0,
-            weight: 0,
-            action: "remove" as CompAction,
-          })),
-      ];
+      const proposed_composition: ProposedHolding[] = proposedComposition;
       const res = await fetch("/api/rebalance/requests", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -404,8 +468,155 @@ export function RebalanceBuilderPage({
         </GlassSection>
       </div>
 
+      <InvestorImpactPanel
+        enabled={!!strategyId && changes > 0}
+        loading={impactQ.isFetching}
+        data={impactQ.data}
+      />
+
       <ProposalsList pushingId={pushingId} setPushingId={setPushingId} canPush={perms.pushRebalance} />
     </ResearchLabCanvas>
+  );
+}
+
+/** Cents (int) → "R1,234.00". */
+function centsToR(c: number | null | undefined): string {
+  return moneyR((Number(c) || 0) / 100);
+}
+
+function InvestorImpactPanel({
+  enabled,
+  loading,
+  data,
+}: {
+  enabled: boolean;
+  loading: boolean;
+  data: ImpactResponse | undefined;
+}) {
+  const investors = data?.investors ?? [];
+  const totals = data?.totals ?? null;
+  const cashOk = totals?.cashOk ?? true;
+
+  return (
+    <GlassSection
+      title="Affected investors — cash & shares"
+      subtitle="Read-only impact of this rebalance"
+      right={
+        <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-400">
+          <FlaskConical className="h-3 w-3" /> Test clients only
+        </span>
+      }
+      noPadding
+    >
+      {!enabled ? (
+        <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
+      ) : loading && investors.length === 0 ? (
+        <p className="px-5 py-4 text-caption">Modelling impact…</p>
+      ) : investors.length === 0 ? (
+        <p className="px-5 py-4 text-caption">
+          {data?.notice ?? "No test-client holdings match this strategy yet."}
+        </p>
+      ) : (
+        <>
+          <div
+            className={cn(
+              "flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 text-xs",
+              cashOk
+                ? "border-[hsl(var(--glass-border))]"
+                : "border-[hsl(var(--down)/0.4)] bg-[hsl(var(--down)/0.06)]",
+            )}
+          >
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="text-muted-foreground">
+                {totals?.investorCount ?? investors.length} investor
+                {(totals?.investorCount ?? investors.length) === 1 ? "" : "s"}
+              </span>
+              <span>
+                Buys <span className="font-mono font-semibold text-down">{centsToR(totals?.buyCents)}</span>
+              </span>
+              <span>
+                Sells <span className="font-mono font-semibold text-up">{centsToR(totals?.sellCents)}</span>
+              </span>
+              <span className="text-muted-foreground">
+                Combined wallets <span className="font-mono">{centsToR(totals?.walletCents)}</span>
+              </span>
+            </div>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                cashOk ? "bg-[hsl(var(--up)/0.15)] text-up" : "bg-[hsl(var(--down)/0.15)] text-down",
+              )}
+            >
+              {cashOk ? "Cash available" : "Insufficient cash"}
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <th className="px-5 py-2 font-medium">Investor</th>
+                  <th className="px-3 py-2 text-right font-medium">Basket</th>
+                  <th className="px-3 py-2 text-right font-medium">To buy</th>
+                  <th className="px-3 py-2 text-right font-medium">To sell</th>
+                  <th className="px-3 py-2 text-right font-medium">Wallet</th>
+                  <th className="px-5 py-2 text-right font-medium">Wallet after</th>
+                </tr>
+              </thead>
+              <tbody>
+                {investors.map((inv) => (
+                  <React.Fragment key={inv.user_id}>
+                    <tr className="border-b border-[hsl(var(--glass-border))]">
+                      <td className="px-5 py-2 font-medium">{inv.name}</td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                        {centsToR(inv.basketCents)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums text-down">
+                        {inv.buyCents ? centsToR(inv.buyCents) : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
+                        {inv.sellCents ? centsToR(inv.sellCents) : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                        {centsToR(inv.walletCents)}
+                      </td>
+                      <td
+                        className={cn(
+                          "px-5 py-2 text-right font-mono tabular-nums font-semibold",
+                          inv.shortfall ? "text-down" : "text-foreground",
+                        )}
+                      >
+                        {centsToR(inv.walletAfterCents)}
+                      </td>
+                    </tr>
+                    {inv.lines.length > 0 && (
+                      <tr className="border-b border-[hsl(var(--glass-border))]">
+                        <td colSpan={6} className="px-5 pb-2 pt-0">
+                          <div className="flex flex-wrap gap-1.5">
+                            {inv.lines.map((ln) => (
+                              <span
+                                key={ln.symbol}
+                                className={cn(
+                                  "rounded border px-1.5 py-0.5 font-mono text-[10px]",
+                                  ln.side === "buy"
+                                    ? "border-[hsl(var(--down)/0.3)] text-down"
+                                    : "border-[hsl(var(--up)/0.3)] text-up",
+                                )}
+                              >
+                                {ln.side === "buy" ? "BUY" : "SELL"} {Math.abs(ln.deltaQty)} {ln.symbol}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </GlassSection>
   );
 }
 

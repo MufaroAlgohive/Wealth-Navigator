@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -16,6 +16,9 @@ import { ArrowLeft, CircleDot, FlaskConical, RefreshCw } from "lucide-react";
 
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassKpi, GlassSection, GlassSegment, PageCanvas } from "@/components/oems/primitives/glass";
+import { LiveModelDashboard } from "@/components/oems/primitives/live-model-dashboard";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
 
 /* ── types (loose; server sends the model_*_c rows through) ───────────────── */
 type Row = Record<string, unknown>;
@@ -58,6 +61,34 @@ export function ModelDetail({ slug }: { slug: string }) {
     queryFn: async () => (await fetch(`/api/models/${slug}`)).json(),
     refetchInterval: 60_000,
   });
+
+  // Push-driven refresh: a fresh `model_run_c` row from the pusher triggers an
+  // immediate refetch of the model bundle so KPIs / equity curve / run log
+  // update with sub-second latency instead of waiting on the 60s poll. The
+  // realtime channel is silent on local dev where Supabase Auth isn't wired.
+  useEffect(() => {
+    if (!isSupabaseAuthConfigured()) return;
+    const supabase = createSupabaseBrowserClient();
+    const channel = supabase.channel(`model-run-${slug}`);
+    const sub = channel.on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "model_run_c",
+        filter: `model_slug=eq.${slug}`,
+      },
+      () => {
+        q.refetch();
+      },
+    );
+    void channel.subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+    // We intentionally subscribe once per slug; q.refetch is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
 
   const d = q.data;
   const model = d?.model;
@@ -222,6 +253,9 @@ export function ModelDetail({ slug }: { slug: string }) {
       <p className="mb-4 text-xs text-muted-foreground">
         Own demo account (no broker): the model runs on real Yahoo prices, holdings are marked daily
         and fees are charged, 1:1 with a real account, but fully simulated. No real trades or money.
+        Switch to the <span className="font-medium text-foreground">Paper account</span> tab for the
+        live demo dashboard — equity vs STX40.JO benchmark, daily P&amp;L, drawdown, allocation and
+        per-holding attribution. Pushes flow into Supabase and trigger an immediate refresh.
       </p>
 
       {/* sync bar */}
@@ -295,6 +329,21 @@ export function ModelDetail({ slug }: { slug: string }) {
         </div>
       ) : (
         <div className="space-y-4">
+          <LiveModelDashboard
+            slug={slug}
+            positions={positions.map((p) => ({
+              symbol: String(p.symbol ?? ""),
+              side: p.side == null ? null : String(p.side),
+              qty: n(p.qty),
+              avg_entry_price: n(p.avg_entry_price),
+              market_value: n(p.market_value),
+              unrealized_pl: n(p.unrealized_pl),
+              unrealized_plpc: n(p.unrealized_plpc),
+              weight: n(p.weight),
+            }))}
+            paperCurveCount={paperCurve.length}
+            currency={ccy}
+          />
           <GlassSection
             title="Demo Account"
             subtitle="paper · our own account tracked daily on real prices, no broker"
