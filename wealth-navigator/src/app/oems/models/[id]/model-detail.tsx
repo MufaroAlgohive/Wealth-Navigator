@@ -77,27 +77,33 @@ export function ModelDetail({ slug }: { slug: string }) {
     for (const p of d?.equity ?? []) {
       const kind = String(p.kind);
       const label = String(p.label);
-      counts[kind] = counts[kind] ?? {};
-      counts[kind][label] = (counts[kind][label] ?? 0) + 1;
+      const bucket = (counts[kind] ??= {});
+      bucket[label] = (bucket[label] ?? 0) + 1;
     }
     const bestLabel: Record<string, string> = {};
-    for (const kind of Object.keys(counts)) {
-      bestLabel[kind] = Object.entries(counts[kind]).sort((a, b) => b[1] - a[1])[0][0];
+    for (const [kind, labels] of Object.entries(counts)) {
+      const top = Object.entries(labels).sort((a, b) => b[1] - a[1])[0];
+      if (top) bestLabel[kind] = top[0];
     }
     for (const p of d?.equity ?? []) {
       const kind = String(p.kind);
       if (String(p.label) !== bestLabel[kind]) continue;
       const eq = n(p.equity);
       if (eq == null) continue;
-      (out[kind] = out[kind] ?? []).push({ ts: String(p.ts).slice(0, 10), equity: eq });
+      (out[kind] ??= []).push({ ts: String(p.ts).slice(0, 10), equity: eq });
     }
     return out;
   }, [d]);
 
   const equityKinds = Object.keys(equityByKind);
   const [curveKind, setCurveKind] = useState<string>("");
-  const activeKind = curveKind && equityByKind[curveKind] ? curveKind : (equityKinds.includes("backtest") ? "backtest" : equityKinds[0] ?? "");
-  const curve = activeKind ? equityByKind[activeKind] : [];
+  const activeKind =
+    curveKind && equityByKind[curveKind]
+      ? curveKind
+      : equityKinds.includes("backtest")
+        ? "backtest"
+        : (equityKinds[0] ?? "");
+  const curve = (activeKind ? equityByKind[activeKind] : []) ?? [];
   const [metricView, setMetricView] = useState<"backtest" | "live">("backtest");
   const activeMetric = (metricView === "live" ? live : backtest) ?? backtest ?? live;
 
@@ -234,7 +240,7 @@ export function ModelDetail({ slug }: { slug: string }) {
           equityKinds.length > 1 ? (
             <GlassSegment
               value={activeKind}
-              options={equityKinds.map((k) => ({ id: k, label: k[0].toUpperCase() + k.slice(1) }))}
+              options={equityKinds.map((k) => ({ id: k, label: k.charAt(0).toUpperCase() + k.slice(1) }))}
               onChange={setCurveKind}
             />
           ) : undefined
