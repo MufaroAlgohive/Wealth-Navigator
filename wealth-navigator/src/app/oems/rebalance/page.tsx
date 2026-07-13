@@ -3,7 +3,19 @@ import { resolveResearchSession } from "@/components/research-ic/server";
 
 export const dynamic = "force-dynamic";
 
-export default async function Page() {
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ strategy?: string; name?: string }>;
+}) {
   const s = await resolveResearchSession();
-  return <RebalanceBuilderPage perms={s.perms} viewerEmail={s.viewerEmail} />;
+  const sp = await searchParams;
+  return (
+    <RebalanceBuilderPage
+      perms={s.perms}
+      viewerEmail={s.viewerEmail}
+      initialStrategyId={sp.strategy}
+      initialStrategyName={sp.name}
+    />
+  );
 }

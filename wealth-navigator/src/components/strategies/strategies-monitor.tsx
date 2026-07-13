@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Layers, Lock, RefreshCw, ShieldCheck } from "lucide-react";
 
 import { Pill } from "@/components/oems/primitives/pill";
@@ -227,6 +227,7 @@ export function StrategiesMonitor() {
 }
 
 function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean; onSelect: () => void }) {
+  const router = useRouter();
   const rebal = s.status === "live" && s.investorCount > 0;
   return (
     <button
@@ -269,6 +270,12 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
             size="sm"
             variant="default"
             className="h-6 gap-1 px-2 text-[10px]"
+            onClick={(e) => {
+              e.stopPropagation();
+              router.push(
+                `/oems/rebalance?strategy=${encodeURIComponent(s.id)}&name=${encodeURIComponent(s.name)}`,
+              );
+            }}
           >
             <RefreshCw className="h-2.5 w-2.5" /> Rebalance
           </Button>

@@ -18,41 +18,8 @@ import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
 import { moneyR, rebalanceCodeMap, useQuotes, weightPct } from "./ui";
 
-const STRATEGIES = [
-  "MINT SA Equity Alpha",
-  "MINT Global Quality",
-  "MINT Resources Tilt",
-  "MINT Smart Beta Low Vol",
-];
-
 type Holding = { ticker: string; name: string; shares: number };
-
-const BASKETS: Record<string, Holding[]> = {
-  "MINT SA Equity Alpha": [
-    { ticker: "NPN", name: "Naspers", shares: 2 },
-    { ticker: "CPI", name: "Capitec Bank", shares: 3 },
-    { ticker: "FSR", name: "FirstRand", shares: 20 },
-    { ticker: "SBK", name: "Standard Bank", shares: 8 },
-    { ticker: "AGL", name: "Anglo American", shares: 4 },
-    { ticker: "SOL", name: "Sasol", shares: 13 },
-  ],
-  "MINT Global Quality": [
-    { ticker: "MSFT", name: "Microsoft", shares: 5 },
-    { ticker: "NPN", name: "Naspers", shares: 2 },
-    { ticker: "PRX", name: "Prosus", shares: 6 },
-  ],
-  "MINT Resources Tilt": [
-    { ticker: "AGL", name: "Anglo American", shares: 10 },
-    { ticker: "GLN", name: "Glencore", shares: 40 },
-    { ticker: "BHG", name: "BHP Group", shares: 8 },
-    { ticker: "SOL", name: "Sasol", shares: 12 },
-  ],
-  "MINT Smart Beta Low Vol": [
-    { ticker: "CPI", name: "Capitec Bank", shares: 2 },
-    { ticker: "SBK", name: "Standard Bank", shares: 10 },
-    { ticker: "SHP", name: "Shoprite", shares: 15 },
-  ],
-};
+type StrategyOpt = { id: string; name: string };
 
 function keyOf(h: Holding) {
   return h.ticker.toUpperCase();
@@ -61,12 +28,53 @@ function keyOf(h: Holding) {
 export function RebalanceBuilderPage({
   perms,
   viewerEmail,
-}: { perms: ResearchPerms; viewerEmail: string | null }) {
+  initialStrategyId,
+  initialStrategyName,
+}: {
+  perms: ResearchPerms;
+  viewerEmail: string | null;
+  initialStrategyId?: string;
+  initialStrategyName?: string;
+}) {
   void viewerEmail;
   const qc = useQueryClient();
-  const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0] ?? "MINT SA Equity Alpha");
-  const baseline = BASKETS[strategy] ?? [];
-  const [working, setWorking] = React.useState<Holding[]>(baseline.map((h) => ({ ...h })));
+
+  // Real strategy catalogue (for the dropdown).
+  const strategiesQ = useQuery<{ strategies?: Array<{ id: string; name: string }> }>({
+    queryKey: ["ric-strategies"],
+    queryFn: async () => (await fetch("/api/strategies", { cache: "no-store" })).json(),
+  });
+  const strategies: StrategyOpt[] = (strategiesQ.data?.strategies ?? []).map((s) => ({
+    id: s.id,
+    name: s.name,
+  }));
+
+  const [strategyId, setStrategyId] = React.useState<string>(initialStrategyId ?? "");
+  React.useEffect(() => {
+    if (strategyId) return;
+    if (initialStrategyId && strategies.some((s) => s.id === initialStrategyId)) {
+      setStrategyId(initialStrategyId);
+    } else if (strategies.length && strategies[0]) {
+      setStrategyId(strategies[0].id);
+    }
+  }, [strategies, strategyId, initialStrategyId]);
+  const strategyName =
+    strategies.find((s) => s.id === strategyId)?.name ?? initialStrategyName ?? strategyId;
+
+  // Real current basket for the selected strategy (strategies_c.holdings).
+  const compQ = useQuery<{ holdings?: Array<{ ticker: string; name: string; shares: number }> }>({
+    queryKey: ["ric-composition", strategyId],
+    enabled: !!strategyId,
+    queryFn: async () =>
+      (await fetch(`/api/strategies/${strategyId}/composition`, { cache: "no-store" })).json(),
+  });
+  const baseline: Holding[] = (compQ.data?.holdings ?? []).map((h) => ({
+    ticker: h.ticker,
+    name: h.name,
+    shares: h.shares,
+  }));
+
+  const [working, setWorking] = React.useState<Holding[]>([]);
   const [addOpen, setAddOpen] = React.useState(false);
   const [addTicker, setAddTicker] = React.useState("");
   const [addShares, setAddShares] = React.useState("");
@@ -75,9 +83,10 @@ export function RebalanceBuilderPage({
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    setWorking((BASKETS[strategy] ?? []).map((h) => ({ ...h })));
+    setWorking(baseline.map((h) => ({ ...h })));
     setAddOpen(false);
-  }, [strategy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategyId, compQ.data]);
 
   const tickers = Array.from(new Set([...working.map(keyOf), ...baseline.map(keyOf)]));
   const quotes = useQuotes(tickers);
@@ -152,7 +161,7 @@ export function RebalanceBuilderPage({
       const res = await fetch("/api/rebalance/requests", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ strategy_id: strategy, current_composition, proposed_composition }),
+        body: JSON.stringify({ strategy_id: strategyName, current_composition, proposed_composition }),
       });
       const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !json.ok) {
@@ -175,13 +184,14 @@ export function RebalanceBuilderPage({
           </p>
         </div>
         <select
-          value={strategy}
-          onChange={(e) => setStrategy(e.target.value)}
+          value={strategyId}
+          onChange={(e) => setStrategyId(e.target.value)}
           className="rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-2 text-sm outline-none focus:border-primary/50"
         >
-          {STRATEGIES.map((s) => (
-            <option key={s} value={s}>
-              {s}
+          {strategies.length === 0 && <option value="">Loading strategies…</option>}
+          {strategies.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
             </option>
           ))}
         </select>
@@ -245,6 +255,15 @@ export function RebalanceBuilderPage({
                 </tr>
               </thead>
               <tbody>
+                {working.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-6 text-center text-caption">
+                      {compQ.isLoading
+                        ? "Loading current basket…"
+                        : "No holdings for this strategy yet. Add stocks to build a proposal."}
+                    </td>
+                  </tr>
+                )}
                 {working.map((h) => (
                   <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
                     <td className="px-5 py-2 font-semibold text-primary">{h.ticker}</td>
