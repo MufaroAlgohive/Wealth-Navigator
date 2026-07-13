@@ -26,11 +26,18 @@ export interface OrderPollResult {
   accounts: string[];
 }
 
+// 8-state lifecycle (see src/types/iress.ts::OrderState). Each value here is
+// the lower-case token that lands in oems_order_audit.status — the BFF
+// renders this directly on the Order Book UI, so a stuck PENDING_ACK row
+// surfaces as "Pending broker acknowledgement" instead of the old "Working".
 const STATE_MAP: Record<OrderState, string> = {
+  PENDING_ACK: "pending_ack",
+  ACKNOWLEDGED: "acknowledged",
   WORKING: "working",
   PARTIAL: "partial",
   FILLED: "filled",
   CANCELLED: "cancelled",
+  EXPIRED: "expired",
   REJECTED: "rejected",
 };
 
@@ -86,6 +93,23 @@ function toAuditRow(order: Order): OrderAuditRow {
       filled: order.filled,
       trader: order.trader,
       ts: order.ts,
+      // IRESS Hermes lifecycle detail (Andre, 2026-07-13). Preserved on every
+      // poll cycle so the desk can see exactly where the order sits on the
+      // broker's OrderPad without tailing logs:
+      //   - brokerState          : ACTIVE | INACTIVE
+      //   - actionStatus         : Pending | Acknowledged | OK | Cancelled | ...
+      //   - internalOrderStatus  : finer status (Hermes-side)
+      //   - stateDescription     : free-text e.g. "Traded 200@177, then 200@179"
+      //   - remainingVolume      : shares left to trade
+      //   - remainingValueCents  : notional left (cents)
+      //   - orderValueCents      : total notional at limit (cents)
+      brokerState: order.brokerState ?? null,
+      actionStatus: order.actionStatus ?? null,
+      internalOrderStatus: order.internalOrderStatus ?? null,
+      stateDescription: order.stateDescription ?? null,
+      remainingVolume: order.remainingVolume ?? null,
+      remainingValueCents: order.remainingValueCents ?? null,
+      orderValueCents: order.orderValueCents ?? null,
     },
     result_payload: {
       rejectReason: order.rejectReason,

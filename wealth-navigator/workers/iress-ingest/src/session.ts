@@ -335,19 +335,40 @@ export class WorkerSessionManager {
 
   private async recoverDeadSession(staleKey: string | undefined, err: unknown): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
+    const lower = msg.toLowerCase();
+    // The IRESS server already entered the logout handshake on a previous
+    // request (`Awaiting Logout Response` / `Current state: Logged off`). At
+    // that point tearDown will fail with the same "not logged in" error, and
+    // IRESSSessionStart has already been kicked off by the wire itself — we
+    // only need to drop the cached key + persisted row. Skipping the
+    // tearDown here avoids two wasted license-seat roundtrips per quote
+    // cycle (the original symptom of the rebuild loop in this week's logs).
+    const alreadyTearingDown =
+      lower.includes("awaiting logout response") || lower.includes("current state: logged off");
     console.warn(
-      `[iress-ingest] dead IRESS session (${msg}) — ending wire session and rebuilding`,
+      `[iress-ingest] dead IRESS session (${msg}) — ${alreadyTearingDown ? "wire already tearing down, " : "ending wire session and "}rebuilding`,
     );
     this.recordSessionError(err);
     this.invalidate();
     if (
+      !alreadyTearingDown &&
       staleKey &&
       (iressConfig.mode === "live" || iressConfig.mode === "wsdl-stub")
     ) {
-      await tearDownIressWireSession({
-        iressSessionKey: staleKey,
-        releaseDelayMs: LICENSE_RELEASE_DELAY_MS,
-      });
+      try {
+        await tearDownIressWireSession({
+          iressSessionKey: staleKey,
+          releaseDelayMs: LICENSE_RELEASE_DELAY_MS,
+        });
+      } catch (teardownErr) {
+        // tearDown failures on a dead session are expected (the server is
+        // already mid-logout). Log and proceed — the rebuild path will mint
+        // a fresh key on the next getSession().
+        const tmsg = teardownErr instanceof Error ? teardownErr.message : String(teardownErr);
+        console.warn(
+          `[iress-ingest] tearDown after dead session failed (continuing): ${tmsg}`,
+        );
+      }
     }
     await clearPersistedSessionKey(this.deps);
   }
@@ -486,7 +507,21 @@ export class WorkerSessionManager {
       return await fn(session);
     } catch (err) {
       if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const lower = msg.toLowerCase();
+        const alreadyTearingDown =
+          lower.includes("awaiting logout response") || lower.includes("current state: logged off");
         await this.recoverDeadSession(session.iressSessionKey, err);
+        // If the IRESS server was already mid-logout, the wire has its own
+        // IRESSSessionStart in flight on the next IRESS_CT allocation. Yield
+        // briefly so we don't race it (and immediately re-trigger the dead
+        // state). 1.5s matches the LICENSE_RELEASE_DELAY_MS lower bound
+        // (sleep(3_000) inside tearDownIressWireSession when a fresh key is
+        // being minted) without being so long that the watchlist loop
+        // stalls visibly.
+        if (alreadyTearingDown) {
+          await new Promise<void>((r) => setTimeout(r, 1500));
+        }
         return await fn(await this.getSession());
       }
       throw err;

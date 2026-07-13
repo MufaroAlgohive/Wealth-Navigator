@@ -155,6 +155,16 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   }
 
   const allHoldings = (holdingsRes.data ?? []) as HoldingRow[];
+
+  // Exclude test accounts (parity with /api/admin/investors/data, which this
+  // route's docstring claims to match). This is a real-investor analytics view;
+  // is_test=true accounts must not pollute the affected-investor list.
+  const testIds = new Set<string>();
+  {
+    const { data: testRows } = await retail.from("profiles").select("id").eq("is_test", true);
+    for (const r of testRows ?? []) testIds.add(r.id as string);
+  }
+
   // Resolve the symbol → security_id lookup once.
   const secIds = [...new Set(allHoldings.map((h) => h.security_id).filter(Boolean))];
   let secById = new Map<string, SecurityRow>();
@@ -168,6 +178,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   // Build investor-level rollups: total shares in the symbol, weighted cost basis.
   const investorAgg = new Map<string, { shares: number; avgCostCents: number; strategies: Set<string> }>();
   for (const h of allHoldings) {
+    if (testIds.has(h.user_id)) continue; // exclude test accounts
     const meta = secById.get(h.security_id);
     if (!meta || meta.symbol.toUpperCase() !== symbol) continue;
     const cur = investorAgg.get(h.user_id) ?? { shares: 0, avgCostCents: 0, strategies: new Set() };

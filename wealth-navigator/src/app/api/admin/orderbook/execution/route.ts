@@ -20,6 +20,19 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  * Schema-missing guard: returns `{ ok: true, rows: [], notice: ... }` so the
  * UI can render an honest empty state without an alert banner when the table
  * hasn't been migrated yet.
+ *
+ * Lifecycle states (2026-07-13): the audit `status` column now carries the
+ * full 8-state IRESS Hermes lifecycle (`pending_ack`, `acknowledged`,
+ * `working`, `partial`, `filled`, `cancelled`, `expired`, `rejected`).
+ * Earlier this route collapsed anything that wasn't `filled` / `partial` /
+ * `cancelled` / `rejected` to `WORKING` — which masked the new
+ * `pending_ack` / `acknowledged` states from the UI. See
+ * `stateUppercaseFromAudit()` below for the up-to-date mapping.
+ *
+ * The route also surfaces the Hermes lifecycle detail (ActionStatus,
+ * InternalOrderStatus, StateDescription, RemainingVolume, brokerState) on
+ * the typed `ExecutionRow` so the desk can see exactly where a stuck
+ * order is on the broker side, not just the downmapped lifecycle state.
  */
 
 export const dynamic = "force-dynamic";
@@ -43,6 +56,13 @@ interface AuditRow {
 interface ExecutionRow {
   id: string;
   order_id: string;
+  // 2026-07-13: surface the IRESS AccountCode (from oems_order_audit.client_account)
+  // so the UI's Cancel button can forward the correct account to the worker's
+  // /orders/cancel endpoint. For UAT dispatches the BFF seeds this with the
+  // client email; the broker account comes from payload.uatAccountCode (also
+  // surfaced as `broker_account` for clarity).
+  client_account: string;
+  broker_account: string | null;
   ts: string;
   strategy: string | null;
   side: string;
@@ -61,6 +81,16 @@ interface ExecutionRow {
   sent_by: string | null;
   state: string;
   broker: string | null;
+  // IRESS Hermes lifecycle detail (2026-07-13). Surface these so the
+  // operator can see exactly where the order sits on Hermes without
+  // tailing worker logs.
+  broker_state?: string | null;
+  action_status?: string | null;
+  internal_order_status?: string | null;
+  state_description?: string | null;
+  remaining_volume?: number | null;
+  remaining_value_cents?: number | null;
+  order_value_cents?: number | null;
 }
 
 function openInstitutional(): SupabaseClient | null {
@@ -75,6 +105,43 @@ function num(v: unknown): number | null {
   if (v == null) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function str(v: unknown): string | null {
+  return typeof v === "string" && v !== "" ? v : null;
+}
+
+/**
+ * Map the audit `status` token (lowercase) to the upper-case enum the
+ * ExecutionView badge expects. Mirrors the OrderState union in
+ * src/types/iress.ts — the audit row carries the downmapped token.
+ */
+function stateUppercaseFromAudit(status: string): string {
+  switch (status) {
+    case "pending_ack":
+      return "PENDING_ACK";
+    case "acknowledged":
+      return "ACKNOWLEDGED";
+    case "partial":
+      return "PARTIAL";
+    case "filled":
+      return "FILLED";
+    case "cancelled":
+      return "CANCELLED";
+    case "expired":
+      return "EXPIRED";
+    case "rejected":
+      return "REJECTED";
+    case "working":
+    case "amended":
+    case "created":
+      return "WORKING";
+    default:
+      // Unknown status — surface as the raw value so the operator can see
+      // "what is this?" in the UI instead of silently downmapping to
+      // WORKING (which would hide a stuck row).
+      return status.toUpperCase();
+  }
 }
 
 function mapRow(r: AuditRow): ExecutionRow {
@@ -100,24 +167,11 @@ function mapRow(r: AuditRow): ExecutionRow {
   let day1PnlCents: number | null = null;
   if (slippageCents != null) day1PnlCents = slippageCents * filled;
 
-  const state = ((): ExecutionRow["state"] => {
-    switch (r.status) {
-      case "filled":
-        return "FILLED";
-      case "partial":
-        return "PARTIAL";
-      case "cancelled":
-        return "CANCELLED";
-      case "rejected":
-        return "REJECTED";
-      default:
-        return "WORKING";
-    }
-  })();
-
   return {
     id: r.id,
     order_id: r.order_id,
+    client_account: r.client_account,
+    broker_account: str(payload.uatAccountCode),
     ts: typeof payload.ts === "string" ? (payload.ts as string) : r.updated_at,
     strategy: typeof payload.strategy === "string" ? (payload.strategy as string) : null,
     side: (r.side ?? "buy").toUpperCase(),
@@ -139,8 +193,18 @@ function mapRow(r: AuditRow): ExecutionRow {
         : typeof payload.trader === "string"
           ? (payload.trader as string)
           : null,
-    state,
+    state: stateUppercaseFromAudit(r.status),
     broker: typeof payload.broker === "string" ? (payload.broker as string) : null,
+    // IRESS Hermes lifecycle detail (2026-07-13). The worker stamps these
+    // on every poll cycle; older rows + BFF-written `working` rows may not
+    // carry them — render as null in that case.
+    broker_state: str(payload.brokerState),
+    action_status: str(payload.actionStatus),
+    internal_order_status: str(payload.internalOrderStatus),
+    state_description: str(payload.stateDescription),
+    remaining_volume: num(payload.remainingVolume),
+    remaining_value_cents: num(payload.remainingValueCents),
+    order_value_cents: num(payload.orderValueCents),
   };
 }
 

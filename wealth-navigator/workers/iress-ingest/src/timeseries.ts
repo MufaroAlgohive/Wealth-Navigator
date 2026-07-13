@@ -324,14 +324,27 @@ async function fetchSeries(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    const lower = msg.toLowerCase();
     // 25014 = subscription/entitlement missing; 25008 = license seat. Both
     // are non-fatal: the loop should keep polling, log the structured
     // event, and wait for Charles to flip the entitlement.
+    //
+    // The live CT server also rejects TimeSeriesGet2 with
+    // `soap:Receiver — Invalid access` (a code-5 / "wrong DataSource" /
+    // wrong entitlement) when the entitlement hasn't been granted yet.
+    // Without this branch that fires every poll (5 min) — eventually
+    // the worker burns the cycle on the same rejected call forever. We
+    // route it through the entitlement-required path so the loop
+    // records the event once per cycle and the integration page
+    // surfaces the "ask Charles" copy instead of a generic fault.
     if (
       msg.includes("25014") ||
       msg.includes("25008") ||
-      msg.toLowerCase().includes("entitlement") ||
-      msg.toLowerCase().includes("not entitled")
+      msg.includes("25010") ||
+      msg.includes("25034") ||
+      lower.includes("entitlement") ||
+      lower.includes("not entitled") ||
+      lower.includes("invalid access")
     ) {
       entitlementRequired = true;
     } else if (isIressSessionDeadError(err)) {

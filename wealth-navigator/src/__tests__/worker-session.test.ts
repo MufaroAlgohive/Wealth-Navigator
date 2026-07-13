@@ -274,9 +274,14 @@ describe("WorkerSessionManager sticky ApplicationID", () => {
 
     expect(result).toBe("ok");
     expect(bringUp).toHaveBeenCalledTimes(2);
-    expect(tearDown).toHaveBeenCalledWith(
-      expect.objectContaining({ iressSessionKey: "KEY-DEAD@WebServicesCT" }),
-    );
+    // 2026-07-13 (Andre + Juan walkthrough): when the broker is already
+    // mid-logout (Current state: Logged off), tearDownIressWireSession
+    // fails with HTTP 500 because the broker has already released the
+    // license. The fix in recoverDeadSession skips the wire teardown
+    // when the error message indicates the broker is already tearing
+    // down, so tearDown should NOT have been called here. The session
+    // is still rebuilt by the next `bringUp` call.
+    expect(tearDown).not.toHaveBeenCalled();
   });
 
   it("does not invalidate the cached session on non-25001 SOAP faults", async () => {

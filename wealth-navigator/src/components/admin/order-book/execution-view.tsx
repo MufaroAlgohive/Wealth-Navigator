@@ -32,6 +32,11 @@ import { usePolling } from "@/lib/hooks/use-polling";
 export interface ExecutionRow {
   id: string;
   order_id: string;
+  // 2026-07-13: OEMS client identifier (profile email or user_id). The Cancel
+  // button uses broker_account (the IRESS AccountCode) when forwarding to
+  // /api/admin/orderbook/cancel.
+  client_account: string;
+  broker_account: string | null;
   ts: string;
   strategy: string | null;
   side: string;
@@ -48,8 +53,32 @@ export interface ExecutionRow {
   venue: string;
   tif: string;
   sent_by: string | null;
-  state: "WORKING" | "PARTIAL" | "FILLED" | "CANCELLED" | "REJECTED" | string;
+  // 8-state lifecycle (2026-07-13): see src/types/iress.ts::OrderState. The
+  // audit `status` column carries `pending_ack` / `acknowledged` in addition
+  // to the older 5 values; the BFF /api/admin/orderbook/execution route
+  // upper-cases them for this typed surface.
+  state:
+    | "PENDING_ACK"
+    | "ACKNOWLEDGED"
+    | "WORKING"
+    | "PARTIAL"
+    | "FILLED"
+    | "CANCELLED"
+    | "EXPIRED"
+    | "REJECTED"
+    | string;
   broker: string | null;
+  // IRESS Hermes lifecycle detail (2026-07-13). Surfaced via tooltip on the
+  // State badge so the operator can read "Traded 200 @ 17700, then 200 @
+  // 17900" without leaving the UI. Older audit rows + BFF-written `working`
+  // rows may not carry these — the UI falls back to the lifecycle state.
+  broker_state?: string | null;
+  action_status?: string | null;
+  internal_order_status?: string | null;
+  state_description?: string | null;
+  remaining_volume?: number | null;
+  remaining_value_cents?: number | null;
+  order_value_cents?: number | null;
 }
 
 interface ExecutionPayload {
@@ -99,10 +128,16 @@ const STATE_VARIANT: Record<
   string,
   "default" | "secondary" | "destructive" | "success" | "warning" | "outline"
 > = {
+  // 8-state lifecycle (2026-07-13). pending_ack + acknowledged render as
+  // outline (the broker is mid-handshake); expired renders as outline with
+  // neutral colour; cancelled + rejected as before.
+  PENDING_ACK: "outline",
+  ACKNOWLEDGED: "outline",
   WORKING: "warning",
   PARTIAL: "warning",
   FILLED: "success",
   CANCELLED: "secondary",
+  EXPIRED: "secondary",
   REJECTED: "destructive",
 };
 
@@ -119,12 +154,54 @@ function slipColor(slipCents: number | null): string {
   return "text-muted-foreground";
 }
 
+/**
+ * Translate an incoming lifecycle token (from SSE / audit BFF) to the typed
+ * `state` enum. Accepts both the upper-case form ("PARTIAL") and the lower-
+ * case audit-token form ("partial") for backwards compatibility with older
+ * SSE producers. Unknown tokens pass through verbatim so the UI badge can
+ * surface "what is this?" rather than silently collapsing to WORKING.
+ */
 function stateUppercaseToDb(state: string): ExecutionRow["state"] {
   const u = state.toUpperCase();
-  if (u === "WORKING" || u === "PARTIAL" || u === "FILLED" || u === "CANCELLED" || u === "REJECTED") {
-    return u;
+  const known = new Set([
+    "PENDING_ACK",
+    "ACKNOWLEDGED",
+    "WORKING",
+    "PARTIAL",
+    "FILLED",
+    "CANCELLED",
+    "EXPIRED",
+    "REJECTED",
+  ]);
+  return known.has(u) ? (u as ExecutionRow["state"]) : (u as ExecutionRow["state"]);
+}
+
+/**
+ * Build the State-badge tooltip. When the audit row carries Hermes lifecycle
+ * detail (stateDescription, actionStatus, internalOrderStatus, …) we render
+ * them so the operator can see exactly where the order is on Hermes without
+ * tailing worker logs. Falls back to a one-liner when only the downmapped
+ * lifecycle state is available.
+ */
+function stateTooltip(row: ExecutionRow): string {
+  const lines: string[] = [];
+  if (row.action_status) lines.push(`Hermes ActionStatus: ${row.action_status}`);
+  if (row.internal_order_status) lines.push(`Hermes InternalOrderStatus: ${row.internal_order_status}`);
+  if (row.broker_state) lines.push(`Hermes OrderState: ${row.broker_state}`);
+  if (row.state_description) lines.push(`Hermes: ${row.state_description}`);
+  if (
+    row.remaining_volume != null &&
+    row.qty > 0 &&
+    row.remaining_volume > 0
+  ) {
+    lines.push(
+      `Remaining: ${row.remaining_volume.toLocaleString("en-ZA")} of ${row.qty.toLocaleString("en-ZA")} shares`,
+    );
   }
-  return "WORKING";
+  if (lines.length === 0) {
+    return "State from audit row (no Hermes detail captured yet)";
+  }
+  return lines.join("\n");
 }
 
 function timeSince(iso: string): string {
@@ -240,10 +317,28 @@ export function ExecutionView({ bookId }: { bookId: string }) {
       const filledPct = qty > 0 ? Math.min(100, (filled / qty) * 100) : 0;
       const avgFill =
         d.avg_fill_price_cents != null ? d.avg_fill_price_cents / 100 : (existing?.avg_fill_price ?? null);
+      // Hermes lifecycle detail from the SSE payload (added 2026-07-13). The
+      // worker now publishes these on every UAT poll cycle alongside the
+      // downmapped state so the operator can see "pending_ack" /
+      // "acknowledged" / partial fills with their Hermes action status.
+      // The BFF /uat/execution-stream SSE passthrough forwards the fields
+      // verbatim; older deltas don't have them and the UI falls back to the
+      // existing row.
+      const rawDelta = d as unknown as {
+        brokerState?: string | null;
+        actionStatus?: string | null;
+        internalOrderStatus?: string | null;
+        stateDescription?: string | null;
+        remainingVolume?: number | null;
+        remainingValueCents?: number | null;
+        orderValueCents?: number | null;
+      };
       const auditId = d.order_audit_id as string;
       const newRow: ExecutionRow = {
         id: auditId,
         order_id: d.iress_order_number || existing?.order_id || auditId,
+        client_account: existing?.client_account ?? "",
+        broker_account: existing?.broker_account ?? null,
         ts: d.timestamp,
         strategy: existing?.strategy ?? d.book_id ?? null,
         side: (d.side ?? existing?.side ?? "BUY").toUpperCase(),
@@ -268,6 +363,15 @@ export function ExecutionView({ bookId }: { bookId: string }) {
         sent_by: existing?.sent_by ?? null,
         state: stateUppercaseToDb(d.state),
         broker: existing?.broker ?? "JSE",
+        broker_state: rawDelta.brokerState ?? existing?.broker_state ?? null,
+        action_status: rawDelta.actionStatus ?? existing?.action_status ?? null,
+        internal_order_status:
+          rawDelta.internalOrderStatus ?? existing?.internal_order_status ?? null,
+        state_description: rawDelta.stateDescription ?? existing?.state_description ?? null,
+        remaining_volume: rawDelta.remainingVolume ?? existing?.remaining_volume ?? null,
+        remaining_value_cents:
+          rawDelta.remainingValueCents ?? existing?.remaining_value_cents ?? null,
+        order_value_cents: rawDelta.orderValueCents ?? existing?.order_value_cents ?? null,
       };
       return { ...prev, [d.order_audit_id as string]: newRow };
     });
@@ -313,6 +417,85 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   // Track which audit rows have ever received an SSE delta so we can show
   // a "LIVE" badge next to them.
   const liveIds = React.useMemo(() => new Set(Object.keys(liveOverrides)), [liveOverrides]);
+
+  // Per-row cancel state (2026-07-13). When the desk clicks Cancel on a
+  // row, we POST /api/admin/orderbook/cancel which forwards to the worker's
+  // /orders/cancel (OrderDelete). The handler optimistically flips the
+  // row to CANCELLED in `liveOverrides` so the UI updates instantly; the
+  // SSE delta from the worker confirms the transition on the next push.
+  const [cancelInFlight, setCancelInFlight] = React.useState<Record<string, boolean>>({});
+  const [cancelError, setCancelError] = React.useState<Record<string, string>>({});
+  const handleCancel = React.useCallback(
+    async (row: ExecutionRow) => {
+      // Prefer the IRESS AccountCode (broker_account — payload.uatAccountCode
+      // for UAT). Fall back to client_account for production rows where the
+      // worker uses IRESS_ACCOUNT_CODE from env. The worker's /orders/cancel
+      // logs the actual account it uses so the operator can see if our
+      // guess was wrong.
+      const accountGuess =
+        (typeof row.broker_account === "string" && row.broker_account.length > 0
+          ? row.broker_account
+          : null) ??
+        (typeof row.client_account === "string" && row.client_account.length > 0
+          ? row.client_account
+          : "56378"); // UAT default — the worker logs the actual account used
+      const iressOrderNumber = row.order_id;
+      if (!iressOrderNumber) return;
+      const auditId = row.id;
+      setCancelInFlight((p) => ({ ...p, [auditId]: true }));
+      setCancelError((p) => ({ ...p, [auditId]: "" }));
+      // Optimistic UI update — flip the local override to CANCELLED.
+      setLiveOverrides((p) => ({
+        ...p,
+        [auditId]: {
+          ...(p[auditId] ?? row),
+          state: "CANCELLED",
+        },
+      }));
+      try {
+        const res = await fetch("/api/admin/orderbook/cancel", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ account: accountGuess, order_number: iressOrderNumber }),
+        });
+        if (!res.ok && res.status >= 500) {
+          setCancelError((p) => ({
+            ...p,
+            [auditId]: `Cancel endpoint returned ${res.status}`,
+          }));
+        } else {
+          const body = (await res.json().catch(() => ({}))) as {
+            ok?: boolean;
+            error?: string;
+            message?: string;
+          };
+          if (body && body.ok === false) {
+            setCancelError((p) => ({
+              ...p,
+              [auditId]: body.message ?? body.error ?? "Cancel failed",
+            }));
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setCancelError((p) => ({ ...p, [auditId]: msg }));
+      } finally {
+        setCancelInFlight((p) => ({ ...p, [auditId]: false }));
+      }
+    },
+    [],
+  );
+
+  // A row is "cancellable" when it's in flight at the broker — i.e. not
+  // already FILLED / CANCELLED / REJECTED / EXPIRED. We surface a disabled
+  // button on terminal rows so the desk gets clear feedback.
+  const isCancellable = (state: string): boolean =>
+    state === "WORKING" ||
+    state === "PARTIAL" ||
+    state === "PENDING_ACK" ||
+    state === "ACKNOWLEDGED" ||
+    state === "created" ||
+    state === "amended";
 
   const showLoading = executions.loading && rows.length === 0;
   const hasNotice = !!executions.data?.notice;
@@ -389,6 +572,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                 "Sent by",
                 "State",
                 "Tracking",
+                "Actions",
               ].map((h) => (
                 <th
                   key={h}
@@ -402,13 +586,13 @@ export function ExecutionView({ bookId }: { bookId: string }) {
           <tbody>
             {showLoading ? (
               <tr>
-                <td colSpan={19} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={20} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   Loading executions…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={19} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={20} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   No execution rows for this book yet — click <em>Send to Market</em> to dispatch.
                 </td>
               </tr>
@@ -488,7 +672,12 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       {r.sent_by ?? "—"}
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
-                      <Badge variant={STATE_VARIANT[r.state] ?? "outline"}>{r.state}</Badge>
+                      <span
+                        title={stateTooltip(r)}
+                        className="inline-flex"
+                      >
+                        <Badge variant={STATE_VARIANT[r.state] ?? "outline"}>{r.state}</Badge>
+                      </span>
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
                       {tracked ? (
@@ -499,6 +688,36 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                           <Radio className="h-2.5 w-2.5 animate-pulse" />
                           live
                         </span>
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      {isCancellable(r.state) ? (
+                        <div className="flex flex-col gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={!!cancelInFlight[r.id]}
+                            onClick={() => void handleCancel(r)}
+                            className="h-7 px-2 text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10"
+                            title={`Cancel order ${r.order_id} on IRESS (OrderDelete via worker).`}
+                          >
+                            {cancelInFlight[r.id] ? (
+                              <>
+                                <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />
+                                cancelling…
+                              </>
+                            ) : (
+                              "Cancel"
+                            )}
+                          </Button>
+                          {cancelError[r.id] ? (
+                            <span className="text-[9px] text-destructive" title={cancelError[r.id] ?? undefined}>
+                              {cancelError[r.id]}
+                            </span>
+                          ) : null}
+                        </div>
                       ) : (
                         <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
                       )}

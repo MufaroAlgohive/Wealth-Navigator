@@ -53,7 +53,44 @@ export interface SeriesPoint {
 export type OrderSide = "BUY" | "SELL";
 export type OrderType = "MKT" | "LMT" | "STP" | "STP_LMT";
 export type OrderTIF = "DAY" | "IOC" | "FOK" | "GTC";
-export type OrderState = "WORKING" | "PARTIAL" | "FILLED" | "CANCELLED" | "REJECTED";
+/**
+ * OEMS-facing order lifecycle. Derived from the IRESS Hermes row shape
+ * (`OrderState` + `ActionStatus` + `InternalOrderStatus` + `DoneVolumeTotal`).
+ *
+ * The IRESS V4 wire doc collapses everything onto `OrderState` (`ACTIVE` /
+ * `INACTIVE`) plus an `ActionStatus` field on the Hermes UI (Pending /
+ * Acknowledged / OK / Cancelled / Rejected). The single `OrderState` enum
+ * the worker historically surfaced could not distinguish "trader ack'd on
+ * Hermes, no fills yet" from "live in the book waiting for fills" — both
+ * looked like `WORKING`. This union adds the intermediate states that
+ * CARE / desk-routed orders actually traverse, so the operator can see
+ * exactly where an order is stuck.
+ *
+ * State mapping (worker `live.ts::mapOrder` + `orders.ts::STATE_MAP`):
+ *   - PENDING_ACK : OrderCreate3 returned OrderNumber, broker hasn't
+ *                   acked yet (CARE flow — Andre, 2026-07-13).
+ *   - ACKNOWLEDGED: ActionStatus=OK, no fills yet.
+ *   - WORKING     : OrderState=ACTIVE, ActionStatus=OK, no fills yet,
+ *                   OR any INACTIVE state with partial fill.
+ *   - PARTIAL     : DoneVolumeTotal > 0 AND < OrderVolume (live OR inactive).
+ *   - FILLED      : DoneVolumeTotal >= OrderVolume. INACTIVE here means
+ *                   "row closed" (not "cancelled") — the broker moves a
+ *                   fully-filled order to INACTIVE. The previous mapper
+ *                   collapsed this to CANCELLED, which is the bug Juan
+ *                   hit on the 400 SOL CARE order.
+ *   - CANCELLED   : OrderState=INACTIVE AND DoneVolumeTotal < OrderVolume.
+ *   - EXPIRED     : TimeInForce=DAY rolled off without a fill.
+ *   - REJECTED    : OrderCreate3 response ErrorNumber != 0.
+ */
+export type OrderState =
+  | "PENDING_ACK"
+  | "ACKNOWLEDGED"
+  | "WORKING"
+  | "PARTIAL"
+  | "FILLED"
+  | "CANCELLED"
+  | "EXPIRED"
+  | "REJECTED";
 export type OrderDestination = "JSE" | "NASDAQ" | "NYSE" | "LSE" | "OTC" | "DARK";
 
 export interface Order {
@@ -83,6 +120,18 @@ export interface Order {
   slippageBps: number | null;
   arrivalMid: number;
   orderTag: string; // IRESS idempotency key
+  // Lifecycle detail captured from the IRESS row (Hermes OrderPad). Optional
+  // because older audit rows + the mock do not supply them; the worker
+  // mapper always populates them when reading from live OrderPadGetByAccount.
+  // Surface them on the type so the OEMS UI can render the exact broker-side
+  // status text, not just the downmapped lifecycle state.
+  brokerState?: string | null;          // "ACTIVE" | "INACTIVE"
+  actionStatus?: string | null;         // "Pending" | "Acknowledged" | "OK" | "Cancelled" | ...
+  internalOrderStatus?: string | null;  // finer status (Hermes-side)
+  stateDescription?: string | null;     // free-text "Traded 200@177, then 200@179"
+  remainingVolume?: number | null;
+  remainingValueCents?: number | null;
+  orderValueCents?: number | null;
 }
 
 // ─── Strategy / mandate ─────────────────────────────────────────────────

@@ -1143,12 +1143,19 @@ describe("live client end-to-end with a fake transport", () => {
     expect(sell.type).toBe("MKT"); // "AT MARKET"
     expect(sell.state).toBe("CANCELLED"); // INACTIVE + no fill
 
-    // Partial-then-expired (the real 400017/400018 shape): 50 of 100 done,
-    // then INACTIVE → CANCELLED with a partial fill, NOT FILLED.
-    const partialExpired = res.DataRows[2]!;
-    expect(partialExpired.qty).toBe(100);
-    expect(partialExpired.filled).toBe(50);
-    expect(partialExpired.state).toBe("CANCELLED");
+// Partial-then-INACTIVE (the real 400017/400018 shape): 50 of 100 done,
+// then INACTIVE. The previous mapper collapsed this to CANCELLED, which
+// (a) mis-labelled active fills and (b) hid the actual CANCELLED rows from
+// the operator's view. The 2026-07-13 mapper returns PARTIAL here — the
+// row has 50 shares filled, the remaining 50 sit either on the desk or
+// have been cancelled; either way, the OEMS surfaces the partial fill as
+// PARTIAL with a separate cancel pipeline telling the operator the row
+// closed. See src/__tests__/order-state-mapping.test.ts for the full
+// lifecycle matrix.
+    const partialInactive = res.DataRows[2]!;
+    expect(partialInactive.qty).toBe(100);
+    expect(partialInactive.filled).toBe(50);
+    expect(partialInactive.state).toBe("PARTIAL");
   });
 });
 

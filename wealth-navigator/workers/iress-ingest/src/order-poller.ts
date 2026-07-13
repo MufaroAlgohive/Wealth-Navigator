@@ -31,10 +31,13 @@ import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 
 const STATE_MAP: Record<OrderState, string> = {
+  PENDING_ACK: "pending_ack",
+  ACKNOWLEDGED: "acknowledged",
   WORKING: "working",
   PARTIAL: "partial",
   FILLED: "filled",
   CANCELLED: "cancelled",
+  EXPIRED: "expired",
   REJECTED: "rejected",
 };
 
@@ -111,9 +114,19 @@ async function fetchUatOrders(session: WorkerMintSession, account: string): Prom
   const res = await client.orderPadGetByAccount({
     ServiceSessionKey: iosKey,
     AccountCode: account,
-    OrderFilter: 1, // WORKING only — the UAT flow cares about in-flight orders;
-    // historical fills are written via the order-creation ack and don't need
-    // to be re-polled.
+    // Filter=3 (ALL): we MUST see INACTIVE rows too, otherwise fully-filled
+    // orders disappear from the poll as soon as Hermes flips OrderState to
+    // INACTIVE on the final fill. That was the 2026-07-13 bug — the UI
+    // showed "partial 75%, remaining 100" and then stayed stuck on
+    // "working" because the WORKING-only filter (filter=1) excluded the
+    // fully-filled row, so `pollUatForFills` never stamped the audit
+    // status to `filled` and never published the final-fill SSE delta.
+    //
+    // The earlier rationale "historical fills are written via the
+    // order-creation ack and don't need to be re-polled" only holds for
+    // orders that fill at creation. CARE / desk-routed orders fill later,
+    // and Hermes transitions them ACTIVE → INACTIVE on the final print.
+    OrderFilter: 3,
     RequestID: newRequestID(`uat-pad-${account}`),
   });
   return res.DataRows;
@@ -278,12 +291,19 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
       filled: fillQty,
       avgPx: avgFillPrice,
       lastFillAt: observedAt,
-      brokerState: order.state,
+      brokerState: order.brokerState ?? order.state,
+      actionStatus: order.actionStatus ?? prevPayload.actionStatus ?? null,
+      internalOrderStatus: order.internalOrderStatus ?? prevPayload.internalOrderStatus ?? null,
+      stateDescription: order.stateDescription ?? prevPayload.stateDescription ?? null,
+      remainingVolume: order.remainingVolume ?? null,
+      remainingValueCents: order.remainingValueCents ?? null,
+      orderValueCents: order.orderValueCents ?? null,
     };
     const newResult: Record<string, unknown> = {
       ...prevResult,
       avgFillPrice,
-      brokerState: order.state,
+      brokerState: order.brokerState ?? order.state,
+      state: order.state,
       lastObservedAt: observedAt,
     };
     // Slippage / day-1 P&L refresh so the UI updates without waiting for

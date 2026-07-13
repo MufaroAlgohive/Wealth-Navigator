@@ -38,7 +38,7 @@ import { getIressCredentialsFromEnv, getIressProdCredentialsFromEnv } from "../.
 import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { createLiveIressClient, getIressClient } from "../../../src/lib/iress/index";
 import { createSoapTransport, makeHeader } from "../../../src/lib/iress/transport";
-import type { IressService, Order } from "../../../src/types/iress";
+import type { IressService, Order, OrderState } from "../../../src/types/iress";
 import { loadWorkerEnv } from "./env";
 import type { WorkerEnv } from "./env";
 import { type UatExecutionDelta, getLastUatPollAt, uatExecutionHub } from "./order-poller";
@@ -844,13 +844,39 @@ async function cancelLiveOrder(
     });
     const cancelledAt = new Date().toISOString();
     // Reflect the cancel in the audit trail so the UI stops showing WORKING.
-    // The order-poller only polls WORKING orders, so once an order goes
-    // INACTIVE it can never observe the transition; stamp it here. Match both
-    // representations: the poller's source=IRESS mirror row (order_id = the
-    // IRESS number) and the BFF/ticket row (payload.iress_order_number). This
-    // is best-effort; the OrderDelete already succeeded.
+    // Match both representations: the poller's source=IRESS mirror row
+    // (order_id = the IRESS number) and the BFF/ticket row
+    // (payload.iress_order_number). This is best-effort; the OrderDelete
+    // already succeeded.
+    //
+    // 2026-07-13 (Andre + Juan): Andre clicked cancel on Hermes and Juan
+    // sat watching the UI for "30 seconds waiting for it to tick". The
+    // original code assumed the poller would catch the transition on its
+    // next cycle. The poller is now filter=3 (ALL) so it CAN see INACTIVE
+    // rows, but cancelling through Hermes means there's no local row
+    // change to surface until then — bad UX. So we publish an SSE delta
+    // here immediately AND stamp the audit row, so the UI updates
+    // within the same round-trip as the broker cancel.
+    let cancelledAuditId: string | null = null;
+    let cancelledFilled: number | null = null;
+    let cancelledAvgFillCents: number | null = null;
     if (deps.supabase) {
       try {
+        // Read the existing audit row(s) so the SSE delta carries the
+        // pre-cancel filled / avg fill values (the row had fills that
+        // should be preserved). Match both representations.
+        const { data: existing } = await deps.supabase
+          .from("oems_order_audit")
+          .select("id, payload")
+          .or(`order_id.eq.${orderId},payload->>iress_order_number.eq.${orderId}`)
+          .limit(1);
+        if (existing && existing.length > 0) {
+          const ex = existing[0] as { id: string; payload: Record<string, unknown> | null };
+          cancelledAuditId = ex.id;
+          const p = ex.payload ?? {};
+          if (typeof p.filled === "number") cancelledFilled = p.filled;
+          if (typeof p.avgPx === "number") cancelledAvgFillCents = Math.round(p.avgPx * 100);
+        }
         await deps.supabase
           .from("oems_order_audit")
           .update({ status: "cancelled" })
@@ -861,6 +887,57 @@ async function cancelLiveOrder(
           .eq("payload->>iress_order_number", orderId);
       } catch {
         /* audit stamp is best-effort; the broker cancel already succeeded */
+      }
+
+      // Publish the SSE delta so subscribed UIs flip to "CANCELLED"
+      // immediately — without waiting for the next 30s poll. The hub
+      // suppresses no-op deltas (state didn't change), but "cancelled"
+      // is always a state change relative to anything pre-cancel.
+      try {
+        uatExecutionHub.publish({
+          iressOrderNumber: orderId,
+          orderAuditId: cancelledAuditId,
+          state: "cancelled",
+          filled: cancelledFilled ?? 0,
+          avgFillPrice: cancelledAvgFillCents != null ? cancelledAvgFillCents / 100 : null,
+          lastFillTimestamp: cancelledAt,
+          raw: {
+            id: orderId,
+            account,
+            strategy: "",
+            side: "BUY",
+            symbol: "",
+            isin: "",
+            type: "LMT",
+            tif: "DAY",
+            destination: "JSE",
+            qty: 0,
+            filled: cancelledFilled ?? 0,
+            limit: null,
+            stop: null,
+            avgPx: cancelledAvgFillCents != null ? cancelledAvgFillCents / 100 : null,
+            vwap: null,
+            trader: "",
+            ts: Date.parse(cancelledAt) || Date.now(),
+            state: "CANCELLED" as OrderState,
+            orderTag: "",
+            slippageBps: null,
+            arrivalMid: 0,
+            brokerState: "INACTIVE",
+            actionStatus: "Cancelled",
+            internalOrderStatus: "Cancelled",
+            stateDescription: "Cancelled by trader",
+            remainingVolume: 0,
+            remainingValueCents: 0,
+            orderValueCents: null,
+          },
+          bookId: null,
+          observedAt: cancelledAt,
+        });
+      } catch (hubErr) {
+        // Hub publish failures are best-effort; the cancel succeeded at
+        // the broker and the audit row is stamped.
+        console.warn(`[iress-ingest] cancel hub publish failed: ${String(hubErr)}`);
       }
     }
     return {
@@ -994,6 +1071,114 @@ export async function handleRequest(
       applicationId: session?.applicationId ?? null,
       iressMode: deps.env.iressMode,
       lastError,
+    });
+    return;
+  }
+
+  if (req.method === "GET" && path === "/debug/order-state-probe") {
+    // Operator-only diagnostic for "where exactly is this stuck on Hermes?".
+    //
+    // Accepts ?account=56378&orderNumber=12345 — pulls the live OrderPad row,
+    // surfaces the raw IRESS Hermes fields (OrderState, ActionStatus,
+    // InternalOrderStatus, StateDescription, DoneVolumeTotal vs OrderVolume,
+    // RemainingVolume, RemainingValue, OrderValue) AND the worker's mapped
+    // lifecycle state. Used by the BFF passthrough (`/api/admin/...`) and by
+    // curl from a desk operator when an order is sitting on the wrong state.
+    //
+    // Added 2026-07-13 after Andre demonstrated that a fully-filled CARE
+    // order collapsed to "Working" in the OEMS while Hermes showed it
+    // inactive + done. The BFF now has enough state to render correctly,
+    // but the operator still needs a way to ask "what does IRESS say right
+    // now?" without tailing worker logs.
+    const account = url.searchParams.get("account")?.trim();
+    const orderNumber = url.searchParams.get("orderNumber")?.trim();
+    if (!account || !orderNumber) {
+      sendError(
+        res,
+        400,
+        "bad_request",
+        "account and orderNumber query params required (?account=56378&orderNumber=12345)",
+      );
+      return;
+    }
+    // Use filter=1 (ALL — Hermes UI default) so cancelled / filled / expired
+    // rows are also returned, not just currently working ones.
+    const fetched = await fetchLiveOrders(deps, account, 1);
+    if (!fetched.ok) {
+      send(res, 200, {
+        ok: false,
+        account,
+        orderNumber,
+        iressMode: deps.env.iressMode,
+        fetchedAt: fetched.fetchedAt,
+        error: fetched.error ?? {
+          code: "fetch_failed",
+          message: "fetchLiveOrders returned ok:false",
+        },
+      });
+      return;
+    }
+    // fetched.orders is `Order[]` from the route contract, but at the wire layer
+    // each row is actually the raw IRESS OrderPad record (the mapper in
+    // live.ts converts it before the rest of the pipeline sees it). Cast to
+    // Record<string, unknown> via unknown so we can read the Hermes-side
+    // fields directly without colliding with the typed `Order` shape.
+    const rawRows = fetched.orders as unknown as Record<string, unknown>[];
+    const match = rawRows.find((row) => String(row["OrderNumber"] ?? "") === orderNumber);
+    if (!match) {
+      send(res, 200, {
+        ok: true,
+        found: false,
+        account,
+        orderNumber,
+        orderPadRows: fetched.orders.length,
+        iressMode: deps.env.iressMode,
+        fetchedAt: fetched.fetchedAt,
+        hint:
+          fetched.orders.length === 0
+            ? "OrderPad returned no rows — check that the account has open orders on the IRESS Hermes OrderPad"
+            : `OrderPad returned ${fetched.orders.length} row(s) but none match OrderNumber=${orderNumber}. The order may have purged, or it sits on a different account.`,
+      });
+      return;
+    }
+    // Surface the raw IRESS row + every Hermes-side lifecycle field the
+    // OEMS now reasons about. We deliberately do NOT run the worker mapper
+    // here — the operator needs to see Hermes's view, not ours — but we do
+    // echo the values the new mapper reads (brokerState, actionStatus,
+    // internalOrderStatus, stateDescription) so the discrepancy (if any)
+    // between raw IRESS and what the worker stamped is visible at a glance.
+    const safe = (k: string) => String(match[k] ?? "");
+    const ordVol = Number(match["OrderVolume"] ?? 0);
+    const done = Number(match["DoneVolumeTotal"] ?? 0);
+    send(res, 200, {
+      ok: true,
+      found: true,
+      account,
+      orderNumber,
+      iressMode: deps.env.iressMode,
+      fetchedAt: fetched.fetchedAt,
+      raw: match,
+      lifecycleFields: {
+        orderState: safe("OrderState"),
+        actionStatus: safe("ActionStatus"),
+        internalOrderStatus: safe("InternalOrderStatus"),
+        stateDescription: safe("StateDescription"),
+        lifetime: safe("Lifetime"),
+        pricingInstructions: safe("PricingInstructions"),
+      },
+      fillMath: {
+        orderVolume: ordVol,
+        doneVolumeTotal: done,
+        remainingVolume: Number(match["RemainingVolume"] ?? Math.max(ordVol - done, 0)),
+        remainingValue: Number(match["RemainingValue"] ?? 0),
+        orderValue: Number(match["OrderValue"] ?? 0),
+        averagePrice: Number(match["AveragePrice"] ?? 0),
+        fillPct: ordVol > 0 ? Math.min(100, (done / ordVol) * 100) : 0,
+      },
+      timestamps: {
+        createDateTime: safe("CreateDateTime"),
+        updateDateTime: safe("UpdateDateTime"),
+      },
     });
     return;
   }
@@ -2122,6 +2307,146 @@ function asNumber(v: unknown): number | null {
  * accepted the order but the response was lost. The tag is the UUID we
  * generated at send-to-market time (stored in payload.uatOrderTag).
  */
+/**
+ * Stamp the audit row + publish the SSE delta after OrderCreate3 finishes.
+ * Used from both the success and the business-rejection paths so the
+ * audit row + UI surface the same Hermes lifecycle detail (`pending_ack`
+ * on success, `rejected` on a broker rejection) regardless of which
+ * path triggered the stamp.
+ */
+async function stampAfterOrderCreate3(opts: {
+  deps: HttpApiDeps;
+  audit: UatAuditRow;
+  orderCreateStatus: "working" | "rejected";
+  errorNumber: number | undefined;
+  errorDescription: string | undefined;
+  existingTag: string;
+  brokerDestination: string;
+  exchange: string;
+  tif: "DAY";
+  accountCode: string;
+  qty: number;
+  symbol: string;
+  orderType: "MKT" | "LMT";
+  priceRands: number | undefined;
+  side: 1 | 2;
+  iressOrderNumber: string | null;
+}): Promise<{ stampedAt: string; writeErr?: string }> {
+  const {
+    deps,
+    audit,
+    orderCreateStatus,
+    errorNumber,
+    errorDescription,
+    existingTag,
+    brokerDestination,
+    exchange,
+    tif,
+    accountCode,
+    qty,
+    symbol,
+    orderType,
+    priceRands,
+    side,
+    iressOrderNumber,
+  } = opts;
+  const db = deps.supabase;
+  const stampedAt = new Date().toISOString();
+  const payloadObj = (audit.payload ?? {}) as Record<string, unknown>;
+
+  const newPayload: Record<string, unknown> = {
+    ...payloadObj,
+    uat: true,
+    uatOrderTag: existingTag,
+    uatAccountCode: accountCode,
+    broker_destination: brokerDestination,
+    uatSentAt: stampedAt,
+    ...(iressOrderNumber ? { iress_order_number: iressOrderNumber } : {}),
+  };
+  const newResult: Record<string, unknown> = {
+    ...(audit.result_payload ?? {}),
+    broker: brokerDestination,
+    venue: exchange,
+    tif,
+    orderTag: existingTag,
+    uatAccountCode: accountCode,
+    ...(iressOrderNumber ? { iress_order_number: iressOrderNumber } : {}),
+  };
+  if (errorNumber != null) {
+    newResult.uatErrorNumber = errorNumber;
+    newResult.uatErrorDescription = errorDescription;
+  }
+
+  let writeErr: string | undefined;
+  if (db) {
+    const { error: writeErrDb } = await db
+      .from("oems_order_audit")
+      .update({
+        payload: newPayload,
+        result_payload: newResult,
+        status:
+          orderCreateStatus === "rejected" ? "rejected" : "pending_ack",
+        updated_at: stampedAt,
+      })
+      .eq("id", audit.id);
+    if (writeErrDb) writeErr = writeErrDb.message;
+  }
+
+  // Hermes lifecycle publish.
+  const initialHubState: OrderState =
+    orderCreateStatus === "rejected" ? "REJECTED" : "PENDING_ACK";
+  uatExecutionHub.publish({
+    iressOrderNumber: iressOrderNumber ?? "",
+    orderAuditId: audit.id,
+    state: orderCreateStatus === "rejected" ? "rejected" : "pending_ack",
+    filled: 0,
+    avgFillPrice: priceRands ?? null,
+    lastFillTimestamp: stampedAt,
+    raw: {
+      id: iressOrderNumber ?? "",
+      account: accountCode,
+      strategy: typeof payloadObj.strategy === "string" ? (payloadObj.strategy as string) : "",
+      side: side === 1 ? "BUY" : "SELL",
+      symbol,
+      isin: typeof payloadObj.isin === "string" ? (payloadObj.isin as string) : "",
+      type: orderType as "MKT" | "LMT",
+      tif: tif as "DAY",
+      destination: brokerDestination as "JSE" | "OTC" | "DARK",
+      qty,
+      filled: 0,
+      limit: priceRands ?? null,
+      stop: null,
+      avgPx: null,
+      vwap: null,
+      trader:
+        typeof payloadObj.sent_by === "string" ? (payloadObj.sent_by as string) : "",
+      ts: Date.now(),
+      state: initialHubState,
+      orderTag: existingTag,
+      slippageBps: null,
+      arrivalMid: 0,
+      brokerState: iressOrderNumber ? "ACTIVE" : null,
+      actionStatus: null,
+      internalOrderStatus:
+        orderCreateStatus === "rejected" ? "Rejected" : "Pending",
+      stateDescription:
+        orderCreateStatus === "rejected"
+          ? (errorDescription ?? "OrderCreate3 returned non-zero error")
+          : "Submitted to IRESS — awaiting broker acknowledgement",
+      remainingVolume: orderCreateStatus === "rejected" ? 0 : qty,
+      remainingValueCents:
+        orderCreateStatus === "rejected" || priceRands == null
+          ? null
+          : Math.round(priceRands * qty * 100),
+      orderValueCents: priceRands != null ? Math.round(priceRands * qty * 100) : null,
+    },
+    bookId: typeof payloadObj.book_id === "string" ? (payloadObj.book_id as string) : null,
+    observedAt: stampedAt,
+  });
+
+  return { stampedAt, writeErr };
+}
+
 async function uatSendToMarket(
   deps: HttpApiDeps,
   orderAuditId: string,
@@ -2239,6 +2564,44 @@ async function uatSendToMarket(
     }
     iressOrderNumber = res.OrderNumber || null;
     if (!iressOrderNumber) {
+      // Distinguish a business rejection (ErrorNumber != 0, no OrderNumber)
+      // from a transport-level failure. 2026-07-13 (Juan + Andre): when
+      // IRESS returns ErrorNumber=25014 (Not entitled) the broker REJECTED
+      // the order — the upstream API call succeeded. We must surface that
+      // as a 422-rejected AND stamp the audit row + publish the SSE delta
+      // so the UI flips to REJECTED immediately. The previous code
+      // returned 502 here which skipped both, leaving the UI perpetually
+      // on WORKING.
+      if (errorNumber != null) {
+        // Stamp the audit row + publish the SSE delta before returning
+        // so the UI flips to REJECTED immediately instead of staying on
+        // the BFF-seeded WORKING.
+        await stampAfterOrderCreate3({
+          deps,
+          audit,
+          orderCreateStatus,
+          errorNumber,
+          errorDescription,
+          existingTag,
+          brokerDestination,
+          exchange,
+          tif,
+          accountCode,
+          qty,
+          symbol,
+          orderType,
+          priceRands,
+          side: side as 1 | 2,
+          iressOrderNumber: null,
+        });
+        return {
+          ok: false,
+          status: 422,
+          code: "order_rejected",
+          message: `OrderCreate3 rejected by broker (${errorNumber}): ${errorDescription ?? "no description"}`,
+          extra: { errorNumber, errorDescription },
+        };
+      }
       return {
         ok: false,
         status: 502,
@@ -2288,86 +2651,37 @@ async function uatSendToMarket(
     }
   }
 
-  // Stamp the broker-assigned OrderNumber back onto the audit row.
-  const stampedAt = new Date().toISOString();
-  const newPayload: Record<string, unknown> = {
-    ...(audit.payload ?? {}),
-    uat: true,
-    uatOrderTag: existingTag,
-    uatAccountCode: accountCode,
-    broker_destination: brokerDestination,
-    uatSentAt: stampedAt,
-    iress_order_number: iressOrderNumber,
-  };
-  const newResult: Record<string, unknown> = {
-    ...(audit.result_payload ?? {}),
-    broker: brokerDestination,
-    venue: exchange,
+  // Stamp the broker-assigned OrderNumber back onto the audit row +
+  // publish the SSE delta. Centralised so the success and rejection
+  // paths share the same Hermes-lifecycle detail.
+  const stamp = await stampAfterOrderCreate3({
+    deps,
+    audit,
+    orderCreateStatus,
+    errorNumber,
+    errorDescription,
+    existingTag,
+    brokerDestination,
+    exchange,
     tif,
-    orderTag: existingTag,
-    uatAccountCode: accountCode,
-    iress_order_number: iressOrderNumber,
-  };
-  if (errorNumber != null) {
-    newResult.uatErrorNumber = errorNumber;
-    newResult.uatErrorDescription = errorDescription;
-  }
+    accountCode,
+    qty,
+    symbol,
+    orderType,
+    priceRands,
+    side: side as 1 | 2,
+    iressOrderNumber,
+  });
 
-  const { error: writeErr } = await db
-    .from("oems_order_audit")
-    .update({
-      payload: newPayload,
-      result_payload: newResult,
-      status: orderCreateStatus === "rejected" ? "rejected" : "working",
-      updated_at: stampedAt,
-    })
-    .eq("id", audit.id);
-
-  if (writeErr) {
+  if (stamp.writeErr) {
     return {
       ok: false,
       status: 500,
       code: "audit_stamp_failed",
-      message: `Order placed but audit stamp failed: ${writeErr.message}`,
+      message: `Order placed but audit stamp failed: ${stamp.writeErr}`,
       extra: { iressOrderNumber, orderAuditId: audit.id },
     };
   }
-
-  // Tell the SSE hub about the new working order so subscribed UIs
-  // immediately render a row, even before the next poll cycle.
-  uatExecutionHub.publish({
-    iressOrderNumber: iressOrderNumber ?? "",
-    orderAuditId: audit.id,
-    state: "working",
-    filled: 0,
-    avgFillPrice: priceRands ?? null,
-    lastFillTimestamp: stampedAt,
-    raw: {
-      id: iressOrderNumber ?? "",
-      account: accountCode,
-      strategy: typeof payloadObj.strategy === "string" ? (payloadObj.strategy as string) : "",
-      side: side === 1 ? "BUY" : "SELL",
-      symbol,
-      isin: typeof payloadObj.isin === "string" ? (payloadObj.isin as string) : "",
-      type: orderType as "MKT" | "LMT",
-      tif: tif as "DAY",
-      destination: brokerDestination as "JSE" | "OTC" | "DARK",
-      qty,
-      filled: 0,
-      limit: priceRands ?? null,
-      stop: null,
-      avgPx: null,
-      vwap: null,
-      trader: typeof payloadObj.sent_by === "string" ? (payloadObj.sent_by as string) : "",
-      ts: Date.now(),
-      state: "WORKING",
-      orderTag: existingTag,
-      slippageBps: null,
-      arrivalMid: 0,
-    },
-    bookId: typeof payloadObj.book_id === "string" ? (payloadObj.book_id as string) : null,
-    observedAt: stampedAt,
-  });
 
   return {
     ok: true,
@@ -2448,6 +2762,19 @@ async function streamUatExecution(
       qty: delta.raw.qty,
       book_id: delta.bookId,
       timestamp: delta.observedAt,
+      // IRESS Hermes lifecycle detail (2026-07-13). Forwarded so the
+      // ExecutionView can show "Traded 200 @ 17700" + action status +
+      // remaining volume as a tooltip on the State badge without polling.
+      // When the audit row hasn't stamped these yet (e.g. a freshly-sent
+      // order before the first poll cycle writes them), the UI falls back
+      // to the existing row.
+      brokerState: delta.raw.brokerState ?? null,
+      actionStatus: delta.raw.actionStatus ?? null,
+      internalOrderStatus: delta.raw.internalOrderStatus ?? null,
+      stateDescription: delta.raw.stateDescription ?? null,
+      remainingVolume: delta.raw.remainingVolume ?? null,
+      remainingValueCents: delta.raw.remainingValueCents ?? null,
+      orderValueCents: delta.raw.orderValueCents ?? null,
     });
   });
 

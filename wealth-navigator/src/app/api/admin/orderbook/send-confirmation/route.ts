@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { isUatEnv } from "@/lib/oems/uat-scope";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -41,6 +42,7 @@ interface AuditRow {
 
 interface Holding {
   id: string;
+  user_id: string;
   security_id: string;
   strategy_name_snapshot: string | null;
 }
@@ -163,14 +165,36 @@ export async function POST(req: Request) {
     try {
       const { data: holds, error: holdsErr } = await retail
         .from("stock_holdings_c")
-        .select("id, security_id, strategy_name_snapshot")
+        .select("id, user_id, security_id, strategy_name_snapshot")
         .eq("strategy_name_snapshot", bookId)
         .eq("is_active", true);
 
       if (holdsErr) {
         holdingsNotice = `stock_holdings_c read failed: ${holdsErr.message}`;
       } else {
-        const holdingRows = (holds ?? []) as Holding[];
+        let holdingRows = (holds ?? []) as Holding[];
+        // CLIENT-DATA GUARD (UAT phase): Fill_date is a real-money field (it sets
+        // the client P&L start date). During the UAT phase never mutate a real
+        // (is_test != true) client's holding — restrict the write to test
+        // clients and report how many real holdings were protected. Inert once
+        // the deployment is confidently on prod (isUatEnv() === false).
+        let protectedReal = 0;
+        if (isUatEnv() && holdingRows.length > 0) {
+          const ownerIds = [...new Set(holdingRows.map((h) => h.user_id).filter(Boolean))];
+          const { data: testRows } = await retail
+            .from("profiles")
+            .select("id")
+            .eq("is_test", true)
+            .in("id", ownerIds);
+          const testIds = new Set((testRows ?? []).map((r) => r.id as string));
+          const before = holdingRows.length;
+          holdingRows = holdingRows.filter((h) => testIds.has(h.user_id));
+          protectedReal = before - holdingRows.length;
+        }
+        const protectedSuffix =
+          protectedReal > 0
+            ? ` (${protectedReal} real client holding(s) protected — not touched during UAT)`
+            : "";
         if (holdingRows.length > 0) {
           const { error: upErr, count } = await retail
             .from("stock_holdings_c")
@@ -181,7 +205,12 @@ export async function POST(req: Request) {
             )
             .eq("is_active", true);
           if (upErr) holdingsNotice = `Fill_date update failed: ${upErr.message}`;
-          else holdingsUpdated = count ?? holdingRows.length;
+          else {
+            holdingsUpdated = count ?? holdingRows.length;
+            if (protectedSuffix) holdingsNotice = `Fill_date updated for test holdings only${protectedSuffix}.`;
+          }
+        } else if (protectedReal > 0) {
+          holdingsNotice = `No test holdings in this book${protectedSuffix} — Fill_date unchanged.`;
         } else {
           holdingsNotice = "No stock_holdings_c rows matched the book — Fill_date unchanged.";
         }

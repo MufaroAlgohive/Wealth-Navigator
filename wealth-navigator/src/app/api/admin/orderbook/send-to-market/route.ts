@@ -5,6 +5,7 @@ import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { callWorker } from "@/lib/iress/worker-api";
+import { isUatEnv } from "@/lib/oems/uat-scope";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -61,6 +62,7 @@ interface Security {
 interface Profile {
   id: string;
   email: string | null;
+  is_test: boolean | null;
 }
 
 function openInstitutional(): SupabaseClient | null {
@@ -167,13 +169,34 @@ export async function POST(req: Request) {
 
   const [{ data: secs }, { data: profs }] = await Promise.all([
     retail.from("securities_c").select("id, symbol, name, isin, last_price").in("id", secIds),
-    retail.from("profiles").select("id, email").in("id", userIds),
+    retail.from("profiles").select("id, email, is_test").in("id", userIds),
   ]);
 
   const secMap: Record<string, Security> = {};
   for (const s of (secs ?? []) as Security[]) secMap[s.id] = s;
   const profMap: Record<string, Profile> = {};
   for (const p of (profs ?? []) as Profile[]) profMap[p.id] = p;
+
+  // CLIENT-DATA GUARD (UAT phase): a UAT dispatch fans real orders out to IRESS.
+  // During the UAT phase, refuse fail-closed if the resolved book contains any
+  // real (is_test != true) client — a UAT run must never send a real client's
+  // order to the broker. This enforces the desk rule "keep it on UAT" and the
+  // hard boundary "do not touch the live DB with real client data". Inert once
+  // the deployment is confidently on prod (isUatEnv() === false).
+  if (uatTest && isUatEnv()) {
+    const realOwners = [...new Set(holdings.map((h) => h.user_id).filter(Boolean))].filter(
+      (uid) => profMap[uid]?.is_test !== true,
+    );
+    if (realOwners.length > 0) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Refused: this UAT dispatch resolves ${realOwners.length} real (non-test) client holding(s) for book '${bookId}'. UAT dispatches must contain only test clients (is_test=true) — use a UAT-* test book.`,
+        },
+        { status: 422 },
+      );
+    }
+  }
 
   const institutional = openInstitutional();
   if (!institutional) {

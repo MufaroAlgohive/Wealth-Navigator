@@ -6,11 +6,16 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const STATUS_TO_STATE: Record<string, OrderState> = {
+  pending_ack: "PENDING_ACK",
+  acknowledged: "ACKNOWLEDGED",
   working: "WORKING",
   partial: "PARTIAL",
   filled: "FILLED",
   cancelled: "CANCELLED",
+  expired: "EXPIRED",
   rejected: "REJECTED",
+  // Legacy / pre-lifecycle values (kept for backwards-compat with audit rows
+  // written before the 8-state schema landed):
   created: "WORKING",
   amended: "WORKING",
 };
@@ -49,6 +54,9 @@ function mapAuditRow(row: AuditRow): Order {
   const tsRaw = payload.ts;
   const ts = typeof tsRaw === "number" ? tsRaw : new Date(row.updated_at).getTime();
 
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
+
   return {
     id: row.order_id,
     account: row.client_account,
@@ -72,6 +80,16 @@ function mapAuditRow(row: AuditRow): Order {
     slippageBps: typeof result.slippageBps === "number" ? result.slippageBps : null,
     arrivalMid,
     orderTag: typeof payload.orderTag === "string" ? payload.orderTag : row.order_id,
+    // IRESS Hermes lifecycle detail (Andre, 2026-07-13). Optional because
+    // older audit rows + BFF-written rows don't carry them; the worker
+    // mapper populates them on every poll cycle for live rows.
+    brokerState: str(payload.brokerState),
+    actionStatus: str(payload.actionStatus),
+    internalOrderStatus: str(payload.internalOrderStatus),
+    stateDescription: str(payload.stateDescription),
+    remainingVolume: num(payload.remainingVolume),
+    remainingValueCents: num(payload.remainingValueCents),
+    orderValueCents: num(payload.orderValueCents),
   };
 }
 

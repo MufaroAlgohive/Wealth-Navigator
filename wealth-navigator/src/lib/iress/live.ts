@@ -344,10 +344,20 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
     return emptyQuote();
   }
   if (isStaleLastPriceOnlyRow(row)) {
+    // Coerce symbol + marketState through scalar-only guards (see str()
+    // helper for the rationale — V4 sometimes nests these as child elements).
+    const symbolVal = row["SecurityCode"] ?? row["Code"] ?? row["Symbol"] ?? "";
+    const stateVal = row["TradingStatus"] ?? row["QuoteState"] ?? row["MarketState"] ?? "HALT";
+    const symbolStr = typeof symbolVal === "string" || typeof symbolVal === "number" || typeof symbolVal === "boolean"
+      ? String(symbolVal)
+      : "";
+    const stateStr = typeof stateVal === "string" || typeof stateVal === "number" || typeof stateVal === "boolean"
+      ? String(stateVal)
+      : "HALT";
     return {
       ...emptyQuote(),
-      symbol: String(row["SecurityCode"] ?? row["Code"] ?? row["Symbol"] ?? ""),
-      marketState: (String(row["TradingStatus"] ?? row["QuoteState"] ?? row["MarketState"] ?? "HALT")) as Quote["marketState"],
+      symbol: symbolStr,
+      marketState: (stateStr || "HALT") as Quote["marketState"],
     };
   }
   const scale = iressQuotePriceScale(row);
@@ -370,7 +380,15 @@ function mapQuote(row: Record<string, unknown> | undefined): Quote {
   const str = (...keys: string[]) => {
     for (const k of keys) {
       const v = row[k];
-      if (v !== undefined && v !== null && v !== "") return String(v);
+      // V4 occasionally nests MarketState / QuoteState as a child element
+      // (e.g. `<MarketState><State>OPEN</State></MarketState>`); calling
+      // String() on that object returns the literal "[object Object]" which
+      // then poisons downstream logs (`marketState=[object Object]`). Coerce
+      // scalars only — anything else is treated as missing.
+      if (v === undefined || v === null || v === "") continue;
+      if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") continue;
+      const s = String(v);
+      if (s !== "") return s;
     }
     return "";
   };
@@ -648,18 +666,83 @@ function mapOrder(row: Record<string, unknown>): Order {
   const ordVol = num("OrderVolume");
   const done = num("DoneVolumeTotal");
   const rawState = str("OrderState").trim().toUpperCase();
+  // The finer Hermes-side action status. CONFIRMED live (Andre, 2026-07-13):
+  // CARE / desk-routed orders move Pending → Acknowledged → OK → ... and
+  // currently the worker collapses the whole OrderState enum down to ACTIVE
+  // / INACTIVE, which means a CARE order that the trader has acknowledged
+  // but not filled looks identical to a CARE order that nobody has touched
+  // yet. InternalOrderStatus carries the finer status; ActionStatus is the
+  // Hermes-side lifecycle (also captured when present).
+  const internalStatus = str("InternalOrderStatus").trim().toUpperCase();
+  const actionStatus = str("ActionStatus").trim().toUpperCase();
+  const stateDescription = str("StateDescription");
+  const remaining = num("RemainingVolume");
+  const remainingValue = num("RemainingValue");
+  const orderValue = num("OrderValue");
+  const life = str("Lifetime").trim().toUpperCase();
+
+  // Lifecycle state. Branch order matters:
+  //   1. Fill detection ALWAYS wins: done >= ordVol → FILLED, regardless of
+  //      ACTIVE/INACTIVE. INACTIVE here means "row closed on Hermes", not
+  //      "cancelled" (the broker transitions fully-filled orders to INACTIVE).
+  //      The previous logic collapsed this to CANCELLED, which was the bug
+  //      that hid the 400 SOL CARE full-fill from the OEMS (Andre, 2026-07-13).
+  //   2. ACTIVE + PENDING lifecycle (no fills) → PENDING_ACK or ACKNOWLEDGED.
+  //      PENDING_ACK = CARE / desk-routed order that hasn't been acked on
+  //      Hermes yet. ACKNOWLEDGED = ActionStatus=OK, no fills.
+  //   3. ACTIVE + any fills → PARTIAL.
+  //   4. ACTIVE + no fills, no explicit lifecycle → WORKING.
+  //   5. INACTIVE + partial done → PARTIAL (handles the brief INACTIVE window
+  //      between fills before the next print — Hermes sometimes flips the row
+  //      to INACTIVE between partial fills).
+  //   6. INACTIVE + no fills → CANCELLED (no other reason lands here in the
+  //      live CT build; EXPIRED is reserved for an explicit TIF-rollover
+  //      we don't yet detect from this row shape).
+  //   7. OrderCreate3 ErrorNumber != 0 lands at the call site as REJECTED
+  //      (OrderCreate3 returns a per-row ErrorNumber; the poll never sees
+  //      rejected rows — the audit row is stamped rejected by the send path).
   const state: Order["state"] = ((): Order["state"] => {
-    if (ordVol > 0 && done >= ordVol) return "FILLED"; // fully done
-    if (rawState === "ACTIVE") return done > 0 ? "PARTIAL" : "WORKING";
-    // INACTIVE: expired / purged / cancelled. A partial done here means the
-    // order filled some, then the remainder was cancelled — that's CANCELLED
-    // with a partial fill (the `filled` field carries the done qty), NOT
-    // FILLED (full fills are already caught above). Labelling it FILLED would
-    // overstate completion in the blotter.
+    if (ordVol > 0 && done >= ordVol) return "FILLED";
+    if (done > 0 && done < ordVol) return rawState === "INACTIVE" ? "PARTIAL" : "PARTIAL";
+    if (rawState === "ACTIVE") {
+      // Lifecycle hint from ActionStatus / InternalOrderStatus.
+      // Pending|Queued|Submitted|AwaitingAck → PENDING_ACK.
+      // Ack|Acknowledged|OK  → ACKNOWLEDGED.
+      // Otherwise → WORKING (the default ACTIVE state).
+      if (
+        actionStatus === "PENDING" ||
+        actionStatus === "QUEUED" ||
+        actionStatus === "SUBMITTED" ||
+        actionStatus === "AWAITINGACK" ||
+        actionStatus === "AWAITING_ACK" ||
+        internalStatus === "PENDING" ||
+        internalStatus === "QUEUED" ||
+        internalStatus === "SUBMITTED"
+      ) {
+        return "PENDING_ACK";
+      }
+      if (
+        actionStatus === "ACK" ||
+        actionStatus === "ACKNOWLEDGED" ||
+        actionStatus === "OK" ||
+        internalStatus === "ACK" ||
+        internalStatus === "ACKNOWLEDGED"
+      ) {
+        return "ACKNOWLEDGED";
+      }
+      return "WORKING";
+    }
+    // INACTIVE + no fills here. Distinguish CANCELLED from EXPIRED when the
+    // row carries an explicit Lifetime / InternalOrderStatus hint.
+    if (
+      life === "DAY" &&
+      (internalStatus === "EXPIRED" || actionStatus === "EXPIRED" || stateDescription.toLowerCase().includes("expir"))
+    ) {
+      return "EXPIRED";
+    }
     return "CANCELLED";
   })();
   const pricing = str("PricingInstructions").toUpperCase();
-  const life = str("Lifetime").toUpperCase();
   return {
     id: str("OrderNumber"),
     parentId: num("ParentOrderNumber") > 0 ? str("ParentOrderNumber") : undefined,
@@ -691,11 +774,44 @@ function mapOrder(row: Record<string, unknown>): Order {
         ? Date.parse(String(row["CreateDateTime"])) || Date.now()
         : Date.now(),
     state,
-    rejectReason: state === "CANCELLED" && row["StateDescription"] ? str("StateDescription") : undefined,
+    rejectReason:
+      (state === "CANCELLED" || state === "EXPIRED" || state === "REJECTED") && stateDescription
+        ? stateDescription
+        : undefined,
     slippageBps: 0,
     arrivalMid: 0,
     orderTag: str("OrderTag") || str("SecondaryClientOrderID") || "",
-  };
+    // Lifecycle details preserved for the audit payload (set by the worker
+    // after mapping — see `orders.ts::toAuditRow`). We don't surface these
+    // on the typed `Order` shape because the UI today only consumes the
+    // lifecycle state, but they MUST travel through the mapper so the
+    // audit write has access to them.
+    ...({
+      brokerState: rawState || null,
+      actionStatus: actionStatus || null,
+      internalOrderStatus: internalStatus || null,
+      stateDescription: stateDescription || null,
+      remainingVolume: Number.isFinite(remaining) ? remaining : null,
+      // IRESS V4 wire: `RemainingValue` / `OrderValue` arrive as integer cents
+      // (matching `OrderPrice` semantics — JSE settlement uses cents, not
+      // fractional Rands). Stored as `*_Cents` on the typed Order so the
+      // /api/orders BFF + UI can render Rands via /100 without a unit
+      // conversion at the edge. Mirrors the existing price_cents storage in
+      // oems_order_audit (which holds raw `OrderPrice` and lets the BFF
+      // divide by 100 on read).
+      remainingValueCents: Number.isFinite(remainingValue) ? Math.round(remainingValue) : null,
+      orderValueCents: Number.isFinite(orderValue) ? Math.round(orderValue) : null,
+    } as Pick<
+      Order,
+      | "brokerState"
+      | "actionStatus"
+      | "internalOrderStatus"
+      | "stateDescription"
+      | "remainingVolume"
+      | "remainingValueCents"
+      | "orderValueCents"
+    >),
+  } as Order;
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────

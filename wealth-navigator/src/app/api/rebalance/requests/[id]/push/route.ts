@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { isUatEnv } from "@/lib/oems/uat-scope";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -107,6 +108,13 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     ? (request.proposed_composition as ProposedRow[])
     : [];
 
+  // UAT scope of this release. `oems_order_audit` has no environment column, so
+  // — like every other order lane — we tag the scope in `payload.uat_test`.
+  // Default is UAT-safe (see isUatEnv): during the whole UAT phase every release
+  // is tagged uat_test=true, so any future live broker sweep can require/exclude
+  // the flag and never mistake a rebalance simulation for a real order.
+  const isUat = isUatEnv();
+
   // Build the execution rows. Each row is a single execution against the
   // institutional `oems_order_audit` table (status='working') so the worker
   // can pick them up via /orders on the next tick. We emit BUY/SELL based on
@@ -141,6 +149,10 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         strategy_id: request.strategy_id,
         action: row.action ?? "hold",
         weight: typeof row.weight === "number" ? row.weight : null,
+        // Scope tag — this is a rebalance simulation on the UAT lane, not a
+        // live order. Consistent with send-to-market / uat-order.
+        uat_test: isUat,
+        scope: isUat ? "uat" : "live",
       },
       result_payload: {},
       created_at: now,
@@ -150,30 +162,19 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     orders.push(auditRow);
   }
 
-  // If the proposal didn't carry executable rows (still common until the IC
-  // templates land), emit at least one audit row keyed off the research
-  // note so the operator gets feedback in the worker /orders feed.
+  // A proposal with no executable rows (no symbol / shares <= 0) has nothing to
+  // release. The audit table enforces CHECK (quantity > 0), so a placeholder
+  // row can never be written — return a clear error instead of a failed insert,
+  // and leave the request in ic_approved so it can be re-raised.
   if (writes.length === 0) {
-    const auditRow: Record<string, unknown> = {
-      order_id: id,
-      client_account: request.strategy_id,
-      symbol: String(`${request.research_note_id ?? "REBAL"}`).slice(0, 12),
-      side: "buy",
-      quantity: 0,
-      price_cents: null,
-      status: "working",
-      source: "rebalance_request",
-      payload: {
-        request_id: id,
-        strategy_id: request.strategy_id,
-        note: "no executable rows in proposed_composition — placeholder row",
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "This proposal has no executable rows to release — each holding needs a symbol and shares > 0. Re-build the rebalance in the Builder.",
       },
-      result_payload: {},
-      created_at: now,
-      updated_at: now,
-    };
-    writes.push(auditRow);
-    orders.push(auditRow);
+      { status: 422 },
+    );
   }
 
   const auditRes = await db.from("oems_order_audit").insert(writes).select();
