@@ -104,6 +104,24 @@ export function RebalanceBuilderPage({
   }
   for (const b of baseline) if (!workByKey.has(keyOf(b))) changes += 1;
 
+  // Research gate: every changed name needs a research note (meeting rule:
+  // "we can't rebalance to anything we don't have research of"). Institutional
+  // research_note_c only; no client data.
+  const changedTickers: string[] = [];
+  for (const w of working) {
+    const b = baseByKey.get(keyOf(w));
+    if (!b || b.shares !== w.shares) changedTickers.push(keyOf(w));
+  }
+  for (const b of baseline) if (!workByKey.has(keyOf(b))) changedTickers.push(keyOf(b));
+  const notesQ = useQuery<{ notes?: Array<{ symbol: string; status: string }> }>({
+    queryKey: ["ric-notes"],
+    queryFn: async () => (await fetch("/api/research/notes", { cache: "no-store" })).json(),
+  });
+  const notedSymbols = new Set(
+    (notesQ.data?.notes ?? []).map((nte) => String(nte.symbol).toUpperCase()),
+  );
+  const missingResearch = changedTickers.filter((t) => !notedSymbols.has(t));
+
   const setShares = (t: string, delta: number) =>
     setWorking((prev) =>
       prev.map((h) => (keyOf(h) === t ? { ...h, shares: Math.max(0, h.shares + delta) } : h)),
@@ -131,6 +149,12 @@ export function RebalanceBuilderPage({
 
   async function submitToIc() {
     setError(null);
+    if (missingResearch.length) {
+      setError(
+        `Research required before submitting: ${missingResearch.join(", ")}. Add a note in the Research Library.`,
+      );
+      return;
+    }
     setSubmitting(true);
     try {
       const current_composition: ProposedHolding[] = baseline.map((b) => ({
@@ -200,6 +224,16 @@ export function RebalanceBuilderPage({
       {error && (
         <p className="rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-3 py-2 text-xs text-down">
           {error}
+        </p>
+      )}
+
+      {missingResearch.length > 0 && changes > 0 && (
+        <p className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+          Research required for {missingResearch.join(", ")} before this can go to the IC.{" "}
+          <Link href="/oems/research" className="underline">
+            Write a note
+          </Link>
+          .
         </p>
       )}
 
@@ -317,7 +351,7 @@ export function RebalanceBuilderPage({
             <button
               type="button"
               onClick={submitToIc}
-              disabled={submitting || changes === 0 || !perms.raiseRebalance}
+              disabled={submitting || changes === 0 || missingResearch.length > 0 || !perms.raiseRebalance}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
               <Send className="h-3.5 w-3.5" /> {submitting ? "Submitting…" : "Submit to IC"}
