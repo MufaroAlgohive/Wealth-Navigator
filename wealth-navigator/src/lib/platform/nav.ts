@@ -2,6 +2,7 @@ import {
   Activity,
   Banknote,
   BookOpen,
+  BrainCircuit,
   Cable,
   CalendarClock,
   ClipboardList,
@@ -103,6 +104,7 @@ export const PLATFORM_NAV: NavSection[] = [
     title: "Strategies",
     items: [
       { label: "Strategies", href: "/strategies", icon: Layers, roles: [DESK, STRAT, WM] },
+      { label: "Models", href: "/oems/models", icon: BrainCircuit, roles: [DESK, STRAT] },
       { label: "Factsheets", href: "/admin/factsheets", icon: FileText },
       { label: "Return Insights", href: "/admin/dashboard", icon: LineChart, roles: [WM, BIZ] },
     ],
