@@ -279,25 +279,22 @@ export function ModelDetail({ slug }: { slug: string }) {
 
       {/* predictions */}
       <GlassSection
-        title="Latest Predictions & Reasoning"
-        subtitle={d?.latestPredictedAt ? `as of ${dt(d.latestPredictedAt)}` : undefined}
+        title="Latest Signals"
+        subtitle={d?.latestPredictedAt ? `target basket as of ${dt(d.latestPredictedAt)}` : "paper"}
         endpoint="GET /api/models/[id]"
         dataSource="supabase"
         db="institutional"
       >
         {(d?.latestPredictions ?? []).length === 0 ? (
-          <EmptyDataState title="No predictions yet" message="The model pushes its signal batch each run." badgeLabel="supabase" />
+          <EmptyDataState title="No signals yet" message="The model pushes its target basket each run." badgeLabel="supabase" />
         ) : (
           <Table
-            head={["Symbol", "Side", "Prob ↑", "Score", "Exp. Entry", "Qty", "Reasoning"]}
+            head={["Symbol", "Side", "Exp. Entry", "Qty"]}
             rows={(d?.latestPredictions ?? []).map((p) => [
               <span className="font-medium">{String(p.symbol)}</span>,
               <Side side={String(p.side ?? "")} />,
-              pct(p.ml_prob_up, 0),
-              fx(p.score),
               money(p.expected_entry_price, ccy),
               n(p.quantity) != null ? String(Math.round(n(p.quantity)!)) : "—",
-              <span className="text-muted-foreground">{p.reason ? String(p.reason) : "—"}</span>,
             ])}
           />
         )}
