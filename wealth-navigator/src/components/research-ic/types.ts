@@ -116,6 +116,25 @@ export interface ResearchNote {
 
 export type RebalanceStatus = "pending" | "ic_approved" | "rejected" | "executed" | "cancelled";
 
+export type VoteValue = "yes" | "no" | "abstain";
+
+export interface RebalanceVote {
+  voter_email: string;
+  vote: VoteValue;
+  voted_at?: string;
+}
+
+export interface VoteTally {
+  yes: number;
+  no: number;
+  abstain: number;
+  quorum: number;
+  threshold: number;
+  requiredYes: number;
+  ratio: number;
+  passed: boolean;
+}
+
 export interface RebalanceRequest {
   id: string;
   strategy_id: string;
@@ -129,6 +148,9 @@ export interface RebalanceRequest {
   executed_at: string | null;
   created_at: string;
   updated_at: string;
+  /** IC votes + tally, enriched by /api/rebalance/requests. */
+  votes?: RebalanceVote[];
+  tally?: VoteTally;
 }
 
 /** Permission booleans resolved server-side (from `can()`) and passed to the client tabs. */

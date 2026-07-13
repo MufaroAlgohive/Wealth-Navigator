@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { tallyVotes, type RebalanceVote } from "@/lib/rebalance/ic-vote";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -80,7 +81,34 @@ export async function GET(req: Request) {
     }
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
-  return NextResponse.json({ ok: true, requests: (data ?? []) as RebalanceRow[] });
+
+  const rows = (data ?? []) as RebalanceRow[];
+
+  // Enrich each proposal with its IC votes + tally in one batched query, so the
+  // committee UI can render the 60% gate without an N+1 fetch. Best-effort: if
+  // rebalance_vote_c isn't migrated yet, every proposal simply shows 0 votes.
+  const byRequest = new Map<string, RebalanceVote[]>();
+  const ids = rows.map((r) => r.id);
+  if (ids.length > 0) {
+    const votesRes = await db
+      .from("rebalance_vote_c")
+      .select("request_id, voter_email, vote, voted_at")
+      .in("request_id", ids);
+    if (!votesRes.error) {
+      for (const v of (votesRes.data ?? []) as Array<RebalanceVote & { request_id: string }>) {
+        const list = byRequest.get(v.request_id) ?? [];
+        list.push({ voter_email: v.voter_email, vote: v.vote, voted_at: v.voted_at });
+        byRequest.set(v.request_id, list);
+      }
+    }
+  }
+
+  const requests = rows.map((r) => {
+    const votes = byRequest.get(r.id) ?? [];
+    return { ...r, votes, tally: tallyVotes(votes) };
+  });
+
+  return NextResponse.json({ ok: true, requests });
 }
 
 export async function POST(req: Request) {

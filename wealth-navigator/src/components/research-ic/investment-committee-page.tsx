@@ -135,6 +135,8 @@ export function InvestmentCommitteePage({
                     req={r}
                     code={rebCodes.get(r.id) ?? "REB"}
                     canApprove={perms.approveRebalance}
+                    canVote={perms.approveRebalance}
+                    viewerEmail={viewerEmail}
                     onChanged={refresh}
                   />
                 ))}
@@ -331,15 +333,74 @@ function useTransition(kind: "note" | "rebalance") {
   return { busy, go };
 }
 
+/** Cast / revise an IC vote on a rebalance proposal. */
+function useVote() {
+  const [busy, setBusy] = React.useState<string | null>(null);
+  const cast = async (id: string, vote: "yes" | "no" | "abstain", onChanged: () => void) => {
+    setBusy(vote);
+    try {
+      await fetch(`/api/rebalance/requests/${id}/vote`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ vote }),
+      });
+      onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
+  return { busy, cast };
+}
+
 function RebalanceAgendaItem({
   req,
   code,
   canApprove,
+  canVote,
+  viewerEmail,
   onChanged,
-}: { req: RebalanceRequest; code: string; canApprove: boolean; onChanged: () => void }) {
+}: {
+  req: RebalanceRequest;
+  code: string;
+  canApprove: boolean;
+  canVote: boolean;
+  viewerEmail: string | null;
+  onChanged: () => void;
+}) {
   const { busy, go } = useTransition("rebalance");
+  const vote = useVote();
   const rows = Array.isArray(req.proposed_composition) ? req.proposed_composition : [];
   const changes = rows.filter((r) => r.action && r.action !== "hold").length;
+
+  const votes = req.votes ?? [];
+  const tally =
+    req.tally ?? { yes: 0, no: 0, abstain: 0, quorum: 3, threshold: 0.6, requiredYes: 2, ratio: 0, passed: false };
+  const myVote = viewerEmail
+    ? votes.find((v) => v.voter_email.toLowerCase() === viewerEmail.toLowerCase())?.vote ?? null
+    : null;
+  const busyAny = busy != null || vote.busy != null;
+
+  const voteBtn = (
+    value: "yes" | "no" | "abstain",
+    label: string,
+    Icon: typeof ThumbsUp,
+    activeClass: string,
+  ) => (
+    <button
+      type="button"
+      disabled={!canVote || busyAny}
+      onClick={() => vote.cast(req.id, value, onChanged)}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs transition disabled:opacity-50",
+        myVote === value
+          ? activeClass
+          : "border-[hsl(var(--glass-border))] hover:bg-[hsl(var(--foreground)/0.05)]",
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" /> {label}
+    </button>
+  );
+
   return (
     <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -354,24 +415,53 @@ function RebalanceAgendaItem({
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {voteBtn("yes", "Yes", ThumbsUp, "border-[hsl(var(--up)/0.5)] bg-[hsl(var(--up)/0.12)] text-[hsl(var(--up))]")}
+          {voteBtn("no", "No", ThumbsDown, "border-[hsl(var(--down)/0.5)] bg-[hsl(var(--down)/0.12)] text-[hsl(var(--down))]")}
+          {voteBtn("abstain", "Abstain", MinusCircle, "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.06)]")}
           <button
             type="button"
-            disabled={!canApprove || busy != null}
+            disabled={!canApprove || busyAny}
             onClick={() => go(req.id, "rejected", onChanged)}
-            className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
+            title="Chair override — reject this proposal"
+            className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
           >
             <X className="h-3.5 w-3.5" /> Reject
           </button>
-          <button
-            type="button"
-            disabled={!canApprove || busy != null}
-            onClick={() => go(req.id, "ic_approved", onChanged)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-          >
-            <Check className="h-3.5 w-3.5" /> Approve
-          </button>
         </div>
       </div>
+
+      {/* 60% vote gate — a proposal is promoted to the order-book lane once YES
+          votes reach requiredYes. */}
+      <div className="mb-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-3 py-2">
+        <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+          <span>
+            IC vote · <span className="text-[hsl(var(--up))]">{tally.yes} yes</span> ·{" "}
+            <span className="text-[hsl(var(--down))]">{tally.no} no</span>
+            {tally.abstain > 0 ? ` · ${tally.abstain} abstain` : ""}
+          </span>
+          <span>
+            {tally.passed ? (
+              <span className="font-medium text-[hsl(var(--up))]">
+                passed · {Math.round(tally.threshold * 100)}% reached
+              </span>
+            ) : (
+              <>
+                needs {tally.requiredYes} yes ({Math.round(tally.threshold * 100)}% of {tally.quorum})
+              </>
+            )}
+          </span>
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-[hsl(var(--foreground)/0.08)]">
+          <div
+            className={cn(
+              "h-full rounded-full transition-all",
+              tally.passed ? "bg-[hsl(var(--up))]" : "bg-primary",
+            )}
+            style={{ width: `${Math.min(100, (tally.yes / Math.max(1, tally.requiredYes)) * 100)}%` }}
+          />
+        </div>
+      </div>
+
       <CompositionTable rows={rows} />
     </div>
   );
