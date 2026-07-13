@@ -63,7 +63,6 @@ export function ModelDetail({ slug }: { slug: string }) {
   const model = d?.model;
   const ccy = model?.currency === "USD" ? "$" : "R";
 
-  // metrics: pick backtest + live
   const backtest = useMemo(() => (d?.metrics ?? []).find((m) => m.kind === "backtest"), [d]);
   const live = useMemo(
     () => (d?.metrics ?? []).find((m) => m.kind === "live" || m.kind === "paper"),
@@ -95,17 +94,70 @@ export function ModelDetail({ slug }: { slug: string }) {
     return out;
   }, [d]);
 
-  const equityKinds = Object.keys(equityByKind);
-  const [curveKind, setCurveKind] = useState<string>("");
-  const activeKind =
-    curveKind && equityByKind[curveKind]
-      ? curveKind
-      : equityKinds.includes("backtest")
-        ? "backtest"
-        : (equityKinds[0] ?? "");
-  const curve = (activeKind ? equityByKind[activeKind] : []) ?? [];
-  const [metricView, setMetricView] = useState<"backtest" | "live">("backtest");
-  const activeMetric = (metricView === "live" ? live : backtest) ?? backtest ?? live;
+  const [view, setView] = useState<"backtest" | "paper">("backtest");
+  const backtestCurve = equityByKind["backtest"] ?? [];
+  const paperCurve = equityByKind["live"] ?? equityByKind["paper"] ?? [];
+  const allTrades = d?.trades ?? [];
+  const backtestTrades = allTrades.filter((t) => t.kind === "backtest");
+  const paperTrades = allTrades.filter((t) => t.kind === "live" || t.kind === "paper");
+  const positions = d?.positions ?? [];
+  const preds = d?.latestPredictions ?? [];
+
+  const equityPanel = (title: string, series: { ts: string; equity: number }[], note?: string) => (
+    <GlassSection title={title} subtitle={note} endpoint="GET /api/models/[id]" dataSource="supabase" db="institutional">
+      {series.length < 2 ? (
+        <EmptyDataState title="No equity curve yet" message="Appears once there is a daily series to plot." badgeLabel="supabase" />
+      ) : (
+        <div className="h-72 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={series} margin={{ top: 8, right: 12, left: 4, bottom: 0 }}>
+              <defs>
+                <linearGradient id="eqfill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.28} />
+                  <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+              <XAxis dataKey="ts" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" minTickGap={40} />
+              <YAxis
+                tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                stroke="hsl(var(--border))"
+                width={64}
+                domain={["dataMin", "dataMax"]}
+                tickFormatter={(v) => `${ccy}${Math.round(Number(v) / 1000)}k`}
+              />
+              <Tooltip
+                contentStyle={{ background: "hsl(var(--glass-bg-strong))", border: "1px solid hsl(var(--glass-border))", borderRadius: 8, fontSize: 12 }}
+                formatter={(v) => [money(v, ccy), "Equity"]}
+              />
+              <Area type="monotone" dataKey="equity" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#eqfill)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </GlassSection>
+  );
+
+  const tradesPanel = (title: string, subtitle: string, rows: Row[]) => (
+    <GlassSection title={title} subtitle={subtitle} endpoint="GET /api/models/[id]" dataSource="supabase" db="institutional">
+      {rows.length === 0 ? (
+        <EmptyDataState title="No trades yet" message="The trade ledger fills as the model transacts." badgeLabel="supabase" />
+      ) : (
+        <Table
+          head={["Date", "Symbol", "Side", "Qty", "Price", "P&L", "Reason"]}
+          rows={rows.slice(0, 80).map((t) => [
+            dt(t.exit_at ?? t.trade_date ?? t.entry_at),
+            <span className="font-medium">{String(t.symbol)}</span>,
+            <Side side={String(t.side ?? "")} />,
+            n(t.qty) != null ? String(Math.round(n(t.qty)!)) : "—",
+            money(t.exit_price ?? t.price ?? t.entry_price, ccy),
+            <Pnl v={n(t.realized_pnl ?? t.pnl)} ccy={ccy} />,
+            <span className="text-muted-foreground">{t.reason ? String(t.reason) : "—"}</span>,
+          ])}
+        />
+      )}
+    </GlassSection>
+  );
 
   if (q.isLoading) {
     return (
@@ -127,6 +179,10 @@ export function ModelDetail({ slug }: { slug: string }) {
       </PageCanvas>
     );
   }
+
+  const currentValue = live?.final_equity ?? paperCurve.at(-1)?.equity ?? null;
+  const startCapital = live?.budget ?? null;
+  const totRet = n(live?.total_return);
 
   return (
     <PageCanvas>
@@ -161,12 +217,11 @@ export function ModelDetail({ slug }: { slug: string }) {
         {model.data_source && <Tag>data · {model.data_source}</Tag>}
         {model.universe && <Tag>{model.universe}</Tag>}
         {model.cadence && <Tag>{model.cadence}</Tag>}
-        {model.budget != null && <Tag>paper capital {money(model.budget, ccy)}</Tag>}
       </div>
 
       <p className="mb-4 text-xs text-muted-foreground">
-        Paper simulation on Yahoo prices, computed by the local model. No real trades, orders, or
-        client accounts. Positions and P&amp;L below are hypothetical.
+        Own demo account (no broker): the model runs on real Yahoo prices, holdings are marked daily
+        and fees are charged, 1:1 with a real account, but fully simulated. No real trades or money.
       </p>
 
       {/* sync bar */}
@@ -185,202 +240,166 @@ export function ModelDetail({ slug }: { slug: string }) {
         </button>
       </div>
 
-      {/* metrics */}
-      <GlassSection
-        title="Performance"
-        subtitle={activeMetric ? `${dt(activeMetric.start_date)} → ${dt(activeMetric.end_date)}` : undefined}
-        endpoint="GET /api/models/[id]"
-        dataSource="supabase"
-        db="institutional"
-        right={
-          backtest && live ? (
-            <GlassSegment
-              value={metricView}
-              options={[
-                { id: "backtest", label: "Backtest" },
-                { id: "live", label: "Live" },
-              ]}
-              onChange={(v) => setMetricView(v as "backtest" | "live")}
-            />
-          ) : undefined
-        }
-      >
-        {!activeMetric ? (
-          <EmptyDataState title="No metrics yet" message="Push a backtest or live rollup to populate performance." badgeLabel="supabase" />
-        ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <GlassKpi label="CAGR" value={pct(activeMetric.cagr)} accent="positive" />
-            <GlassKpi label="Total Return" value={pct(activeMetric.total_return)} accent="positive" />
-            <GlassKpi label="Sharpe" value={fx(activeMetric.sharpe)} accent="primary" />
-            <GlassKpi label="Max Drawdown" value={pct(activeMetric.max_drawdown)} accent="negative" />
-            <GlassKpi label="Volatility" value={pct(activeMetric.volatility)} />
-            <GlassKpi label="RoMaD" value={fx(activeMetric.romad)} />
-            <GlassKpi label="Win Rate" value={pct(activeMetric.win_rate)} />
-            <GlassKpi
-              label="Alpha vs Bench"
-              value={pct(activeMetric.alpha_cagr)}
-              sub={n(activeMetric.benchmark_cagr) != null ? `bench ${pct(activeMetric.benchmark_cagr)}` : undefined}
-              accent="positive"
-            />
-            <GlassKpi label="Final Equity" value={money(activeMetric.final_equity, ccy)} />
-            <GlassKpi label="Trades" value={n(activeMetric.n_trades) != null ? String(activeMetric.n_trades) : "—"} sub={n(activeMetric.n_round_trips) != null ? `${activeMetric.n_round_trips} round-trips` : undefined} />
-            <GlassKpi label="Avg P&L / trade" value={money(activeMetric.avg_pnl_per_trade, ccy)} />
-            <GlassKpi label="Fees" value={n(activeMetric.fees_bps) != null ? `${activeMetric.fees_bps} bps` : "—"} />
-          </div>
-        )}
-      </GlassSection>
+      {/* Backtest | Paper */}
+      <div className="mb-4">
+        <GlassSegment
+          value={view}
+          options={[
+            { id: "backtest", label: "Backtest" },
+            { id: "paper", label: "Paper account" },
+          ]}
+          onChange={(v) => setView(v as "backtest" | "paper")}
+        />
+      </div>
 
-      {/* equity curve */}
-      <GlassSection
-        title="Equity Curve"
-        endpoint="GET /api/models/[id]"
-        dataSource="supabase"
-        db="institutional"
-        right={
-          equityKinds.length > 1 ? (
-            <GlassSegment
-              value={activeKind}
-              options={equityKinds.map((k) => ({ id: k, label: k.charAt(0).toUpperCase() + k.slice(1) }))}
-              onChange={setCurveKind}
-            />
-          ) : undefined
-        }
-      >
-        {curve.length < 2 ? (
-          <EmptyDataState title="No equity curve" message="Push a backtest or live equity series to plot it." badgeLabel="supabase" />
-        ) : (
-          <div className="h-72 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={curve} margin={{ top: 8, right: 12, left: 4, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="eqfill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.28} />
-                    <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                <XAxis dataKey="ts" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" minTickGap={40} />
-                <YAxis
-                  tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
-                  stroke="hsl(var(--border))"
-                  width={64}
-                  domain={["dataMin", "dataMax"]}
-                  tickFormatter={(v) => `${ccy}${Math.round(Number(v) / 1000)}k`}
+      {view === "backtest" ? (
+        <div className="space-y-4">
+          <GlassSection
+            title="Backtest Performance"
+            subtitle={backtest ? `${dt(backtest.start_date)} → ${dt(backtest.end_date)} · historical` : "historical validation"}
+            endpoint="GET /api/models/[id]"
+            dataSource="supabase"
+            db="institutional"
+          >
+            {!backtest ? (
+              <EmptyDataState title="No backtest yet" message="Push a backtest run to populate performance." badgeLabel="supabase" />
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <GlassKpi label="CAGR" value={pct(backtest.cagr)} accent="positive" />
+                <GlassKpi label="Total Return" value={pct(backtest.total_return)} accent="positive" />
+                <GlassKpi label="Sharpe" value={fx(backtest.sharpe)} accent="primary" />
+                <GlassKpi label="Max Drawdown" value={pct(backtest.max_drawdown)} accent="negative" />
+                <GlassKpi label="Volatility" value={pct(backtest.volatility)} />
+                <GlassKpi label="RoMaD" value={fx(backtest.romad)} />
+                <GlassKpi label="Win Rate" value={pct(backtest.win_rate)} />
+                <GlassKpi
+                  label="Alpha vs Bench"
+                  value={pct(backtest.alpha_cagr)}
+                  sub={n(backtest.benchmark_cagr) != null ? `bench ${pct(backtest.benchmark_cagr)}` : undefined}
+                  accent="positive"
                 />
-                <Tooltip
-                  contentStyle={{
-                    background: "hsl(var(--glass-bg-strong))",
-                    border: "1px solid hsl(var(--glass-border))",
-                    borderRadius: 8,
-                    fontSize: 12,
-                  }}
-                  formatter={(v) => [money(v, ccy), "Equity"]}
-                />
-                <Area type="monotone" dataKey="equity" stroke="hsl(var(--primary))" strokeWidth={2} fill="url(#eqfill)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </GlassSection>
+                <GlassKpi label="Final Equity" value={money(backtest.final_equity, ccy)} />
+                <GlassKpi label="Trades" value={n(backtest.n_trades) != null ? String(backtest.n_trades) : "—"} sub={n(backtest.n_round_trips) != null ? `${backtest.n_round_trips} round-trips` : undefined} />
+                <GlassKpi label="Avg P&L / trade" value={money(backtest.avg_pnl_per_trade, ccy)} />
+                <GlassKpi label="Fees" value={n(backtest.fees_bps) != null ? `${backtest.fees_bps} bps` : "—"} />
+              </div>
+            )}
+          </GlassSection>
 
-      {/* predictions */}
-      <GlassSection
-        title="Latest Signals"
-        subtitle={d?.latestPredictedAt ? `target basket as of ${dt(d.latestPredictedAt)}` : "paper"}
-        endpoint="GET /api/models/[id]"
-        dataSource="supabase"
-        db="institutional"
-      >
-        {(d?.latestPredictions ?? []).length === 0 ? (
-          <EmptyDataState title="No signals yet" message="The model pushes its target basket each run." badgeLabel="supabase" />
-        ) : (
-          <Table
-            head={["Symbol", "Side", "Exp. Entry", "Qty"]}
-            rows={(d?.latestPredictions ?? []).map((p) => [
-              <span className="font-medium">{String(p.symbol)}</span>,
-              <Side side={String(p.side ?? "")} />,
-              money(p.expected_entry_price, ccy),
-              n(p.quantity) != null ? String(Math.round(n(p.quantity)!)) : "—",
-            ])}
-          />
-        )}
-      </GlassSection>
+          {equityPanel(
+            "Backtest Equity Curve",
+            backtestCurve,
+            backtest ? `${dt(backtest.start_date)} → ${dt(backtest.end_date)}` : undefined,
+          )}
+          {tradesPanel("Backtest Trades", "historical fills", backtestTrades)}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <GlassSection
+            title="Demo Account"
+            subtitle="paper · our own account tracked daily on real prices, no broker"
+            endpoint="GET /api/models/[id]"
+            dataSource="supabase"
+            db="institutional"
+          >
+            {live == null && paperCurve.length === 0 && positions.length === 0 ? (
+              <EmptyDataState
+                title="Paper account not started yet"
+                message="Once the daily simulator runs, the demo account (holdings, equity, next target) appears here."
+                badgeLabel="supabase"
+              />
+            ) : (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <GlassKpi label="Starting Capital" value={money(startCapital, ccy)} />
+                <GlassKpi label="Current Value" value={money(currentValue, ccy)} accent="primary" />
+                <GlassKpi label="Total Return" value={pct(totRet)} accent={totRet != null && totRet < 0 ? "negative" : "positive"} />
+                <GlassKpi label="Max Drawdown" value={pct(live?.max_drawdown)} accent="negative" />
+                <GlassKpi label="Holdings" value={String(positions.length)} />
+                <GlassKpi label="Days Tracked" value={String(paperCurve.length)} />
+                <GlassKpi label="Since" value={live?.start_date ? dt(live.start_date) : (paperCurve[0]?.ts ?? "—")} />
+                <GlassKpi label="Fees" value={n(live?.fees_bps) != null ? `${live?.fees_bps} bps` : "7 bps"} />
+              </div>
+            )}
+          </GlassSection>
 
-      {/* positions */}
-      <GlassSection
-        title="Simulated Positions"
-        subtitle={d?.positionSnapshotAt ? `paper · snapshot ${dt(d.positionSnapshotAt)}` : "paper"}
-        endpoint="GET /api/models/[id]"
-        dataSource="supabase"
-        db="institutional"
-      >
-        {(d?.positions ?? []).length === 0 ? (
-          <EmptyDataState title="No open positions" message="Position snapshots appear once the model is running paper/live." badgeLabel="supabase" />
-        ) : (
-          <Table
-            head={["Symbol", "Side", "Qty", "Avg Entry", "Mkt Value", "Unreal. P&L", "Weight"]}
-            rows={(d?.positions ?? []).map((p) => [
-              <span className="font-medium">{String(p.symbol)}</span>,
-              <Side side={String(p.side ?? "long")} />,
-              n(p.qty) != null ? String(Math.round(n(p.qty)!)) : "—",
-              money(p.avg_entry_price, ccy),
-              money(p.market_value, ccy),
-              <Pnl v={n(p.unrealized_pl)} ccy={ccy} pc={n(p.unrealized_plpc)} />,
-              pct(p.weight),
-            ])}
-          />
-        )}
-      </GlassSection>
+          {equityPanel("Paper Equity (daily)", paperCurve, "marked daily on Yahoo closes")}
 
-      {/* trades */}
-      <GlassSection
-        title="Simulated Trades"
-        subtitle="paper fills"
-        endpoint="GET /api/models/[id]"
-        dataSource="supabase"
-        db="institutional"
-      >
-        {(d?.trades ?? []).length === 0 ? (
-          <EmptyDataState title="No trades yet" message="The trade ledger fills as the model transacts." badgeLabel="supabase" />
-        ) : (
-          <Table
-            head={["Date", "Symbol", "Side", "Qty", "Price", "P&L", "Reason"]}
-            rows={(d?.trades ?? []).slice(0, 60).map((t) => [
-              dt(t.exit_at ?? t.trade_date ?? t.entry_at),
-              <span className="font-medium">{String(t.symbol)}</span>,
-              <Side side={String(t.side ?? "")} />,
-              n(t.qty) != null ? String(Math.round(n(t.qty)!)) : "—",
-              money(t.exit_price ?? t.price ?? t.entry_price, ccy),
-              <Pnl v={n(t.realized_pnl ?? t.pnl)} ccy={ccy} />,
-              <span className="text-muted-foreground">{t.reason ? String(t.reason) : "—"}</span>,
-            ])}
-          />
-        )}
-      </GlassSection>
+          <GlassSection
+            title="Current Holdings"
+            subtitle={d?.positionSnapshotAt ? `as of ${dt(d.positionSnapshotAt)}` : "paper"}
+            endpoint="GET /api/models/[id]"
+            dataSource="supabase"
+            db="institutional"
+          >
+            {positions.length === 0 ? (
+              <EmptyDataState title="No open positions" message="Holdings appear once the paper account is running." badgeLabel="supabase" />
+            ) : (
+              <Table
+                head={["Symbol", "Side", "Qty", "Avg Entry", "Mkt Value", "Unreal. P&L", "Weight"]}
+                rows={positions.map((p) => [
+                  <span className="font-medium">{String(p.symbol)}</span>,
+                  <Side side={String(p.side ?? "long")} />,
+                  n(p.qty) != null ? String(Math.round(n(p.qty)!)) : "—",
+                  money(p.avg_entry_price, ccy),
+                  money(p.market_value, ccy),
+                  <Pnl v={n(p.unrealized_pl)} ccy={ccy} pc={n(p.unrealized_plpc)} />,
+                  pct(p.weight),
+                ])}
+              />
+            )}
+          </GlassSection>
 
-      {/* data sync / push log */}
-      <GlassSection
-        title="Data Sync"
-        subtitle="push log from the model container (model_run_c)"
-        endpoint="GET /api/models/[id]"
-        dataSource="supabase"
-        db="institutional"
-      >
-        {(d?.runs ?? []).length === 0 ? (
-          <EmptyDataState title="No pushes recorded" message="Each pusher run logs here (register / backtest / live / heartbeat)." badgeLabel="supabase" />
-        ) : (
-          <Table
-            head={["When", "Kind", "Status", "Rows", "Message"]}
-            rows={(d?.runs ?? []).map((r) => [
-              <span className="text-muted-foreground">{typeof r.created_at === "string" ? new Date(r.created_at).toLocaleString() : "—"}</span>,
-              String(r.kind ?? "—"),
-              <span className={r.status === "error" ? "text-down" : r.status === "ok" ? "text-up" : ""}>{String(r.status ?? "—")}</span>,
-              n(r.rows_pushed) != null ? String(r.rows_pushed) : "—",
-              <span className="text-muted-foreground">{r.message ? String(r.message) : "—"}</span>,
-            ])}
-          />
-        )}
-      </GlassSection>
+          <GlassSection
+            title="Next Rebalance Target"
+            subtitle={d?.latestPredictedAt ? `what the model plans to hold · ${dt(d.latestPredictedAt)}` : "the model's target basket"}
+            endpoint="GET /api/models/[id]"
+            dataSource="supabase"
+            db="institutional"
+          >
+            {preds.length === 0 ? (
+              <EmptyDataState title="No target yet" message="The model publishes its next target basket each run." badgeLabel="supabase" />
+            ) : (
+              <Table
+                head={["Symbol", "Side", "Exp. Entry", "Qty"]}
+                rows={preds.map((p) => [
+                  <span className="font-medium">{String(p.symbol)}</span>,
+                  <Side side={String(p.side ?? "")} />,
+                  money(p.expected_entry_price, ccy),
+                  n(p.quantity) != null ? String(Math.round(n(p.quantity)!)) : "—",
+                ])}
+              />
+            )}
+          </GlassSection>
+
+          {tradesPanel("Paper Trades", "simulated fills, fees included", paperTrades)}
+        </div>
+      )}
+
+      {/* data sync / push log (shared) */}
+      <div className="mt-4">
+        <GlassSection
+          title="Data Sync"
+          subtitle="push log from the model container (model_run_c)"
+          endpoint="GET /api/models/[id]"
+          dataSource="supabase"
+          db="institutional"
+        >
+          {(d?.runs ?? []).length === 0 ? (
+            <EmptyDataState title="No pushes recorded" message="Each pusher run logs here (register / backtest / live / heartbeat)." badgeLabel="supabase" />
+          ) : (
+            <Table
+              head={["When", "Kind", "Status", "Rows", "Message"]}
+              rows={(d?.runs ?? []).map((r) => [
+                <span className="text-muted-foreground">{typeof r.created_at === "string" ? new Date(r.created_at).toLocaleString() : "—"}</span>,
+                String(r.kind ?? "—"),
+                <span className={r.status === "error" ? "text-down" : r.status === "ok" ? "text-up" : ""}>{String(r.status ?? "—")}</span>,
+                n(r.rows_pushed) != null ? String(r.rows_pushed) : "—",
+                <span className="text-muted-foreground">{r.message ? String(r.message) : "—"}</span>,
+              ])}
+            />
+          )}
+        </GlassSection>
+      </div>
     </PageCanvas>
   );
 }
