@@ -123,37 +123,39 @@ export async function POST(req: Request) {
   }
   const securityId = sec.id;
 
-  // Resolve a user to own the holding. Prefer the admin's own RETAIL profile;
-  // fall back to ANY profile, since a UAT test holding (cleaned up after the
-  // run) only needs a valid user_id FK, not a specific owner. This keeps the
-  // seed working even when the signed-in admin email has no RETAIL profile
-  // (e.g. juan@stratosphere.vip is not a retail customer).
-  const { data: prof, error: profErr } = await retail
+  // Resolve a TEST user to own the holding. It MUST be an is_test=true profile.
+  // A UAT test holding attached to a real (non-test) client pollutes the LIVE
+  // Active order book (that scope shows non-test-profile holdings). So we ONLY
+  // ever seed onto a test profile and refuse otherwise — never fall back to a
+  // real client. Prefer the signed-in admin's profile only if it is itself a
+  // test profile.
+  const { data: adminProf } = await retail
     .from("profiles")
-    .select("id, email")
+    .select("id, email, is_test")
     .ilike("email", auth.ctx.email)
+    .eq("is_test", true)
     .limit(1)
     .maybeSingle();
 
-  if (profErr) {
-    return NextResponse.json({ ok: false, error: profErr.message }, { status: 500 });
-  }
-  let profile = prof as Profile | null;
+  let profile = (adminProf as Profile | null) ?? null;
   if (!profile?.id) {
-    const { data: anyProf, error: anyErr } = await retail
+    const { data: testProf, error: testErr } = await retail
       .from("profiles")
-      .select("id, email")
-      .limit(1);
-    if (anyErr) {
-      return NextResponse.json({ ok: false, error: anyErr.message }, { status: 500 });
+      .select("id, email, is_test")
+      .eq("is_test", true)
+      .limit(1)
+      .maybeSingle();
+    if (testErr) {
+      return NextResponse.json({ ok: false, error: testErr.message }, { status: 500 });
     }
-    profile = Array.isArray(anyProf) ? ((anyProf[0] as Profile) ?? null) : null;
+    profile = (testProf as Profile | null) ?? null;
   }
   if (!profile?.id) {
     return NextResponse.json(
       {
         ok: false,
-        error: "No RETAIL profiles exist to own the UAT test holding. Create at least one profile first.",
+        error:
+          "No RETAIL test profile (is_test=true) exists. Create a test profile before seeding UAT holdings — test data must never attach to a real client.",
       },
       { status: 422 },
     );
