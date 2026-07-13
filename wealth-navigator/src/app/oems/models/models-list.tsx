@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { BrainCircuit, CircleDot, Cpu } from "lucide-react";
+import { BrainCircuit, CircleDot, Cpu, RefreshCw } from "lucide-react";
 
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
@@ -93,6 +93,20 @@ export function ModelsList() {
         endpoint="GET /api/models"
         dataSource="supabase"
         db="institutional"
+        right={
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>synced {q.dataUpdatedAt ? new Date(q.dataUpdatedAt).toLocaleTimeString() : "—"}</span>
+            <button
+              type="button"
+              onClick={() => q.refetch()}
+              disabled={q.isFetching}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 font-medium text-foreground transition hover:border-primary/60 hover:text-primary disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${q.isFetching ? "animate-spin" : ""}`} />
+              {q.isFetching ? "Syncing…" : "Refresh"}
+            </button>
+          </div>
+        }
       >
         {q.isLoading ? (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">

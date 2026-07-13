@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ArrowLeft, CircleDot } from "lucide-react";
+import { ArrowLeft, CircleDot, RefreshCw } from "lucide-react";
 
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassKpi, GlassSection, GlassSegment, PageCanvas } from "@/components/oems/primitives/glass";
@@ -153,6 +153,22 @@ export function ModelDetail({ slug }: { slug: string }) {
         {model.universe && <Tag>{model.universe}</Tag>}
         {model.cadence && <Tag>{model.cadence}</Tag>}
         {model.budget != null && <Tag>budget {money(model.budget, ccy)}</Tag>}
+      </div>
+
+      {/* sync bar */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/50 bg-glass-bg px-3 py-2 text-xs">
+        <span className="text-muted-foreground">
+          Synced from Supabase · read {q.dataUpdatedAt ? new Date(q.dataUpdatedAt).toLocaleTimeString() : "—"} · pushed {ago(model.heartbeatAgeMs)}
+        </span>
+        <button
+          type="button"
+          onClick={() => q.refetch()}
+          disabled={q.isFetching}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 font-medium text-foreground transition hover:border-primary/60 hover:text-primary disabled:opacity-50"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${q.isFetching ? "animate-spin" : ""}`} />
+          {q.isFetching ? "Syncing…" : "Refresh"}
+        </button>
       </div>
 
       {/* metrics */}
@@ -325,6 +341,30 @@ export function ModelDetail({ slug }: { slug: string }) {
               money(t.exit_price ?? t.price ?? t.entry_price, ccy),
               <Pnl v={n(t.realized_pnl ?? t.pnl)} ccy={ccy} />,
               <span className="text-muted-foreground">{t.reason ? String(t.reason) : "—"}</span>,
+            ])}
+          />
+        )}
+      </GlassSection>
+
+      {/* data sync / push log */}
+      <GlassSection
+        title="Data Sync"
+        subtitle="push log from the model container (model_run_c)"
+        endpoint="GET /api/models/[id]"
+        dataSource="supabase"
+        db="institutional"
+      >
+        {(d?.runs ?? []).length === 0 ? (
+          <EmptyDataState title="No pushes recorded" message="Each pusher run logs here (register / backtest / live / heartbeat)." badgeLabel="supabase" />
+        ) : (
+          <Table
+            head={["When", "Kind", "Status", "Rows", "Message"]}
+            rows={(d?.runs ?? []).map((r) => [
+              <span className="text-muted-foreground">{typeof r.created_at === "string" ? new Date(r.created_at).toLocaleString() : "—"}</span>,
+              String(r.kind ?? "—"),
+              <span className={r.status === "error" ? "text-down" : r.status === "ok" ? "text-up" : ""}>{String(r.status ?? "—")}</span>,
+              n(r.rows_pushed) != null ? String(r.rows_pushed) : "—",
+              <span className="text-muted-foreground">{r.message ? String(r.message) : "—"}</span>,
             ])}
           />
         )}
