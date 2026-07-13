@@ -12,7 +12,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ArrowLeft, CircleDot, RefreshCw } from "lucide-react";
+import { ArrowLeft, CircleDot, FlaskConical, RefreshCw } from "lucide-react";
 
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassKpi, GlassSection, GlassSegment, PageCanvas } from "@/components/oems/primitives/glass";
@@ -128,7 +128,10 @@ export function ModelDetail({ slug }: { slug: string }) {
       {/* header */}
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-page-title">{model.name}</h1>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <h1 className="text-page-title">{model.name}</h1>
+            <PaperBadge />
+          </div>
           <p className="text-sm text-muted-foreground">{model.strategy_name ?? model.slug}</p>
           {model.description && (
             <p className="mt-1 max-w-2xl text-[13px] text-muted-foreground/90">{model.description}</p>
@@ -141,9 +144,9 @@ export function ModelDetail({ slug }: { slug: string }) {
             }`}
           >
             <CircleDot className="h-3.5 w-3.5" />
-            {model.heartbeatFresh ? "Live" : model.heartbeatAgeMs == null ? "No data" : "Stale"}
+            {model.heartbeatFresh ? "Active" : model.heartbeatAgeMs == null ? "No data" : "Idle"}
           </span>
-          <p className="text-[11px] text-muted-foreground">heartbeat {ago(model.heartbeatAgeMs)}</p>
+          <p className="text-[11px] text-muted-foreground">last push {ago(model.heartbeatAgeMs)}</p>
         </div>
       </div>
       <div className="mb-5 flex flex-wrap gap-1.5">
@@ -152,8 +155,13 @@ export function ModelDetail({ slug }: { slug: string }) {
         {model.data_source && <Tag>data · {model.data_source}</Tag>}
         {model.universe && <Tag>{model.universe}</Tag>}
         {model.cadence && <Tag>{model.cadence}</Tag>}
-        {model.budget != null && <Tag>budget {money(model.budget, ccy)}</Tag>}
+        {model.budget != null && <Tag>paper capital {money(model.budget, ccy)}</Tag>}
       </div>
+
+      <p className="mb-4 text-xs text-muted-foreground">
+        Paper simulation on Yahoo prices, computed by the local model. No real trades, orders, or
+        client accounts. Positions and P&amp;L below are hypothetical.
+      </p>
 
       {/* sync bar */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/50 bg-glass-bg px-3 py-2 text-xs">
@@ -297,8 +305,8 @@ export function ModelDetail({ slug }: { slug: string }) {
 
       {/* positions */}
       <GlassSection
-        title="Current Positions"
-        subtitle={d?.positionSnapshotAt ? `snapshot ${dt(d.positionSnapshotAt)}` : undefined}
+        title="Simulated Positions"
+        subtitle={d?.positionSnapshotAt ? `paper · snapshot ${dt(d.positionSnapshotAt)}` : "paper"}
         endpoint="GET /api/models/[id]"
         dataSource="supabase"
         db="institutional"
@@ -323,7 +331,8 @@ export function ModelDetail({ slug }: { slug: string }) {
 
       {/* trades */}
       <GlassSection
-        title="Recent Trades"
+        title="Simulated Trades"
+        subtitle="paper fills"
         endpoint="GET /api/models/[id]"
         dataSource="supabase"
         db="institutional"
@@ -374,6 +383,15 @@ export function ModelDetail({ slug }: { slug: string }) {
 }
 
 /* ── small bits ──────────────────────────────────────────────────────────── */
+function PaperBadge() {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+      <FlaskConical className="h-3 w-3" />
+      Paper · Simulation
+    </span>
+  );
+}
+
 function BackLink() {
   return (
     <Link href="/oems/models" className="mb-3 inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground">

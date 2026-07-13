@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { BrainCircuit, CircleDot, Cpu, RefreshCw } from "lucide-react";
+import { BrainCircuit, CircleDot, Cpu, FlaskConical, RefreshCw } from "lucide-react";
 
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
@@ -54,12 +54,22 @@ function ago(ms: number | null): string {
 function StatusPill({ model }: { model: Model }) {
   const fresh = model.heartbeatFresh;
   const color = fresh ? "text-up" : model.heartbeatAgeMs == null ? "text-muted-foreground" : "text-down";
-  const label = fresh ? "Live" : model.heartbeatAgeMs == null ? "No data" : "Stale";
+  // Freshness of the model's data pushes, NOT a live trading state.
+  const label = fresh ? "Active" : model.heartbeatAgeMs == null ? "No data" : "Idle";
   return (
     <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${color}`}>
       <CircleDot className="h-3 w-3" />
       {label}
       <span className="text-[10px] text-muted-foreground">· {ago(model.heartbeatAgeMs)}</span>
+    </span>
+  );
+}
+
+function PaperBadge() {
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+      <FlaskConical className="h-3 w-3" />
+      Paper · Simulation
     </span>
   );
 }
@@ -78,13 +88,15 @@ export function ModelsList() {
 
   return (
     <PageCanvas>
-      <div className="mb-1 flex items-center gap-2">
+      <div className="mb-1 flex flex-wrap items-center gap-2.5">
         <BrainCircuit className="h-5 w-5 text-primary" />
         <h1 className="text-page-title">Models</h1>
+        <PaperBadge />
       </div>
       <p className="mb-5 max-w-2xl text-sm text-muted-foreground">
-        Quant models running in local Docker (Yahoo-fed paper simulation), pushing live metrics,
-        predictions and equity to the desk. Backtest and live performance side by side.
+        Paper-traded quant models. Each runs in local Docker, tracks on Yahoo prices, and pushes its
+        signals, positions and performance here. Backtest and paper performance side by side.{" "}
+        <span className="text-foreground/80">No real trades or accounts</span> are involved.
       </p>
 
       <GlassSection
