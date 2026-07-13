@@ -91,7 +91,16 @@ export async function syncRetailPrices(opts: {
   // Retail writes use their OWN explicit gate (default: shadow), independent of
   // the worker-wide dryRun/allowWrites that govern the institutional feed. Flip
   // IRESS_RETAIL_DRY_RUN=0 only after the shadow run validates coverage + scaling.
-  const writesOn = process.env.IRESS_RETAIL_DRY_RUN === "0" && Boolean(retail);
+  // HARD UAT GUARD (re-contamination fix, 2026-07-13): NEVER write retail prices
+  // while pointed at the CT/UAT IRESS endpoint (webservices-ct) or in UAT mode.
+  // Those are TEST prices and corrupt the live consumer's securities_c.last_price
+  // / stock_intraday_c. This cannot be overridden by IRESS_RETAIL_DRY_RUN; only a
+  // real PROD market-data feed may ever write retail.
+  const iressBaseUrl = process.env.IRESS_BASE_URL ?? "";
+  const onUatEndpoint =
+    /webservices-ct/i.test(iressBaseUrl) ||
+    ["1", "true"].includes((process.env.IRESS_UAT_MODE ?? "").trim().toLowerCase());
+  const writesOn = process.env.IRESS_RETAIL_DRY_RUN === "0" && Boolean(retail) && !onUatEndpoint;
   // UAT phase: IRESS returns TEST prices, so do not persist them to the
   // institutional quote_snapshot_c either (it is read-gated today, but writing
   // test prices to a shared table is a latent leak for any future reader).
