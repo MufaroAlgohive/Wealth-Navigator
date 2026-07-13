@@ -68,6 +68,47 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     ? predictions.filter((p) => p.predicted_at === latestPredAt)
     : [];
 
+  // Derived rollup for the Demo Account KPIs: prefer a stored `live`/`paper`
+  // metric row (so externally-computed fields like sharpe/cagr/win_rate still
+  // win), but fall back to computing final_equity / total_return / max_drawdown
+  // / start_date from the equity curve when the pusher hasn't written a metric
+  // row (the lumibot dashboard sometimes only persists one equity point).
+  const storedLive = metrics.find((m) => m.kind === "live" || m.kind === "paper");
+  const paperCurve = equity.filter(
+    (p) => (p.kind === "paper" || p.kind === "live") && typeof p.equity === "number",
+  );
+  let derivedLive: typeof storedLive = null;
+  if (!storedLive && paperCurve.length >= 1) {
+    const sorted = [...paperCurve].sort(
+      (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
+    );
+    const startEq = Number(sorted[0]!.equity);
+    const endEq = Number(sorted[sorted.length - 1]!.equity);
+    let peak = startEq;
+    let maxDd = 0;
+    for (const p of sorted) {
+      const v = Number(p.equity);
+      if (v > peak) peak = v;
+      if (peak > 0) {
+        const dd = v / peak - 1;
+        if (dd < maxDd) maxDd = dd;
+      }
+    }
+    derivedLive = {
+      model_slug: slug,
+      kind: "paper",
+      label: "derived",
+      as_of: sorted[sorted.length - 1]!.ts,
+      start_date: String(sorted[0]!.ts).slice(0, 10),
+      end_date: String(sorted[sorted.length - 1]!.ts).slice(0, 10),
+      budget: model.budget ?? startEq,
+      final_equity: endEq,
+      total_return: startEq > 0 ? endEq / startEq - 1 : null,
+      max_drawdown: maxDd,
+    };
+  }
+  const effectiveLive = storedLive ?? derivedLive;
+
   const now = Date.now();
   const hb = model.last_heartbeat_at ? new Date(model.last_heartbeat_at).getTime() : 0;
 
@@ -79,6 +120,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       heartbeatAgeMs: hb > 0 ? now - hb : null,
     },
     metrics,
+    derivedLive,
+    effectiveLive,
     equity,
     predictions,
     latestPredictions,

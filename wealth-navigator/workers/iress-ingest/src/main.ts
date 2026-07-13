@@ -281,12 +281,19 @@ async function ipsLoop(): Promise<void> {
 async function alertLoop(): Promise<void> {
   // Research-trigger evaluator. Pure DB read (no IRESS session) — runs
   // independently of the quote loop so an IRESS outage doesn't blind the
-  // alert path. `quote_snapshot_c` is the canonical institutional price
-  // table populated by the retailIngestLoop / PricingQuoteGet path.
+  // alert path. Prices come from the RETAIL DB (`stock_intraday_c` /
+  // `securities_c`) because the institutional `quote_snapshot_c` schema
+  // is keyed by `security_code` and the desk's tick stream reads from
+  // retail. The retail client is optional — without it the evaluator
+  // falls back to `quote_snapshot_c.last` (cents, IRESS L1).
   if (env.alertEvalSec <= 0) return;
   while (!shuttingDown) {
     try {
-      const r = await evaluateTriggers({ env, supabase });
+      const r = await evaluateTriggers({
+        env,
+        supabase,
+        retailSupabase: retailSupabase ?? null,
+      });
       if (r.breached > 0 || r.inserted > 0 || r.errors.length > 0) {
         console.info(
           JSON.stringify({

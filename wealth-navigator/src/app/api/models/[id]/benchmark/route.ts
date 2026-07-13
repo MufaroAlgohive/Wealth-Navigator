@@ -34,7 +34,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   const db = createInstitutionalServiceRoleClient();
   const { data: model, error: modelErr } = await db
     .from("model_registry_c")
-    .select("slug, currency, benchmark")
+    .select("slug, currency")
     .eq("slug", slug)
     .maybeSingle();
   if (modelErr || !model) {

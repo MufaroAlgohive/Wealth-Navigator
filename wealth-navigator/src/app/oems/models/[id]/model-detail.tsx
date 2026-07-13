@@ -32,6 +32,8 @@ interface Detail {
     last_run_at: string | null; heartbeatFresh: boolean; heartbeatAgeMs: number | null; params: Row | null;
   };
   metrics?: Row[];
+  derivedLive?: Row | null;
+  effectiveLive?: Row | null;
   equity?: Row[];
   latestPredictions?: Row[];
   latestPredictedAt?: string | null;
@@ -96,7 +98,10 @@ export function ModelDetail({ slug }: { slug: string }) {
 
   const backtest = useMemo(() => (d?.metrics ?? []).find((m) => m.kind === "backtest"), [d]);
   const live = useMemo(
-    () => (d?.metrics ?? []).find((m) => m.kind === "live" || m.kind === "paper"),
+    () =>
+      (d?.metrics ?? []).find((m) => m.kind === "live" || m.kind === "paper") ??
+      d?.effectiveLive ??
+      null,
     [d],
   );
 

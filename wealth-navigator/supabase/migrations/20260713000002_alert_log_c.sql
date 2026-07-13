@@ -7,6 +7,16 @@
 -- /api/alerts route read from this table.
 -- Review-only; paste into the institutional Supabase SQL editor.
 -- Idempotent — safe to re-run.
+--
+-- v2 (2026-07-13 patch): Postgres rejected `uq_alert_log_daily` because
+-- `breached_at::date` is `STABLE`, not `IMMUTABLE` — and index expressions
+-- must be IMMUTABLE. Pinning the timezone to UTC inside a STORED-generated
+-- column makes the expression row-local and PG happily indexes it. The
+-- natural key (note_id, trigger_kind, breached_date) is computed in the
+-- generated column on every insert so the worker stays a vanilla
+-- `.insert(...)` write; if a second insert hits the same key Postgres raises
+-- unique_violation (SQLSTATE 23505) and the worker treats it as
+-- "already fired today".
 
 CREATE TABLE IF NOT EXISTS alert_log_c (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -16,6 +26,12 @@ CREATE TABLE IF NOT EXISTS alert_log_c (
   trigger_price NUMERIC NOT NULL,
   observed_price NUMERIC NOT NULL,
   breached_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- Buckets the day in UTC. Date math over a `timestamptz` depends on the
+  -- session timezone unless we pin it; pinning to UTC makes the expression
+  -- IMMUTABLE inside a STORED generated column and indexable. The desk lives
+  -- in Africa/Johannesburg but the alert_date is global UTC, which matches
+  -- the worker's `recordWorkerEvent` timestamps.
+  breached_date DATE GENERATED ALWAYS AS ((breached_at AT TIME ZONE 'UTC')::date) STORED,
   acknowledged_at TIMESTAMPTZ,
   acknowledged_by TEXT,
   email_sent_at TIMESTAMPTZ,
@@ -25,11 +41,15 @@ CREATE TABLE IF NOT EXISTS alert_log_c (
 
 CREATE INDEX IF NOT EXISTS idx_alert_log_note ON alert_log_c(note_id);
 CREATE INDEX IF NOT EXISTS idx_alert_log_symbol ON alert_log_c(symbol);
+CREATE INDEX IF NOT EXISTS idx_alert_log_date ON alert_log_c(breached_date);
 CREATE INDEX IF NOT EXISTS idx_alert_log_unacked ON alert_log_c(acknowledged_at) WHERE acknowledged_at IS NULL;
--- Idempotency: the worker uses (note_id, trigger_kind, breached_at::date) as the
--- natural key — never fire the same trigger twice on the same day.
+-- Idempotency: the worker uses (note_id, trigger_kind, breached_date) as the
+-- natural key — never fire the same trigger twice on the same day. The
+-- generated `breached_date` column is IMMUTABLE so this index builds cleanly
+-- (the previous index `uq_alert_log_daily` used `(breached_at::date)` which
+-- Postgres correctly refused as STABLE → cannot be indexed).
 CREATE UNIQUE INDEX IF NOT EXISTS uq_alert_log_daily
-  ON alert_log_c(note_id, trigger_kind, (breached_at::date));
+  ON alert_log_c(note_id, trigger_kind, breached_date);
 
 ALTER TABLE alert_log_c ENABLE ROW LEVEL SECURITY;
 
