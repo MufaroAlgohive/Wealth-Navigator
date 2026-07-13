@@ -879,11 +879,27 @@ async function cancelLiveOrder(
         }
         await deps.supabase
           .from("oems_order_audit")
-          .update({ status: "cancelled" })
+          // 2026-07-13 — Transcript gap #2 (26:21): Andre flagged
+          // "last action" as a key field. Stamp a one-liner on every
+          // cancel so the UI's new Action column updates without
+          // needing a poll cycle.
+          .update({
+            status: "cancelled",
+            payload: {
+              lastAction: "Cancelled by trader (OrderDelete)",
+              lastActionAt: cancelledAt,
+            },
+          })
           .eq("order_id", orderId);
         await deps.supabase
           .from("oems_order_audit")
-          .update({ status: "cancelled" })
+          .update({
+            status: "cancelled",
+            payload: {
+              lastAction: "Cancelled by trader (OrderDelete)",
+              lastActionAt: cancelledAt,
+            },
+          })
           .eq("payload->>iress_order_number", orderId);
       } catch {
         /* audit stamp is best-effort; the broker cancel already succeeded */
@@ -901,6 +917,11 @@ async function cancelLiveOrder(
           filled: cancelledFilled ?? 0,
           avgFillPrice: cancelledAvgFillCents != null ? cancelledAvgFillCents / 100 : null,
           lastFillTimestamp: cancelledAt,
+          // 2026-07-13 — Transcript gap #2 (26:21): explicitly carry the
+          // last-action text so the UI's new Action column updates
+          // without needing a poll cycle.
+          lastAction: "Cancelled by trader (OrderDelete)",
+          lastActionAt: cancelledAt,
           raw: {
             id: orderId,
             account,
@@ -2354,6 +2375,13 @@ async function stampAfterOrderCreate3(opts: {
   const stampedAt = new Date().toISOString();
   const payloadObj = (audit.payload ?? {}) as Record<string, unknown>;
 
+  // 2026-07-13 (Andre + Juan call, 26:21): Andre flagged "last action"
+  // as a key field. Stamp a compact one-liner on every OrderCreate3
+  // transition so the UI doesn't have to invent the action description
+  // from raw Hermes fields.
+  const lastAction = orderCreateStatus === "rejected"
+    ? `Rejected (${errorNumber ?? "?"}: ${errorDescription ?? "no detail"})`
+    : "Submitted to IRESS — awaiting broker acknowledgement";
   const newPayload: Record<string, unknown> = {
     ...payloadObj,
     uat: true,
@@ -2362,6 +2390,8 @@ async function stampAfterOrderCreate3(opts: {
     broker_destination: brokerDestination,
     uatSentAt: stampedAt,
     ...(iressOrderNumber ? { iress_order_number: iressOrderNumber } : {}),
+    lastAction,
+    lastActionAt: stampedAt,
   };
   const newResult: Record<string, unknown> = {
     ...(audit.result_payload ?? {}),
@@ -2371,6 +2401,8 @@ async function stampAfterOrderCreate3(opts: {
     orderTag: existingTag,
     uatAccountCode: accountCode,
     ...(iressOrderNumber ? { iress_order_number: iressOrderNumber } : {}),
+    lastAction,
+    lastActionAt: stampedAt,
   };
   if (errorNumber != null) {
     newResult.uatErrorNumber = errorNumber;
@@ -2395,6 +2427,14 @@ async function stampAfterOrderCreate3(opts: {
   // Hermes lifecycle publish.
   const initialHubState: OrderState =
     orderCreateStatus === "rejected" ? "REJECTED" : "PENDING_ACK";
+  // 2026-07-13 — Transcript gap #1 + #2 (23:40 / 26:21): carry the
+  // lastAction one-liner AND the IRESS error fields in the SSE delta
+  // so the UI's new Action + Error columns update without a poll
+  // cycle.
+  const lastActionSummary =
+    orderCreateStatus === "rejected"
+      ? `Rejected (${errorNumber ?? "?"}: ${errorDescription ?? "no detail"})`
+      : "Submitted to IRESS — awaiting broker acknowledgement";
   uatExecutionHub.publish({
     iressOrderNumber: iressOrderNumber ?? "",
     orderAuditId: audit.id,
@@ -2402,6 +2442,11 @@ async function stampAfterOrderCreate3(opts: {
     filled: 0,
     avgFillPrice: priceRands ?? null,
     lastFillTimestamp: stampedAt,
+    lastAction: lastActionSummary,
+    lastActionAt: stampedAt,
+    iressErrorNumber: orderCreateStatus === "rejected" ? errorNumber ?? null : null,
+    iressErrorDescription:
+      orderCreateStatus === "rejected" ? errorDescription ?? null : null,
     raw: {
       id: iressOrderNumber ?? "",
       account: accountCode,
@@ -2775,6 +2820,16 @@ async function streamUatExecution(
       remainingVolume: delta.raw.remainingVolume ?? null,
       remainingValueCents: delta.raw.remainingValueCents ?? null,
       orderValueCents: delta.raw.orderValueCents ?? null,
+      // 2026-07-13 — Transcript gap #2 (26:21): forward the one-liner
+      // last-action summary so the UI's new Action column updates
+      // immediately on every state transition.
+      lastAction: delta.lastAction ?? null,
+      lastActionAt: delta.lastActionAt ?? null,
+      // 2026-07-13 — Transcript gap #1 (23:40): forward IRESS error
+      // fields so a rejection delta surfaces the actual reason
+      // without the operator needing to dig into Supabase.
+      iressErrorNumber: delta.iressErrorNumber ?? null,
+      iressErrorDescription: delta.iressErrorDescription ?? null,
     });
   });
 

@@ -79,6 +79,19 @@ export interface ExecutionRow {
   remaining_volume?: number | null;
   remaining_value_cents?: number | null;
   order_value_cents?: number | null;
+  // 2026-07-13 — Transcript gap #1 (23:40): IRESS ErrorNumber +
+  // ErrorDescription. The worker stamps these under
+  // `result_payload.uatErrorNumber` / `result_payload.uatErrorDescription`
+  // when OrderCreate3 returns a non-zero ErrorNumber. We render them as a
+  // tiny destructive badge next to the state when present — the operator
+  // can read the actual reason without opening Supabase.
+  iress_error_number?: number | null;
+  iress_error_description?: string | null;
+  // 2026-07-13 — Transcript gap #2 (26:21): "last action" — Andre
+  // specifically called this out as a key field for "real-time order
+  // state understanding". Rendered as a separate column.
+  last_action?: string | null;
+  last_action_at?: string | null;
 }
 
 interface ExecutionPayload {
@@ -110,6 +123,14 @@ interface UatDelta {
   qty: number;
   book_id: string | null;
   timestamp: string;
+  // 2026-07-13 — Transcript gap (26:21): one-liner for the Action
+  // column so the UI updates without an extra DB read.
+  last_action?: string | null;
+  last_action_at?: string | null;
+  // 2026-07-13 — Transcript gap (23:40): IRESS error fields so a
+  // rejection surfaces its actual reason.
+  iressErrorNumber?: number | null;
+  iressErrorDescription?: string | null;
 }
 
 const RANDS = new Intl.NumberFormat("en-ZA", {
@@ -372,6 +393,16 @@ export function ExecutionView({ bookId }: { bookId: string }) {
         remaining_value_cents:
           rawDelta.remainingValueCents ?? existing?.remaining_value_cents ?? null,
         order_value_cents: rawDelta.orderValueCents ?? existing?.order_value_cents ?? null,
+        // 2026-07-13 — Transcript gap #1 + #2 (23:40 / 26:21). The
+        // SSE delta carries `last_action` / `last_action_at` so the
+        // UI's new Action column updates immediately when the worker
+        // publishes an event-driven transition (ack / partial /
+        // cancelled). We also forward the IRESS error fields when
+        // the worker publishes a rejection delta.
+        iress_error_number: existing?.iress_error_number ?? null,
+        iress_error_description: existing?.iress_error_description ?? null,
+        last_action: d.last_action ?? existing?.last_action ?? null,
+        last_action_at: d.last_action_at ?? existing?.last_action_at ?? null,
       };
       return { ...prev, [d.order_audit_id as string]: newRow };
     });
@@ -571,6 +602,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                 "TIF",
                 "Sent by",
                 "State",
+                "Action",
                 "Tracking",
                 "Actions",
               ].map((h) => (
@@ -586,13 +618,13 @@ export function ExecutionView({ bookId }: { bookId: string }) {
           <tbody>
             {showLoading ? (
               <tr>
-                <td colSpan={20} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={21} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   Loading executions…
                 </td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={20} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={21} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   No execution rows for this book yet — click <em>Send to Market</em> to dispatch.
                 </td>
               </tr>
@@ -678,6 +710,56 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       >
                         <Badge variant={STATE_VARIANT[r.state] ?? "outline"}>{r.state}</Badge>
                       </span>
+                    </td>
+                    <td
+                      className="px-3 py-1.5 text-[11px] text-foreground whitespace-nowrap"
+                      title={
+                        r.action_status || r.last_action
+                          ? [
+                              r.action_status ? `Hermes ActionStatus: ${r.action_status}` : null,
+                              r.internal_order_status
+                                ? `Hermes InternalOrderStatus: ${r.internal_order_status}`
+                                : null,
+                              r.last_action ? `Last action: ${r.last_action}` : null,
+                              r.last_action_at
+                                ? `@ ${fmtTs(r.last_action_at)}`
+                                : null,
+                              r.iress_error_description
+                                ? `IRESS error: ${r.iress_error_description}`
+                                : null,
+                            ]
+                              .filter(Boolean)
+                              .join("\n")
+                          : "—"
+                      }
+                    >
+                      {r.iress_error_number != null ? (
+                        <div className="flex flex-col gap-0.5">
+                          <Badge variant="destructive" className="text-[9px]">
+                            IRESS {r.iress_error_number}
+                          </Badge>
+                          {r.iress_error_description ? (
+                            <span className="text-[10px] text-destructive/90 line-clamp-1 max-w-[160px]">
+                              {r.iress_error_description}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : r.action_status || r.last_action ? (
+                        <div className="flex flex-col gap-0.5">
+                          {r.action_status ? (
+                            <span className="text-[11px] font-medium text-foreground">
+                              {r.action_status}
+                            </span>
+                          ) : null}
+                          {r.last_action ? (
+                            <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[160px]">
+                              {r.last_action}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
                       {tracked ? (

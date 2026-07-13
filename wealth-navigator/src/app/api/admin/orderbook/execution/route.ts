@@ -91,6 +91,18 @@ interface ExecutionRow {
   remaining_volume?: number | null;
   remaining_value_cents?: number | null;
   order_value_cents?: number | null;
+  // IRESS ErrorNumber + ErrorDescription (2026-07-13). The worker stamps
+  // `result_payload.uatErrorNumber` + `uatErrorDescription` when IRESS
+  // returns a non-zero ErrorNumber from OrderCreate3 (or any set method).
+  // Per the call w/ Andre, these were a documented gap — they were in
+  // `result_payload` but never surfaced to the desk UI. The operator
+  // needs them to triage rejections (25014 "Not entitled", 25008 "No
+  // license seat", 25010 invalid access, etc.) without tailing worker
+  // logs.
+  iress_error_number?: number | null;
+  iress_error_description?: string | null;
+  last_action?: string | null;
+  last_action_at?: string | null;
 }
 
 function openInstitutional(): SupabaseClient | null {
@@ -205,6 +217,24 @@ function mapRow(r: AuditRow): ExecutionRow {
     remaining_volume: num(payload.remainingVolume),
     remaining_value_cents: num(payload.remainingValueCents),
     order_value_cents: num(payload.orderValueCents),
+    // 2026-07-13 — Transcript gap #1 (23:40): surface IRESS ErrorNumber
+    // + ErrorDescription from result_payload so a rejection from IRESS
+    // shows up with its actual reason ("Not entitled" / "No license seat" /
+    // etc.). Read both legacy locations — the older route stamps it under
+    // `result.uatErrorNumber` / `result.uatErrorDescription`, and a
+    // re-polled row could carry it under `result.errorNumber` too.
+    iress_error_number:
+      num(result.uatErrorNumber) ?? num(result.errorNumber) ?? null,
+    iress_error_description:
+      str(result.uatErrorDescription) ?? str(result.errorDescription) ?? null,
+    // 2026-07-13 — Transcript gap #2 (26:21): "action status" + "last
+    // action" were specifically called out by Andre as the key fields
+    // for real-time order-state understanding. We already surface the
+    // ActionStatus text via `action_status` above; promote the
+    // UAT-specific last-action audit log out of the payload blob so
+    // the UI can pin it as a row-level field.
+    last_action: str(result.lastAction) ?? str(payload.lastAction) ?? null,
+    last_action_at: str(result.lastActionAt) ?? str(payload.lastActionAt) ?? null,
   };
 }
 

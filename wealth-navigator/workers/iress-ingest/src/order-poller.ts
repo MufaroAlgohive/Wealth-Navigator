@@ -62,6 +62,16 @@ export interface UatExecutionDelta {
   filled: number;
   avgFillPrice: number | null;
   lastFillTimestamp: string | null;
+  // 2026-07-13 (Andre + Juan, 26:21): one-liner describing the most
+  // recent transition ("Cancelled", "Partial +200", etc.) so the
+  // ExecutionView can render a first-class Action column without
+  // reconstructing the verb from raw Hermes fields.
+  lastAction?: string | null;
+  lastActionAt?: string | null;
+  // 2026-07-13 (Andre + Juan, 23:40): IRESS ErrorNumber + error text
+  // so a rejection delta surfaces the actual reason in the UI.
+  iressErrorNumber?: number | null;
+  iressErrorDescription?: string | null;
   /** Full poll row (for new UAT orders the SSE consumer has never seen). */
   raw: Order;
   /** Book id (payload.book_id) — null for fresh-from-IRESS rows. */
@@ -268,6 +278,28 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
     const avgFillPrice = order.avgPx != null && Number.isFinite(order.avgPx) ? order.avgPx : null;
     const state = mapStateToDb(order.state);
 
+    // 2026-07-13 (Andre + Juan call, 26:21): Andre flagged "action status"
+    // + "last action" as the key fields for diagnosing stuck orders in
+    // real time. We pin a compact `lastAction` summary on every poll so
+    // the ExecutionView can render a one-line "Latest: <event>" without
+    // the operator needing to open Supabase or tail worker logs.
+    //
+    // Format: "<verb> <state>" — e.g. "Acknowledged", "Filled +200",
+    // "Partial @ R177.00", "Cancelled", "Expired".
+    let lastAction: string | null = null;
+    if (state === "filled") lastAction = `Filled (${fillQty} @ R${avgFillPrice?.toFixed(2) ?? "?"})`;
+    else if (state === "partial")
+      lastAction = `Partial +${fillQty}${avgFillPrice != null ? ` @ R${avgFillPrice.toFixed(2)}` : ""}`;
+    else if (state === "cancelled") lastAction = "Cancelled by broker/trader";
+    else if (state === "expired") lastAction = "Expired (DAY TIF rollover)";
+    else if (state === "rejected")
+      lastAction = `Rejected (${order.stateDescription ?? "no reason"})`;
+    else if (state === "acknowledged")
+      lastAction = "Acknowledged by broker";
+    else if (state === "working") lastAction = "Working on exchange";
+    else if (state === "pending_ack")
+      lastAction = "Awaiting broker acknowledgement";
+
     // Publish first so subscribers see the latest regardless of write success.
     uatExecutionHub.publish({
       iressOrderNumber: order.id,
@@ -276,6 +308,11 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
       filled: fillQty,
       avgFillPrice,
       lastFillTimestamp: observedAt,
+      // 2026-07-13 — Transcript gap #2 (26:21): carry the same
+      // one-liner we stamp on the audit row so the SSE consumer can
+      // render it in the Action column without an extra DB read.
+      lastAction,
+      lastActionAt: observedAt,
       raw: order,
       bookId: audit && typeof audit.payload?.book_id === "string" ? (audit.payload.book_id as string) : null,
       observedAt,
@@ -298,6 +335,12 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
       remainingVolume: order.remainingVolume ?? null,
       remainingValueCents: order.remainingValueCents ?? null,
       orderValueCents: order.orderValueCents ?? null,
+      // 2026-07-13: transcript 26:21 — Andre flagged "last action" as
+      // a key field. Stamp both the action text and its timestamp on
+      // every poll so the UI can render the most recent transition in
+      // the table + tooltip.
+      lastAction,
+      lastActionAt: observedAt,
     };
     const newResult: Record<string, unknown> = {
       ...prevResult,
@@ -305,6 +348,8 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
       brokerState: order.brokerState ?? order.state,
       state: order.state,
       lastObservedAt: observedAt,
+      lastAction,
+      lastActionAt: observedAt,
     };
     // Slippage / day-1 P&L refresh so the UI updates without waiting for
     // a manual /fills POST.

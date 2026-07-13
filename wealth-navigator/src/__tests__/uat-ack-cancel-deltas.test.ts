@@ -162,6 +162,13 @@ interface HubCall {
   iressOrderNumber: string;
   orderAuditId: string | null;
   raw?: Record<string, unknown>;
+  // 2026-07-13 — Transcript gap (23:40 / 26:21): SSE deltas carry the
+  // lastAction + IRESS error fields so the UI's new Action + Error
+  // columns update without a poll cycle.
+  lastAction?: string | null;
+  lastActionAt?: string | null;
+  iressErrorNumber?: number | null;
+  iressErrorDescription?: string | null;
 }
 
 /**
@@ -412,6 +419,93 @@ describe("OrderDelete cancel → SSE delta + audit.cancelled (Juan + Andre 2026-
       const cancelled = published.find((d) => d.state === "cancelled");
       expect(cancelled, "expected hub delta with state=cancelled").toBeTruthy();
       expect(cancelled?.iressOrderNumber).toBe("1500118");
+
+      // 4. Transcript gap #2 (26:21): the cancelled SSE delta MUST carry
+      //    a one-liner `lastAction` so the UI's new Action column updates
+      //    without a poll cycle.
+      expect(cancelled?.lastAction).toBe("Cancelled by trader (OrderDelete)");
+      expect(typeof cancelled?.lastActionAt).toBe("string");
+
+      // 5. Transcript gap #1 (23:40): the cancel updates carry a
+      //    `lastAction` payload entry for the BFF to surface.
+      const stampedUpdates = supa.updates.filter(
+        (u) => typeof (u.payload?.payload as Record<string, unknown> | undefined)?.lastAction === "string",
+      );
+      expect(stampedUpdates.length, "expected lastAction stamped into payload").toBeGreaterThan(0);
+      expect(
+        (stampedUpdates[0]?.payload?.payload as Record<string, unknown>).lastAction,
+      ).toBe("Cancelled by trader (OrderDelete)");
+
+      unsubscribe();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("OrderCreate3 rejection stamps audit.iressErrorNumber + publishes a rejected SSE delta (Transcript gap #1, 23:40)", async () => {
+    // 2026-07-13 (Andre): "Investigation of missing full fill, cancel,
+    // acknowledgement, and ERROR MESSAGE flows". The worker stamps
+    // uatErrorNumber + uatErrorDescription on rejection — verify the
+    // audit row carries them AND the SSE delta propagates them so the
+    // UI's new Error column surfaces the actual broker reason.
+    resetIressDouble();
+    // Use the existing `pendingFail` injection pattern so the
+    // getIressClient().orderCreate3 mock returns ErrorNumber=25014.
+    iressDouble.state.pendingFail = {
+      errorNumber: 25014,
+      description: "Not entitled — application licence required for OrderCreate3 on this account.",
+    };
+    const supa = makeSupabaseStub({
+      seededRow: {
+        id: "audit-row-rejected",
+        order_id: "OB-DEMO-REJ",
+        client_account: "56378",
+        symbol: "SOL",
+        side: "buy",
+        quantity: 400,
+        price_cents: 17700,
+        status: "working",
+        source: "UAT",
+        payload: { book_id: "UAT-reject", strategy: "UAT-reject", limitPrice: 177 },
+        result_payload: {},
+      },
+    });
+    const { published, unsubscribe } = await attachHubRecorder();
+    const { session } = makeSessionStub();
+    const server = await mountWorker({
+      supabase: supa.client,
+      session,
+    });
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/uat/send-to-market`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          order_audit_id: "audit-row-rejected",
+          broker_destination: "JSE",
+        }),
+      });
+      const body = (await res.json()) as { ok?: boolean; code?: string; status?: number };
+      expect(res.status, `body=${JSON.stringify(body)}`).toBe(422);
+      expect(body.ok).toBe(false);
+      expect(body.code).toBe("order_rejected");
+
+      // 1. Audit row was stamped rejected AND carries the IRESS error.
+      const stampCall = supa.updates.find(
+        (u) => u.payload && u.payload.status === "rejected",
+      );
+      expect(stampCall, "expected audit stamped with status=rejected").toBeTruthy();
+      expect(stampCall?.payload.status).toBe("rejected");
+      const resultPayload = stampCall?.payload?.result_payload as Record<string, unknown>;
+      expect(resultPayload.uatErrorNumber).toBe(25014);
+      expect(resultPayload.uatErrorDescription).toContain("Not entitled");
+
+      // 2. The hub received a rejected delta.
+      const rejected = published.find((d) => d.state === "rejected");
+      expect(rejected, "expected hub delta with state=rejected").toBeTruthy();
+      expect(rejected?.lastAction).toContain("Rejected");
+      expect(rejected?.lastAction).toContain("25014");
       unsubscribe();
     } finally {
       await server.close();
