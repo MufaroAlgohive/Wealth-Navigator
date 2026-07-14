@@ -64,6 +64,23 @@ export function ModelDetail({ slug }: { slug: string }) {
     refetchInterval: 60_000,
   });
 
+  // Fetch the paper-vs-benchmark bundle once and share it between the
+  // Live Demo Dashboard and the lower "Demo Account" + "Paper Equity (daily)"
+  // panels. The BFF's /api/models/[id] equity payload gets truncated by the
+  // PostgREST 1000-row cap when a model has >1000 backtest points, so the
+  // paper series disappears from the lower panels. The benchmark endpoint
+  // filters by `kind in ('paper','live')` and reliably returns the live
+  // series regardless of the backtest row count.
+  type BenchSummary = {
+    paper: Array<{ ts: string; date: string; equity: number; day_pnl: number | null; day_pnl_pct: number | null; cash: number | null }>;
+  };
+  const benchQ = useQuery<BenchSummary>({
+    queryKey: ["model-benchmark-shared", slug],
+    queryFn: async () => (await fetch(`/api/models/${slug}/benchmark`)).json(),
+    refetchInterval: 60_000,
+  });
+  const benchmarkPaper = benchQ.data?.paper ?? [];
+
   // Push-driven refresh: a fresh `model_run_c` row from the pusher triggers an
   // immediate refetch of the model bundle so KPIs / equity curve / run log
   // update with sub-second latency instead of waiting on the 60s poll. The
@@ -132,7 +149,14 @@ export function ModelDetail({ slug }: { slug: string }) {
 
   const [view, setView] = useState<"backtest" | "paper">("backtest");
   const backtestCurve = equityByKind["backtest"] ?? [];
-  const paperCurve = equityByKind["live"] ?? equityByKind["paper"] ?? [];
+  // Fall back to the benchmark paper curve when the BFF truncated the
+  // /api/models/[id] equity payload at the 1000-row PostgREST cap. The
+  // benchmark endpoint filters by `kind in ('paper','live')` and reliably
+  // returns the live series.
+  const paperCurveFromDetail = equityByKind["live"] ?? equityByKind["paper"] ?? [];
+  const paperCurve = paperCurveFromDetail.length > 0
+    ? paperCurveFromDetail
+    : benchmarkPaper.map((p) => ({ ts: p.date, equity: p.equity }));
   const allTrades = d?.trades ?? [];
   const backtestTrades = allTrades.filter((t) => t.kind === "backtest");
   const paperTrades = allTrades.filter((t) => t.kind === "live" || t.kind === "paper");
@@ -348,6 +372,7 @@ export function ModelDetail({ slug }: { slug: string }) {
             }))}
             paperCurveCount={paperCurve.length}
             currency={ccy}
+            externalPaperCurve={benchmarkPaper}
           />
           <GlassSection
             title="Demo Account"

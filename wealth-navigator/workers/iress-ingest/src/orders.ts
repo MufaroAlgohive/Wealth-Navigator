@@ -26,10 +26,13 @@ export interface OrderPollResult {
   accounts: string[];
 }
 
-// 8-state lifecycle (see src/types/iress.ts::OrderState). Each value here is
+// 10-state lifecycle (see src/types/iress.ts::OrderState). Each value here is
 // the lower-case token that lands in oems_order_audit.status — the BFF
 // renders this directly on the Order Book UI, so a stuck PENDING_ACK row
 // surfaces as "Pending broker acknowledgement" instead of the old "Working".
+// CANCEL_PENDING and AMEND_PENDING are intermediate instructions issued by
+// the desk broker (via /orders/cancel or /orders/amend) before IRESS acks —
+// the UI flips to CANCELLED / WORKING once the next poll observes the ack.
 const STATE_MAP: Record<OrderState, string> = {
   PENDING_ACK: "pending_ack",
   ACKNOWLEDGED: "acknowledged",
@@ -37,8 +40,10 @@ const STATE_MAP: Record<OrderState, string> = {
   PARTIAL: "partial",
   FILLED: "filled",
   CANCELLED: "cancelled",
+  CANCEL_PENDING: "cancel_pending",
   EXPIRED: "expired",
   REJECTED: "rejected",
+  AMEND_PENDING: "amend_pending",
 };
 
 function mapStateToDb(state: OrderState): string {

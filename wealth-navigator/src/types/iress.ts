@@ -79,8 +79,16 @@ export type OrderTIF = "DAY" | "IOC" | "FOK" | "GTC";
  *                   collapsed this to CANCELLED, which is the bug Juan
  *                   hit on the 400 SOL CARE order.
  *   - CANCELLED   : OrderState=INACTIVE AND DoneVolumeTotal < OrderVolume.
+ *   - CANCEL_PENDING: Desk-issued OrderDelete that hasn't been acknowledged
+ *                   by the broker yet. Flips to CANCELLED on the next poll
+ *                   once IRESS confirms. Stored as 'cancel_pending' on
+ *                   oems_order_audit.status.
  *   - EXPIRED     : TimeInForce=DAY rolled off without a fill.
  *   - REJECTED    : OrderCreate3 response ErrorNumber != 0.
+ *   - AMEND_PENDING: Desk-issued OrderAmend that hasn't been acknowledged
+ *                   by the broker yet. Flips to WORKING / PARTIAL on the
+ *                   next poll once IRESS confirms. Stored as 'amend_pending'
+ *                   on oems_order_audit.status.
  */
 export type OrderState =
   | "PENDING_ACK"
@@ -89,8 +97,10 @@ export type OrderState =
   | "PARTIAL"
   | "FILLED"
   | "CANCELLED"
+  | "CANCEL_PENDING"
   | "EXPIRED"
-  | "REJECTED";
+  | "REJECTED"
+  | "AMEND_PENDING";
 export type OrderDestination = "JSE" | "NASDAQ" | "NYSE" | "LSE" | "OTC" | "DARK";
 
 export interface Order {

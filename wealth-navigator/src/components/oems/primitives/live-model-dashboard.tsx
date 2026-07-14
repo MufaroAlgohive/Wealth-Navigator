@@ -112,6 +112,15 @@ interface Props {
   positions: PositionLite[];
   paperCurveCount: number;
   currency: string;
+  /**
+   * Optional pre-fetched paper curve from the parent. When supplied we use it
+   * directly instead of issuing our own `/api/models/[id]/benchmark` fetch —
+   * this lets the parent (model-detail.tsx) drive a single shared fetch so
+   * the Live Demo Snapshot, Demo Account KPI strip, and Paper Equity chart
+   * all agree on `paper.length` even when the BFF's `/api/models/[id]`
+   * equity payload has been truncated by the PostgREST 1000-row cap.
+   */
+  externalPaperCurve?: PaperPoint[];
 }
 
 type RangeKey = "1W" | "1M" | "3M" | "YTD" | "ALL";
@@ -146,7 +155,7 @@ function toDate(ts: string | Date): string {
   return ts.toISOString().slice(0, 10);
 }
 
-export function LiveModelDashboard({ slug, positions, paperCurveCount, currency }: Props) {
+export function LiveModelDashboard({ slug, positions, paperCurveCount, currency, externalPaperCurve }: Props) {
   const ccy = currency === "USD" ? "$" : "R";
   const q = useQuery<BenchmarkResponse>({
     queryKey: ["model-benchmark", slug],
@@ -155,7 +164,12 @@ export function LiveModelDashboard({ slug, positions, paperCurveCount, currency 
   });
 
   const data = q.data;
-  const paper = data?.paper ?? [];
+  // Prefer the externally-supplied paper curve (e.g. from the parent) so
+  // the paper-equity day count stays in sync with the Demo Account KPI
+  // strip. Falls back to the locally-fetched benchmark response.
+  const paper = externalPaperCurve && externalPaperCurve.length > 0
+    ? externalPaperCurve
+    : (data?.paper ?? []);
   const summary = data?.summary;
   const benchmark = data?.benchmark ?? null;
   const benchAvailable =
@@ -423,28 +437,41 @@ export function LiveModelDashboard({ slug, positions, paperCurveCount, currency 
                     return [`${v.toFixed(2)} (${v >= 100 ? "+" : ""}${(v - 100).toFixed(2)}%)`, label];
                   }}
                 />
-                <Line
-                  type="monotone"
-                  dataKey="paper"
-                  name="Paper"
-                  stroke="hsl(var(--primary))"
-                  strokeWidth={2.2}
-                  dot={false}
-                  isAnimationActive={false}
-                />
                 {showBench && (
                   <Line
                     type="monotone"
                     dataKey="bench"
                     name="STX40.JO"
-                    stroke="hsl(var(--foreground))"
-                    strokeWidth={1.6}
-                    strokeDasharray="5 3"
+                    stroke="hsl(var(--muted-foreground))"
+                    strokeWidth={1.4}
+                    strokeDasharray="5 4"
                     dot={false}
                     connectNulls
                     isAnimationActive={false}
                   />
                 )}
+                <Line
+                  type="monotone"
+                  dataKey="paper"
+                  name="Paper account"
+                  stroke="hsl(var(--primary))"
+                  strokeWidth={2.6}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+                <Legend
+                  verticalAlign="top"
+                  height={24}
+                  iconType="line"
+                  wrapperStyle={{ fontSize: 11, color: "hsl(var(--muted-foreground))" }}
+                  formatter={(value: string) =>
+                    value === "Paper account" ? (
+                      <span style={{ color: "hsl(var(--primary))", fontWeight: 600 }}>Paper account (us)</span>
+                    ) : (
+                      <span style={{ color: "hsl(var(--muted-foreground))" }}>STX40.JO benchmark</span>
+                    )
+                  }
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
