@@ -26,13 +26,18 @@ export interface OrderPollResult {
   accounts: string[];
 }
 
-// 10-state lifecycle (see src/types/iress.ts::OrderState). Each value here is
+// 11-state lifecycle (see src/types/iress.ts::OrderState). Each value here is
 // the lower-case token that lands in oems_order_audit.status — the BFF
 // renders this directly on the Order Book UI, so a stuck PENDING_ACK row
 // surfaces as "Pending broker acknowledgement" instead of the old "Working".
 // CANCEL_PENDING and AMEND_PENDING are intermediate instructions issued by
 // the desk broker (via /orders/cancel or /orders/amend) before IRESS acks —
 // the UI flips to CANCELLED / WORKING once the next poll observes the ack.
+// FAILED is post-routing (broker parked the row because of a venue /
+// transport error — Andre kicked his session to test on 2026-07-14); the
+// IRESS ErrorNumber + ErrorDescription travel on the audit row payload so
+// the operator can see "Failed — 25008: No licenses" instead of a bare
+// "FAILED" chip.
 const STATE_MAP: Record<OrderState, string> = {
   PENDING_ACK: "pending_ack",
   ACKNOWLEDGED: "acknowledged",
@@ -44,6 +49,7 @@ const STATE_MAP: Record<OrderState, string> = {
   EXPIRED: "expired",
   REJECTED: "rejected",
   AMEND_PENDING: "amend_pending",
+  FAILED: "failed",
 };
 
 function mapStateToDb(state: OrderState): string {
@@ -115,6 +121,13 @@ function toAuditRow(order: Order): OrderAuditRow {
       remainingVolume: order.remainingVolume ?? null,
       remainingValueCents: order.remainingValueCents ?? null,
       orderValueCents: order.orderValueCents ?? null,
+      // 2026-07-14: IRESS ErrorNumber / ErrorDescription captured at the
+      // mapper — surfaced on the audit payload so the BFF can render the
+      // actual broker-side reason for a FAILED audit row. Stored on the
+      // payload (not result_payload) because it is a broker-side field
+      // like actionStatus, not a UI-computed metric.
+      iressErrorNumber: order.iressErrorNumber ?? null,
+      iressErrorDescription: order.iressErrorDescription ?? null,
     },
     result_payload: {
       rejectReason: order.rejectReason,

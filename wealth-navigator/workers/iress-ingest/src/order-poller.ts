@@ -37,8 +37,11 @@ const STATE_MAP: Record<OrderState, string> = {
   PARTIAL: "partial",
   FILLED: "filled",
   CANCELLED: "cancelled",
+  CANCEL_PENDING: "cancel_pending",
   EXPIRED: "expired",
   REJECTED: "rejected",
+  AMEND_PENDING: "amend_pending",
+  FAILED: "failed",
 };
 
 function mapStateToDb(state: OrderState): string {

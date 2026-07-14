@@ -81,10 +81,23 @@ interface ExecutionRow {
   sent_by: string | null;
   state: string;
   broker: string | null;
+  // 2026-07-14: pre-trade limit-guard stamp from the BFF
+  // /api/admin/orderbook/send-to-market. The UI renders a "Guarded"
+  // badge when enforced=true so the operator never wonders whether a
+  // naked short / cash-bust order went out (the IRESS IOS+ OrderPad
+  // does not block these — Andre, 2026-07-14 UAT walkthrough
+  // 28:22-34:32).
+  limits_enforced?: boolean | null;
+  limits_checked_at?: string | null;
+  limits_account_code?: string | null;
+  limits_skip_reason?: string | null;
   // IRESS Hermes lifecycle detail (2026-07-13). Surface these so the
   // operator can see exactly where the order sits on Hermes without
-  // tailing worker logs.
-  broker_state?: string | null;
+  // tailing worker logs. 2026-07-14: tightened broker_state to the
+  // typed union (ACTIVE | INACTIVE | UNKNOWN) matching OrderBrokerState
+  // in src/types/iress.ts so the UI can render the active/inactive chip
+  // with confidence.
+  broker_state?: "ACTIVE" | "INACTIVE" | "UNKNOWN" | null;
   action_status?: string | null;
   internal_order_status?: string | null;
   state_description?: string | null;
@@ -98,7 +111,9 @@ interface ExecutionRow {
   // `result_payload` but never surfaced to the desk UI. The operator
   // needs them to triage rejections (25014 "Not entitled", 25008 "No
   // license seat", 25010 invalid access, etc.) without tailing worker
-  // logs.
+  // logs. 2026-07-14: the FAILED branch also writes
+  // `payload.iressErrorNumber` + `payload.iressErrorDescription` for
+  // transport-level failures (network down, kicked session). Read both.
   iress_error_number?: number | null;
   iress_error_description?: string | null;
   last_action?: string | null;
@@ -140,10 +155,16 @@ function stateUppercaseFromAudit(status: string): string {
       return "FILLED";
     case "cancelled":
       return "CANCELLED";
+    case "cancel_pending":
+      return "CANCEL_PENDING";
+    case "amend_pending":
+      return "AMEND_PENDING";
     case "expired":
       return "EXPIRED";
     case "rejected":
       return "REJECTED";
+    case "failed":
+      return "FAILED";
     case "working":
     case "amended":
     case "created":
@@ -207,10 +228,29 @@ function mapRow(r: AuditRow): ExecutionRow {
           : null,
     state: stateUppercaseFromAudit(r.status),
     broker: typeof payload.broker === "string" ? (payload.broker as string) : null,
+    // 2026-07-14: surface the pre-trade limit-guard stamp from the BFF
+    // /api/admin/orderbook/send-to-market so the desk can tell at a
+    // glance which orders went through the no-naked-short + cash-bust
+    // guard vs which ones slipped through the gap. The IRESS broker
+    // does NOT block naked shorts — Andre, 2026-07-14.
+    limits_enforced:
+      typeof payload.limits_enforced === "boolean" ? (payload.limits_enforced as boolean) : null,
+    limits_checked_at:
+      typeof payload.limits_checked_at === "string" ? (payload.limits_checked_at as string) : null,
+    limits_account_code:
+      typeof payload.limits_account_code === "string" ? (payload.limits_account_code as string) : null,
+    limits_skip_reason:
+      typeof payload.limits_skip_reason === "string" ? (payload.limits_skip_reason as string) : null,
     // IRESS Hermes lifecycle detail (2026-07-13). The worker stamps these
     // on every poll cycle; older rows + BFF-written `working` rows may not
-    // carry them — render as null in that case.
-    broker_state: str(payload.brokerState),
+    // carry them — render as null in that case. 2026-07-14: broker_state
+    // is tightened to the OrderBrokerState union so the UI's
+    // active/inactive chip reflects what IRESS actually has on the book
+    // (a fully-filled order is INACTIVE but FILLED).
+    broker_state:
+      str(payload.brokerState) === "ACTIVE" || str(payload.brokerState) === "INACTIVE"
+        ? (str(payload.brokerState) as "ACTIVE" | "INACTIVE")
+        : "UNKNOWN",
     action_status: str(payload.actionStatus),
     internal_order_status: str(payload.internalOrderStatus),
     state_description: str(payload.stateDescription),
@@ -223,10 +263,19 @@ function mapRow(r: AuditRow): ExecutionRow {
     // etc.). Read both legacy locations — the older route stamps it under
     // `result.uatErrorNumber` / `result.uatErrorDescription`, and a
     // re-polled row could carry it under `result.errorNumber` too.
+    // 2026-07-14: the FAILED stamp also writes `payload.iressErrorNumber`
+    // + `payload.iressErrorDescription` — read those too so the FAILED
+    // chip carries the IRESS error inline.
     iress_error_number:
-      num(result.uatErrorNumber) ?? num(result.errorNumber) ?? null,
+      num(result.uatErrorNumber) ??
+      num(result.errorNumber) ??
+      num(payload.iressErrorNumber) ??
+      null,
     iress_error_description:
-      str(result.uatErrorDescription) ?? str(result.errorDescription) ?? null,
+      str(result.uatErrorDescription) ??
+      str(result.errorDescription) ??
+      str(payload.iressErrorDescription) ??
+      null,
     // 2026-07-13 — Transcript gap #2 (26:21): "action status" + "last
     // action" were specifically called out by Andre as the key fields
     // for real-time order-state understanding. We already surface the

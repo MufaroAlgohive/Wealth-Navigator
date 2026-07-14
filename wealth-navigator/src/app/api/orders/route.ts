@@ -83,7 +83,13 @@ function mapAuditRow(row: AuditRow): Order {
     // IRESS Hermes lifecycle detail (Andre, 2026-07-13). Optional because
     // older audit rows + BFF-written rows don't carry them; the worker
     // mapper populates them on every poll cycle for live rows.
-    brokerState: str(payload.brokerState),
+    // 2026-07-14: fold to the OrderBrokerState union. Unknown / legacy
+    // payloads default to "UNKNOWN" so the UI can render the inactive
+    // chip rather than a free-text string.
+    brokerState:
+      str(payload.brokerState) === "ACTIVE" || str(payload.brokerState) === "INACTIVE"
+        ? (str(payload.brokerState) as "ACTIVE" | "INACTIVE")
+        : "UNKNOWN",
     actionStatus: str(payload.actionStatus),
     internalOrderStatus: str(payload.internalOrderStatus),
     stateDescription: str(payload.stateDescription),

@@ -26,6 +26,7 @@ import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
 
@@ -53,10 +54,14 @@ export interface ExecutionRow {
   venue: string;
   tif: string;
   sent_by: string | null;
-  // 8-state lifecycle (2026-07-13): see src/types/iress.ts::OrderState. The
+  // 11-state lifecycle (2026-07-14): see src/types/iress.ts::OrderState. The
   // audit `status` column carries `pending_ack` / `acknowledged` in addition
-  // to the older 5 values; the BFF /api/admin/orderbook/execution route
-  // upper-cases them for this typed surface.
+  // to the older 5 values, plus the new intermediate `cancel_pending` /
+  // `amend_pending` tokens that surface the desk's instruction BEFORE the
+  // desk broker has acked it, plus the terminal `failed` state for
+  // post-routing transport / venue failures (Andre, 2026-07-14). The BFF
+  // /api/admin/orderbook/execution route upper-cases them for this typed
+  // surface.
   state:
     | "PENDING_ACK"
     | "ACKNOWLEDGED"
@@ -64,15 +69,21 @@ export interface ExecutionRow {
     | "PARTIAL"
     | "FILLED"
     | "CANCELLED"
+    | "CANCEL_PENDING"
+    | "AMEND_PENDING"
     | "EXPIRED"
     | "REJECTED"
+    | "FAILED"
     | string;
   broker: string | null;
-  // IRESS Hermes lifecycle detail (2026-07-13). Surfaced via tooltip on the
-  // State badge so the operator can read "Traded 200 @ 17700, then 200 @
-  // 17900" without leaving the UI. Older audit rows + BFF-written `working`
-  // rows may not carry these — the UI falls back to the lifecycle state.
-  broker_state?: string | null;
+  // IRESS Hermes OrderState (2026-07-13). Surfaced via tooltip on the State
+  // badge so the operator can read "Traded 200 @ 17700, then 200 @ 17900"
+  // without leaving the UI. Older audit rows + BFF-written `working` rows
+  // may not carry these — the UI falls back to the lifecycle state.
+  // 2026-07-14: typed to OrderBrokerState ("ACTIVE" | "INACTIVE" | "UNKNOWN")
+  // and surfaced as a green/grey chip next to the State column — operators
+  // need to see "still on the book" vs "parked" at a glance.
+  broker_state?: "ACTIVE" | "INACTIVE" | "UNKNOWN" | null;
   action_status?: string | null;
   internal_order_status?: string | null;
   state_description?: string | null;
@@ -92,6 +103,17 @@ export interface ExecutionRow {
   // state understanding". Rendered as a separate column.
   last_action?: string | null;
   last_action_at?: string | null;
+  // 2026-07-14: pre-trade limit guard contract from the BFF
+  // /api/admin/orderbook/send-to-market. `limits_enforced=true` means
+  // the dispatch passed the no-naked-short + cash-bust guard against
+  // the desk's IRESS AccountCode. False/null means either the order
+  // predates the guard or the BFF could not run the guard (no account
+  // row, bad status, etc.) — render an honest "Not guarded" chip with
+  // the skip reason on hover.
+  limits_enforced?: boolean | null;
+  limits_checked_at?: string | null;
+  limits_account_code?: string | null;
+  limits_skip_reason?: string | null;
 }
 
 interface ExecutionPayload {
@@ -149,17 +171,25 @@ const STATE_VARIANT: Record<
   string,
   "default" | "secondary" | "destructive" | "success" | "warning" | "outline"
 > = {
-  // 8-state lifecycle (2026-07-13). pending_ack + acknowledged render as
-  // outline (the broker is mid-handshake); expired renders as outline with
-  // neutral colour; cancelled + rejected as before.
+  // 11-state lifecycle (2026-07-14). pending_ack + acknowledged render as
+  // outline (the broker is mid-handshake). cancel_pending / amend_pending
+  // are the trader's instructions that have not yet been acknowledged by
+  // the desk broker — render as outline (neutral, in-flight). Working +
+  // partial as warning (live in market). Filled = success. Cancelled /
+  // expired as secondary (terminal, neutral). Rejected + Failed as
+  // destructive (terminal, negative). Andre + Juan, transcript gap
+  // "active or inactive" indicator (2026-07-14, 27:27-27:53).
   PENDING_ACK: "outline",
   ACKNOWLEDGED: "outline",
+  CANCEL_PENDING: "outline",
+  AMEND_PENDING: "outline",
   WORKING: "warning",
   PARTIAL: "warning",
   FILLED: "success",
   CANCELLED: "secondary",
   EXPIRED: "secondary",
   REJECTED: "destructive",
+  FAILED: "destructive",
 };
 
 function fmtTs(iso: string): string {
@@ -191,8 +221,11 @@ function stateUppercaseToDb(state: string): ExecutionRow["state"] {
     "PARTIAL",
     "FILLED",
     "CANCELLED",
+    "CANCEL_PENDING",
+    "AMEND_PENDING",
     "EXPIRED",
     "REJECTED",
+    "FAILED",
   ]);
   return known.has(u) ? (u as ExecutionRow["state"]) : (u as ExecutionRow["state"]);
 }
@@ -384,7 +417,14 @@ export function ExecutionView({ bookId }: { bookId: string }) {
         sent_by: existing?.sent_by ?? null,
         state: stateUppercaseToDb(d.state),
         broker: existing?.broker ?? "JSE",
-        broker_state: rawDelta.brokerState ?? existing?.broker_state ?? null,
+        // 2026-07-14: fold the SSE `brokerState` down to the typed
+        // OrderBrokerState union — same fold as the worker mapper +
+        // BFF. Unknown values surface as null (the UI then renders no
+        // chip, which is the correct "haven't observed yet" state).
+        broker_state:
+          rawDelta.brokerState === "ACTIVE" || rawDelta.brokerState === "INACTIVE"
+            ? (rawDelta.brokerState as "ACTIVE" | "INACTIVE")
+            : existing?.broker_state ?? null,
         action_status: rawDelta.actionStatus ?? existing?.action_status ?? null,
         internal_order_status:
           rawDelta.internalOrderStatus ?? existing?.internal_order_status ?? null,
@@ -475,12 +515,15 @@ export function ExecutionView({ bookId }: { bookId: string }) {
       const auditId = row.id;
       setCancelInFlight((p) => ({ ...p, [auditId]: true }));
       setCancelError((p) => ({ ...p, [auditId]: "" }));
-      // Optimistic UI update — flip the local override to CANCELLED.
+      // Optimistic UI update — flip the local override to CANCEL_PENDING
+      // so the desk sees "cancel sent" before the broker acks. The worker
+      // SSE delta (or next 30s poll) carries the state transition to
+      // CANCELLED once IRESS acknowledges the OrderDelete.
       setLiveOverrides((p) => ({
         ...p,
         [auditId]: {
           ...(p[auditId] ?? row),
-          state: "CANCELLED",
+          state: "CANCEL_PENDING",
         },
       }));
       try {
@@ -518,8 +561,9 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   );
 
   // A row is "cancellable" when it's in flight at the broker — i.e. not
-  // already FILLED / CANCELLED / REJECTED / EXPIRED. We surface a disabled
-  // button on terminal rows so the desk gets clear feedback.
+  // already FILLED / CANCELLED / REJECTED / EXPIRED / FAILED. We surface a
+  // disabled button on terminal rows so the desk gets clear feedback. FAILED
+  // (2026-07-14) is also terminal — there's nothing on the book to cancel.
   const isCancellable = (state: string): boolean =>
     state === "WORKING" ||
     state === "PARTIAL" ||
@@ -527,6 +571,133 @@ export function ExecutionView({ bookId }: { bookId: string }) {
     state === "ACKNOWLEDGED" ||
     state === "created" ||
     state === "amended";
+
+  // Amend is the same set as cancel, plus the lifecycle never allows
+  // amending an AMEND_PENDING row (avoid racing two broker instructions
+  // on the same OrderNumber). Operators must wait for the ack.
+  const isAmendable = (state: string): boolean =>
+    isCancellable(state) && state !== "AMEND_PENDING";
+
+  // 2026-07-14: amend row state. When the desk clicks "Amend" on a row,
+  // we expand an inline form (price / qty / TIF) directly under the row.
+  // The form local state lives in `amendForm` keyed by audit row id so
+  // multiple rows can have their own open form simultaneously.
+  const [amendOpen, setAmendOpen] = React.useState<Record<string, boolean>>({});
+  const [amendForm, setAmendForm] = React.useState<
+    Record<string, { priceRands: string; volume: string; tif: "DAY" | "GTC" | "IOC" | "FOK" }>
+  >({});
+  const [amendInFlight, setAmendInFlight] = React.useState<Record<string, boolean>>({});
+  const [amendError, setAmendError] = React.useState<Record<string, string>>({});
+
+  const openAmend = React.useCallback((row: ExecutionRow) => {
+    const auditId = row.id;
+    setAmendOpen((p) => ({ ...p, [auditId]: true }));
+    setAmendForm((p) => ({
+      ...p,
+      [auditId]: {
+        // Pre-fill from the current row so the operator only changes
+        // what they need to. Limit is stored as Rands on the row.
+        priceRands: row.limit_price != null ? String(row.limit_price) : "",
+        volume: String(row.qty || ""),
+        tif: (row.tif === "DAY" || row.tif === "GTC" || row.tif === "IOC" || row.tif === "FOK")
+          ? row.tif
+          : "DAY",
+      },
+    }));
+    setAmendError((p) => ({ ...p, [auditId]: "" }));
+  }, []);
+
+  const closeAmend = React.useCallback((auditId: string) => {
+    setAmendOpen((p) => ({ ...p, [auditId]: false }));
+    setAmendError((p) => ({ ...p, [auditId]: "" }));
+  }, []);
+
+  const submitAmend = React.useCallback(
+    async (row: ExecutionRow) => {
+      const auditId = row.id;
+      const form = amendForm[auditId];
+      if (!form) return;
+      const accountGuess =
+        (typeof row.broker_account === "string" && row.broker_account.length > 0
+          ? row.broker_account
+          : null) ??
+        (typeof row.client_account === "string" && row.client_account.length > 0
+          ? row.client_account
+          : "56378");
+      const iressOrderNumber = row.order_id;
+      if (!iressOrderNumber) return;
+      // Build the amend payload. Skip fields that match the existing
+      // row (don't ask the broker to "amend" to the same value).
+      const px = form.priceRands.trim() === "" ? null : Number(form.priceRands);
+      const vol = form.volume.trim() === "" ? null : Number(form.volume);
+      const body: Record<string, unknown> = { account: accountGuess, order_number: iressOrderNumber };
+      if (px != null && Number.isFinite(px) && (row.limit_price == null || Math.abs(px - row.limit_price) > 0.0001)) {
+        body.price = px;
+      }
+      if (vol != null && Number.isFinite(vol) && vol > 0 && vol !== row.qty) {
+        body.volume = vol;
+      }
+      if (form.tif !== row.tif) {
+        body.tif = form.tif;
+      }
+      if (!("price" in body) && !("volume" in body) && !("tif" in body)) {
+        setAmendError((p) => ({
+          ...p,
+          [auditId]: "Nothing to amend — at least one of price / volume / TIF must change.",
+        }));
+        return;
+      }
+      setAmendInFlight((p) => ({ ...p, [auditId]: true }));
+      setAmendError((p) => ({ ...p, [auditId]: "" }));
+      // Optimistic UI — flip the local override to AMEND_PENDING so the
+      // desk sees the instruction before the broker acks. The worker SSE
+      // delta confirms (and carries the new fields on the next push).
+      setLiveOverrides((p) => ({
+        ...p,
+        [auditId]: {
+          ...(p[auditId] ?? row),
+          state: "AMEND_PENDING",
+          ...(px != null && Number.isFinite(px) ? { limit_price: px } : {}),
+          ...(vol != null && Number.isFinite(vol) ? { qty: vol } : {}),
+        },
+      }));
+      try {
+        const res = await fetch("/api/admin/orderbook/amend", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok && res.status >= 500) {
+          setAmendError((p) => ({
+            ...p,
+            [auditId]: `Amend endpoint returned ${res.status}`,
+          }));
+        } else {
+          const data = (await res.json().catch(() => ({}))) as {
+            ok?: boolean;
+            error?: string;
+            message?: string;
+          };
+          if (data && data.ok === false) {
+            setAmendError((p) => ({
+              ...p,
+              [auditId]: data.message ?? data.error ?? "Amend failed",
+            }));
+          } else {
+            // Close the form on success — the row now shows AMEND_PENDING
+            // and the operator waits for the broker ack.
+            closeAmend(auditId);
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setAmendError((p) => ({ ...p, [auditId]: msg }));
+      } finally {
+        setAmendInFlight((p) => ({ ...p, [auditId]: false }));
+      }
+    },
+    [amendForm, closeAmend],
+  );
 
   const showLoading = executions.loading && rows.length === 0;
   const hasNotice = !!executions.data?.notice;
@@ -643,7 +814,8 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     : `${liveSlipCents > 0 ? "+" : ""}${(liveSlipCents / 100).toFixed(2)}`;
                 const tracked = liveIds.has(r.id);
                 return (
-                  <tr key={r.id} className="border-b border-border/40 hover:bg-accent/10">
+                  <React.Fragment key={r.id}>
+                  <tr className="border-b border-border/40 hover:bg-accent/10">
                     <td className="px-3 py-1.5 font-mono text-[11px] text-foreground whitespace-nowrap">
                       {r.order_id}
                     </td>
@@ -704,12 +876,70 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       {r.sent_by ?? "—"}
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
-                      <span
-                        title={stateTooltip(r)}
-                        className="inline-flex"
-                      >
-                        <Badge variant={STATE_VARIANT[r.state] ?? "outline"}>{r.state}</Badge>
-                      </span>
+                      <div className="flex flex-col items-start gap-0.5">
+                        <span
+                          title={stateTooltip(r)}
+                          className="inline-flex"
+                        >
+                          <Badge variant={STATE_VARIANT[r.state] ?? "outline"}>{r.state}</Badge>
+                        </span>
+                        {/* 2026-07-14: surface the IRESS broker-side
+                            active / inactive flag (Hermes OrderState) as a
+                            tiny secondary chip. Distinct from the lifecycle
+                            state — a fully-filled order is INACTIVE but
+                            "FILLED". Operators asked for an "active or
+                            inactive" indicator so they can spot orders the
+                            broker has parked vs ones still live. UNKNOWN
+                            surfaces for BFF-seeded rows pre-poll. */}
+                        {r.broker_state && r.broker_state !== "UNKNOWN" ? (
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wider",
+                              r.broker_state === "ACTIVE"
+                                ? "bg-success/15 text-success"
+                                : "bg-muted text-muted-foreground",
+                            )}
+                            title={`Hermes OrderState: ${r.broker_state}`}
+                          >
+                            {r.broker_state === "ACTIVE" ? "● active" : "○ inactive"}
+                          </span>
+                        ) : null}
+                        {/* 2026-07-14: pre-trade limit-guard stamp from the
+                            BFF send-to-market. The IRESS broker does NOT
+                            block naked shorts (Andre, 28:22-34:32) — this
+                            chip tells the desk whether the no-naked-short
+                            + cash-bust guard ran for this dispatch. */}
+                        {r.limits_enforced === true ? (
+                          <span
+                            className="inline-flex items-center rounded-full bg-primary/10 px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wider text-primary"
+                            title={`Limit guard PASSED at ${r.limits_checked_at ?? "—"} for account ${r.limits_account_code ?? "—"}. Available cash + position + in-flight orders were checked.`}
+                          >
+                            ✓ guarded
+                          </span>
+                        ) : r.limits_enforced === false ? (
+                          <span
+                            className="inline-flex items-center rounded-full bg-warning/15 px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wider text-warning"
+                            title={`Limit guard did NOT run for this order — ${r.limits_skip_reason ?? "no reason recorded"}. Order dispatched to broker without cash / naked-short check.`}
+                          >
+                            ⚠ not guarded
+                          </span>
+                        ) : null}
+                        {/* 2026-07-14: a FAILED order's only useful detail
+                            is the broker error. Render the IRESS
+                            ErrorNumber + ErrorDescription inline so the
+                            operator doesn't need to expand the row to
+                            know why it failed (Andre, transcript 25:08-
+                            27:53 — the "destinations unavailable" test). */}
+                        {r.state === "FAILED" && r.iress_error_number != null ? (
+                          <span
+                            className="text-[9px] text-destructive/90"
+                            title={r.iress_error_description ?? undefined}
+                          >
+                            IRESS {r.iress_error_number}
+                            {r.iress_error_description ? `: ${r.iress_error_description}` : null}
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td
                       className="px-3 py-1.5 text-[11px] text-foreground whitespace-nowrap"
@@ -777,23 +1007,36 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     <td className="px-3 py-1.5 whitespace-nowrap">
                       {isCancellable(r.state) ? (
                         <div className="flex flex-col gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={!!cancelInFlight[r.id]}
-                            onClick={() => void handleCancel(r)}
-                            className="h-7 px-2 text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10"
-                            title={`Cancel order ${r.order_id} on IRESS (OrderDelete via worker).`}
-                          >
-                            {cancelInFlight[r.id] ? (
-                              <>
-                                <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />
-                                cancelling…
-                              </>
-                            ) : (
-                              "Cancel"
-                            )}
-                          </Button>
+                          <div className="flex gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={!!cancelInFlight[r.id]}
+                              onClick={() => void handleCancel(r)}
+                              className="h-7 px-2 text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10"
+                              title={`Cancel order ${r.order_id} on IRESS (OrderDelete via worker).`}
+                            >
+                              {cancelInFlight[r.id] ? (
+                                <>
+                                  <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />
+                                  cancelling…
+                                </>
+                              ) : (
+                                "Cancel"
+                              )}
+                            </Button>
+                            {isAmendable(r.state) ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openAmend(r)}
+                                className="h-7 px-2 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"
+                                title={`Amend order ${r.order_id} on IRESS (OrderAmend2 via worker).`}
+                              >
+                                Amend
+                              </Button>
+                            ) : null}
+                          </div>
                           {cancelError[r.id] ? (
                             <span className="text-[9px] text-destructive" title={cancelError[r.id] ?? undefined}>
                               {cancelError[r.id]}
@@ -805,7 +1048,118 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       )}
                     </td>
                   </tr>
-                );
+                  {amendOpen[r.id] ? (
+                    <tr key={`${r.id}-amend`} className="border-b border-border/40 bg-muted/30">
+                      <td colSpan={21} className="px-3 py-2">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Amend order {r.order_id} — OrderAmend2 via worker
+                          </span>
+                          <div className="flex flex-wrap items-end gap-2">
+                            <label className="flex flex-col gap-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                              Price (R)
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                className="h-7 w-24 text-[11px]"
+                                value={amendForm[r.id]?.priceRands ?? ""}
+                                onChange={(e) =>
+                                  setAmendForm((p) => ({
+                                    ...p,
+                                    [r.id]: {
+                                      priceRands: e.target.value,
+                                      volume: p[r.id]?.volume ?? "",
+                                      tif: p[r.id]?.tif ?? "DAY",
+                                    },
+                                  }))
+                                }
+                                placeholder={r.limit_price != null ? String(r.limit_price) : "—"}
+                              />
+                            </label>
+                            <label className="flex flex-col gap-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                              Volume
+                              <Input
+                                type="number"
+                                step="1"
+                                min="1"
+                                className="h-7 w-20 text-[11px]"
+                                value={amendForm[r.id]?.volume ?? ""}
+                                onChange={(e) =>
+                                  setAmendForm((p) => ({
+                                    ...p,
+                                    [r.id]: {
+                                      priceRands: p[r.id]?.priceRands ?? "",
+                                      volume: e.target.value,
+                                      tif: p[r.id]?.tif ?? "DAY",
+                                    },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label className="flex flex-col gap-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                              TIF
+                              <select
+                                className="h-7 rounded-md border border-input bg-background px-2 text-[11px]"
+                                value={amendForm[r.id]?.tif ?? "DAY"}
+                                onChange={(e) =>
+                                  setAmendForm((p) => ({
+                                    ...p,
+                                    [r.id]: {
+                                      priceRands: p[r.id]?.priceRands ?? "",
+                                      volume: p[r.id]?.volume ?? "",
+                                      tif: e.target.value as "DAY" | "GTC" | "IOC" | "FOK",
+                                    },
+                                  }))
+                                }
+                              >
+                                <option value="DAY">DAY</option>
+                                <option value="GTC">GTC</option>
+                                <option value="IOC">IOC</option>
+                                <option value="FOK">FOK</option>
+                              </select>
+                            </label>
+                            <Button
+                              size="sm"
+                              disabled={!!amendInFlight[r.id]}
+                              onClick={() => void submitAmend(r)}
+                              className="h-7"
+                              title="Submit OrderAmend2 to IRESS via the worker."
+                            >
+                              {amendInFlight[r.id] ? (
+                                <>
+                                  <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />
+                                  sending…
+                                </>
+                              ) : (
+                                "Submit amend"
+                              )}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => closeAmend(r.id)}
+                              className="h-7"
+                              disabled={!!amendInFlight[r.id]}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                          {amendError[r.id] ? (
+                            <span className="text-[10px] text-destructive" title={amendError[r.id] ?? undefined}>
+                              {amendError[r.id]}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-muted-foreground">
+                              Only changed fields are sent to the broker (OrderAmend2 is partial). State flips to AMEND_PENDING on submit, then back to WORKING/PARTIAL on broker ack — partial fills preserved.
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </React.Fragment>
+              );
               })
             )}
           </tbody>

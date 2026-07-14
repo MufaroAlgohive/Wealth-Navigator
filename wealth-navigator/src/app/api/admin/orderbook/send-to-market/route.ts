@@ -9,6 +9,40 @@ import { isUatEnv } from "@/lib/oems/uat-scope";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
+ * Pre-trade strategy-level limit guard (2026-07-14, transcript gap
+ * "We bought 100, sold 50, then sold 75 — broker didn't block the 75").
+ *
+ * The IRESS IOS+ OrderPad does NOT enforce portfolio limits — Andre
+ * confirmed during the UAT walkthrough (2026-07-14, 28:22-34:32) that
+ * the desk expects MY side to gate:
+ *
+ *   - BUY  : notional must fit within available cash at the desk
+ *            account (oems_account_c.cash_balance minus outstanding
+ *            buy notional from in-flight orders).
+ *   - SELL : must not exceed current position + outstanding buys in
+ *            flight (i.e. no naked shorts).
+ *
+ * Scope: runs against the *aggregate strategy book* against the desk's
+ * IRESS AccountCode (env IRESS_ACCOUNT_CODE, default "56378" for UAT).
+ * Per-investor enforcement is deferred until the mint_number ↔
+ * AccountCode bridge lands (post-OEMS v1, AGENTS.md).
+ *
+ * The guard fails closed: any violation returns 422 with the offending
+ * holdings + the reason. The audit rows are NOT written in that case.
+ *
+ * Two-state contract surfaced on every successful audit row:
+ *   payload.limits_enforced    = true  → guard ran + passed
+ *   payload.limits_checked_at  = ISO timestamp
+ *   payload.limits_snapshot    = { available_cash, account_code,
+ *     positions[], in_flight[] } for forensic replay
+ *
+ * When the guard CAN'T run (no oems_account_c row, no last_price, etc.)
+ * we still write the audit rows but stamp limits_enforced=false + a
+ * reason so the operator sees the gap rather than believing the trade
+ * was validated.
+ */
+
+/**
  * POST /api/admin/orderbook/send-to-market
  *
  * Mint OEM Phase B3 — dispatches a book of orders to the broker by writing
@@ -82,6 +116,279 @@ interface WorkerUatResponse {
   brokerDestination?: string;
   errorNumber?: number;
   errorDescription?: string;
+}
+
+// ─── Pre-trade limit guard types ───────────────────────────────────────
+interface AccountSnapshot {
+  account_code: string;
+  cash_balance: number | null;
+  nav_value: number | null;
+  account_status: string | null;
+}
+interface PositionSnapshot {
+  security_code: string;
+  quantity: number;
+}
+interface InFlightOrder {
+  security_code: string;
+  symbol: string;
+  side: "buy" | "sell";
+  quantity: number;
+  price_cents: number | null;
+  // Approx notional in Rands for cash-availability math (uses limit
+  // when available, otherwise the row's avgPx, otherwise null).
+  notionalRands: number | null;
+  order_id: string;
+}
+interface LimitViolation {
+  holding_id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  qty: number;
+  reason: string;
+  // Detail for the operator tooltip.
+  detail: Record<string, number | string | null>;
+}
+interface LimitSnapshot {
+  account_code: string;
+  available_cash: number | null;
+  positions: Array<{ security_code: string; quantity: number }>;
+  in_flight: Array<{
+    symbol: string;
+    side: string;
+    quantity: number;
+    notional_rands: number | null;
+  }>;
+}
+interface LimitGuardResult {
+  enforced: boolean;
+  violations: LimitViolation[];
+  snapshot: LimitSnapshot | null;
+  // Human-readable reason the guard could not run (null when enforced).
+  skipReason: string | null;
+}
+
+// Statuses we treat as "in flight" (i.e. committed against the limit).
+// Filled / cancelled / expired / rejected / failed are terminal — they
+// already hit (or settled at) the broker and are reflected in the IPS
+// position snapshot.
+const IN_FLIGHT_STATUSES = new Set([
+  "pending_ack",
+  "acknowledged",
+  "working",
+  "partial",
+  "amend_pending",
+  "cancel_pending",
+]);
+
+/**
+ * Run the pre-trade strategy-level limit guard for a book of holdings
+ * against the desk's IRESS AccountCode (env IRESS_ACCOUNT_CODE, default
+ * "56378"). Reads positions + cash + outstanding orders from the
+ * institutional Supabase. Returns `{ enforced, violations, snapshot,
+ * skipReason }` — `enforced=false` means the guard could not run (no
+ * account row, missing price data, etc.) and the caller must stamp the
+ * audit row with `limits_enforced: false` so the operator sees the gap.
+ */
+async function runLimitGuard(
+  institutional: SupabaseClient,
+  accountCode: string,
+  holdings: Holding[],
+  secMap: Record<string, Security>,
+  orderType: "limit" | "market",
+): Promise<LimitGuardResult> {
+  // 1. Account snapshot (cash + nav + status).
+  const { data: acctRow } = await institutional
+    .from("oems_account_c")
+    .select("account_code, cash_balance, nav_value, account_status")
+    .eq("account_code", accountCode)
+    .maybeSingle();
+  const account = (acctRow ?? null) as AccountSnapshot | null;
+  if (!account) {
+    return {
+      enforced: false,
+      violations: [],
+      snapshot: null,
+      skipReason: `No oems_account_c row for account_code=${accountCode} — IPS worker must ingest IPSAccountGetAll1 first.`,
+    };
+  }
+  if (account.account_status && !["OPEN", "ACTIVE", "MARGIN"].includes(account.account_status.toUpperCase())) {
+    return {
+      enforced: false,
+      violations: [],
+      snapshot: { account_code: accountCode, available_cash: account.cash_balance, positions: [], in_flight: [] },
+      skipReason: `Account ${accountCode} status is '${account.account_status}' — guard refused to run.`,
+    };
+  }
+
+  // 2. Positions snapshot for the desk account.
+  const { data: posRows } = await institutional
+    .from("oems_position_c")
+    .select("security_code, quantity")
+    .eq("account_code", accountCode);
+  const positions = ((posRows ?? []) as PositionSnapshot[]).reduce<Map<string, number>>(
+    (m, p) => m.set(p.security_code, Number(p.quantity) || 0),
+    new Map(),
+  );
+
+  // 3. In-flight orders for the desk account (any status not terminal).
+  const { data: ooRows } = await institutional
+    .from("oems_order_audit")
+    .select("order_id, symbol, side, quantity, price_cents, status, payload")
+    .eq("client_account", accountCode)
+    .in("status", Array.from(IN_FLIGHT_STATUSES));
+  const inFlight: InFlightOrder[] = ((ooRows ?? []) as Array<{
+    order_id: string;
+    symbol: string;
+    side: string;
+    quantity: number;
+    price_cents: number | null;
+    payload: Record<string, unknown> | null;
+  }>).map((r) => {
+    // Notional = price_cents/100 * quantity (Rands). Falls back to
+    // payload.avgPx / payload.limitPrice. null when no usable price.
+    const pxCents =
+      r.price_cents ??
+      (typeof r.payload?.avgPx === "number" ? Math.round(Number(r.payload.avgPx) * 100) : null) ??
+      (typeof r.payload?.limitPrice === "number" ? Math.round(Number(r.payload.limitPrice) * 100) : null);
+    const notional = pxCents != null ? (pxCents / 100) * Number(r.quantity) : null;
+    return {
+      order_id: r.order_id,
+      security_code: r.symbol,
+      symbol: r.symbol,
+      side: r.side === "sell" ? "sell" : "buy",
+      quantity: Number(r.quantity) || 0,
+      price_cents: r.price_cents,
+      notionalRands: notional,
+    };
+  });
+
+  const availableCash =
+    account.cash_balance != null
+      ? Math.max(0, Number(account.cash_balance)) -
+        inFlight
+          .filter((o) => o.side === "buy")
+          .reduce((s, o) => s + (o.notionalRands ?? 0), 0)
+      : null;
+
+  const snapshot: LimitSnapshot = {
+    account_code: accountCode,
+    available_cash: availableCash,
+    positions: Array.from(positions.entries()).map(([security_code, quantity]) => ({ security_code, quantity })),
+    in_flight: inFlight.map((o) => ({
+      symbol: o.symbol,
+      side: o.side,
+      quantity: o.quantity,
+      notional_rands: o.notionalRands,
+    })),
+  };
+
+  // 4. Validate each holding against the snapshot. First failure is
+  // fatal (atomic dispatch — we don't partial-send a book).
+  const violations: LimitViolation[] = [];
+  // Track the running position / cash projection across the book so
+  // intra-book sells/buys don't double-count against the snapshot.
+  const projectedCash: { value: number | null } = { value: availableCash };
+  const projectedPositions = new Map(positions);
+
+  for (const h of holdings) {
+    const sec = secMap[h.security_id];
+    const symbol = sec?.symbol ?? "—";
+    const qty = Number(h.quantity) || 0;
+    if (qty <= 0) {
+      violations.push({
+        holding_id: h.id,
+        symbol,
+        side: h.trade_side === "sell" ? "sell" : "buy",
+        qty,
+        reason: "Quantity must be > 0",
+        detail: {},
+      });
+      continue;
+    }
+
+    if (h.trade_side === "sell") {
+      // No naked short: current position + outstanding buys in flight must
+      // cover the sell. The orderbook audit table tracks in-flight orders;
+      // oems_position_c carries the broker-confirmed position.
+      const cur = projectedPositions.get(symbol) ?? 0;
+      const ooBuy = inFlight
+        .filter((o) => o.security_code === symbol && o.side === "buy")
+        .reduce((s, o) => s + o.quantity, 0);
+      const ooSell = inFlight
+        .filter((o) => o.security_code === symbol && o.side === "sell")
+        .reduce((s, o) => s + o.quantity, 0);
+      const effectivePosition = cur + ooBuy - ooSell;
+      if (qty > effectivePosition) {
+        violations.push({
+          holding_id: h.id,
+          symbol,
+          side: "sell",
+          qty,
+          reason: `Would create a net short of ${qty - effectivePosition} shares — broker does not block naked shorts; this guard refused.`,
+          detail: {
+            current_position: cur,
+            outstanding_buys: ooBuy,
+            outstanding_sells: ooSell,
+            effective_cover: effectivePosition,
+            short_fall: qty - effectivePosition,
+          },
+        });
+        continue;
+      }
+      // Project: subtract the sell from the running position.
+      projectedPositions.set(symbol, cur - qty);
+    } else {
+      // BUY: notional must fit within available cash at limit (or last price).
+      const pxRands =
+        orderType === "limit" && Number.isFinite(Number(h.Expected_fill)) && Number(h.Expected_fill) > 0
+          ? Number(h.Expected_fill) / 100
+          : sec?.last_price != null
+            ? Number(sec.last_price) / 100
+            : null;
+      if (pxRands == null || !Number.isFinite(pxRands) || pxRands <= 0) {
+        violations.push({
+          holding_id: h.id,
+          symbol,
+          side: "buy",
+          qty,
+          reason: `No usable price for cash check (limit=${h.Expected_fill ?? "null"}, last_price=${sec?.last_price ?? "null"})`,
+          detail: {},
+        });
+        continue;
+      }
+      const notional = pxRands * qty;
+      if (projectedCash.value != null && projectedCash.value < notional) {
+        violations.push({
+          holding_id: h.id,
+          symbol,
+          side: "buy",
+          qty,
+          reason: `Notional ${notional.toFixed(2)} exceeds available cash ${projectedCash.value.toFixed(2)} (account ${accountCode}, minus in-flight BUY notional).`,
+          detail: {
+            unit_price: pxRands,
+            notional: notional,
+            available_cash: projectedCash.value,
+            shortfall: notional - projectedCash.value,
+          },
+        });
+        continue;
+      }
+      // Project: deduct the notional from cash + add qty to the projected position.
+      if (projectedCash.value != null) {
+        projectedCash.value = projectedCash.value - notional;
+      }
+      const cur = projectedPositions.get(symbol) ?? 0;
+      projectedPositions.set(symbol, cur + qty);
+    }
+  }
+
+  return {
+    enforced: violations.length === 0,
+    violations,
+    snapshot,
+    skipReason: null,
+  };
 }
 
 export async function POST(req: Request) {
@@ -203,8 +510,47 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
   }
 
+  // ── Pre-trade limit guard ───────────────────────────────────────────
+  // (2026-07-14) Refuse the dispatch when ANY holding would create a
+  // naked short or bust available cash. The IRESS IOS+ OrderPad does
+  // not enforce these — the desk confirmed during UAT walkthrough
+  // (28:22-34:32) that we are responsible for limits.
+  //
+  // Per-investor enforcement is post-OEMS v1 (mint_number ↔ AccountCode
+  // bridge). For now the guard runs against the aggregate strategy
+  // book against the desk's IRESS AccountCode (env
+  // IRESS_ACCOUNT_CODE, default "56378" for UAT).
+  const deskAccountCode =
+    (typeof process.env.IRESS_ACCOUNT_CODE === "string" && process.env.IRESS_ACCOUNT_CODE.trim().length > 0
+      ? process.env.IRESS_ACCOUNT_CODE.trim()
+      : "56378");
+  const guard = await runLimitGuard(institutional, deskAccountCode, holdings, secMap, orderType);
+  if (!guard.enforced) {
+    if (guard.violations.length > 0) {
+      // Hard refusal — return the violation list, do NOT write audit rows.
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "Pre-trade limit guard refused the dispatch.",
+          code: "limit_guard_violation",
+          account_code: deskAccountCode,
+          violations: guard.violations,
+          snapshot: guard.snapshot,
+        },
+        { status: 422 },
+      );
+    }
+    // Guard could not run (no account row, bad status, etc.). Log and
+    // continue — the audit row will carry limits_enforced=false so the
+    // operator sees the gap.
+    console.warn(
+      `[orderbook/send-to-market] limit guard SKIPPED for book=${bookId}: ${guard.skipReason ?? "unknown"}`,
+    );
+  }
+
   // Build execution rows (one per ISIN per holding). order_id is the strategy
   // book so the desk can group/aggregate on the front-end.
+  const limitsCheckedAt = new Date().toISOString();
   const executionRows = holdings.map((h, idx) => {
     const sec = secMap[h.security_id];
     const prof = profMap[h.user_id];
@@ -232,6 +578,16 @@ export async function POST(req: Request) {
         holding_id: h.id,
         trader: auth.ctx.email,
         uat_test: uatTest,
+        // 2026-07-14 — limit guard contract. Stamp on every audit row
+        // so the desk UI can render "Guarded / Not guarded" + the
+        // snapshot for forensic replay. When enforced=false the
+        // skip_reason carries the gap so the operator never wonders
+        // whether a naked short went out.
+        limits_enforced: guard.enforced,
+        limits_checked_at: limitsCheckedAt,
+        limits_account_code: deskAccountCode,
+        limits_skip_reason: guard.enforced ? null : guard.skipReason,
+        limits_snapshot: guard.snapshot,
       },
       result_payload: {
         broker,
@@ -360,6 +716,16 @@ export async function POST(req: Request) {
         notice: uatFanout.notice,
         results,
       },
+      // 2026-07-14: surface the pre-trade limit guard result on every
+      // successful dispatch. The audit row carries the same fields
+      // (payload.limits_*) so the operator can replay the snapshot.
+      limits: {
+        enforced: guard.enforced,
+        account_code: deskAccountCode,
+        checked_at: limitsCheckedAt,
+        skip_reason: guard.enforced ? null : guard.skipReason,
+        snapshot: guard.snapshot,
+      },
     });
   }
 
@@ -383,6 +749,14 @@ export async function POST(req: Request) {
       sent: uatFanout.sent,
       failed: uatFanout.failed,
       notice: uatFanout.notice,
+    },
+    // 2026-07-14: limit guard surface on the audit-only path too.
+    limits: {
+      enforced: guard.enforced,
+      account_code: deskAccountCode,
+      checked_at: limitsCheckedAt,
+      skip_reason: guard.enforced ? null : guard.skipReason,
+      snapshot: guard.snapshot,
     },
   });
 }

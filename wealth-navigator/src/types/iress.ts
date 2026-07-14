@@ -89,6 +89,15 @@ export type OrderTIF = "DAY" | "IOC" | "FOK" | "GTC";
  *                   by the broker yet. Flips to WORKING / PARTIAL on the
  *                   next poll once IRESS confirms. Stored as 'amend_pending'
  *                   on oems_order_audit.status.
+ *   - FAILED       : Terminal. OrderCreate3 / OrderAmend / OrderDelete was
+ *                   rejected at the broker (network down, venue unavailable,
+ *                   operator kicked the session, invalid account, etc.). The
+ *                   IRESS ErrorNumber + ErrorDescription are surfaced on
+ *                   `iressErrorNumber` / `rejectReason` so the operator can
+ *                   see the actual reason. Distinct from REJECTED which is
+ *                   a validation-level rejection pre-routing; FAILED is a
+ *                   post-routing transport / venue failure. Stored as
+ *                   'failed' on oems_order_audit.status.
  */
 export type OrderState =
   | "PENDING_ACK"
@@ -100,7 +109,22 @@ export type OrderState =
   | "CANCEL_PENDING"
   | "EXPIRED"
   | "REJECTED"
-  | "AMEND_PENDING";
+  | "AMEND_PENDING"
+  | "FAILED";
+
+/**
+ * IRESS Hermes OrderPad broker-side activity flag. Distinct from the
+ * lifecycle `OrderState` because a fully-filled order is also INACTIVE
+ * once the broker closes the row, but the operator needs to know the
+ * order is still "live in the book" vs "done and parked". Render as a
+ * green / grey chip on the OEMS row. Sourced from IRESS OrderState field
+ * (not ActionStatus) — the worker mapper always populates this.
+ *   - ACTIVE  : order is on the book, IRESS considers it live
+ *   - INACTIVE: order is closed (filled, cancelled, expired, or rejected)
+ *   - UNKNOWN : worker hasn't observed the order yet (e.g. fresh audit
+ *               row pre-poll)
+ */
+export type OrderBrokerState = "ACTIVE" | "INACTIVE" | "UNKNOWN";
 export type OrderDestination = "JSE" | "NASDAQ" | "NYSE" | "LSE" | "OTC" | "DARK";
 
 export interface Order {
@@ -127,6 +151,13 @@ export interface Order {
   ts: number;
   state: OrderState;
   rejectReason?: string;
+  // 2026-07-14 (Andre + Juan): surfaced on the typed Order (not just on
+  // the SSE delta) so the audit BFF + the order book UI can render the
+  // actual broker-side reason when an order goes FAILED post-routing.
+  // IRESS ErrorNumber is non-zero on OrderPad rows that the broker parked
+  // after a venue / transport failure (network down, kicked session, etc).
+  iressErrorNumber?: number | null;
+  iressErrorDescription?: string | null;
   slippageBps: number | null;
   arrivalMid: number;
   orderTag: string; // IRESS idempotency key
@@ -135,7 +166,7 @@ export interface Order {
   // mapper always populates them when reading from live OrderPadGetByAccount.
   // Surface them on the type so the OEMS UI can render the exact broker-side
   // status text, not just the downmapped lifecycle state.
-  brokerState?: string | null;          // "ACTIVE" | "INACTIVE"
+  brokerState?: OrderBrokerState | null;  // "ACTIVE" | "INACTIVE" | "UNKNOWN"
   actionStatus?: string | null;         // "Pending" | "Acknowledged" | "OK" | "Cancelled" | ...
   internalOrderStatus?: string | null;  // finer status (Hermes-side)
   stateDescription?: string | null;     // free-text "Traded 200@177, then 200@179"

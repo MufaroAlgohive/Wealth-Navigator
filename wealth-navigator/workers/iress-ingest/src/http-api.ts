@@ -803,6 +803,21 @@ interface OrderCancelResult {
   error?: { code: string; message: string };
 }
 
+interface OrderAmendResult {
+  ok: boolean;
+  orderId: string;
+  account: string;
+  amendedAt: string;
+  workerId: string;
+  iressMode: string;
+  // Echo back the fields we sent to OrderAmend2 so the caller / audit row
+  // can show what was changed. Null when not amended (failed path).
+  newPrice: number | null;
+  newVolume: number | null;
+  newTif: string | null;
+  error?: { code: string; message: string };
+}
+
 /**
  * Forward an `OrderDelete` to IRESS via the IOS+ service session.
  * Same live-only gate as `fetchLiveOrders`: in mock / non-live modes
@@ -860,19 +875,30 @@ async function cancelLiveOrder(
     let cancelledAuditId: string | null = null;
     let cancelledFilled: number | null = null;
     let cancelledAvgFillCents: number | null = null;
+    let cancelledSymbol: string | null = null;
+    let cancelledQty: number | null = null;
     if (deps.supabase) {
       try {
         // Read the existing audit row(s) so the SSE delta carries the
-        // pre-cancel filled / avg fill values (the row had fills that
-        // should be preserved). Match both representations.
+        // pre-cancel filled / avg fill values AND symbol / qty from the
+        // top-level columns (those are NOT inside payload). Without
+        // these, the UI's second grouped row (the cancel delta) renders
+        // with `symbol: "—"` and `qty: "0"` until the next poll lands.
         const { data: existing } = await deps.supabase
           .from("oems_order_audit")
-          .select("id, payload")
+          .select("id, payload, symbol, quantity")
           .or(`order_id.eq.${orderId},payload->>iress_order_number.eq.${orderId}`)
           .limit(1);
         if (existing && existing.length > 0) {
-          const ex = existing[0] as { id: string; payload: Record<string, unknown> | null };
+          const ex = existing[0] as {
+            id: string;
+            payload: Record<string, unknown> | null;
+            symbol: string | null;
+            quantity: number | null;
+          };
           cancelledAuditId = ex.id;
+          cancelledSymbol = ex.symbol ?? null;
+          cancelledQty = typeof ex.quantity === "number" ? ex.quantity : null;
           const p = ex.payload ?? {};
           if (typeof p.filled === "number") cancelledFilled = p.filled;
           if (typeof p.avgPx === "number") cancelledAvgFillCents = Math.round(p.avgPx * 100);
@@ -905,34 +931,45 @@ async function cancelLiveOrder(
         /* audit stamp is best-effort; the broker cancel already succeeded */
       }
 
-      // Publish the SSE delta so subscribed UIs flip to "CANCELLED"
-      // immediately — without waiting for the next 30s poll. The hub
-      // suppresses no-op deltas (state didn't change), but "cancelled"
-      // is always a state change relative to anything pre-cancel.
+      // Publish the SSE delta so subscribed UIs flip to
+      // "CANCEL_PENDING" immediately — without waiting for the next
+      // 30s poll. The hub suppresses no-op deltas (state didn't
+      // change), but "cancel_pending" is always a state change
+      // relative to anything pre-cancel. The next poll (or a manual
+      // ack from the desk broker) writes a CANCELLED row which flips
+      // the UI to terminal.
       try {
         uatExecutionHub.publish({
           iressOrderNumber: orderId,
           orderAuditId: cancelledAuditId,
-          state: "cancelled",
+          state: "cancel_pending",
           filled: cancelledFilled ?? 0,
           avgFillPrice: cancelledAvgFillCents != null ? cancelledAvgFillCents / 100 : null,
           lastFillTimestamp: cancelledAt,
           // 2026-07-13 — Transcript gap #2 (26:21): explicitly carry the
           // last-action text so the UI's new Action column updates
           // without needing a poll cycle.
-          lastAction: "Cancelled by trader (OrderDelete)",
+          // 2026-07-14 — Transcript gap #3 (19:35, 19:49): symbol + qty
+          // disappear on the cancel delta because the OrderDelete SOAP
+          // reply doesn't carry the original row's SecurityCode /
+          // Volume. Carry them forward from the existing audit row so
+          // the parent's symbol/qty never blanks while the cancel
+          // instruction is in-flight. `symbol` defaults to "" and qty
+          // to 0 only if we genuinely have no prior audit row to read
+          // from (first-ever cancel of a freshly created order).
+          lastAction: "Cancel sent — awaiting broker acknowledgement",
           lastActionAt: cancelledAt,
           raw: {
             id: orderId,
             account,
             strategy: "",
             side: "BUY",
-            symbol: "",
+            symbol: cancelledSymbol ?? "",
             isin: "",
             type: "LMT",
             tif: "DAY",
             destination: "JSE",
-            qty: 0,
+            qty: cancelledQty ?? 0,
             filled: cancelledFilled ?? 0,
             limit: null,
             stop: null,
@@ -940,14 +977,14 @@ async function cancelLiveOrder(
             vwap: null,
             trader: "",
             ts: Date.parse(cancelledAt) || Date.now(),
-            state: "CANCELLED" as OrderState,
+            state: "CANCEL_PENDING" as OrderState,
             orderTag: "",
             slippageBps: null,
             arrivalMid: 0,
             brokerState: "INACTIVE",
-            actionStatus: "Cancelled",
-            internalOrderStatus: "Cancelled",
-            stateDescription: "Cancelled by trader",
+            actionStatus: "Cancel sent",
+            internalOrderStatus: "Awaiting cancel acknowledgement",
+            stateDescription: "Cancel instruction sent — awaiting broker acknowledgement",
             remainingVolume: 0,
             remainingValueCents: 0,
             orderValueCents: null,
@@ -975,6 +1012,243 @@ async function cancelLiveOrder(
     }
     const message = err instanceof Error ? err.message : String(err);
     const code = err instanceof IressError ? `iress_${err.code}` : "cancel_failed";
+    return baseError(code, message);
+  }
+}
+
+/**
+ * Forward an `OrderAmend2` to IRESS via the IOS+ service session.
+ *
+ * 2026-07-14 (Andre + Juan, 37:04): Andre confirmed the lifecycle for
+ * an amend is "amend_pending → broker ack → WORKING/PARTIAL (preserving
+ * fills)". Mirrors `cancelLiveOrder` 1:1 — same live-only gate, same
+ * SSE delta + audit-row stamp pattern, same broker error envelope.
+ *
+ * Body shape:
+ *   { orderId: string, account?: string, price?: number,
+ *     volume?: number, tif?: "DAY" | "GTC" | "IOC" | "FOK",
+ *     triggerPrice?: number }
+ *
+ * `OrderAmend2` is a partial-update: only the fields you pass are
+ * changed at the broker. At least one of price / volume / tif /
+ * triggerPrice must be supplied, else IRESS returns an error. The
+ * server does NOT short-circuit that here — it forwards whatever the
+ * BFF sent and surfaces the broker's verdict in the result envelope.
+ */
+async function amendLiveOrder(
+  deps: HttpApiDeps,
+  account: string,
+  orderId: string,
+  amend: {
+    price?: number | null;
+    volume?: number | null;
+    tif?: "DAY" | "GTC" | "IOC" | "FOK" | null;
+    triggerPrice?: number | null;
+  },
+): Promise<OrderAmendResult> {
+  const baseError = (code: string, message: string): OrderAmendResult => ({
+    ok: false,
+    orderId,
+    account,
+    amendedAt: new Date().toISOString(),
+    workerId: deps.env.workerId,
+    iressMode: deps.env.iressMode,
+    newPrice: amend.price ?? null,
+    newVolume: amend.volume ?? null,
+    newTif: amend.tif ?? null,
+    error: { code, message },
+  });
+  const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+  if (!isLive) {
+    return baseError("mock_mode", "Worker is running in mock mode; no live orders available");
+  }
+  if (
+    amend.price == null &&
+    amend.volume == null &&
+    amend.tif == null &&
+    amend.triggerPrice == null
+  ) {
+    return baseError(
+      "no_fields",
+      "Amend requires at least one of price / volume / tif / triggerPrice",
+    );
+  }
+  try {
+    const session = await deps.sessions.getSession();
+    const iosKey = session.serviceKeys.IOSPlus;
+    if (!iosKey) {
+      return baseError("ios_unavailable", "IOSPlus service session not available; order pad not entitled");
+    }
+    const client = getIressClient("live");
+    await client.orderAmend2({
+      ServiceSessionKey: iosKey,
+      OrderNumber: orderId,
+      ...(amend.price != null ? { Price: amend.price } : {}),
+      ...(amend.volume != null ? { Volume: amend.volume } : {}),
+      ...(amend.tif != null ? { TimeInForce: amend.tif } : {}),
+      ...(amend.triggerPrice != null ? { TriggerPrice: amend.triggerPrice } : {}),
+    });
+    const amendedAt = new Date().toISOString();
+    // Stamp the audit row + publish the SSE delta so the desk sees
+    // AMEND_PENDING immediately (Andre, 37:04). Same pattern as
+    // cancelLiveOrder: read symbol / qty / filled / avgPx from the
+    // existing audit row so the parent's symbol/qty never blanks
+    // while the amend instruction is in-flight, then stamp the
+    // payload with the new fields we sent to the broker.
+    let amendedAuditId: string | null = null;
+    let amendedSymbol: string | null = null;
+    let amendedQty: number | null = null;
+    let amendedFilled: number | null = null;
+    let amendedAvgFillCents: number | null = null;
+    if (deps.supabase) {
+      try {
+        const { data: existing } = await deps.supabase
+          .from("oems_order_audit")
+          .select("id, payload, symbol, quantity")
+          .or(`order_id.eq.${orderId},payload->>iress_order_number.eq.${orderId}`)
+          .limit(1);
+        if (existing && existing.length > 0) {
+          const ex = existing[0] as {
+            id: string;
+            payload: Record<string, unknown> | null;
+            symbol: string | null;
+            quantity: number | null;
+          };
+          amendedAuditId = ex.id;
+          amendedSymbol = ex.symbol ?? null;
+          amendedQty = typeof ex.quantity === "number" ? ex.quantity : null;
+          const p = ex.payload ?? {};
+          if (typeof p.filled === "number") amendedFilled = p.filled;
+          if (typeof p.avgPx === "number") amendedAvgFillCents = Math.round(p.avgPx * 100);
+        }
+        const amendSummary = [
+          amend.price != null ? `price=${amend.price}` : null,
+          amend.volume != null ? `volume=${amend.volume}` : null,
+          amend.tif != null ? `tif=${amend.tif}` : null,
+          amend.triggerPrice != null ? `trigger=${amend.triggerPrice}` : null,
+        ]
+          .filter(Boolean)
+          .join(", ");
+        await deps.supabase
+          .from("oems_order_audit")
+          .update({
+            // AMEND_PENDING (2026-07-14): Andre confirmed the lifecycle.
+            // Flip to amend_pending so the UI shows the in-flight
+            // instruction. The next poll (or a manual ack) writes a
+            // WORKING/PARTIAL row which flips the UI back, preserving
+            // any partial fills already on the book.
+            status: "amend_pending",
+            payload: {
+              lastAction: `Amend sent (${amendSummary}) — awaiting broker acknowledgement`,
+              lastActionAt: amendedAt,
+              amend_pending: {
+                price: amend.price ?? null,
+                volume: amend.volume ?? null,
+                tif: amend.tif ?? null,
+                trigger_price: amend.triggerPrice ?? null,
+                sent_at: amendedAt,
+              },
+            },
+          })
+          .eq("order_id", orderId);
+        await deps.supabase
+          .from("oems_order_audit")
+          .update({
+            status: "amend_pending",
+            payload: {
+              lastAction: `Amend sent (${amendSummary}) — awaiting broker acknowledgement`,
+              lastActionAt: amendedAt,
+              amend_pending: {
+                price: amend.price ?? null,
+                volume: amend.volume ?? null,
+                tif: amend.tif ?? null,
+                trigger_price: amend.triggerPrice ?? null,
+                sent_at: amendedAt,
+              },
+            },
+          })
+          .eq("payload->>iress_order_number", orderId);
+      } catch {
+        /* audit stamp is best-effort; the broker amend already succeeded */
+      }
+
+      try {
+        uatExecutionHub.publish({
+          iressOrderNumber: orderId,
+          orderAuditId: amendedAuditId,
+          state: "amend_pending",
+          filled: amendedFilled ?? 0,
+          avgFillPrice: amendedAvgFillCents != null ? amendedAvgFillCents / 100 : null,
+          lastFillTimestamp: amendedAt,
+          lastAction: `Amend sent (${[
+            amend.price != null ? `price=${amend.price}` : null,
+            amend.volume != null ? `volume=${amend.volume}` : null,
+            amend.tif != null ? `tif=${amend.tif}` : null,
+            amend.triggerPrice != null ? `trigger=${amend.triggerPrice}` : null,
+          ]
+            .filter(Boolean)
+            .join(", ")}) — awaiting broker acknowledgement`,
+          lastActionAt: amendedAt,
+          // 2026-07-14: amend preserves fills. The hub forwards the
+          // current fill + avgPx unchanged so the parent's % filled /
+          // avg price never blanks during the in-flight amend. The
+          // next poll (or a manual ack) flips the state to
+          // WORKING / PARTIAL with the new price/volume applied.
+          raw: {
+            id: orderId,
+            account,
+            strategy: "",
+            side: "BUY",
+            symbol: amendedSymbol ?? "",
+            isin: "",
+            type: "LMT",
+            tif: amend.tif ?? "DAY",
+            destination: "JSE",
+            qty: amendedQty ?? 0,
+            filled: amendedFilled ?? 0,
+            limit: amend.price ?? null,
+            stop: amend.triggerPrice ?? null,
+            avgPx: amendedAvgFillCents != null ? amendedAvgFillCents / 100 : null,
+            vwap: amendedAvgFillCents != null ? amendedAvgFillCents / 100 : null,
+            trader: "",
+            ts: Date.parse(amendedAt) || Date.now(),
+            state: "AMEND_PENDING" as OrderState,
+            orderTag: "",
+            slippageBps: null,
+            arrivalMid: 0,
+            brokerState: "ACTIVE",
+            actionStatus: "Amend sent",
+            internalOrderStatus: "Awaiting amend acknowledgement",
+            stateDescription: "Amend instruction sent — awaiting broker acknowledgement",
+            remainingVolume: amendedQty != null && amendedFilled != null ? amendedQty - amendedFilled : null,
+            remainingValueCents: null,
+            orderValueCents:
+              amend.price != null && amendedQty != null ? Math.round(amend.price * amendedQty * 100) : null,
+          },
+          bookId: null,
+          observedAt: amendedAt,
+        });
+      } catch (hubErr) {
+        console.warn(`[iress-ingest] amend hub publish failed: ${String(hubErr)}`);
+      }
+    }
+    return {
+      ok: true,
+      orderId,
+      account,
+      amendedAt,
+      workerId: deps.env.workerId,
+      iressMode: deps.env.iressMode,
+      newPrice: amend.price ?? null,
+      newVolume: amend.volume ?? null,
+      newTif: amend.tif ?? null,
+    };
+  } catch (err) {
+    if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
+      deps.sessions.invalidate();
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const code = err instanceof IressError ? `iress_${err.code}` : "amend_failed";
     return baseError(code, message);
   }
 }
@@ -1481,6 +1755,72 @@ export async function handleRequest(
     // answered "not entitled" / "order not found" / "session dead" —
     // those are real answers, not failures.
     send(res, 200, cancelResult);
+    return;
+  }
+
+  // 2026-07-14: amend route (mirrors /orders/cancel). Body:
+  //   { orderId, account?, price?, volume?, tif?, triggerPrice? }
+  // At least one of price / volume / tif / triggerPrice must be set;
+  // the worker forwards whatever the BFF sent to OrderAmend2 and
+  // surfaces the broker's verdict in the result envelope.
+  if (req.method === "POST" && path === "/orders/amend") {
+    let amendBody: unknown;
+    try {
+      amendBody = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    if (!amendBody || typeof amendBody !== "object") {
+      sendError(
+        res,
+        400,
+        "bad_request",
+        "Body must be JSON with `orderId` and at least one of price / volume / tif / triggerPrice",
+      );
+      return;
+    }
+    const ab = amendBody as Record<string, unknown>;
+    const orderIdRaw = ab["orderId"];
+    const orderId = typeof orderIdRaw === "string" ? orderIdRaw.trim() : "";
+    if (!orderId) {
+      sendError(res, 400, "bad_request", "`orderId` is required");
+      return;
+    }
+    const accountRaw = ab["account"];
+    const account =
+      (typeof accountRaw === "string" && accountRaw.trim()) ||
+      deps.env.iressAccountCode.split(",")[0]?.trim() ||
+      "";
+    if (!account) {
+      sendError(
+        res,
+        503,
+        "account_not_configured",
+        "Order account code not configured (set IRESS_ACCOUNT_CODE on the worker)",
+      );
+      return;
+    }
+    const numOrNull = (v: unknown): number | null => {
+      if (v == null) return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const tifRaw = typeof ab["tif"] === "string" ? (ab["tif"] as string).trim().toUpperCase() : null;
+    const tif: "DAY" | "GTC" | "IOC" | "FOK" | null =
+      tifRaw === "DAY" || tifRaw === "GTC" || tifRaw === "IOC" || tifRaw === "FOK" ? tifRaw : null;
+    if (typeof ab["tif"] === "string" && tif == null) {
+      sendError(res, 400, "bad_request", "`tif` must be one of DAY / GTC / IOC / FOK");
+      return;
+    }
+    const amend = {
+      price: numOrNull(ab["price"]),
+      volume: numOrNull(ab["volume"]),
+      tif,
+      triggerPrice: numOrNull(ab["triggerPrice"]),
+    };
+    const amendResult = await amendLiveOrder(deps, account, orderId, amend);
+    send(res, 200, amendResult);
     return;
   }
 
@@ -2338,7 +2678,16 @@ function asNumber(v: unknown): number | null {
 async function stampAfterOrderCreate3(opts: {
   deps: HttpApiDeps;
   audit: UatAuditRow;
-  orderCreateStatus: "working" | "rejected";
+  // "working" | "rejected" | "failed":
+  //   - working  : OrderCreate3 returned OrderNumber, no ErrorNumber
+  //   - rejected : OrderCreate3 returned non-zero ErrorNumber (broker
+  //                validation reject — pre-routing)
+  //   - failed   : transport-level failure that the OrderTag lookup
+  //                could not recover (network down, kicked session,
+  //                venue unavailable). 2026-07-14 (Andre test).
+  //                Distinct from REJECTED — REJECTED is pre-routing
+  //                validation, FAILED is post-routing transport.
+  orderCreateStatus: "working" | "rejected" | "failed";
   errorNumber: number | undefined;
   errorDescription: string | undefined;
   existingTag: string;
@@ -2378,10 +2727,18 @@ async function stampAfterOrderCreate3(opts: {
   // 2026-07-13 (Andre + Juan call, 26:21): Andre flagged "last action"
   // as a key field. Stamp a compact one-liner on every OrderCreate3
   // transition so the UI doesn't have to invent the action description
-  // from raw Hermes fields.
-  const lastAction = orderCreateStatus === "rejected"
-    ? `Rejected (${errorNumber ?? "?"}: ${errorDescription ?? "no detail"})`
-    : "Submitted to IRESS — awaiting broker acknowledgement";
+  // from raw Hermes fields. 2026-07-14: extend with the FAILED branch so
+  // transport-level failures land with the actual broker / network error
+  // text instead of a generic "OrderCreate3 failed".
+  const lastAction = (() => {
+    if (orderCreateStatus === "rejected") {
+      return `Rejected (${errorNumber ?? "?"}: ${errorDescription ?? "no detail"})`;
+    }
+    if (orderCreateStatus === "failed") {
+      return `Failed (${errorNumber ?? "transport"}: ${errorDescription ?? "no detail"})`;
+    }
+    return "Submitted to IRESS — awaiting broker acknowledgement";
+  })();
   const newPayload: Record<string, unknown> = {
     ...payloadObj,
     uat: true,
@@ -2416,8 +2773,16 @@ async function stampAfterOrderCreate3(opts: {
       .update({
         payload: newPayload,
         result_payload: newResult,
+        // 2026-07-14: stamp FAILED on transport-level failure. The BFF
+        // status-code stays 502 (transport-failed), but the audit row +
+        // SSE delta immediately surface FAILED so the OEMS UI's State
+        // chip flips off "Pending" instead of getting stuck.
         status:
-          orderCreateStatus === "rejected" ? "rejected" : "pending_ack",
+          orderCreateStatus === "rejected"
+            ? "rejected"
+            : orderCreateStatus === "failed"
+              ? "failed"
+              : "pending_ack",
         updated_at: stampedAt,
       })
       .eq("id", audit.id);
@@ -2426,7 +2791,11 @@ async function stampAfterOrderCreate3(opts: {
 
   // Hermes lifecycle publish.
   const initialHubState: OrderState =
-    orderCreateStatus === "rejected" ? "REJECTED" : "PENDING_ACK";
+    orderCreateStatus === "rejected"
+      ? "REJECTED"
+      : orderCreateStatus === "failed"
+        ? "FAILED"
+        : "PENDING_ACK";
   // 2026-07-13 — Transcript gap #1 + #2 (23:40 / 26:21): carry the
   // lastAction one-liner AND the IRESS error fields in the SSE delta
   // so the UI's new Action + Error columns update without a poll
@@ -2434,19 +2803,31 @@ async function stampAfterOrderCreate3(opts: {
   const lastActionSummary =
     orderCreateStatus === "rejected"
       ? `Rejected (${errorNumber ?? "?"}: ${errorDescription ?? "no detail"})`
-      : "Submitted to IRESS — awaiting broker acknowledgement";
+      : orderCreateStatus === "failed"
+        ? `Failed (${errorNumber ?? "transport"}: ${errorDescription ?? "no detail"})`
+        : "Submitted to IRESS — awaiting broker acknowledgement";
   uatExecutionHub.publish({
     iressOrderNumber: iressOrderNumber ?? "",
     orderAuditId: audit.id,
-    state: orderCreateStatus === "rejected" ? "rejected" : "pending_ack",
+    state:
+      orderCreateStatus === "rejected"
+        ? "rejected"
+        : orderCreateStatus === "failed"
+          ? "failed"
+          : "pending_ack",
     filled: 0,
     avgFillPrice: priceRands ?? null,
     lastFillTimestamp: stampedAt,
     lastAction: lastActionSummary,
     lastActionAt: stampedAt,
-    iressErrorNumber: orderCreateStatus === "rejected" ? errorNumber ?? null : null,
+    iressErrorNumber:
+      orderCreateStatus === "rejected" || orderCreateStatus === "failed"
+        ? errorNumber ?? null
+        : null,
     iressErrorDescription:
-      orderCreateStatus === "rejected" ? errorDescription ?? null : null,
+      orderCreateStatus === "rejected" || orderCreateStatus === "failed"
+        ? errorDescription ?? null
+        : null,
     raw: {
       id: iressOrderNumber ?? "",
       account: accountCode,
@@ -2470,20 +2851,41 @@ async function stampAfterOrderCreate3(opts: {
       orderTag: existingTag,
       slippageBps: null,
       arrivalMid: 0,
-      brokerState: iressOrderNumber ? "ACTIVE" : null,
+      // FAILED orders are not on the book (parked by the broker),
+      // so surface INACTIVE. ACTIVE / UNKNOWN only when IRESS has
+      // actually accepted the order.
+      brokerState:
+        orderCreateStatus === "failed"
+          ? "INACTIVE"
+          : iressOrderNumber
+            ? "ACTIVE"
+            : null,
       actionStatus: null,
       internalOrderStatus:
-        orderCreateStatus === "rejected" ? "Rejected" : "Pending",
+        orderCreateStatus === "rejected"
+          ? "Rejected"
+          : orderCreateStatus === "failed"
+            ? "Failed"
+            : "Pending",
       stateDescription:
         orderCreateStatus === "rejected"
           ? (errorDescription ?? "OrderCreate3 returned non-zero error")
-          : "Submitted to IRESS — awaiting broker acknowledgement",
-      remainingVolume: orderCreateStatus === "rejected" ? 0 : qty,
+          : orderCreateStatus === "failed"
+            ? (errorDescription ?? "OrderCreate3 transport failure")
+            : "Submitted to IRESS — awaiting broker acknowledgement",
+      remainingVolume:
+        orderCreateStatus === "rejected" || orderCreateStatus === "failed"
+          ? 0
+          : qty,
       remainingValueCents:
-        orderCreateStatus === "rejected" || priceRands == null
+        orderCreateStatus === "rejected" ||
+        orderCreateStatus === "failed" ||
+        priceRands == null
           ? null
           : Math.round(priceRands * qty * 100),
       orderValueCents: priceRands != null ? Math.round(priceRands * qty * 100) : null,
+      iressErrorNumber: errorNumber ?? null,
+      iressErrorDescription: errorDescription ?? null,
     },
     bookId: typeof payloadObj.book_id === "string" ? (payloadObj.book_id as string) : null,
     observedAt: stampedAt,
@@ -2686,6 +3088,35 @@ async function uatSendToMarket(
       }
     }
     if (!iressOrderNumber) {
+      // 2026-07-14 (Andre test): when transport fails and the OrderTag
+      // lookup can't recover the broker-assigned OrderNumber, stamp the
+      // audit row + publish a FAILED SSE delta so the OEMS UI flips off
+      // "Pending" immediately. Previously the row was left on the
+      // BFF-seeded "working" forever — operators saw an order that was
+      // silently dead, with no error surfaced.
+      try {
+        await stampAfterOrderCreate3({
+          deps,
+          audit,
+          orderCreateStatus: "failed",
+          errorNumber: code ?? undefined,
+          errorDescription: msg,
+          existingTag,
+          brokerDestination,
+          exchange,
+          tif,
+          accountCode,
+          qty,
+          symbol,
+          orderType,
+          priceRands,
+          side: side as 1 | 2,
+          iressOrderNumber: null,
+        });
+      } catch (stampErr) {
+        const stampMsg = stampErr instanceof Error ? stampErr.message : String(stampErr);
+        console.warn(`[iress-ingest] FAILED-stamp after transport error failed: ${stampMsg}`);
+      }
       return {
         ok: false,
         status: 502,

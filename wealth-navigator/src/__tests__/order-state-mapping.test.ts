@@ -91,7 +91,14 @@ function mapOrderForTest(row: Record<string, unknown>): Order {
     slippageBps: 0,
     arrivalMid: 0,
     orderTag: str("OrderTag"),
-    brokerState: rawState || null,
+    // 2026-07-14: fold IRESS' raw OrderState down to the typed
+    // OrderBrokerState union — same fold as production
+    // (src/lib/iress/live.ts::mapOrder). Unknown values surface as
+    // UNKNOWN rather than a free-text string.
+    brokerState:
+      rawState === "ACTIVE" || rawState === "INACTIVE"
+        ? (rawState as Order["brokerState"])
+        : "UNKNOWN",
     actionStatus: actionStatus || null,
     internalOrderStatus: internalStatus || null,
     stateDescription: stateDescription || null,

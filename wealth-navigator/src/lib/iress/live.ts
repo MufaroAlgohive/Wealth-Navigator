@@ -666,6 +666,14 @@ function mapOrder(row: Record<string, unknown>): Order {
   const ordVol = num("OrderVolume");
   const done = num("DoneVolumeTotal");
   const rawState = str("OrderState").trim().toUpperCase();
+  // IRESS OrderPad row carries a per-row ErrorNumber (Andre, 2026-07-14).
+  // A non-zero ErrorNumber means the broker parked the row after a
+  // venue / transport failure (network down, operator kicked the session,
+  // destinations unavailable, etc.). Distinct from REJECTED which is a
+  // pre-routing validation reject; FAILED is post-routing. The UI
+  // surfaces the ErrorDescription as the reject reason.
+  const errorNumber = has("ErrorNumber") ? num("ErrorNumber") : 0;
+  const errorDescription = has("ErrorDescription") ? str("ErrorDescription") : "";
   // The finer Hermes-side action status. CONFIRMED live (Andre, 2026-07-13):
   // CARE / desk-routed orders move Pending → Acknowledged → OK → ... and
   // currently the worker collapses the whole OrderState enum down to ACTIVE
@@ -695,12 +703,17 @@ function mapOrder(row: Record<string, unknown>): Order {
   //   5. INACTIVE + partial done → PARTIAL (handles the brief INACTIVE window
   //      between fills before the next print — Hermes sometimes flips the row
   //      to INACTIVE between partial fills).
-  //   6. INACTIVE + no fills → CANCELLED (no other reason lands here in the
+  //   6. INACTIVE + ErrorNumber != 0 → FAILED (Andre, 2026-07-14). Broker
+  //      parked the row because of a venue / transport error. ErrorNumber /
+  //      ErrorDescription are preserved on the typed Order so the UI
+  //      surfaces the actual reason.
+  //   7. INACTIVE + no fills → CANCELLED (no other reason lands here in the
   //      live CT build; EXPIRED is reserved for an explicit TIF-rollover
   //      we don't yet detect from this row shape).
-  //   7. OrderCreate3 ErrorNumber != 0 lands at the call site as REJECTED
-  //      (OrderCreate3 returns a per-row ErrorNumber; the poll never sees
-  //      rejected rows — the audit row is stamped rejected by the send path).
+  //   8. OrderCreate3 ErrorNumber != 0 lands at the call site as REJECTED
+  //      (OrderCreate3 returns a per-row ErrorNumber for pre-routing
+  //      validation rejects; FAILED is the post-routing equivalent observed
+  //      via the poll).
   const state: Order["state"] = ((): Order["state"] => {
     if (ordVol > 0 && done >= ordVol) return "FILLED";
     if (done > 0 && done < ordVol) return rawState === "INACTIVE" ? "PARTIAL" : "PARTIAL";
@@ -732,8 +745,8 @@ function mapOrder(row: Record<string, unknown>): Order {
       }
       return "WORKING";
     }
-    // INACTIVE + no fills here. Distinguish CANCELLED from EXPIRED when the
-    // row carries an explicit Lifetime / InternalOrderStatus hint.
+    // INACTIVE + no fills here. Distinguish FAILED / EXPIRED / CANCELLED.
+    if (errorNumber !== 0) return "FAILED";
     if (
       life === "DAY" &&
       (internalStatus === "EXPIRED" || actionStatus === "EXPIRED" || stateDescription.toLowerCase().includes("expir"))
@@ -775,9 +788,18 @@ function mapOrder(row: Record<string, unknown>): Order {
         : Date.now(),
     state,
     rejectReason:
-      (state === "CANCELLED" || state === "EXPIRED" || state === "REJECTED") && stateDescription
-        ? stateDescription
+      (state === "CANCELLED" || state === "EXPIRED" || state === "REJECTED" || state === "FAILED") &&
+      (errorDescription || stateDescription)
+        ? errorDescription || stateDescription
         : undefined,
+    // 2026-07-14 (Andre + Juan): IRESS returns ErrorNumber on the OrderPad
+    // row for FAILED orders. Surfaced on the typed Order so the OEMS UI
+    // renders "Failed — ErrorNumber 25008: No licenses" instead of a bare
+    // "FAILED" chip. Mirrors the `iressErrorNumber` already exposed on
+    // UatExecutionDelta (SSE payload) — the audit BFF also reads it from
+    // the row payload so rejection deltas show the broker's actual reason.
+    iressErrorNumber: errorNumber !== 0 ? errorNumber : null,
+    iressErrorDescription: errorDescription || null,
     slippageBps: 0,
     arrivalMid: 0,
     orderTag: str("OrderTag") || str("SecondaryClientOrderID") || "",
@@ -787,7 +809,14 @@ function mapOrder(row: Record<string, unknown>): Order {
     // lifecycle state, but they MUST travel through the mapper so the
     // audit write has access to them.
     ...({
-      brokerState: rawState || null,
+      // 2026-07-14: fold IRESS' raw OrderState down to the typed
+      // OrderBrokerState union ("ACTIVE" | "INACTIVE" | "UNKNOWN"). The UI
+      // renders this as a green/grey chip next to the lifecycle state —
+      // operators need to see "still on the book" vs "parked" at a glance
+      // (Andre, transcript gap "active or inactive" indicator).
+      brokerState: (rawState === "ACTIVE" || rawState === "INACTIVE")
+        ? (rawState as Order["brokerState"])
+        : "UNKNOWN",
       actionStatus: actionStatus || null,
       internalOrderStatus: internalStatus || null,
       stateDescription: stateDescription || null,
