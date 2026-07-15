@@ -222,20 +222,44 @@ async function runLimitGuard(
   }
 
   // 2. Positions snapshot for the desk account.
+  // 2026-07-15: indexed by BOTH the raw IRESS security_code (e.g.
+  // `SOL.JO`) AND a suffix-stripped version (e.g. `SOL`). The retail
+  // `securities_c.symbol` may not carry the `.JO` exchange suffix while
+  // the IPS worker writes whatever IRESS returned. Without the
+  // suffix-tolerant lookup, the naked-short check sees `cur=0` for the
+  // holding's symbol and lets a sell through even though the broker
+  // already confirms the position.
   const { data: posRows } = await institutional
     .from("oems_position_c")
     .select("security_code, quantity")
     .eq("account_code", accountCode);
+  const stripExchangeSuffix = (s: string): string =>
+    s.replace(/\.(JO|ZA|JSE|LON|NAS|NYSE|ASX|LSE|TYO|HKG|AMS|PAR|FRA|MIL|MAD)\b/i, "");
   const positions = ((posRows ?? []) as PositionSnapshot[]).reduce<Map<string, number>>(
-    (m, p) => m.set(p.security_code, Number(p.quantity) || 0),
+    (m, p) => {
+      const raw = p.security_code;
+      const stripped = stripExchangeSuffix(raw);
+      const q = Number(p.quantity) || 0;
+      m.set(raw, q);
+      if (stripped !== raw) m.set(stripped, q);
+      return m;
+    },
     new Map(),
   );
 
-  // 3. In-flight orders for the desk account (any status not terminal).
+  // 3. In-flight orders for the desk account.
+  // 2026-07-15: previously filtered on `.eq("client_account", accountCode)`
+  // which only matched worker poll rows (those carry the IRESS account
+  // code in `client_account`). BFF send-to-market seeds used the MINT
+  // user email there, so we never saw them in this snapshot — meaning
+  // outstanding buys/sells were never netted against current positions
+  // for the cash + naked-short math. We now OR in
+  // `payload->>broker_account_code.eq.accountCode` to pick up BFF seed
+  // rows that route through this same desk account.
   const { data: ooRows } = await institutional
     .from("oems_order_audit")
     .select("order_id, symbol, side, quantity, price_cents, status, payload")
-    .eq("client_account", accountCode)
+    .or(`client_account.eq.${accountCode},payload->>broker_account_code.eq.${accountCode}`)
     .in("status", Array.from(IN_FLIGHT_STATUSES));
   const inFlight: InFlightOrder[] = ((ooRows ?? []) as Array<{
     order_id: string;
@@ -311,12 +335,24 @@ async function runLimitGuard(
       // No naked short: current position + outstanding buys in flight must
       // cover the sell. The orderbook audit table tracks in-flight orders;
       // oems_position_c carries the broker-confirmed position.
-      const cur = projectedPositions.get(symbol) ?? 0;
+      //
+      // 2026-07-15: matched on BOTH the raw holding symbol and the
+      // suffix-stripped variant so we cover the case where retail
+      // `securities_c.symbol` lacks the IRESS `.JO` exchange suffix but
+      // the in-flight rows have it (or vice versa).
+      const symbolStripped = stripExchangeSuffix(symbol);
+      const cur = projectedPositions.get(symbol) ?? projectedPositions.get(symbolStripped) ?? 0;
       const ooBuy = inFlight
-        .filter((o) => o.security_code === symbol && o.side === "buy")
+        .filter((o) => {
+          if (o.side !== "buy") return false;
+          return o.security_code === symbol || stripExchangeSuffix(o.security_code) === symbolStripped;
+        })
         .reduce((s, o) => s + o.quantity, 0);
       const ooSell = inFlight
-        .filter((o) => o.security_code === symbol && o.side === "sell")
+        .filter((o) => {
+          if (o.side !== "sell") return false;
+          return o.security_code === symbol || stripExchangeSuffix(o.security_code) === symbolStripped;
+        })
         .reduce((s, o) => s + o.quantity, 0);
       const effectivePosition = cur + ooBuy - ooSell;
       if (qty > effectivePosition) {
@@ -525,21 +561,47 @@ export async function POST(req: Request) {
       ? process.env.IRESS_ACCOUNT_CODE.trim()
       : "56378");
   const guard = await runLimitGuard(institutional, deskAccountCode, holdings, secMap, orderType);
-  if (!guard.enforced) {
-    if (guard.violations.length > 0) {
-      // Hard refusal — return the violation list, do NOT write audit rows.
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "Pre-trade limit guard refused the dispatch.",
-          code: "limit_guard_violation",
-          account_code: deskAccountCode,
-          violations: guard.violations,
-          snapshot: guard.snapshot,
+  // 2026-07-15: stamp the timestamp at the top so we can echo it on
+  // every audit row AND on the 422 response when the guard blocks.
+  const limitsCheckedAt = new Date().toISOString();
+
+  // 2026-07-15 (Andre + Juan, transcript 13:40-14:08): the original
+  // code only checked `guard.violations` inside the `if (!guard.enforced)`
+  // branch. When the guard ran successfully (had data + status) AND found
+  // a violation, the dispatch fell through and the audit rows were
+  // written — naked shorts + cash busts leaked to Hermes. The fix:
+  // violation check runs unconditionally; the `enforced=false` distinction
+  // is only about whether the guard had enough data to compute risk.
+  if (guard.violations.length > 0) {
+    console.warn(
+      `[orderbook/send-to-market] limit guard BLOCKED dispatch for book=${bookId} ` +
+        `account=${deskAccountCode} enforced=${guard.enforced} ` +
+        `violations=${guard.violations.length} ` +
+        `first=${JSON.stringify(guard.violations[0])}`,
+    );
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "Pre-trade limit guard refused the dispatch.",
+        code: "limit_guard_violation",
+        account_code: deskAccountCode,
+        enforced: guard.enforced,
+        // Per-holding violations + the position/cash snapshot the guard
+        // saw, so the operator can replay the math in the audit row.
+        violations: guard.violations,
+        snapshot: guard.snapshot,
+        guard_verdict: {
+          enforced: guard.enforced,
+          blocked: true,
+          checked_at: limitsCheckedAt,
+          violation_count: guard.violations.length,
+          skip_reason: guard.enforced ? null : (guard.skipReason ?? null),
         },
-        { status: 422 },
-      );
-    }
+      },
+      { status: 422 },
+    );
+  }
+  if (!guard.enforced) {
     // Guard could not run (no account row, bad status, etc.). Log and
     // continue — the audit row will carry limits_enforced=false so the
     // operator sees the gap.
@@ -550,7 +612,8 @@ export async function POST(req: Request) {
 
   // Build execution rows (one per ISIN per holding). order_id is the strategy
   // book so the desk can group/aggregate on the front-end.
-  const limitsCheckedAt = new Date().toISOString();
+  // limitsCheckedAt was declared above so we can echo it in the 422
+  // response too (the timestamp is the same for the guard verdict).
   const executionRows = holdings.map((h, idx) => {
     const sec = secMap[h.security_id];
     const prof = profMap[h.user_id];
@@ -573,6 +636,14 @@ export async function POST(req: Request) {
         security_id: h.security_id,
         isin: sec?.isin ?? null,
         limitPrice: orderType === "limit" ? limitRands : null,
+        // 2026-07-15: stamp the IRESS AccountCode on the BFF seed row so
+        // the pre-trade limit guard can correlate the row back to the
+        // desk account. Previously `oems_order_audit.client_account`
+        // held the MINT user email on BFF seeds vs the IRESS account
+        // code on worker poll rows — a `.eq("client_account", "56378")`
+        // filter on inflight orders would miss every BFF seed, leaving
+        // outstanding buys/sells out of the cash + naked-short math.
+        broker_account_code: deskAccountCode,
         sent_by: auth.ctx.email,
         sent_at: new Date().toISOString(),
         holding_id: h.id,
