@@ -13,10 +13,21 @@ import { getApplicantByExternalId, sumsubConfigured } from "@/lib/admin/sumsub";
 
 export const dynamic = "force-dynamic";
 
-function deriveKyc(ob?: { kyc_status?: string | null; sumsub_review_answer?: string | null }, ra?: { kyc_verified?: boolean | null }): "verified" | "pending" | "rejected" {
-  if (ra?.kyc_verified || ob?.kyc_status === "verified" || ob?.kyc_status === "completed" || ob?.sumsub_review_answer === "GREEN") return "verified";
-  if (ob?.sumsub_review_answer === "RED" || ob?.kyc_status === "rejected") return "rejected";
-  return "pending";
+type KycState = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
+
+function deriveKyc(
+  ob?: { kyc_status?: string | null; sumsub_review_answer?: string | null; sumsub_review_status?: string | null },
+  ra?: { kyc_verified?: boolean | null; kyc_needs_resubmission?: boolean | null },
+): KycState {
+  const status = String(ob?.kyc_status || "").trim().toLowerCase();
+  const answer = String(ob?.sumsub_review_answer || "").trim().toLowerCase();
+  const review = String(ob?.sumsub_review_status || "").trim().toLowerCase();
+  if (answer === "red" || status.includes("reject")) return "rejected";
+  if (ra?.kyc_needs_resubmission) return "resubmission_required";
+  if (ra?.kyc_verified || answer === "green" || /verified|completed|approved/.test(status)) return "verified";
+  if (answer === "yellow" || answer === "orange" || /pending|review|process|init/.test(review)) return "pending";
+  if (status || answer || review) return "pending";
+  return "not_initiated";
 }
 
 function costCentsPerShare(h: { avg_fill?: number | null; Expected_fill?: number | null }): number {
@@ -38,7 +49,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const action = url.searchParams.get("action") || "list";
 
-  let db;
+  let db: ReturnType<typeof createRetailServiceRoleClient>;
   try {
     db = createRetailServiceRoleClient();
   } catch {
@@ -53,15 +64,25 @@ export async function GET(req: Request) {
       .limit(2000);
     const rows = profiles ?? [];
     const ids = rows.map((p) => p.id);
-    const obMap: Record<string, { kyc_status?: string | null; sumsub_review_answer?: string | null }> = {};
-    const raMap: Record<string, { kyc_verified?: boolean | null; bank_linked?: boolean | null }> = {};
+    const obMap: Record<string, { kyc_status?: string | null; sumsub_review_answer?: string | null; sumsub_review_status?: string | null }> = {};
+    const raMap: Record<string, { kyc_verified?: boolean | null; kyc_needs_resubmission?: boolean | null; bank_linked?: boolean | null }> = {};
+    const parentIds = new Set<string>();
+    const childProfileIds = new Set<string>();
     if (ids.length) {
-      const [{ data: ob }, { data: ra }] = await Promise.all([
-        db.from("user_onboarding").select("user_id, kyc_status, sumsub_review_answer").in("user_id", ids),
-        db.from("required_actions").select("user_id, kyc_verified, bank_linked").in("user_id", ids),
+      const [{ data: ob }, { data: ra }, { data: family }] = await Promise.all([
+        db.from("user_onboarding").select("user_id, kyc_status, sumsub_review_answer, sumsub_review_status").in("user_id", ids),
+        db.from("required_actions").select("user_id, kyc_verified, kyc_needs_resubmission, bank_linked").in("user_id", ids),
+        db.from("family_members").select("primary_user_id, parent_id, linked_user_id, relationship"),
       ]);
       for (const o of ob ?? []) obMap[o.user_id as string] = o;
       for (const r of ra ?? []) raMap[r.user_id as string] = r;
+      for (const member of family ?? []) {
+        if (String(member.relationship || "").trim().toLowerCase() !== "child") continue;
+        const parentId = String(member.primary_user_id || member.parent_id || "").trim();
+        const linkedUserId = String(member.linked_user_id || "").trim();
+        if (parentId) parentIds.add(parentId);
+        if (linkedUserId) childProfileIds.add(linkedUserId);
+      }
     }
     const clients = rows.map((p) => ({
       id: p.id,
@@ -72,6 +93,7 @@ export async function GET(req: Request) {
       created_at: p.created_at,
       kyc: deriveKyc(obMap[p.id], raMap[p.id]),
       bank_linked: !!raMap[p.id]?.bank_linked,
+      family_role: childProfileIds.has(String(p.id)) ? "child" : parentIds.has(String(p.id)) ? "parent" : "other",
     }));
     return NextResponse.json({ ok: true, clients });
   }
@@ -145,7 +167,7 @@ export async function POST(req: Request) {
     const userId = String(body.user_id || "");
     const decision = body.decision === "approve" ? "approve" : "reject";
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
-    let db;
+    let db: ReturnType<typeof createRetailServiceRoleClient>;
     try {
       db = createRetailServiceRoleClient();
     } catch {

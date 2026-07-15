@@ -9,8 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { cn } from "@/lib/cn";
 
-type Kyc = "verified" | "pending" | "rejected";
-interface ClientRow { id: string; name: string; email: string | null; mint_number: string | null; is_test: boolean | null; kyc: Kyc; bank_linked: boolean; }
+type Kyc = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
+type KycFilter = "all" | Kyc;
+type FamilyFilter = "all" | "parent" | "child";
+interface ClientRow { id: string; name: string; email: string | null; mint_number: string | null; is_test: boolean | null; kyc: Kyc; bank_linked: boolean; family_role: "parent" | "child" | "other"; }
 interface Holding { symbol: string; name: string; qty: number; valueCents: number; pnlCents: number; strategy: string | null; purchaseValueCents?: number | null; }
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status: string | null; transaction_date: string | null; }
 interface Detail {
@@ -24,7 +26,8 @@ interface Detail {
 const R = (cents: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(cents / 100);
 const pnlCls = (n: number) => (n >= 0 ? "text-success" : "text-destructive");
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase() || "?";
-const kycCls = (k: Kyc) => (k === "verified" ? "bg-success/15 text-success" : k === "rejected" ? "bg-destructive/15 text-destructive" : "bg-warning/15 text-warning");
+const kycCls = (k: Kyc) => (k === "verified" ? "bg-success/15 text-success" : k === "rejected" || k === "resubmission_required" ? "bg-destructive/15 text-destructive" : k === "pending" ? "bg-warning/15 text-warning" : "bg-muted text-muted-foreground");
+const kycLabel = (k: Kyc) => k.replaceAll("_", " ");
 const str = (v: unknown) => (v == null || v === "" ? "—" : String(v));
 
 export default function ClientsPage() {
@@ -34,10 +37,8 @@ export default function ClientsPage() {
   const [detail, setDetail] = React.useState<Detail | null>(null);
   const [tab, setTab] = React.useState("profile");
   const [sumsub, setSumsub] = React.useState<string | null>(null);
-  // Lonwabo: land on "Invested" (KYC-ready) clients by default; toggle to all
-  // (incl. home users). "Invested" keys off KYC-verified for now; once the data
-  // phase exposes a holdings/invested flag this should switch to "has holdings".
-  const [view, setView] = React.useState<"invested" | "all">("invested");
+  const [kycFilter, setKycFilter] = React.useState<KycFilter>("all");
+  const [familyFilter, setFamilyFilter] = React.useState<FamilyFilter>("all");
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => setClients(d.ok ? d.clients || [] : [])).catch(() => setClients([]));
@@ -67,27 +68,45 @@ export default function ClientsPage() {
   };
 
   const filtered = (clients ?? [])
-    .filter((c) => view === "all" || c.kyc === "verified")
+    .filter((c) => kycFilter === "all" || c.kyc === kycFilter)
+    .filter((c) => familyFilter === "all" || c.family_role === familyFilter)
     .filter((c) => !search.trim() || `${c.name} ${c.email} ${c.mint_number}`.toLowerCase().includes(search.toLowerCase()));
+  const countKyc = (status: Kyc) => (clients ?? []).filter((client) => client.kyc === status).length;
   const sel = clients?.find((c) => c.id === selId) || null;
   const p = detail?.profile ?? {};
   const ob = detail?.onboarding ?? {};
 
   return (
     <div className="mx-auto max-w-6xl">
+      <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <ClientMetric label="Total clients" value={clients?.length ?? "—"} tone="primary" />
+        <ClientMetric label="KYC completed" value={clients ? countKyc("verified") : "—"} tone="success" />
+        <ClientMetric label="KYC pending" value={clients ? countKyc("pending") + countKyc("resubmission_required") : "—"} tone="warning" />
+        <ClientMetric label="KYC rejected" value={clients ? countKyc("rejected") : "—"} tone="danger" />
+      </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
         {/* Roster */}
         <div className="rounded-2xl border border-border bg-card p-4">
-          <div className="mb-2 flex gap-0.5 rounded-lg bg-muted p-0.5 text-xs">
-            {([["invested", "Invested"], ["all", "All clients"]] as const).map(([v, label]) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                className={cn("flex-1 rounded px-2 py-1 font-medium transition-colors", view === v ? "bg-background text-foreground shadow" : "text-muted-foreground hover:text-foreground")}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            <label className="space-y-1">
+              <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">KYC status</span>
+              <select value={kycFilter} onChange={(event) => setKycFilter(event.target.value as KycFilter)} className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-primary/25">
+                <option value="all">All statuses</option>
+                <option value="verified">Verified</option>
+                <option value="pending">Pending</option>
+                <option value="rejected">Rejected</option>
+                <option value="resubmission_required">Resubmission required</option>
+                <option value="not_initiated">Not initiated</option>
+              </select>
+            </label>
+            <label className="space-y-1">
+              <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Family role</span>
+              <select value={familyFilter} onChange={(event) => setFamilyFilter(event.target.value as FamilyFilter)} className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-primary/25">
+                <option value="all">All clients</option>
+                <option value="parent">Parents</option>
+                <option value="child">Children</option>
+              </select>
+            </label>
           </div>
           <div className="relative mb-3">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -103,7 +122,7 @@ export default function ClientsPage() {
                     <div className="flex items-center gap-1.5"><span className="truncate text-sm font-medium text-foreground">{c.name}</span>{c.is_test && <span className="rounded bg-muted px-1 text-[9px] text-muted-foreground">TEST</span>}</div>
                     <div className="truncate text-[11px] text-muted-foreground">{c.mint_number || c.email}</div>
                   </div>
-                  <span className={cn("rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase", kycCls(c.kyc))}>{c.kyc[0]}</span>
+                  <span title={kycLabel(c.kyc)} className={cn("rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase", kycCls(c.kyc))}>{c.kyc === "not_initiated" ? "N" : c.kyc === "resubmission_required" ? "R!" : c.kyc[0]}</span>
                 </button>
               ))}
           </div>
@@ -121,7 +140,7 @@ export default function ClientsPage() {
                     <div className="text-lg font-bold text-foreground">{sel.name}</div>
                     <div className="text-xs text-muted-foreground">{sel.email} {sel.mint_number ? `· ${sel.mint_number}` : ""}</div>
                   </div>
-                  <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize", kycCls(detail.kyc))}>{detail.kyc}</span>
+                  <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize", kycCls(detail.kyc))}>{kycLabel(detail.kyc)}</span>
                 </div>
 
                 <Tabs value={tab} onValueChange={setTab}>
@@ -197,4 +216,17 @@ export default function ClientsPage() {
 
 function Row({ label, value }: { label: string; value: string }) {
   return <div className="flex items-center justify-between gap-3 bg-card px-3 py-2.5"><dt className="text-[11px] text-muted-foreground">{label}</dt><dd className="truncate text-[13px] font-medium text-foreground">{value}</dd></div>;
+}
+
+function ClientMetric({ label, value, tone }: { label: string; value: number | string; tone: "primary" | "success" | "warning" | "danger" }) {
+  const accent = tone === "success" ? "bg-success" : tone === "warning" ? "bg-warning" : tone === "danger" ? "bg-destructive" : "bg-primary";
+  return (
+    <div className="flex h-14 items-center gap-3 rounded-xl border border-border bg-card px-3.5 shadow-sm">
+      <span className={cn("h-7 w-1 rounded-full", accent)} aria-hidden="true" />
+      <div className="min-w-0">
+        <div className="font-mono text-lg font-bold leading-none text-foreground">{value}</div>
+        <div className="mt-1 truncate text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+      </div>
+    </div>
+  );
 }
