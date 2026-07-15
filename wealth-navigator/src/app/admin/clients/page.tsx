@@ -54,6 +54,7 @@ export default function ClientsPage() {
   const [documents, setDocuments] = React.useState<DocumentGroups | null>(null);
   const [documentsBusy, setDocumentsBusy] = React.useState(false);
   const [packBusy, setPackBusy] = React.useState(false);
+  const [computershareBusy, setComputershareBusy] = React.useState(false);
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => {
@@ -152,6 +153,25 @@ export default function ClientsPage() {
       toast.error(error instanceof Error ? error.message : "Could not download client pack");
     } finally {
       setPackBusy(false);
+    }
+  };
+
+  const openComputershareDocument = async (mode: "view" | "download") => {
+    if (!detail) return;
+    setComputershareBusy(true);
+    try {
+      const report = await buildComputersharePdf(p, ob, detail.onboarding_pack ?? {});
+      if (mode === "download") report.doc.save(report.filename);
+      else {
+        const blobUrl = URL.createObjectURL(report.doc.output("blob"));
+        const opened = window.open(blobUrl, "_blank", "noopener,noreferrer");
+        if (!opened) report.doc.save(report.filename);
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not generate Computershare document");
+    } finally {
+      setComputershareBusy(false);
     }
   };
 
@@ -267,6 +287,11 @@ export default function ClientsPage() {
                       <Row label="Employer" value={str(ob.employer_name)} /><Row label="Employment" value={str(ob.employment_status)} />
                       <Row label="Annual income" value={str(ob.annual_income_amount)} /><Row label="Agreement" value={ob.signed_agreement_url ? "Signed" : "—"} />
                     </dl>
+                    {!detail.is_unlinked_child && <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-3 py-2.5">
+                      <div className="min-w-0 flex-1"><p className="text-xs font-semibold text-foreground">ComputerShare account creation doc</p><p className="text-[10px] text-muted-foreground">Details authorised for share-account creation</p></div>
+                      <Button size="sm" variant="secondary" disabled={computershareBusy} onClick={() => openComputershareDocument("view")}><Eye />View</Button>
+                      <button type="button" disabled={computershareBusy} onClick={() => openComputershareDocument("download")} title="Download Computershare document" aria-label="Download Computershare document" className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"><Download className="h-3.5 w-3.5" /></button>
+                    </div>}
                     <div className="flex flex-wrap items-center gap-2">
                       {detail.is_unlinked_child ? <>
                         {detail.child_certificate?.url ? <Button size="sm" variant="secondary" asChild><a href={detail.child_certificate.url} target="_blank" rel="noreferrer">View certificate</a></Button> : <span className="text-[11px] text-muted-foreground">No child certificate has been uploaded.</span>}
@@ -360,6 +385,81 @@ function extensionForDocument(document: ClientDocument, mimeType: string): strin
   if (mimeType.includes("jpeg") || mimeType.includes("jpg")) return ".jpg";
   if (mimeType.includes("json")) return ".json";
   return ".bin";
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch { /* empty */ }
+  }
+  return {};
+}
+
+function pickPath(source: Record<string, unknown>, paths: string[]): unknown {
+  for (const path of paths) {
+    let current: unknown = source;
+    for (const part of path.split(".")) current = current && typeof current === "object" ? (current as Record<string, unknown>)[part] : undefined;
+    if (current != null && String(current).trim()) return current;
+  }
+  return null;
+}
+
+function firstValue(values: unknown[], fallback = "N/A"): string {
+  const found = values.find((value) => value != null && String(value).trim());
+  return found == null ? fallback : String(found).trim();
+}
+
+async function buildComputersharePdf(profile: Record<string, unknown>, onboarding: Record<string, unknown>, packValue: Record<string, unknown>) {
+  const { jsPDF } = await import("jspdf");
+  const pack = objectValue(packValue);
+  const sumsubRaw = objectValue(onboarding.sumsub_raw);
+  const mandate = objectValue(sumsubRaw.mandate_data);
+  const tax = objectValue(sumsubRaw.tax_details);
+  const bank = objectValue(sumsubRaw.bank_details);
+  const firstName = firstValue([profile.first_name, pickPath(pack, ["info.firstName", "fixedInfo.firstName", "firstName"])], "");
+  const lastName = firstValue([profile.last_name, pickPath(pack, ["info.lastName", "fixedInfo.lastName", "lastName"])], "");
+  const fullName = `${firstName} ${lastName}`.trim() || firstValue([pickPath(pack, ["fullName", "info.fullName", "fixedInfo.fullName"])]);
+  const physicalAddress = firstValue([pickPath(pack, ["info.addresses.0.streetEn", "info.addresses.0.street", "fixedInfo.residentialAddress", "fixedInfo.address", "info.residentialAddress", "info.address"]), onboarding.physical_address, onboarding.residential_address, onboarding.address, profile.address]);
+  const postalAddress = firstValue([pickPath(pack, ["info.addresses.0.formattedAddress", "fixedInfo.postalAddress", "info.postalAddress"]), onboarding.postal_address, profile.postal_address], physicalAddress);
+  const rows: [string, string][] = [
+    ["ASSET / FUND MANAGER", firstValue([onboarding.asset_fund_manager, onboarding.company_name, "MINT PLATFORMS (pty) Ltd"])],
+    ["ACCOUNT NAME", fullName],
+    ["CONTACT NAME", fullName],
+    ["IDENTITY / REGISTRATION NUMBER", firstValue([profile.identity_number, profile.id_number, onboarding.id_number, onboarding.identity_number, pickPath(pack, ["info.idNumber", "fixedInfo.idNumber", "idNumber"]), mandate.id_number])],
+    ["INCOME TAX NUMBER", firstValue([tax.tax_number, sumsubRaw.tax_number, onboarding.tax_number, onboarding.income_tax_number, profile.tax_number, pickPath(pack, ["info.taxId", "fixedInfo.taxId"])])],
+    ["PHYSICAL ADDRESS", physicalAddress],
+    ["POSTAL ADDRESS", postalAddress],
+    ["TEL NO (O/H)", firstValue([onboarding.tel_no, profile.tel_no])],
+    ["FAX NO", firstValue([onboarding.fax_no, profile.fax_no])],
+    ["CELL NO", firstValue([profile.phone_number, onboarding.phone_number, pickPath(pack, ["phone", "phoneNumber", "info.phone"])])],
+    ["E-MAIL", firstValue([profile.email, onboarding.email, pickPath(pack, ["email", "info.email"])])],
+    ["BANK ACCOUNT NUMBER", firstValue([onboarding.bank_account_number, profile.bank_account_number, profile.bank_account])],
+    ["BRANCH NUMBER", firstValue([onboarding.bank_branch_code, onboarding.branch_code, profile.branch_number])],
+    ["BANK NAME", firstValue([onboarding.bank_name, profile.bank_name])],
+    ["ACCOUNT NAME", firstValue([onboarding.bank_account_name, profile.bank_account_name, mandate.bank_account_name, mandate.account_name, fullName])],
+    ["ACCOUNT TYPE", firstValue([bank.bank_account_type, bank.account_type, onboarding.bank_account_type, profile.bank_account_type, mandate.bank_account_type, mandate.account_type])],
+  ];
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const width = doc.internal.pageSize.getWidth();
+  const height = doc.internal.pageSize.getHeight();
+  const margin = 38;
+  const contentWidth = width - margin * 2;
+  const leftWidth = Math.round(contentWidth * 0.34);
+  const rightWidth = contentWidth - leftWidth;
+  let y = margin + 70;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.text("ACCOUNT DETAILS", width / 2, y, { align: "center" }); y += 24;
+  for (const [label, value] of rows) {
+    const labelLines = doc.splitTextToSize(label, leftWidth - 16);
+    const valueLines = doc.splitTextToSize(value || "N/A", rightWidth - 16);
+    const rowHeight = Math.max(label.includes("ADDRESS") ? 88 : 30, Math.max(labelLines.length, valueLines.length) * 13 + 12);
+    if (y + rowHeight > height - margin) { doc.addPage(); y = margin; }
+    doc.setDrawColor(17, 17, 17); doc.setLineWidth(1); doc.rect(margin, y, leftWidth, rowHeight); doc.rect(margin + leftWidth, y, rightWidth, rowHeight);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.text(labelLines, margin + 8, y + 16); doc.setFontSize(11); doc.text(valueLines, margin + leftWidth + 8, y + 16); y += rowHeight;
+  }
+  return { doc, filename: `computershare-account-creation-${safeFilename(`${firstName}_${lastName}` || String(profile.id || "client"))}.pdf` };
 }
 
 function ClientMetric({ label, value, tone }: { label: string; value: number | string; tone: "primary" | "success" | "warning" | "danger" }) {
