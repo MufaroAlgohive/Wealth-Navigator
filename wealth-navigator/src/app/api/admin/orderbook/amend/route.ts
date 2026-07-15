@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { callWorker } from "@/lib/iress/worker-api";
+import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * POST /api/admin/orderbook/amend
@@ -28,6 +29,15 @@ import { callWorker } from "@/lib/iress/worker-api";
  * sent to the broker. At least one of price / volume / tif /
  * triggerPrice must be set; the worker rejects an empty amend with
  * 400 + `code: "no_fields"` and the BFF forwards that as-is.
+ *
+ * 2026-07-15 (Andre + Juan, transcript 09:19-09:42): IRESS OrderAmend2
+ * cannot change PricingInstructions — MARKET→LIMIT (or vice versa) is
+ * not supported, the broker silently no-ops. The desk reported that
+ * "amend price R180" on a MARKET order looked like a successful amend
+ * (we set AMEND_PENDING on our side) but Hermes showed nothing changed.
+ * We now pre-read the audit row's `payload.order_type` and hard-reject
+ * `price` changes on a MARKET order with 422 + `code: "market_price_amend"`
+ * so the UI shows the constraint inline.
  *
  * Returns: { ok, orderNumber, account, amendedAt?, newPrice?,
  *   newVolume?, newTif?, workerId?, error? }
@@ -116,6 +126,59 @@ export async function POST(req: Request) {
       },
       { status: 400 },
     );
+  }
+
+  // 2026-07-15: if the operator is trying to amend `price` we need to
+  // confirm the row is LIMIT-ordered. IRESS OrderAmend2 cannot change
+  // PricingInstructions — a price change on a MARKET order silently
+  // no-ops at the broker (Andre + Juan, transcript 09:19-09:42). We
+  // hard-reject here so the UI surfaces the constraint instead of
+  // showing a fake AMEND_PENDING that didn't actually change anything.
+  if (price != null) {
+    try {
+      const institutional = createInstitutionalServiceRoleClient();
+      if (!institutional) {
+        console.warn(
+          "[orderbook/amend] cannot read payload.order_type — institutional Supabase not configured; skipping market-amend guard",
+        );
+      } else {
+        const { data: auditRow } = await institutional
+          .from("oems_order_audit")
+          .select("payload")
+          .or(`order_id.eq.${orderNumber},payload->>iress_order_number.eq.${orderNumber}`)
+          .limit(1)
+          .maybeSingle();
+        const auditPayload =
+          auditRow && typeof auditRow.payload === "object" && auditRow.payload !== null
+            ? (auditRow.payload as Record<string, unknown>)
+            : {};
+        const rawOrderType = auditPayload.order_type;
+        const normalised: "limit" | "market" | null =
+          rawOrderType === "limit" || rawOrderType === "market"
+            ? rawOrderType
+            : null;
+        if (normalised === "market") {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "market_price_amend",
+              message:
+                "OrderAmend2 cannot change PricingInstructions (LIMIT↔MARKET). For a MARKET order, cancel + re-create to set a limit price; volume / TIF amendments are still applied.",
+              orderNumber,
+              account,
+              order_type: normalised,
+            },
+            { status: 422 },
+          );
+        }
+      }
+    } catch (guardErr) {
+      console.warn(
+        `[orderbook/amend] could not enforce market-price guard: ${guardErr instanceof Error ? guardErr.message : String(guardErr)}`,
+      );
+      // Fall through — better to attempt the amend than to false-block
+      // on a transient Supabase read error.
+    }
   }
 
   if (!isIressWorkerConfigured()) {

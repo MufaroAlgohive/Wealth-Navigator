@@ -123,6 +123,11 @@ interface ExecutionRow {
   // uses this in the lifecycle timeline to colour-code which producer
   // touched the order.
   source?: string | null;
+  // 2026-07-15: PricingInstructions the order was sent under — "limit"
+  // or "market". Drives the UI's LMT/MKT chip and prevents the desk from
+  // trying to amend a price on a MARKET order (IRESS OrderAmend2 cannot
+  // change PricingInstructions, so such amends silently no-op).
+  order_type?: "limit" | "market" | null;
 }
 
 function openInstitutional(): SupabaseClient | null {
@@ -218,6 +223,12 @@ function mapRow(r: AuditRow): ExecutionRow {
     qty,
     filled,
     filled_pct: Number(filledPct.toFixed(1)),
+    order_type:
+      payload.order_type === "limit" || payload.order_type === "market"
+        ? payload.order_type
+        : limitPrice != null
+          ? "limit"
+          : "market",
     limit_price: limitPrice,
     avg_fill_price: avgFill,
     vwap: num(payload.vwap),

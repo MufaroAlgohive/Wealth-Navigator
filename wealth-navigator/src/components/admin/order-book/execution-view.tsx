@@ -107,6 +107,13 @@ export interface ExecutionRow {
   // the BFF vs `iress-worker` from the worker poll). UI uses this in
   // the lifecycle timeline to surface which producer wrote each row.
   source?: string | null;
+  // 2026-07-15: PricingInstructions the order was sent under — "limit"
+  // or "market". Surfaces as a LMT/MKT chip in the Limit column so the
+  // desk can see at a glance whether a price amend is applicable.
+  // IRESS OrderAmend2 silently no-ops Price changes on MARKET orders
+  // because PricingInstructions cannot be amended in-place (Andre + Juan,
+  // 2026-07-15 transcript 09:19-09:42).
+  order_type?: "limit" | "market" | null;
   // 2026-07-14: pre-trade limit guard contract from the BFF
   // /api/admin/orderbook/send-to-market. `limits_enforced=true` means
   // the dispatch passed the no-naked-short + cash-bust guard against
@@ -641,10 +648,16 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   // already FILLED / CANCELLED / REJECTED / EXPIRED / FAILED. We surface a
   // disabled button on terminal rows so the desk gets clear feedback. FAILED
   // (2026-07-14) is also terminal — there's nothing on the book to cancel.
+  //
+  // 2026-07-15 (Andre + Juan, 06:35-07:46): Hermes rules — when an order
+  // is in PENDING_ACK, the message we sent has left our session and is
+  // owned by the destination. We can't cancel or amend it from here. So
+  // we exclude PENDING_ACK from the cancellable set; the operator must
+  // wait for the broker ack before any instruction lands. The action
+  // column renders a small "⌛ wait for broker ack" hint instead.
   const isCancellable = (state: string): boolean =>
     state === "WORKING" ||
     state === "PARTIAL" ||
-    state === "PENDING_ACK" ||
     state === "ACKNOWLEDGED" ||
     state === "created" ||
     state === "amended";
@@ -654,6 +667,11 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   // on the same OrderNumber). Operators must wait for the ack.
   const isAmendable = (state: string): boolean =>
     isCancellable(state) && state !== "AMEND_PENDING";
+
+  // 2026-07-15: PENDING_ACK rows are read-only — Show a hint placeholder
+  // in the actions column so the desk knows the row is queued at the
+  // destination rather than muted.
+  const isAwaitingBrokerAck = (state: string): boolean => state === "PENDING_ACK";
 
   // 2026-07-14: amend row state. When the desk clicks "Amend" on a row,
   // we expand an inline form (price / qty / TIF) directly under the row.
@@ -726,6 +744,20 @@ export function ExecutionView({ bookId }: { bookId: string }) {
       }
       setAmendInFlight((p) => ({ ...p, [auditId]: true }));
       setAmendError((p) => ({ ...p, [auditId]: "" }));
+      // 2026-07-15: pre-flight guard for MARKET orders. OrderAmend2
+      // cannot change PricingInstructions — sending `price` on a MARKET
+      // row would silently no-op at Hermes (Andre + Juan, 09:19-09:42).
+      // We block locally so the form shows the constraint without a
+      // round-trip; the BFF enforces the same guard with 422.
+      if (row.order_type === "market" && px != null && Number.isFinite(px)) {
+        setAmendError((p) => ({
+          ...p,
+          [auditId]:
+            "MARKET orders cannot have their price amended via OrderAmend2 — cancel and re-create the order to set a limit price. Volume / TIF will still amend.",
+        }));
+        setAmendInFlight((p) => ({ ...p, [auditId]: false }));
+        return;
+      }
       // Optimistic UI — flip the local override to AMEND_PENDING so the
       // desk sees the instruction before the broker acks. The worker SSE
       // delta confirms (and carries the new fields on the next push).
@@ -972,7 +1004,26 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       {fmtQty(Math.max(0, r.qty - r.filled))}
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
-                      {fmtMoney(r.limit_price)}
+                      <div className="flex flex-col items-start gap-0.5">
+                        <span>{fmtMoney(r.limit_price)}</span>
+                        {r.order_type ? (
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded px-1 py-0 text-[9px] font-semibold uppercase tracking-wider",
+                              r.order_type === "limit"
+                                ? "bg-primary/10 text-primary"
+                                : "bg-warning/15 text-warning",
+                            )}
+                            title={
+                              r.order_type === "limit"
+                                ? "LIMIT order — IRESS OrderAmend2 can update price / volume / TIF / triggerPrice."
+                                : "MARKET order — IRESS OrderAmend2 cannot change PricingInstructions (LIMIT↔MARKET). Price amendments on this row will silently no-op; cancel + re-create to switch."
+                            }
+                          >
+                            {r.order_type === "limit" ? "LMT" : "MKT"}
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       {fmtMoney(r.avg_fill_price)}
@@ -1156,7 +1207,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                                 size="sm"
                                 onClick={() => openAmend(r)}
                                 className="h-7 px-2 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"
-                                title={`Amend order ${r.order_id} on IRESS (OrderAmend2 via worker).`}
+                                title={`Amend order ${r.order_id} on IRESS (OrderAmend2 via worker). Only Volume / Price / TimeInForce / TriggerPrice can be amended — LIMIT↔MARKET is not amendable, cancel + re-create instead.`}
                               >
                                 Amend
                               </Button>
@@ -1167,6 +1218,19 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                               {cancelError[r.id]}
                             </span>
                           ) : null}
+                        </div>
+                      ) : isAwaitingBrokerAck(r.state) ? (
+                        <div className="flex flex-col gap-0.5">
+                          <span
+                            className="inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning/5 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-warning"
+                            title="OrderCreate3 has left our session and is owned by the destination. Cancel / Amend are disabled until the broker acknowledges the order."
+                          >
+                            <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                            awaiting broker ack
+                          </span>
+                          <span className="text-[9px] text-muted-foreground">
+                            Actions locked until Hermes acknowledges
+                          </span>
                         </div>
                       ) : (
                         <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
@@ -1276,7 +1340,11 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                                 type="number"
                                 step="0.01"
                                 min="0"
-                                className="h-7 w-24 text-[11px]"
+                                disabled={r.order_type === "market"}
+                                className={cn(
+                                  "h-7 w-24 text-[11px]",
+                                  r.order_type === "market" && "cursor-not-allowed opacity-60",
+                                )}
                                 value={amendForm[r.id]?.priceRands ?? ""}
                                 onChange={(e) =>
                                   setAmendForm((p) => ({
@@ -1288,7 +1356,18 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                                     },
                                   }))
                                 }
-                                placeholder={r.limit_price != null ? String(r.limit_price) : "—"}
+                                placeholder={
+                                  r.order_type === "market"
+                                    ? "MKT — not amendable"
+                                    : r.limit_price != null
+                                      ? String(r.limit_price)
+                                      : "—"
+                                }
+                                title={
+                                  r.order_type === "market"
+                                    ? "Price cannot be amended on a MARKET order via OrderAmend2 (PricingInstructions is fixed). Cancel + re-create to set a limit price."
+                                    : "New limit price in Rands. Sent to OrderAmend2 as Price (partial update)."
+                                }
                               />
                             </label>
                             <label className="flex flex-col gap-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -1362,6 +1441,13 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                           {amendError[r.id] ? (
                             <span className="text-[10px] text-destructive" title={amendError[r.id] ?? undefined}>
                               {amendError[r.id]}
+                            </span>
+                          ) : r.order_type === "market" ? (
+                            <span
+                              className="text-[10px] text-warning"
+                              title="IRESS OrderAmend2 cannot change PricingInstructions. Sending a `price` on a MARKET order returns 422 from /api/admin/orderbook/amend — cancel + re-create to switch. Volume / TIF amendments still apply."
+                            >
+                              MARKET order — price amendments are blocked at the broker. Volume / TIF will amend; for a limit price, cancel and re-create. State flips to AMEND_PENDING on submit, then back to WORKING/PARTIAL on broker ack — partial fills preserved.
                             </span>
                           ) : (
                             <span className="text-[10px] text-muted-foreground">
