@@ -44,7 +44,19 @@ interface Detail {
 }
 
 const n = (v: unknown): number | null => (typeof v === "number" && isFinite(v) ? v : null);
-const pct = (v: unknown, dp = 1) => (n(v) == null ? "—" : `${(n(v)! * 100).toFixed(dp)}%`);
+const pct = (v: unknown, dp = 1) => {
+  const x = n(v);
+  if (x == null) return "—";
+  // Normalise negative zero so we render "0.0%" not "-0.0%".
+  const v2 = Object.is(x, -0) || Math.abs(x) < 1e-9 ? 0 : x;
+  return `${(v2 * 100).toFixed(dp)}%`;
+};
+const pctSigned = (v: unknown, dp = 1) => {
+  const x = n(v);
+  if (x == null) return "—";
+  const v2 = Object.is(x, -0) || Math.abs(x) < 1e-9 ? 0 : x;
+  return `${v2 >= 0 ? "+" : ""}${(v2 * 100).toFixed(dp)}%`;
+};
 const fx = (v: unknown, dp = 2) => (n(v) == null ? "—" : n(v)!.toFixed(dp));
 const money = (v: unknown, ccy = "R") =>
   n(v) == null ? "—" : `${ccy}${Math.round(n(v)!).toLocaleString("en-ZA")}`;
@@ -240,9 +252,25 @@ export function ModelDetail({ slug }: { slug: string }) {
     );
   }
 
-  const currentValue = live?.final_equity ?? paperCurve.at(-1)?.equity ?? null;
-  const startCapital = live?.budget ?? null;
-  const totRet = n(live?.total_return);
+  // Demo Account KPIs — derived from the paper equity curve (the source of
+  // truth) so the values match the chart the user can see and stay correct
+  // even when the pusher's `model_metric_c.budget` is stale. The curve takes
+  // priority over the stored metric row.
+  const firstPaper = paperCurve[0];
+  const lastPaper = paperCurve.at(-1);
+  const currentValue = (lastPaper?.equity ?? null) ?? n(live?.final_equity) ?? null;
+  const startCapital = (firstPaper?.equity ?? null) ?? n(live?.budget) ?? null;
+  const totRet =
+    startCapital != null && currentValue != null && startCapital > 0
+      ? currentValue / startCapital - 1
+      : n(live?.total_return);
+  const sinceDate = firstPaper?.ts ?? (typeof live?.start_date === "string" ? dt(live.start_date) : null);
+  // Holdings weight = market_value / Σmarket_value (the pusher's stored weight
+  // is sometimes null when the paper account doesn't persist it).
+  const totalMv = positions.reduce(
+    (s, p) => s + (n(p.market_value) ?? 0),
+    0,
+  );
 
   return (
     <PageCanvas>
@@ -391,11 +419,15 @@ export function ModelDetail({ slug }: { slug: string }) {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <GlassKpi label="Starting Capital" value={money(startCapital, ccy)} />
                 <GlassKpi label="Current Value" value={money(currentValue, ccy)} accent="primary" />
-                <GlassKpi label="Total Return" value={pct(totRet)} accent={totRet != null && totRet < 0 ? "negative" : "positive"} />
+                <GlassKpi
+                  label="Total Return"
+                  value={pctSigned(totRet)}
+                  accent={totRet != null && totRet < 0 ? "negative" : "positive"}
+                />
                 <GlassKpi label="Max Drawdown" value={pct(live?.max_drawdown)} accent="negative" />
                 <GlassKpi label="Holdings" value={String(positions.length)} />
                 <GlassKpi label="Days Tracked" value={String(paperCurve.length)} />
-                <GlassKpi label="Since" value={live?.start_date ? dt(live.start_date) : (paperCurve[0]?.ts ?? "—")} />
+                <GlassKpi label="Since" value={sinceDate ?? "—"} />
                 <GlassKpi label="Fees" value={n(live?.fees_bps) != null ? `${live?.fees_bps} bps` : "7 bps"} />
               </div>
             )}
@@ -415,15 +447,19 @@ export function ModelDetail({ slug }: { slug: string }) {
             ) : (
               <Table
                 head={["Symbol", "Side", "Qty", "Avg Entry", "Mkt Value", "Unreal. P&L", "Weight"]}
-                rows={positions.map((p) => [
-                  <span className="font-medium">{String(p.symbol)}</span>,
-                  <Side side={String(p.side ?? "long")} />,
-                  n(p.qty) != null ? String(Math.round(n(p.qty)!)) : "—",
-                  money(p.avg_entry_price, ccy),
-                  money(p.market_value, ccy),
-                  <Pnl v={n(p.unrealized_pl)} ccy={ccy} pc={n(p.unrealized_plpc)} />,
-                  pct(p.weight),
-                ])}
+                rows={positions.map((p) => {
+                  const mv = n(p.market_value) ?? 0;
+                  const weight = totalMv > 0 ? mv / totalMv : n(p.weight);
+                  return [
+                    <span className="font-medium">{String(p.symbol)}</span>,
+                    <Side side={String(p.side ?? "long")} />,
+                    n(p.qty) != null ? String(Math.round(n(p.qty)!)) : "—",
+                    money(p.avg_entry_price, ccy),
+                    money(p.market_value, ccy),
+                    <Pnl v={n(p.unrealized_pl)} ccy={ccy} pc={n(p.unrealized_plpc)} />,
+                    weight == null ? "—" : pct(weight),
+                  ];
+                })}
               />
             )}
           </GlassSection>

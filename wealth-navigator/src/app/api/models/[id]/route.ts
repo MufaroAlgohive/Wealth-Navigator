@@ -68,46 +68,91 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     ? predictions.filter((p) => p.predicted_at === latestPredAt)
     : [];
 
-  // Derived rollup for the Demo Account KPIs: prefer a stored `live`/`paper`
-  // metric row (so externally-computed fields like sharpe/cagr/win_rate still
-  // win), but fall back to computing final_equity / total_return / max_drawdown
-  // / start_date from the equity curve when the pusher hasn't written a metric
-  // row (the lumibot dashboard sometimes only persists one equity point).
+  // Derived rollup for the Demo Account KPIs.
+  //
+  // The paper equity curve is the SINGLE SOURCE OF TRUTH for the model account:
+  //   start_capital = first equity point
+  //   current_value = latest equity point
+  //   total_return  = (current - start) / start
+  //   max_drawdown  = peak-to-trough on the curve
+  //
+  // The pusher's `model_metric_c.budget / final_equity / total_return /
+  // max_drawdown` columns are *display echoes* — they can lag the curve, drift
+  // if the pusher is configured against a stale registry budget, or simply be
+  // wrong (the lumibot pusher writes `registry.budget` into the metric, so a
+  // R500k registry budget leaks into the metric row even when the curve
+  // started at R100k).
+  //
+  // Stored metric rows STILL win for fields the curve can't supply
+  // (sharpe / cagr / win_rate / volatility / sortino / romad / fees_bps /
+  // benchmark_cagr / alpha_cagr / n_trades / n_round_trips / avg_pnl_per_trade
+  // / extra). We take a base metric row, override the four curve-truthy fields
+  // above, and return that as `effectiveLive`.
   const storedLive = metrics.find((m) => m.kind === "live" || m.kind === "paper");
   const paperCurve = equity.filter(
     (p) => (p.kind === "paper" || p.kind === "live") && typeof p.equity === "number",
   );
-  let derivedLive: typeof storedLive = null;
-  if (!storedLive && paperCurve.length >= 1) {
-    const sorted = [...paperCurve].sort(
-      (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
-    );
-    const startEq = Number(sorted[0]!.equity);
-    const endEq = Number(sorted[sorted.length - 1]!.equity);
-    let peak = startEq;
-    let maxDd = 0;
-    for (const p of sorted) {
+
+  // Sort the paper curve ascending by timestamp (PostgREST already returns
+  // them sorted, but defensive in case the column has microsecond jitter on
+  // repeated intraday inserts).
+  const sortedPaper = [...paperCurve].sort(
+    (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
+  );
+
+  let curveStartEq: number | null = null;
+  let curveEndEq: number | null = null;
+  let curveMaxDd: number | null = null;
+  let curveStartDate: string | null = null;
+  if (sortedPaper.length >= 1) {
+    curveStartEq = Number(sortedPaper[0]!.equity);
+    curveEndEq = Number(sortedPaper[sortedPaper.length - 1]!.equity);
+    curveStartDate = String(sortedPaper[0]!.ts).slice(0, 10);
+    let peak = curveStartEq;
+    let dd = 0;
+    for (const p of sortedPaper) {
       const v = Number(p.equity);
       if (v > peak) peak = v;
       if (peak > 0) {
-        const dd = v / peak - 1;
-        if (dd < maxDd) maxDd = dd;
+        const x = v / peak - 1;
+        if (x < dd) dd = x;
       }
     }
-    derivedLive = {
+    curveMaxDd = dd;
+  }
+
+  // Build the live rollup the UI reads: take the stored metric row when one
+  // exists (carries sharpe/cagr/etc), and overwrite the curve-truthy fields
+  // with the freshly computed values from the equity curve.
+  const effectiveLive = (() => {
+    const base = storedLive ?? (sortedPaper.length >= 1 ? {
       model_slug: slug,
       kind: "paper",
       label: "derived",
-      as_of: sorted[sorted.length - 1]!.ts,
-      start_date: String(sorted[0]!.ts).slice(0, 10),
-      end_date: String(sorted[sorted.length - 1]!.ts).slice(0, 10),
-      budget: model.budget ?? startEq,
-      final_equity: endEq,
-      total_return: startEq > 0 ? endEq / startEq - 1 : null,
-      max_drawdown: maxDd,
+      as_of: sortedPaper[sortedPaper.length - 1]!.ts,
+    } : null);
+    if (base == null) return null;
+    return {
+      ...base,
+      // The curve wins, always. fall back to the stored value only when the
+      // curve has no equity points at all (which means the pusher hasn't
+      // started yet and the stored metric is the best signal we have).
+      budget: curveStartEq ?? base.budget ?? null,
+      final_equity: curveEndEq ?? base.final_equity ?? null,
+      total_return: curveStartEq != null && curveStartEq > 0 && curveEndEq != null
+        ? curveEndEq / curveStartEq - 1
+        : base.total_return ?? null,
+      max_drawdown: curveMaxDd ?? base.max_drawdown ?? null,
+      start_date: curveStartDate ?? base.start_date ?? null,
+      end_date: sortedPaper.length
+        ? String(sortedPaper[sortedPaper.length - 1]!.ts).slice(0, 10)
+        : base.end_date ?? null,
     };
-  }
-  const effectiveLive = storedLive ?? derivedLive;
+  })();
+
+  // `derivedLive` is kept as an alias for back-compat with the type — the
+  // effective row IS the derived+overlaid record now.
+  const derivedLive = effectiveLive;
 
   const now = Date.now();
   const hb = model.last_heartbeat_at ? new Date(model.last_heartbeat_at).getTime() : 0;

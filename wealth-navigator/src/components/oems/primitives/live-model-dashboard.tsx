@@ -137,10 +137,16 @@ const DAY_MS = 86_400_000;
 const n = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
 
-const pct = (v: number | null | undefined, dp = 1) =>
-  v == null ? "—" : `${(v * 100).toFixed(dp)}%`;
-const pctSigned = (v: number | null | undefined, dp = 1) =>
-  v == null ? "—" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(dp)}%`;
+const pct = (v: number | null | undefined, dp = 1) => {
+  if (v == null) return "—";
+  const v2 = Object.is(v, -0) || Math.abs(v) < 1e-9 ? 0 : v;
+  return `${(v2 * 100).toFixed(dp)}%`;
+};
+const pctSigned = (v: number | null | undefined, dp = 1) => {
+  if (v == null) return "—";
+  const v2 = Object.is(v, -0) || Math.abs(v) < 1e-9 ? 0 : v;
+  return `${v2 >= 0 ? "+" : ""}${(v2 * 100).toFixed(dp)}%`;
+};
 const num = (v: number | null | undefined, dp = 2) =>
   v == null ? "—" : v.toFixed(dp);
 const fx = (v: number | null | undefined, dp = 2) =>
