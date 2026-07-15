@@ -1,18 +1,36 @@
-orderbook(group): collapse same-OrderNumber audit rows into one expandable row
+orderbook(group): collapse BFF seed + worker poll onto the broker OrderNumber
 
-The two producers for an order (BFF pre-send seed + worker-poll) write
-separate audit rows keyed by the IRESS OrderNumber. They currently stack
-as adjacent rows, which clutters the table when the operator wants to
-read the live lifecycle.
+Juan (operator): "all the orders that we're now doing and testing keep
+changing their order IDs and disappearing".
 
-Group rows by order_id with a chevron + lifecycle-count badge on the
-parent. Children stay collapsed by default and render in a small
-nested table when expanded. Auto-expand on every new SSE delta so the
-operator sees the lifecycle event as it happens (the AMEND_PENDING
-ack arriving from the broker pops the child row in view).
+Root cause: the BFF send-to-market seed sat at `order_id = OB-…`
+(strategy tag the BFF minted), while the worker poll row that
+reflected the broker's verdict sat at `order_id = 1500150` (the IRESS
+OrderNumber). Two separate audit rows, two separate `order_id` keys,
+so the group-by-order_id UI collapsed them into adjacent rows on
+screen instead of one expandable entry.
 
-The source field on ExecutionRow now surfaces the producer
-(OB_SEND_TO_MARKET_UAT vs iress-worker) so the timeline makes it
-obvious which writer touched each row.
+`/uat/send-to-market` already wrote `payload.iress_order_number` so
+the worker had the broker OrderNumber on hand — but it never copied
+that value into the audit row's primary `order_id` column. So the
+seed row kept its OB-… id for the lifetime of the order.
+
+Fix in `stampAfterOrderCreate3`: once `OrderCreate3` returns
+`iressOrderNumber`, overwrite the audit row's `order_id` to the
+broker OrderNumber. The original seed id is preserved on
+`payload.seed_order_id` for audit back-reference. The poller's
+existing audit rows already use the broker OrderNumber as
+`order_id`, so after this change every audit row touching the same
+order collapses into the same group on the next render.
+
+Operator verification (after deploy):
+- Send a fresh BUY. The new row's `order_id` should flip from
+  OB-… to the IRESS OrderNumber (e.g. 1500150) within ~30s of the
+  worker acking. Refresh the order book — the parent row should
+  show one chevron + `+1` lifecycle event rather than two adjacent
+  rows.
+- Order fills / partials / cancels / amends keep writing fresh
+  audit rows under the same `order_id` (broker OrderNumber), so
+  the lifecycle timeline auto-grows inside the same group.
 
 Co-Authored-By: Claude <noreply@anthropic.com>
