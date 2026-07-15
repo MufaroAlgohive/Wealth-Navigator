@@ -1,8 +1,13 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "next build",
+  "installCommand": "bun install",
+  "devCommand": "next dev",
   "crons": [
     {
       "path": "/api/cron/yahoo-fundamentals",
-      "schedule": "*/30 6-16 * * 1-5"
+      "schedule": "0 16 * * 1-5"
     }
   ]
 }
