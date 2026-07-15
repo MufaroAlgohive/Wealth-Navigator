@@ -103,6 +103,10 @@ export interface ExecutionRow {
   // state understanding". Rendered as a separate column.
   last_action?: string | null;
   last_action_at?: string | null;
+  // 2026-07-15: producer of the audit row (`OB_SEND_TO_MARKET_UAT` from
+  // the BFF vs `iress-worker` from the worker poll). UI uses this in
+  // the lifecycle timeline to surface which producer wrote each row.
+  source?: string | null;
   // 2026-07-14: pre-trade limit guard contract from the BFF
   // /api/admin/orderbook/send-to-market. `limits_enforced=true` means
   // the dispatch passed the no-naked-short + cash-bust guard against
@@ -489,6 +493,79 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   // a "LIVE" badge next to them.
   const liveIds = React.useMemo(() => new Set(Object.keys(liveOverrides)), [liveOverrides]);
 
+  // 2026-07-15: group rows by `order_id` (the IRESS OrderNumber). The
+  // ExecutionView shows audit rows from two producers — the BFF-seeded
+  // UAT row (stamped BEFORE the worker call, status="pending_ack") and
+  // the worker-poll row (stamped after the broker ack, with limit /
+  // filled / avgPx). When the OrderNumber is the same on both, they
+  // collapse into a single parent row + a chevron that expands the
+  // timeline of lifecycle events (every audit row that touched that
+  // order). Parent = the row with the most signal (filled > 0, or has
+  // limit_price, or has brokerState ACTIVE). Children = everything else.
+  interface GroupedRow {
+    parent: ExecutionRow;
+    children: ExecutionRow[];
+  }
+  const groupedRows = React.useMemo<GroupedRow[]>(() => {
+    const byKey = new Map<string, ExecutionRow[]>();
+    for (const r of rows) {
+      const key = (r.order_id || r.id || "—").trim() || "—";
+      const arr = byKey.get(key);
+      if (arr) arr.push(r);
+      else byKey.set(key, [r]);
+    }
+    const out: GroupedRow[] = [];
+    for (const arr of byKey.values()) {
+      // Pick parent: prefer the row with a real fill OR a limit price OR
+      // a known brokerState. Tie-break by most-recent updated_at / ts.
+      const score = (x: ExecutionRow): number =>
+        (x.filled > 0 ? 100 : 0) +
+        (x.limit_price != null ? 10 : 0) +
+        (x.broker_state === "ACTIVE" ? 5 : x.broker_state === "INACTIVE" ? 1 : 0) +
+        (x.avg_fill_price != null ? 4 : 0);
+      const sorted = [...arr].sort((a, b) => {
+        const ds = score(b) - score(a);
+        if (ds !== 0) return ds;
+        return Date.parse(b.ts || "") - Date.parse(a.ts || "");
+      });
+      const [parent, ...children] = sorted;
+      // `sorted` always has at least one row (we created the array from
+      // arr.length > 0). Non-null assert so TS strict sees it as such.
+      out.push({ parent: parent!, children });
+    }
+    // Order groups by the parent's most-recent timestamp DESC.
+    out.sort((a, b) => Date.parse(b.parent.ts || "") - Date.parse(a.parent.ts || ""));
+    return out;
+  }, [rows]);
+
+  // Expansion state — order_id → expanded. Default: collapsed (the
+  // parent shows the lifecycle count badge; click to expand). Auto-expand
+  // when a NEW SSE delta lands so the operator sees the lifecycle event
+  // as it happens (Andre, 2026-07-13).
+  const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
+  const prevLiveCountRef = React.useRef<number>(0);
+  React.useEffect(() => {
+    const currentCount = Object.keys(liveOverrides).length;
+    if (currentCount > prevLiveCountRef.current) {
+      // A new SSE delta arrived — auto-expand the affected order so the
+      // operator sees the lifecycle event without manual interaction.
+      setExpanded((prev) => {
+        const next = { ...prev };
+        for (const o of Object.values(liveOverrides)) {
+          const key = (o.order_id || o.id || "").trim();
+          if (key) next[key] = true;
+        }
+        return next;
+      });
+    }
+    prevLiveCountRef.current = currentCount;
+  }, [liveOverrides]);
+
+  const totalEvents = React.useMemo(
+    () => groupedRows.reduce((s, g) => s + 1 + g.children.length, 0),
+    [groupedRows],
+  );
+
   // Per-row cancel state (2026-07-13). When the desk clicks Cancel on a
   // row, we POST /api/admin/orderbook/cancel which forwards to the worker's
   // /orders/cancel (OrderDelete). The handler optimistically flips the
@@ -699,7 +776,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
     [amendForm, closeAmend],
   );
 
-  const showLoading = executions.loading && rows.length === 0;
+  const showLoading = executions.loading && groupedRows.length === 0;
   const hasNotice = !!executions.data?.notice;
 
   return (
@@ -710,8 +787,13 @@ export function ExecutionView({ bookId }: { bookId: string }) {
             Per-ISIN execution
           </span>
           <Badge variant="outline" className="font-mono">
-            {executions.data?.count ?? rows.length}
+            {groupedRows.length}
           </Badge>
+          {totalEvents !== groupedRows.length ? (
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              ({totalEvents} events)
+            </span>
+          ) : null}
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">book {bookId}</span>
           {uatEnabled ? (
             <span
@@ -755,6 +837,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
           <thead>
             <tr className="border-b border-border bg-card/60 text-left">
               {[
+                "",
                 "Order ID",
                 "Timestamp",
                 "Strategy",
@@ -789,18 +872,19 @@ export function ExecutionView({ bookId }: { bookId: string }) {
           <tbody>
             {showLoading ? (
               <tr>
-                <td colSpan={21} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={22} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   Loading executions…
                 </td>
               </tr>
-            ) : rows.length === 0 ? (
+            ) : groupedRows.length === 0 ? (
               <tr>
-                <td colSpan={21} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={22} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   No execution rows for this book yet — click <em>Send to Market</em> to dispatch.
                 </td>
               </tr>
             ) : (
-              rows.map((r) => {
+              groupedRows.map((g) => {
+                const r = g.parent;
                 const liveLast = lastBySymbol.get(r.symbol);
                 const effectiveLast =
                   typeof liveLast === "number" && Number.isFinite(liveLast) ? liveLast : r.avg_fill_price;
@@ -813,11 +897,52 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     ? "—"
                     : `${liveSlipCents > 0 ? "+" : ""}${(liveSlipCents / 100).toFixed(2)}`;
                 const tracked = liveIds.has(r.id);
+                const groupKey = (r.order_id || r.id || "").trim();
+                const isExpanded = !!expanded[groupKey];
+                const toggle = () =>
+                  setExpanded((p) => ({ ...p, [groupKey]: !p[groupKey] }));
+                const childCount = g.children.length;
                 return (
-                  <React.Fragment key={r.id}>
-                  <tr className="border-b border-border/40 hover:bg-accent/10">
+                  <React.Fragment key={`grp:${groupKey}`}>
+                  <tr
+                    className={cn(
+                      "border-b border-border/40 hover:bg-accent/10",
+                      childCount > 0 && "bg-accent/5",
+                    )}
+                  >
+                    <td className="px-2 py-1.5 whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={toggle}
+                        className={cn(
+                          "inline-flex h-5 w-5 items-center justify-center rounded border border-border/60 bg-background/40 text-[10px] text-muted-foreground hover:bg-accent",
+                          childCount === 0 && "opacity-30 cursor-default",
+                        )}
+                        disabled={childCount === 0}
+                        aria-label={isExpanded ? "Collapse timeline" : "Expand timeline"}
+                        title={
+                          childCount === 0
+                            ? "No lifecycle events to expand"
+                            : isExpanded
+                              ? "Collapse lifecycle timeline"
+                              : `Expand ${childCount} lifecycle event${childCount === 1 ? "" : "s"}`
+                        }
+                      >
+                        {isExpanded ? "▾" : "▸"}
+                      </button>
+                    </td>
                     <td className="px-3 py-1.5 font-mono text-[11px] text-foreground whitespace-nowrap">
-                      {r.order_id}
+                      <div className="flex items-center gap-1.5">
+                        <span>{r.order_id}</span>
+                        {childCount > 0 ? (
+                          <span
+                            className="inline-flex items-center rounded-full bg-accent px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wider text-accent-foreground"
+                            title={`${childCount} lifecycle event${childCount === 1 ? "" : "s"} on this OrderNumber — click the chevron to expand`}
+                          >
+                            +{childCount}
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
                       {fmtTs(r.ts)}
@@ -1048,9 +1173,98 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       )}
                     </td>
                   </tr>
+                  {isExpanded && childCount > 0 ? (
+                    <tr
+                      key={`${groupKey}-lifecycle`}
+                      className="border-b border-border/40 bg-accent/10"
+                    >
+                      <td colSpan={22} className="px-3 py-2">
+                        <div className="flex flex-col gap-1.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              Lifecycle timeline — {r.order_id}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground">
+                              {childCount} event{childCount === 1 ? "" : "s"} after the parent ({r.action_status ?? r.last_action ?? "open"})
+                            </span>
+                          </div>
+                          <table className="w-full border-collapse">
+                            <thead>
+                              <tr className="text-left text-[9px] uppercase tracking-wider text-muted-foreground">
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Timestamp</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Strategy</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Side</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Symbol</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Qty</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Limit</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Avg Px</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">% Filled</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">State</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Action</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Sent by</th>
+                                <th className="px-2 py-1 font-semibold whitespace-nowrap">Source</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {g.children.map((c) => {
+                                const cFilled = c.filled ?? 0;
+                                const cOrdVol = c.qty ?? 0;
+                                const cPct =
+                                  cOrdVol > 0
+                                    ? `${((cFilled / cOrdVol) * 100).toFixed(cFilled > 0 ? 1 : 0)}%`
+                                    : "—";
+                                return (
+                                  <tr
+                                    key={c.id}
+                                    className="border-t border-border/30 hover:bg-accent/10"
+                                  >
+                                    <td className="px-2 py-1 font-mono text-[10px] text-muted-foreground whitespace-nowrap">
+                                      {fmtTs(c.ts)}
+                                    </td>
+                                    <td className="px-2 py-1 text-[10px] whitespace-nowrap">{c.strategy ?? "—"}</td>
+                                    <td className="px-2 py-1 whitespace-nowrap">
+                                      <Badge variant={c.side === "SELL" ? "destructive" : "success"} className="text-[9px]">
+                                        {c.side}
+                                      </Badge>
+                                    </td>
+                                    <td className="px-2 py-1 text-[10px] font-semibold whitespace-nowrap">{c.symbol}</td>
+                                    <td className="px-2 py-1 text-[10px] whitespace-nowrap">{c.qty ?? "—"}</td>
+                                    <td className="px-2 py-1 text-[10px] whitespace-nowrap">
+                                      {c.limit_price != null ? fmtMoney(c.limit_price) : "—"}
+                                    </td>
+                                    <td className="px-2 py-1 text-[10px] whitespace-nowrap">
+                                      {c.avg_fill_price != null ? fmtMoney(c.avg_fill_price) : "—"}
+                                    </td>
+                                    <td className="px-2 py-1 text-[10px] whitespace-nowrap">{cPct}</td>
+                                    <td className="px-2 py-1 whitespace-nowrap">
+                                      <Badge variant={STATE_VARIANT[c.state] ?? "outline"} className="text-[9px]">
+                                        {c.state}
+                                      </Badge>
+                                    </td>
+                                    <td
+                                      className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap"
+                                      title={c.action_status || c.last_action || undefined}
+                                    >
+                                      {c.action_status ?? c.last_action ?? "—"}
+                                    </td>
+                                    <td className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap">
+                                      {c.sent_by ?? "—"}
+                                    </td>
+                                    <td className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap">
+                                      {c.source ?? "—"}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
                   {amendOpen[r.id] ? (
                     <tr key={`${r.id}-amend`} className="border-b border-border/40 bg-muted/30">
-                      <td colSpan={21} className="px-3 py-2">
+                      <td colSpan={22} className="px-3 py-2">
                         <div className="flex flex-col gap-1">
                           <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                             Amend order {r.order_id} — OrderAmend2 via worker

@@ -1,0 +1,18 @@
+orderbook(group): collapse same-OrderNumber audit rows into one expandable row
+
+The two producers for an order (BFF pre-send seed + worker-poll) write
+separate audit rows keyed by the IRESS OrderNumber. They currently stack
+as adjacent rows, which clutters the table when the operator wants to
+read the live lifecycle.
+
+Group rows by order_id with a chevron + lifecycle-count badge on the
+parent. Children stay collapsed by default and render in a small
+nested table when expanded. Auto-expand on every new SSE delta so the
+operator sees the lifecycle event as it happens (the AMEND_PENDING
+ack arriving from the broker pops the child row in view).
+
+The source field on ExecutionRow now surfaces the producer
+(OB_SEND_TO_MARKET_UAT vs iress-worker) so the timeline makes it
+obvious which writer touched each row.
+
+Co-Authored-By: Claude <noreply@anthropic.com>

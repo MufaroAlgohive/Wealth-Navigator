@@ -118,6 +118,11 @@ interface ExecutionRow {
   iress_error_description?: string | null;
   last_action?: string | null;
   last_action_at?: string | null;
+  // 2026-07-15: producer of the row — `OB_SEND_TO_MARKET_UAT` for
+  // BFF-seed pre-send rows, `iress-worker` for worker-poll writes. UI
+  // uses this in the lifecycle timeline to colour-code which producer
+  // touched the order.
+  source?: string | null;
 }
 
 function openInstitutional(): SupabaseClient | null {
@@ -284,6 +289,7 @@ function mapRow(r: AuditRow): ExecutionRow {
     // the UI can pin it as a row-level field.
     last_action: str(result.lastAction) ?? str(payload.lastAction) ?? null,
     last_action_at: str(result.lastActionAt) ?? str(payload.lastActionAt) ?? null,
+    source: str(r.source) ?? "iress_order_audit",
   };
 }
 
