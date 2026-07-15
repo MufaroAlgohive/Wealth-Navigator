@@ -30,6 +30,29 @@ function deriveKyc(
   return "not_initiated";
 }
 
+function deriveChildKyc(member: Record<string, unknown>): KycState {
+  const status = String(member.certificate_verification_status || member.kyc_status || "")
+    .trim()
+    .toLowerCase();
+  if (/verified|approved|accepted|completed/.test(status)) return "verified";
+  if (/reject|declined/.test(status)) return "rejected";
+  if (/pending|review|submitted|uploaded/.test(status)) return "pending";
+  return "not_initiated";
+}
+
+function parseRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 function costCentsPerShare(h: { avg_fill?: number | null; Expected_fill?: number | null }): number {
   const avgCents = Number(h.avg_fill) || 0;
   const expectedRaw = Number(h.Expected_fill) || 0;
@@ -113,7 +136,7 @@ export async function GET(req: Request) {
           mint_number: (member.mint_number as string | null) ?? null,
           is_test: false,
           created_at: member.created_at ?? null,
-          kyc: "not_initiated" as const,
+          kyc: deriveChildKyc(member),
           bank_linked: false,
           family_role: "child" as const,
           family_member_id: familyMemberId,
@@ -162,21 +185,27 @@ export async function GET(req: Request) {
         },
         onboarding: null,
         required: null,
-        kyc: "not_initiated",
+        kyc: deriveChildKyc(member as Record<string, unknown>),
         holdings,
         transactions: (txns ?? []).map((transaction) => ({
           ...transaction,
           transaction_date: transaction.transaction_date || transaction.created_at || null,
         })),
         is_unlinked_child: true,
+        child_certificate: {
+          url: member.certificate_url ?? null,
+          status: member.certificate_verification_status ?? member.kyc_status ?? null,
+          reviewed_at: member.kyc_reviewed_at ?? null,
+        },
       });
     }
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
 
-    const [{ data: profile }, { data: onboarding }, { data: required }, { data: holds }, { data: txns }] = await Promise.all([
+    const [{ data: profile }, { data: onboarding }, { data: required }, { data: pack }, { data: holds }, { data: txns }] = await Promise.all([
       db.from("profiles").select("*").eq("id", userId).maybeSingle(),
       db.from("user_onboarding").select("*").eq("user_id", userId).maybeSingle(),
       db.from("required_actions").select("*").eq("user_id", userId).maybeSingle(),
+      db.from("user_onboarding_pack_details").select("pack_details").eq("user_id", userId).maybeSingle(),
       db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
       db.from("transactions").select("id, name, description, amount, direction, status, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(25),
     ]);
@@ -198,11 +227,19 @@ export async function GET(req: Request) {
       return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };
     }).sort((a, b) => b.valueCents - a.valueCents);
 
+    const sumsubRaw = parseRecord(onboarding?.sumsub_raw);
+    const mandateData = parseRecord(sumsubRaw.mandate_data);
     return NextResponse.json({
       ok: true,
       profile: profile ?? null,
       onboarding: onboarding ?? null,
       required: required ?? null,
+      onboarding_pack: pack?.pack_details ?? null,
+      mandate: {
+        available: Object.keys(mandateData).length > 0 || Boolean(onboarding?.signed_agreement_url),
+        data: mandateData,
+        signed_agreement_url: onboarding?.signed_agreement_url ?? null,
+      },
       kyc: deriveKyc(onboarding ?? undefined, required ?? undefined),
       holdings,
       transactions: txns ?? [],
@@ -232,7 +269,34 @@ export async function POST(req: Request) {
   }
 
   const action = new URL(req.url).searchParams.get("action") || "";
-  const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; decision?: string };
+  const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; family_member_id?: string; decision?: string };
+
+  if (action === "child-certificate-review") {
+    const familyMemberId = String(body.family_member_id || "");
+    const decision = body.decision === "approve" ? "verified" : body.decision === "reject" ? "rejected" : "pending";
+    if (!familyMemberId) return NextResponse.json({ ok: false, error: "family_member_id required" }, { status: 400 });
+    let db: ReturnType<typeof createRetailServiceRoleClient>;
+    try {
+      db = createRetailServiceRoleClient();
+    } catch {
+      return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
+    }
+    const now = new Date().toISOString();
+    const { data: member, error } = await db
+      .from("family_members")
+      .update({
+        certificate_verification_status: decision,
+        kyc_status: decision,
+        kyc_reviewed_at: now,
+        updated_at: now,
+      })
+      .eq("id", familyMemberId)
+      .select("id,certificate_verification_status,kyc_status,kyc_reviewed_at")
+      .maybeSingle();
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    if (!member) return NextResponse.json({ ok: false, error: "Family member not found" }, { status: 404 });
+    return NextResponse.json({ ok: true, decision, member });
+  }
 
   if (action === "kyc-review") {
     const userId = String(body.user_id || "");

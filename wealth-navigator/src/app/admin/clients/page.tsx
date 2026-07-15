@@ -22,6 +22,9 @@ interface Detail {
   holdings: Holding[];
   transactions: Txn[];
   is_unlinked_child?: boolean;
+  onboarding_pack?: Record<string, unknown> | null;
+  mandate?: { available: boolean; data: Record<string, unknown>; signed_agreement_url?: string | null };
+  child_certificate?: { url?: string | null; status?: string | null; reviewed_at?: string | null };
 }
 
 const R = (cents: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(cents / 100);
@@ -29,6 +32,8 @@ const pnlCls = (n: number) => (n >= 0 ? "text-success" : "text-destructive");
 const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").slice(0, 2).toUpperCase() || "?";
 const kycCls = (k: Kyc) => (k === "verified" ? "bg-success/15 text-success" : k === "rejected" || k === "resubmission_required" ? "bg-destructive/15 text-destructive" : k === "pending" ? "bg-warning/15 text-warning" : "bg-muted text-muted-foreground");
 const kycLabel = (k: Kyc) => k.replaceAll("_", " ");
+const kycSelectCls = (value: KycFilter) => value === "verified" ? "border-success/40 bg-success/10 text-success" : value === "rejected" || value === "resubmission_required" ? "border-destructive/40 bg-destructive/10 text-destructive" : value === "pending" ? "border-warning/50 bg-warning/10 text-warning" : value === "not_initiated" ? "border-chart-5/40 bg-chart-5/10 text-chart-5" : "border-primary/35 bg-primary/10 text-primary";
+const familySelectCls = (value: FamilyFilter) => value === "parent" ? "border-chart-5/40 bg-chart-5/10 text-chart-5" : value === "child" ? "border-success/40 bg-success/10 text-success" : "border-primary/35 bg-primary/10 text-primary";
 const str = (v: unknown) => (v == null || v === "" ? "—" : String(v));
 
 export default function ClientsPage() {
@@ -72,6 +77,18 @@ export default function ClientsPage() {
     setSumsub(`SumSub: ${data?.review?.reviewResult?.reviewAnswer || data?.reviewStatus || "unknown"}`);
   };
 
+  const childCertificateAction = async (decision: "approve" | "reject" | "reevaluate") => {
+    if (!sel?.family_member_id) return;
+    const d = await fetch("/api/admin/clients?action=child-certificate-review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ family_member_id: sel.family_member_id, decision }),
+    }).then((response) => response.json()).catch(() => ({ ok: false }));
+    if (!d.ok) return toast.error(d.error || "Certificate review failed");
+    toast.success(decision === "approve" ? "Child certificate verified" : decision === "reject" ? "Child certificate rejected" : "Certificate returned to review");
+    await openClient(sel.id);
+  };
+
   const filtered = (clients ?? [])
     .filter((c) => kycFilter === "all" || c.kyc === kycFilter)
     .filter((c) => familyFilter === "all" || c.family_role === familyFilter)
@@ -95,7 +112,7 @@ export default function ClientsPage() {
           <div className="mb-2 grid grid-cols-2 gap-2">
             <label className="space-y-1">
               <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">KYC status</span>
-              <select value={kycFilter} onChange={(event) => setKycFilter(event.target.value as KycFilter)} className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-primary/25">
+              <select value={kycFilter} onChange={(event) => setKycFilter(event.target.value as KycFilter)} className={cn("h-8 w-full rounded-lg border px-2 text-xs font-semibold outline-none transition-colors focus:ring-2 focus:ring-primary/25", kycSelectCls(kycFilter))}>
                 <option value="all">All statuses</option>
                 <option value="verified">Verified</option>
                 <option value="pending">Pending</option>
@@ -106,7 +123,7 @@ export default function ClientsPage() {
             </label>
             <label className="space-y-1">
               <span className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Family role</span>
-              <select value={familyFilter} onChange={(event) => setFamilyFilter(event.target.value as FamilyFilter)} className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus:ring-2 focus:ring-primary/25">
+              <select value={familyFilter} onChange={(event) => setFamilyFilter(event.target.value as FamilyFilter)} className={cn("h-8 w-full rounded-lg border px-2 text-xs font-semibold outline-none transition-colors focus:ring-2 focus:ring-primary/25", familySelectCls(familyFilter))}>
                 <option value="all">All clients</option>
                 <option value="parent">Parents</option>
                 <option value="child">Children</option>
@@ -149,7 +166,7 @@ export default function ClientsPage() {
                 </div>
 
                 <Tabs value={tab} onValueChange={setTab}>
-                  <TabsList><TabsTrigger value="profile">Profile</TabsTrigger><TabsTrigger value="kyc">KYC</TabsTrigger><TabsTrigger value="holdings">Holdings</TabsTrigger><TabsTrigger value="activity">Activity</TabsTrigger></TabsList>
+                  <TabsList><TabsTrigger value="profile">Profile</TabsTrigger><TabsTrigger value="kyc">KYC</TabsTrigger>{!detail.is_unlinked_child && <TabsTrigger value="mandate">Mandate</TabsTrigger>}<TabsTrigger value="holdings">Holdings</TabsTrigger><TabsTrigger value="activity">Activity</TabsTrigger></TabsList>
 
                   <TabsContent value="profile">
                     <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
@@ -162,6 +179,16 @@ export default function ClientsPage() {
                     </dl>
                   </TabsContent>
 
+                  <TabsContent value="mandate" className="space-y-3">
+                    {!detail.mandate?.available ? <p className="rounded-xl border border-dashed border-border py-8 text-center text-xs text-muted-foreground">No captured mandate is available for this client.</p> : <>
+                      <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
+                        {Object.entries(detail.mandate.data).map(([key, value]) => <Row key={key} label={key.replaceAll("_", " ")} value={formatDetailValue(value)} />)}
+                      </dl>
+                      {detail.mandate.signed_agreement_url && <Button size="sm" variant="secondary" asChild><a href={detail.mandate.signed_agreement_url} target="_blank" rel="noreferrer">View signed agreement</a></Button>}
+                    </>}
+                    {detail.onboarding_pack && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer text-xs font-semibold text-foreground">Captured onboarding pack</summary><dl className="mt-3 grid grid-cols-1 gap-px overflow-hidden rounded-lg bg-border sm:grid-cols-2">{Object.entries(detail.onboarding_pack).map(([key, value]) => <Row key={key} label={key.replaceAll("_", " ")} value={formatDetailValue(value)} />)}</dl></details>}
+                  </TabsContent>
+
                   <TabsContent value="kyc" className="space-y-4">
                     <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
                       <Row label="KYC status" value={str(ob.kyc_status)} /><Row label="SumSub answer" value={str(ob.sumsub_review_answer)} />
@@ -171,7 +198,12 @@ export default function ClientsPage() {
                       <Row label="Annual income" value={str(ob.annual_income_amount)} /><Row label="Agreement" value={ob.signed_agreement_url ? "Signed" : "—"} />
                     </dl>
                     <div className="flex flex-wrap items-center gap-2">
-                      {detail.is_unlinked_child ? <span className="text-[11px] text-muted-foreground">KYC actions become available after this child is linked to a user profile.</span> : <>
+                      {detail.is_unlinked_child ? <>
+                        {detail.child_certificate?.url ? <Button size="sm" variant="secondary" asChild><a href={detail.child_certificate.url} target="_blank" rel="noreferrer">View certificate</a></Button> : <span className="text-[11px] text-muted-foreground">No child certificate has been uploaded.</span>}
+                        {detail.child_certificate?.url && detail.kyc !== "verified" && <Button size="sm" variant="success" onClick={() => childCertificateAction("approve")}>Accept certificate</Button>}
+                        {detail.child_certificate?.url && detail.kyc !== "rejected" && <Button size="sm" variant="destructive" onClick={() => childCertificateAction("reject")}>Reject certificate</Button>}
+                        {detail.child_certificate?.url && detail.kyc === "rejected" && <Button size="sm" variant="warning" onClick={() => childCertificateAction("reevaluate")}>Re-evaluate</Button>}
+                      </> : <>
                       <Button size="sm" variant="success" onClick={() => kycAction("approve")}>Approve KYC</Button>
                       <Button size="sm" variant="destructive" onClick={() => kycAction("reject")}>Reject</Button>
                       <Button size="sm" variant="secondary" onClick={syncSumsub}>Sync SumSub</Button>
@@ -223,6 +255,13 @@ export default function ClientsPage() {
 
 function Row({ label, value }: { label: string; value: string }) {
   return <div className="flex items-center justify-between gap-3 bg-card px-3 py-2.5"><dt className="text-[11px] text-muted-foreground">{label}</dt><dd className="truncate text-[13px] font-medium text-foreground">{value}</dd></div>;
+}
+
+function formatDetailValue(value: unknown): string {
+  if (value == null || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 function ClientMetric({ label, value, tone }: { label: string; value: number | string; tone: "primary" | "success" | "warning" | "danger" }) {
