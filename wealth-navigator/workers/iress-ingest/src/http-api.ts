@@ -1080,14 +1080,42 @@ async function amendLiveOrder(
       return baseError("ios_unavailable", "IOSPlus service session not available; order pad not entitled");
     }
     const client = getIressClient("live");
-    await client.orderAmend2({
-      ServiceSessionKey: iosKey,
+    const sentParams: Record<string, unknown> = {
       OrderNumber: orderId,
-      ...(amend.price != null ? { Price: amend.price } : {}),
-      ...(amend.volume != null ? { Volume: amend.volume } : {}),
-      ...(amend.tif != null ? { TimeInForce: amend.tif } : {}),
-      ...(amend.triggerPrice != null ? { TriggerPrice: amend.triggerPrice } : {}),
-    });
+    };
+    if (amend.price != null) sentParams.Price = amend.price;
+    if (amend.volume != null) sentParams.Volume = amend.volume;
+    if (amend.tif != null) sentParams.TimeInForce = amend.tif;
+    if (amend.triggerPrice != null) sentParams.TriggerPrice = amend.triggerPrice;
+    const amendStartedAt = Date.now();
+    console.info(
+      `[iress-ingest/amend] OrderAmend2 request account=${account} orderNumber=${orderId} fields=${JSON.stringify(sentParams)}`,
+    );
+    let amendResult: { OrderNumber: string };
+    try {
+      amendResult = await client.orderAmend2({
+        ServiceSessionKey: iosKey,
+        OrderNumber: orderId,
+        ...(amend.price != null ? { Price: amend.price } : {}),
+        ...(amend.volume != null ? { Volume: amend.volume } : {}),
+        ...(amend.tif != null ? { TimeInForce: amend.tif } : {}),
+        ...(amend.triggerPrice != null ? { TriggerPrice: amend.triggerPrice } : {}),
+      });
+      const amendElapsed = Date.now() - amendStartedAt;
+      console.info(
+        `[iress-ingest/amend] OrderAmend2 success account=${account} orderNumber=${orderId} returned=${JSON.stringify(amendResult)} elapsedMs=${amendElapsed}`,
+      );
+    } catch (amendErr) {
+      const amendElapsed = Date.now() - amendStartedAt;
+      const iressCode =
+        amendErr instanceof IressError ? amendErr.code : null;
+      const iressDesc =
+        amendErr instanceof IressError ? amendErr.message : null;
+      console.error(
+        `[iress-ingest/amend] OrderAmend2 FAILED account=${account} orderNumber=${orderId} sent=${JSON.stringify(sentParams)} errorCode=${iressCode ?? "—"} errorDesc=${iressDesc ?? String(amendErr)} elapsedMs=${amendElapsed}`,
+      );
+      throw amendErr;
+    }
     const amendedAt = new Date().toISOString();
     // Stamp the audit row + publish the SSE delta so the desk sees
     // AMEND_PENDING immediately (Andre, 37:04). Same pattern as

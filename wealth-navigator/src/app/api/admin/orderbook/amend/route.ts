@@ -193,19 +193,29 @@ export async function POST(req: Request) {
     );
   }
 
+  const amendPayload = {
+    account,
+    orderId: orderNumber,
+    ...(price != null ? { price } : {}),
+    ...(volume != null ? { volume } : {}),
+    ...(tif != null ? { tif } : {}),
+    ...(triggerPrice != null ? { triggerPrice } : {}),
+  };
+  console.info(
+    `[orderbook/amend] forwarding to worker account=${account} orderNumber=${orderNumber} payload=${JSON.stringify(amendPayload)}`,
+  );
   const amend = await callWorker<WorkerAmendResponse>({
     method: "POST",
     path: "/orders/amend",
-    body: {
-      account,
-      orderId: orderNumber,
-      ...(price != null ? { price } : {}),
-      ...(volume != null ? { volume } : {}),
-      ...(tif != null ? { tif } : {}),
-      ...(triggerPrice != null ? { triggerPrice } : {}),
-    },
+    body: amendPayload,
     timeoutMs: 15_000,
   });
+  console.info(
+    `[orderbook/amend] worker response account=${account} orderNumber=${orderNumber} ok=${amend.ok ?? false} httpStatus=${amend.status ?? "?"} ` +
+      (amend.ok
+        ? `body=${JSON.stringify(amend.body).slice(0, 800)}`
+        : `code=${amend.code ?? "—"} error=${amend.error ?? "—"} workerUrl=${amend.workerUrl ?? "—"}`),
+  );
 
   if (!amend.ok) {
     return NextResponse.json(
