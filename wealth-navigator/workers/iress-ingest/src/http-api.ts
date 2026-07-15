@@ -2796,23 +2796,48 @@ async function stampAfterOrderCreate3(opts: {
 
   let writeErr: string | undefined;
   if (db) {
+    const updateShape: Record<string, unknown> = {
+      payload: newPayload,
+      result_payload: newResult,
+      // 2026-07-14: stamp FAILED on transport-level failure. The BFF
+      // status-code stays 502 (transport-failed), but the audit row +
+      // SSE delta immediately surface FAILED so the OEMS UI's State
+      // chip flips off "Pending" instead of getting stuck.
+      status:
+        orderCreateStatus === "rejected"
+          ? "rejected"
+          : orderCreateStatus === "failed"
+            ? "failed"
+            : "pending_ack",
+      updated_at: stampedAt,
+    };
+    // 2026-07-15: collapse the BFF seed + the worker poll row into
+    // the same OrderNumber-grouped bucket. Previously the BFF seed
+    // sat at `order_id = OB-…` (a strategy-tag the BFF minted) and
+    // the worker poll sat at `order_id = 1500150` (the IRESS
+    // OrderNumber). The grouping-by-order_id on the UI saw two
+    // distinct buckets — the parent + child ended up as adjacent
+    // rows on screen instead of one expandable entry. We now
+    // overwrite `order_id` to the IRESS OrderNumber once it's known.
+    // The original seed lives on in `payload.seed_order_id` for audit
+    // back-reference and `payload.iress_order_number` was already
+    // populated above.
+    if (iressOrderNumber) {
+      const seedOrderId =
+        typeof audit.order_id === "string" && audit.order_id.length > 0
+          ? audit.order_id
+          : null;
+      if (seedOrderId && !payloadObj.seed_order_id) {
+        newPayload.seed_order_id = seedOrderId;
+      }
+      // Keep the BFF seed's original OB-… order_id OUT of the
+      // collision — overwrite to the IRESS OrderNumber so the
+      // grouping key lines up with the worker poll row.
+      updateShape.order_id = iressOrderNumber;
+    }
     const { error: writeErrDb } = await db
       .from("oems_order_audit")
-      .update({
-        payload: newPayload,
-        result_payload: newResult,
-        // 2026-07-14: stamp FAILED on transport-level failure. The BFF
-        // status-code stays 502 (transport-failed), but the audit row +
-        // SSE delta immediately surface FAILED so the OEMS UI's State
-        // chip flips off "Pending" instead of getting stuck.
-        status:
-          orderCreateStatus === "rejected"
-            ? "rejected"
-            : orderCreateStatus === "failed"
-              ? "failed"
-              : "pending_ack",
-        updated_at: stampedAt,
-      })
+      .update(updateShape)
       .eq("id", audit.id);
     if (writeErrDb) writeErr = writeErrDb.message;
   }
