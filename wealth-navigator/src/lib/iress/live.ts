@@ -1509,6 +1509,40 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async orderAmend2(req: OrderAmend2Request): Promise<{ OrderNumber: string }> {
       require(req.ServiceSessionKey, "ServiceSessionKey", "OrderAmend2");
       require(req.OrderNumber, "OrderNumber", "OrderAmend2");
+      // 2026-07-15: the IRESS V4 spec requires OrderAmend2's amendable
+      // fields to be wrapped in a nested `<Order>` element (per
+      // `Documentation & Vision/iress-v4-docs/13-soap-examples/order-amend-2.request.xml`):
+      //
+      //   <Parameters>
+      //     <Order>
+      //       <OrderNumber>...</OrderNumber>
+      //       <Volume>...</Volume>
+      //       <Price>...</Price>
+      //     </Order>
+      //   </Parameters>
+      //
+      // The previous build sent a flat shape:
+      //   <Parameters><OrderNumber>...</OrderNumber><Volume>...</Volume></Parameters>
+      //
+      // which the broker's XML parser accepted enough to return a
+      // success envelope (echoing the OrderNumber) but couldn't
+      // associate the `Volume` with any field on the order. Result:
+      // Hermes confirms the amend with a 200 / ErrorNumber=0, but
+      // Hermes doesn't actually mutate the order. The OEMS UI flipped
+      // to AMEND_PENDING (correct on our side), the next worker poll
+      // showed no change on the broker side (no error either), and
+      // the operator kept guessing at why nothing updated.
+      //
+      // The fix is the nested <Order> wrapper. We send only the
+      // fields the BFF supplied; OrderAmend2 is a partial-update
+      // (untouched fields inherit from the existing order).
+      const orderObj: Record<string, unknown> = {
+        OrderNumber: req.OrderNumber,
+      };
+      if (req.Volume != null) orderObj.Volume = req.Volume;
+      if (req.Price != null) orderObj.Price = req.Price;
+      if (req.TriggerPrice != null) orderObj.TriggerPrice = req.TriggerPrice;
+      if (req.TimeInForce != null) orderObj.TimeInForce = req.TimeInForce;
       const result = await transport.call({
         method: "OrderAmend2",
         header: makeHeader({
@@ -1517,13 +1551,7 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           timeout: 25,
           waitForResponse: true,
         }),
-        parameters: {
-          OrderNumber: req.OrderNumber,
-          Volume: req.Volume,
-          Price: req.Price,
-          TriggerPrice: req.TriggerPrice,
-          TimeInForce: req.TimeInForce,
-        },
+        parameters: { Order: orderObj },
       });
       const first = result.firstRow;
       const errorNumber = first && first["ErrorNumber"] !== undefined ? Number(first["ErrorNumber"]) : 0;

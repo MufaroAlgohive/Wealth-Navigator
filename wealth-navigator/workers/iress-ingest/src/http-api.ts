@@ -1080,13 +1080,22 @@ async function amendLiveOrder(
       return baseError("ios_unavailable", "IOSPlus service session not available; order pad not entitled");
     }
     const client = getIressClient("live");
-    const sentParams: Record<string, unknown> = {
-      OrderNumber: orderId,
-    };
-    if (amend.price != null) sentParams.Price = amend.price;
-    if (amend.volume != null) sentParams.Volume = amend.volume;
-    if (amend.tif != null) sentParams.TimeInForce = amend.tif;
-    if (amend.triggerPrice != null) sentParams.TriggerPrice = amend.triggerPrice;
+    // 2026-07-15: build the wire-shape payload up front so the log
+    // line below mirrors what the broker actually sees. OrderAmend2
+    // expects the amendable fields inside a nested `<Order>` element
+    // (`Documentation & Vision/iress-v4-docs/13-soap-examples/order-amend-2.request.xml`).
+    // A flat `<Parameters><OrderNumber>...</OrderNumber><Volume>...</Volume></Parameters>`
+    // envelope parses enough to return success but doesn't mutate the
+    // order on Hermes — which is exactly what Andre observed earlier
+    // today (the worker logged Volume=100 sent, Hermes confirmed
+    // OrderNumber=1500152 with no ErrorNumber, but the order's volume
+    // never changed at the broker).
+    const orderObj: Record<string, unknown> = { OrderNumber: orderId };
+    if (amend.price != null) orderObj.Price = amend.price;
+    if (amend.volume != null) orderObj.Volume = amend.volume;
+    if (amend.tif != null) orderObj.TimeInForce = amend.tif;
+    if (amend.triggerPrice != null) orderObj.TriggerPrice = amend.triggerPrice;
+    const sentParams: Record<string, unknown> = { Order: orderObj };
     const amendStartedAt = Date.now();
     console.info(
       `[iress-ingest/amend] OrderAmend2 request account=${account} orderNumber=${orderId} fields=${JSON.stringify(sentParams)}`,
