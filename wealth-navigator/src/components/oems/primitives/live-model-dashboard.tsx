@@ -363,7 +363,18 @@ export function LiveModelDashboard({ slug, positions, paperCurveCount, currency,
           <GlassKpi label="Beta vs STX40" value={num(summary?.beta)} />
           <GlassKpi label="Information Ratio" value={fx(summary?.infoRatio)} />
           <GlassKpi label="Tracking Error" value={summary?.trackingError != null ? `${(summary.trackingError * 100).toFixed(2)}%` : "—"} />
-          <GlassKpi label="Max Drawdown" value={pct(summary?.maxDrawdown)} accent="negative" />
+          <GlassKpi
+            label="Max Drawdown"
+            value={summary?.maxDrawdown == null ? "—" : summary.maxDrawdown === 0 ? "0.00%" : pct(summary.maxDrawdown)}
+            sub={
+              summary?.maxDrawdown === 0
+                ? "no drawdown recorded in this window"
+                : summary?.maxDrawdownBench != null
+                  ? `bench ${summary.maxDrawdownBench === 0 ? "0.00%" : pct(summary.maxDrawdownBench)}`
+                  : undefined
+            }
+            accent="negative"
+          />
           <GlassKpi label="Up Capture" value={summary?.upCapture != null ? `${(summary.upCapture * 100).toFixed(0)}%` : "—"} />
           <GlassKpi label="Down Capture" value={summary?.downCapture != null ? `${(summary.downCapture * 100).toFixed(0)}%` : "—"} />
         </div>
@@ -565,9 +576,13 @@ export function LiveModelDashboard({ slug, positions, paperCurveCount, currency,
                     tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
                     stroke="hsl(var(--border))"
                     width={56}
-                    tickFormatter={(v: number) => `${v.toFixed(1)}%`}
+                    tickFormatter={(v: number) => `${v.toFixed(2)}%`}
+                    domain={["dataMin", 0]}
                     tickLine={false}
+                    // Pad the upper bound a hair so the 0 line isn't on the chart edge.
+                    padding={{ top: 4 }}
                   />
+                  <ReferenceLine y={0} stroke="hsl(var(--muted-foreground) / 0.4)" strokeDasharray="2 3" />
                   <Tooltip
                     contentStyle={tooltipStyle}
                     formatter={(v: number | string) => [`${Number(v).toFixed(2)}%`, "Drawdown"]}

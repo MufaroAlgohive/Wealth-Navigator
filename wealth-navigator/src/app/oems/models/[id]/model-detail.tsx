@@ -424,7 +424,22 @@ export function ModelDetail({ slug }: { slug: string }) {
                   value={pctSigned(totRet)}
                   accent={totRet != null && totRet < 0 ? "negative" : "positive"}
                 />
-                <GlassKpi label="Max Drawdown" value={pct(live?.max_drawdown)} accent="negative" />
+                <GlassKpi
+                  label="Max Drawdown"
+                  value={
+                    live?.max_drawdown == null
+                      ? "—"
+                      : live.max_drawdown === 0
+                        ? "0.00%"
+                        : pct(live.max_drawdown)
+                  }
+                  sub={
+                    live?.max_drawdown === 0
+                      ? "no drawdown recorded in this window"
+                      : undefined
+                  }
+                  accent="negative"
+                />
                 <GlassKpi label="Holdings" value={String(positions.length)} />
                 <GlassKpi label="Days Tracked" value={String(paperCurve.length)} />
                 <GlassKpi label="Since" value={sinceDate ?? "—"} />
