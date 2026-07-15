@@ -18,6 +18,7 @@ interface Holding { symbol: string; name: string; qty: number; valueCents: numbe
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status: string | null; transaction_date: string | null; }
 interface ClientDocument { id: string; name: string; fileType: string; addedDate: string | null; url: string; source: "experian" | "sumsub" | "signed"; }
 interface DocumentGroups { experian: ClientDocument[]; sumsub: ClientDocument[]; signed: ClientDocument[]; }
+interface ClientStats { total: number; completed: number; pending: number; rejected: number; }
 interface Detail {
   profile: Record<string, unknown> | null;
   onboarding: Record<string, unknown> | null;
@@ -41,6 +42,7 @@ const str = (v: unknown) => (v == null || v === "" ? "—" : String(v));
 
 export default function ClientsPage() {
   const [clients, setClients] = React.useState<ClientRow[] | null>(null);
+  const [clientStats, setClientStats] = React.useState<ClientStats | null>(null);
   const [search, setSearch] = React.useState("");
   const [selId, setSelId] = React.useState<string | null>(null);
   const [detail, setDetail] = React.useState<Detail | null>(null);
@@ -54,7 +56,10 @@ export default function ClientsPage() {
   const [packBusy, setPackBusy] = React.useState(false);
 
   React.useEffect(() => {
-    fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => setClients(d.ok ? d.clients || [] : [])).catch(() => setClients([]));
+    fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => {
+      setClients(d.ok ? d.clients || [] : []);
+      setClientStats(d.ok ? d.stats || null : null);
+    }).catch(() => { setClients([]); setClientStats(null); });
   }, []);
 
   const openClient = async (id: string) => {
@@ -65,13 +70,6 @@ export default function ClientsPage() {
       : `user_id=${encodeURIComponent(id)}`;
     const d = await fetch(`/api/admin/clients?action=detail&${target}`).then((r) => r.json()).catch(() => ({ ok: false }));
     if (d.ok) setDetail(d);
-  };
-
-  const kycAction = async (decision: string) => {
-    if (!selId) return;
-    const d = await fetch("/api/admin/clients?action=kyc-review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: selId, decision }) }).then((r) => r.json());
-    if (d.ok) { toast.success(decision === "approve" ? "KYC approved" : "KYC rejected"); await openClient(selId); }
-    else toast.error(d.error || "Failed");
   };
 
   const syncSumsub = async () => {
@@ -161,7 +159,6 @@ export default function ClientsPage() {
     .filter((c) => kycFilter === "all" || c.kyc === kycFilter)
     .filter((c) => familyFilter === "all" || c.family_role === familyFilter)
     .filter((c) => !search.trim() || `${c.name} ${c.email} ${c.mint_number}`.toLowerCase().includes(search.toLowerCase()));
-  const countKyc = (status: Kyc) => (clients ?? []).filter((client) => client.kyc === status).length;
   const sel = clients?.find((c) => c.id === selId) || null;
   const p = detail?.profile ?? {};
   const ob = detail?.onboarding ?? {};
@@ -169,10 +166,10 @@ export default function ClientsPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
-        <ClientMetric label="Total clients" value={clients?.length ?? "—"} tone="primary" />
-        <ClientMetric label="KYC completed" value={clients ? countKyc("verified") : "—"} tone="success" />
-        <ClientMetric label="KYC pending" value={clients ? countKyc("pending") + countKyc("resubmission_required") : "—"} tone="warning" />
-        <ClientMetric label="KYC rejected" value={clients ? countKyc("rejected") : "—"} tone="danger" />
+        <ClientMetric label="Total clients" value={clientStats?.total ?? "—"} tone="primary" />
+        <ClientMetric label="KYC completed" value={clientStats?.completed ?? "—"} tone="success" />
+        <ClientMetric label="KYC pending" value={clientStats?.pending ?? "—"} tone="warning" />
+        <ClientMetric label="KYC rejected" value={clientStats?.rejected ?? "—"} tone="danger" />
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
         {/* Roster */}
@@ -277,8 +274,6 @@ export default function ClientsPage() {
                         {detail.child_certificate?.url && detail.kyc !== "rejected" && <Button size="sm" variant="destructive" onClick={() => childCertificateAction("reject")}>Reject certificate</Button>}
                         {detail.child_certificate?.url && detail.kyc === "rejected" && <Button size="sm" variant="warning" onClick={() => childCertificateAction("reevaluate")}>Re-evaluate</Button>}
                       </> : <>
-                      <Button size="sm" variant="success" onClick={() => kycAction("approve")}>Approve KYC</Button>
-                      <Button size="sm" variant="destructive" onClick={() => kycAction("reject")}>Reject</Button>
                       <Button size="sm" variant="secondary" onClick={syncSumsub}>Sync SumSub</Button>
                       {sumsub && <span className="text-[11px] text-muted-foreground">{sumsub}</span>}
                       </>}

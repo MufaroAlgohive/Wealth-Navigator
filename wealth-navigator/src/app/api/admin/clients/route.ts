@@ -15,18 +15,31 @@ export const dynamic = "force-dynamic";
 
 type KycState = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
 
-function deriveKyc(
+export function deriveKyc(
   ob?: { kyc_status?: string | null; sumsub_review_answer?: string | null; sumsub_review_status?: string | null },
   ra?: { kyc_verified?: boolean | null; kyc_needs_resubmission?: boolean | null },
+  pack?: unknown,
 ): KycState {
   const status = String(ob?.kyc_status || "").trim().toLowerCase();
   const answer = String(ob?.sumsub_review_answer || "").trim().toLowerCase();
   const review = String(ob?.sumsub_review_status || "").trim().toLowerCase();
-  if (answer === "red" || status.includes("reject")) return "rejected";
+  const packRecord = parseRecord(pack);
+  const packReview = parseRecord(packRecord.review);
+  const packResult = parseRecord(packReview.result);
+  const packAnswer = String(packResult.reviewAnswer || packReview.reviewAnswer || packRecord.reviewAnswer || "").trim().toLowerCase();
+  const packStatus = String(packReview.reviewStatus || packRecord.reviewStatus || packRecord.status || "").trim().toLowerCase();
+  if (packAnswer === "red" || (!packAnswer && status.includes("reject"))) return "rejected";
+  if (packAnswer === "yellow" || packAnswer === "orange" || (!packAnswer && /pending|init|review|process/.test(packStatus))) return "pending";
+  if (packAnswer === "green" || (!packAnswer && /completed|approved/.test(packStatus))) return "verified";
+  if (/verified|completed|approved|done/.test(status)) return "verified";
+  if (/pending|in.progress|review|processing|queued/.test(status)) return "pending";
+  // These fields are fallbacks only when CRM's onboarding + pack sources are empty.
+  if (ra?.kyc_verified) return "verified";
   if (ra?.kyc_needs_resubmission) return "resubmission_required";
-  if (ra?.kyc_verified || answer === "green" || /verified|completed|approved/.test(status)) return "verified";
+  if (answer === "red") return "rejected";
+  if (answer === "green") return "verified";
   if (answer === "yellow" || answer === "orange" || /pending|review|process|init/.test(review)) return "pending";
-  if (status || answer || review) return "pending";
+  if (status || answer || review || packStatus) return "pending";
   return "not_initiated";
 }
 
@@ -89,17 +102,20 @@ export async function GET(req: Request) {
     const ids = rows.map((p) => p.id);
     const obMap: Record<string, { kyc_status?: string | null; sumsub_review_answer?: string | null; sumsub_review_status?: string | null }> = {};
     const raMap: Record<string, { kyc_verified?: boolean | null; kyc_needs_resubmission?: boolean | null; bank_linked?: boolean | null }> = {};
+    const packMap: Record<string, unknown> = {};
     const parentIds = new Set<string>();
     const childProfileIds = new Set<string>();
     let familyRows: Record<string, unknown>[] = [];
     if (ids.length) {
-      const [{ data: ob }, { data: ra }, { data: family }] = await Promise.all([
+      const [{ data: ob }, { data: ra }, { data: packs }, { data: family }] = await Promise.all([
         db.from("user_onboarding").select("user_id, kyc_status, sumsub_review_answer, sumsub_review_status").in("user_id", ids),
         db.from("required_actions").select("user_id, kyc_verified, kyc_needs_resubmission, bank_linked").in("user_id", ids),
+        db.from("user_onboarding_pack_details").select("user_id,pack_details").in("user_id", ids),
         db.from("family_members").select("*"),
       ]);
       for (const o of ob ?? []) obMap[o.user_id as string] = o;
       for (const r of ra ?? []) raMap[r.user_id as string] = r;
+      for (const pack of packs ?? []) packMap[pack.user_id as string] = pack.pack_details;
       familyRows = (family ?? []) as Record<string, unknown>[];
       for (const member of family ?? []) {
         if (String(member.relationship || "").trim().toLowerCase() !== "child") continue;
@@ -116,7 +132,7 @@ export async function GET(req: Request) {
       mint_number: p.mint_number,
       is_test: p.is_test,
       created_at: p.created_at,
-      kyc: deriveKyc(obMap[p.id], raMap[p.id]),
+      kyc: deriveKyc(obMap[p.id], raMap[p.id], packMap[p.id]),
       bank_linked: !!raMap[p.id]?.bank_linked,
       family_role: childProfileIds.has(String(p.id)) ? "child" : parentIds.has(String(p.id)) ? "parent" : "other",
       family_member_id: null,
@@ -144,7 +160,14 @@ export async function GET(req: Request) {
         };
       });
     const clients = [...profileClients, ...unlinkedChildren];
-    return NextResponse.json({ ok: true, clients });
+    const stats = profileClients.reduce((counts, client) => {
+      counts.total += 1;
+      if (client.kyc === "verified") counts.completed += 1;
+      else if (client.kyc === "pending" || client.kyc === "resubmission_required") counts.pending += 1;
+      else if (client.kyc === "rejected") counts.rejected += 1;
+      return counts;
+    }, { total: 0, completed: 0, pending: 0, rejected: 0 });
+    return NextResponse.json({ ok: true, clients, stats });
   }
 
   if (action === "detail") {
@@ -240,7 +263,7 @@ export async function GET(req: Request) {
         data: mandateData,
         signed_agreement_url: onboarding?.signed_agreement_url ?? null,
       },
-      kyc: deriveKyc(onboarding ?? undefined, required ?? undefined),
+      kyc: deriveKyc(onboarding ?? undefined, required ?? undefined, pack?.pack_details),
       holdings,
       transactions: txns ?? [],
     });
@@ -281,17 +304,15 @@ export async function POST(req: Request) {
     } catch {
       return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
     }
-    const now = new Date().toISOString();
+    const updatePayload: { certificate_verification_status: string; kyc_pending?: boolean } = {
+      certificate_verification_status: decision,
+    };
+    if (decision === "verified") updatePayload.kyc_pending = true;
     const { data: member, error } = await db
       .from("family_members")
-      .update({
-        certificate_verification_status: decision,
-        kyc_status: decision,
-        kyc_reviewed_at: now,
-        updated_at: now,
-      })
+      .update(updatePayload)
       .eq("id", familyMemberId)
-      .select("id,certificate_verification_status,kyc_status,kyc_reviewed_at")
+      .select("id,certificate_verification_status,kyc_status,kyc_pending")
       .maybeSingle();
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     if (!member) return NextResponse.json({ ok: false, error: "Family member not found" }, { status: 404 });
