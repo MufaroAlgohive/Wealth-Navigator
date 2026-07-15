@@ -68,14 +68,16 @@ export async function GET(req: Request) {
     const raMap: Record<string, { kyc_verified?: boolean | null; kyc_needs_resubmission?: boolean | null; bank_linked?: boolean | null }> = {};
     const parentIds = new Set<string>();
     const childProfileIds = new Set<string>();
+    let familyRows: Record<string, unknown>[] = [];
     if (ids.length) {
       const [{ data: ob }, { data: ra }, { data: family }] = await Promise.all([
         db.from("user_onboarding").select("user_id, kyc_status, sumsub_review_answer, sumsub_review_status").in("user_id", ids),
         db.from("required_actions").select("user_id, kyc_verified, kyc_needs_resubmission, bank_linked").in("user_id", ids),
-        db.from("family_members").select("primary_user_id, parent_id, linked_user_id, relationship"),
+        db.from("family_members").select("*"),
       ]);
       for (const o of ob ?? []) obMap[o.user_id as string] = o;
       for (const r of ra ?? []) raMap[r.user_id as string] = r;
+      familyRows = (family ?? []) as Record<string, unknown>[];
       for (const member of family ?? []) {
         if (String(member.relationship || "").trim().toLowerCase() !== "child") continue;
         const parentId = String(member.primary_user_id || member.parent_id || "").trim();
@@ -84,7 +86,7 @@ export async function GET(req: Request) {
         if (linkedUserId) childProfileIds.add(linkedUserId);
       }
     }
-    const clients = rows.map((p) => ({
+    const profileClients = rows.map((p) => ({
       id: p.id,
       name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email || p.id.slice(0, 8),
       email: p.email,
@@ -94,12 +96,81 @@ export async function GET(req: Request) {
       kyc: deriveKyc(obMap[p.id], raMap[p.id]),
       bank_linked: !!raMap[p.id]?.bank_linked,
       family_role: childProfileIds.has(String(p.id)) ? "child" : parentIds.has(String(p.id)) ? "parent" : "other",
+      family_member_id: null,
+      is_linked_child: childProfileIds.has(String(p.id)),
     }));
+    const unlinkedChildren = familyRows
+      .filter((member) => String(member.relationship || "").trim().toLowerCase() === "child")
+      .filter((member) => !String(member.linked_user_id || "").trim())
+      .map((member) => {
+        const familyMemberId = String(member.id || "");
+        const firstName = String(member.first_name || "");
+        const lastName = String(member.last_name || "");
+        return {
+          id: `family:${familyMemberId}`,
+          name: `${firstName} ${lastName}`.trim() || `Child ${familyMemberId.slice(0, 8)}`,
+          email: (member.email as string | null) ?? null,
+          mint_number: (member.mint_number as string | null) ?? null,
+          is_test: false,
+          created_at: member.created_at ?? null,
+          kyc: "not_initiated" as const,
+          bank_linked: false,
+          family_role: "child" as const,
+          family_member_id: familyMemberId,
+          is_linked_child: false,
+        };
+      });
+    const clients = [...profileClients, ...unlinkedChildren];
     return NextResponse.json({ ok: true, clients });
   }
 
   if (action === "detail") {
     const userId = url.searchParams.get("user_id") || "";
+    const familyMemberId = url.searchParams.get("family_member_id") || "";
+    if (familyMemberId) {
+      const [{ data: member }, { data: holds }, { data: txns }] = await Promise.all([
+        db.from("family_members").select("*").eq("id", familyMemberId).maybeSingle(),
+        db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("family_member_id", familyMemberId).eq("is_active", true).eq("trade_side", "BUY"),
+        db.from("family_transactions").select("*").eq("member_id", familyMemberId).order("created_at", { ascending: false }).limit(25),
+      ]);
+      if (!member) return NextResponse.json({ ok: false, error: "Family member not found" }, { status: 404 });
+      const secIds = [...new Set((holds ?? []).map((holding) => holding.security_id).filter(Boolean))];
+      const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
+      if (secIds.length) {
+        const { data: securities } = await db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds);
+        for (const security of securities ?? []) secMap[security.id as string] = security as never;
+      }
+      const holdings = (holds ?? []).map((holding) => {
+        const security = secMap[holding.security_id as string];
+        const qty = Number(holding.quantity) || 0;
+        const costCents = costCentsPerShare(holding);
+        const priceCents = Number(security?.last_price) > 0 ? Number(security?.last_price) : costCents;
+        const valueCents = qty * priceCents;
+        const purchaseValueCents = qty * costCents;
+        return { symbol: security?.symbol ?? "—", name: security?.name ?? "—", qty, valueCents, purchaseValueCents, pnlCents: valueCents - purchaseValueCents, strategy: holding.strategy_name_snapshot ?? null };
+      });
+      const parentId = String(member.primary_user_id || member.parent_id || "");
+      const { data: parent } = parentId
+        ? await db.from("profiles").select("first_name,last_name,email").eq("id", parentId).maybeSingle()
+        : { data: null };
+      return NextResponse.json({
+        ok: true,
+        profile: {
+          ...member,
+          managing_parent: parent ? `${parent.first_name || ""} ${parent.last_name || ""}`.trim() : parentId || null,
+          guardian_email: parent?.email ?? null,
+        },
+        onboarding: null,
+        required: null,
+        kyc: "not_initiated",
+        holdings,
+        transactions: (txns ?? []).map((transaction) => ({
+          ...transaction,
+          transaction_date: transaction.transaction_date || transaction.created_at || null,
+        })),
+        is_unlinked_child: true,
+      });
+    }
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
 
     const [{ data: profile }, { data: onboarding }, { data: required }, { data: holds }, { data: txns }] = await Promise.all([

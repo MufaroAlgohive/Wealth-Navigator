@@ -12,7 +12,7 @@ import { cn } from "@/lib/cn";
 type Kyc = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
 type KycFilter = "all" | Kyc;
 type FamilyFilter = "all" | "parent" | "child";
-interface ClientRow { id: string; name: string; email: string | null; mint_number: string | null; is_test: boolean | null; kyc: Kyc; bank_linked: boolean; family_role: "parent" | "child" | "other"; }
+interface ClientRow { id: string; name: string; email: string | null; mint_number: string | null; is_test: boolean | null; kyc: Kyc; bank_linked: boolean; family_role: "parent" | "child" | "other"; family_member_id?: string | null; is_linked_child?: boolean; }
 interface Holding { symbol: string; name: string; qty: number; valueCents: number; pnlCents: number; strategy: string | null; purchaseValueCents?: number | null; }
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status: string | null; transaction_date: string | null; }
 interface Detail {
@@ -21,6 +21,7 @@ interface Detail {
   kyc: Kyc;
   holdings: Holding[];
   transactions: Txn[];
+  is_unlinked_child?: boolean;
 }
 
 const R = (cents: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(cents / 100);
@@ -46,7 +47,11 @@ export default function ClientsPage() {
 
   const openClient = async (id: string) => {
     setSelId(id); setDetail(null); setTab("profile"); setSumsub(null);
-    const d = await fetch(`/api/admin/clients?action=detail&user_id=${id}`).then((r) => r.json()).catch(() => ({ ok: false }));
+    const client = clients?.find((item) => item.id === id);
+    const target = client?.family_member_id
+      ? `family_member_id=${encodeURIComponent(client.family_member_id)}`
+      : `user_id=${encodeURIComponent(id)}`;
+    const d = await fetch(`/api/admin/clients?action=detail&${target}`).then((r) => r.json()).catch(() => ({ ok: false }));
     if (d.ok) setDetail(d);
   };
 
@@ -119,7 +124,7 @@ export default function ClientsPage() {
                 <button key={c.id} onClick={() => openClient(c.id)} className={cn("flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left", selId === c.id ? "bg-primary/10" : "hover:bg-accent/50")}>
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-bold text-primary-foreground">{initials(c.name)}</div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5"><span className="truncate text-sm font-medium text-foreground">{c.name}</span>{c.is_test && <span className="rounded bg-muted px-1 text-[9px] text-muted-foreground">TEST</span>}</div>
+                    <div className="flex items-center gap-1.5"><span className="truncate text-sm font-medium text-foreground">{c.name}</span>{c.is_test && <span className="rounded bg-muted px-1 text-[9px] text-muted-foreground">TEST</span>}{c.family_role === "child" && <span className="rounded bg-primary/10 px-1 text-[9px] text-primary">{c.is_linked_child ? "LINKED CHILD" : "UNLINKED CHILD"}</span>}</div>
                     <div className="truncate text-[11px] text-muted-foreground">{c.mint_number || c.email}</div>
                   </div>
                   <span title={kycLabel(c.kyc)} className={cn("rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase", kycCls(c.kyc))}>{c.kyc === "not_initiated" ? "N" : c.kyc === "resubmission_required" ? "R!" : c.kyc[0]}</span>
@@ -166,10 +171,12 @@ export default function ClientsPage() {
                       <Row label="Annual income" value={str(ob.annual_income_amount)} /><Row label="Agreement" value={ob.signed_agreement_url ? "Signed" : "—"} />
                     </dl>
                     <div className="flex flex-wrap items-center gap-2">
+                      {detail.is_unlinked_child ? <span className="text-[11px] text-muted-foreground">KYC actions become available after this child is linked to a user profile.</span> : <>
                       <Button size="sm" variant="success" onClick={() => kycAction("approve")}>Approve KYC</Button>
                       <Button size="sm" variant="destructive" onClick={() => kycAction("reject")}>Reject</Button>
                       <Button size="sm" variant="secondary" onClick={syncSumsub}>Sync SumSub</Button>
                       {sumsub && <span className="text-[11px] text-muted-foreground">{sumsub}</span>}
+                      </>}
                     </div>
                   </TabsContent>
 
