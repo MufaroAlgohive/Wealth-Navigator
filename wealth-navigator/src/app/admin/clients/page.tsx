@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
+import JSZip from "jszip";
 import { toast } from "sonner";
-import { Search } from "lucide-react";
+import { Download, Eye, Package, Search, X } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,8 @@ type FamilyFilter = "all" | "parent" | "child";
 interface ClientRow { id: string; name: string; email: string | null; mint_number: string | null; is_test: boolean | null; kyc: Kyc; bank_linked: boolean; family_role: "parent" | "child" | "other"; family_member_id?: string | null; is_linked_child?: boolean; }
 interface Holding { symbol: string; name: string; qty: number; valueCents: number; pnlCents: number; strategy: string | null; purchaseValueCents?: number | null; }
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status: string | null; transaction_date: string | null; }
+interface ClientDocument { id: string; name: string; fileType: string; addedDate: string | null; url: string; source: "experian" | "sumsub" | "signed"; }
+interface DocumentGroups { experian: ClientDocument[]; sumsub: ClientDocument[]; signed: ClientDocument[]; }
 interface Detail {
   profile: Record<string, unknown> | null;
   onboarding: Record<string, unknown> | null;
@@ -45,6 +48,10 @@ export default function ClientsPage() {
   const [sumsub, setSumsub] = React.useState<string | null>(null);
   const [kycFilter, setKycFilter] = React.useState<KycFilter>("all");
   const [familyFilter, setFamilyFilter] = React.useState<FamilyFilter>("all");
+  const [documentsOpen, setDocumentsOpen] = React.useState(false);
+  const [documents, setDocuments] = React.useState<DocumentGroups | null>(null);
+  const [documentsBusy, setDocumentsBusy] = React.useState(false);
+  const [packBusy, setPackBusy] = React.useState(false);
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => setClients(d.ok ? d.clients || [] : [])).catch(() => setClients([]));
@@ -87,6 +94,67 @@ export default function ClientsPage() {
     if (!d.ok) return toast.error(d.error || "Certificate review failed");
     toast.success(decision === "approve" ? "Child certificate verified" : decision === "reject" ? "Child certificate rejected" : "Certificate returned to review");
     await openClient(sel.id);
+  };
+
+  const loadDocuments = async () => {
+    if (!sel || sel.family_member_id) return null;
+    setDocumentsBusy(true);
+    const data = await fetch(`/api/admin/clients/documents?profile_id=${encodeURIComponent(sel.id)}`)
+      .then((response) => response.json())
+      .catch(() => ({ ok: false }));
+    setDocumentsBusy(false);
+    if (!data.ok) {
+      toast.error(data.error || "Could not load client documents");
+      return null;
+    }
+    const groups = data.groups as DocumentGroups;
+    setDocuments(groups);
+    return groups;
+  };
+
+  const openDocuments = async () => {
+    setDocumentsOpen(true);
+    setDocuments(null);
+    await loadDocuments();
+  };
+
+  const downloadPack = async () => {
+    if (!sel || sel.family_member_id) return;
+    setPackBusy(true);
+    try {
+      const groups = documents ?? (await loadDocuments());
+      if (!groups) return;
+      const zip = new JSZip();
+      const folders = {
+        experian: zip.folder("documents/experian"),
+        sumsub: zip.folder("documents/sumsub"),
+        signed: zip.folder("documents/signed"),
+      };
+      let added = 0;
+      for (const [source, items] of Object.entries(groups) as [keyof DocumentGroups, ClientDocument[]][]) {
+        for (const [index, document] of items.entries()) {
+          const response = await fetch(document.url);
+          if (!response.ok) continue;
+          const blob = await response.blob();
+          const extension = extensionForDocument(document, blob.type);
+          folders[source]?.file(`${String(index + 1).padStart(2, "0")}-${safeFilename(document.name)}${extension}`, blob);
+          added += 1;
+        }
+      }
+      zip.file("manifest.json", JSON.stringify({ profile_id: sel.id, client: sel.name, generated_at: new Date().toISOString(), document_count: added }, null, 2));
+      const blob = await zip.generateAsync({ type: "blob" });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = window.document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = `client-pack-${safeFilename(sel.name || sel.id)}.zip`;
+      anchor.click();
+      URL.revokeObjectURL(objectUrl);
+      toast.success(`Downloaded pack with ${added} document${added === 1 ? "" : "s"}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not download client pack");
+    } finally {
+      setPackBusy(false);
+    }
   };
 
   const filtered = (clients ?? [])
@@ -164,6 +232,11 @@ export default function ClientsPage() {
                   </div>
                   <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize", kycCls(detail.kyc))}>{kycLabel(detail.kyc)}</span>
                 </div>
+
+                {!detail.is_unlinked_child && <div className="flex flex-wrap justify-end gap-2">
+                  <Button size="sm" variant="secondary" onClick={openDocuments}><Eye />Documents</Button>
+                  <Button size="sm" onClick={downloadPack} disabled={packBusy}><Package />{packBusy ? "Preparing pack…" : "Download pack"}</Button>
+                </div>}
 
                 <Tabs value={tab} onValueChange={setTab}>
                   <TabsList><TabsTrigger value="profile">Profile</TabsTrigger><TabsTrigger value="kyc">KYC</TabsTrigger>{!detail.is_unlinked_child && <TabsTrigger value="mandate">Mandate</TabsTrigger>}<TabsTrigger value="holdings">Holdings</TabsTrigger><TabsTrigger value="activity">Activity</TabsTrigger></TabsList>
@@ -249,6 +322,19 @@ export default function ClientsPage() {
             )}
         </div>
       </div>
+      {documentsOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" role="dialog" aria-modal="true" aria-label="Select document">
+        <div className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+          <div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="text-base font-bold text-foreground">Select document</h2><Button size="icon-sm" variant="ghost" aria-label="Close" onClick={() => setDocumentsOpen(false)}><X /></Button></div>
+          <div className="space-y-5 overflow-y-auto p-5">
+            {documentsBusy || documents === null ? <p className="py-12 text-center text-sm text-muted-foreground">Loading documents…</p> : <>
+              <DocumentSection title="Experian documents" items={documents.experian} empty="No Experian documents archived for this user." />
+              <DocumentSection title="Sumsub documents" items={documents.sumsub} empty="No Sumsub documents found for this user." />
+              <DocumentSection title="Signed documents" items={documents.signed} empty="No signed documents found for this user." />
+            </>}
+          </div>
+          <div className="flex items-center justify-between border-t border-border px-5 py-3"><small className="text-[11px] text-muted-foreground">Tip: You can preview or download any document directly.</small><Button size="sm" onClick={downloadPack} disabled={packBusy}><Download />{packBusy ? "Preparing…" : "Download pack"}</Button></div>
+        </div>
+      </div>}
     </div>
   );
 }
@@ -262,6 +348,23 @@ function formatDetailValue(value: unknown): string {
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function DocumentSection({ title, items, empty }: { title: string; items: ClientDocument[]; empty: string }) {
+  return <section><div className="mb-2 flex items-center gap-2"><h3 className="text-xs font-bold uppercase tracking-wider text-foreground">{title}</h3><span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary">{items.length}</span></div>{items.length === 0 ? <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center text-xs text-muted-foreground">{empty}</div> : <div className="space-y-2">{items.map((document) => <div key={`${document.source}-${document.id}`} className="flex items-center gap-3 rounded-xl border border-border bg-background px-3 py-2.5"><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold text-foreground">{document.name}</p><p className="text-[10px] text-muted-foreground">{document.fileType}{document.addedDate ? ` · ${new Date(document.addedDate).toLocaleDateString("en-ZA")}` : ""}</p></div><Button size="sm" variant="ghost" asChild><a href={document.url} target="_blank" rel="noreferrer"><Eye />Preview</a></Button><Button size="sm" variant="secondary" asChild><a href={document.url} download><Download />Download</a></Button></div>)}</div>}</section>;
+}
+
+function safeFilename(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "document";
+}
+
+function extensionForDocument(document: ClientDocument, mimeType: string): string {
+  if (/\.[a-zA-Z0-9]{2,5}$/.test(document.name)) return "";
+  if (mimeType.includes("pdf") || document.fileType.toLowerCase().includes("pdf")) return ".pdf";
+  if (mimeType.includes("png")) return ".png";
+  if (mimeType.includes("jpeg") || mimeType.includes("jpg")) return ".jpg";
+  if (mimeType.includes("json")) return ".json";
+  return ".bin";
 }
 
 function ClientMetric({ label, value, tone }: { label: string; value: number | string; tone: "primary" | "success" | "warning" | "danger" }) {
