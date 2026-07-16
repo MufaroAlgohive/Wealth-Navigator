@@ -167,9 +167,17 @@ export async function POST(req: Request) {
     });
   }
 
+  // Surface the worker's actual reason. On a non-2xx (e.g. the 422 the
+  // pre-trade naked-short guard returns) callWorker's `error` is the generic
+  // "Worker returned 422" — the useful message ("Sell blocked: 200 CAC exceeds
+  // available-to-sell 100…") is in `errorBody`. Prefer it so the desk sees WHY.
+  const upstream =
+    !res.ok && res.errorBody && typeof res.errorBody === "object"
+      ? (res.errorBody as { message?: string; error?: string; code?: string })
+      : undefined;
   const errMsg = res.ok
     ? (res.body?.errorDescription ?? res.body?.errorNumber?.toString() ?? "unknown worker error")
-    : res.error;
+    : (upstream?.message ?? upstream?.error ?? res.error);
   return NextResponse.json({
     ok: false,
     orderAuditId: auditId,
@@ -178,5 +186,6 @@ export async function POST(req: Request) {
     mode: "uat",
     status: "rejected",
     error: errMsg,
+    code: upstream?.code ?? (res.ok ? undefined : res.code),
   });
 }
