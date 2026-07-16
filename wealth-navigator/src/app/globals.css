@@ -172,6 +172,58 @@
   }
 }
 
+/* x-data-spreadsheet ships with fixed light colours. Keep that exact CRM look
+   in light mode, then theme its chrome and canvas as one coherent dark surface
+   when next-themes places `.dark` on the document root. */
+.dark .oem-spreadsheet .x-spreadsheet,
+.dark .oem-spreadsheet .x-spreadsheet-sheet,
+.dark .oem-spreadsheet .x-spreadsheet-overlayer,
+.dark .oem-spreadsheet .x-spreadsheet-overlayer-content {
+  background: #161a1d;
+  color: #c7d1db;
+}
+.dark .oem-spreadsheet .x-spreadsheet-table {
+  filter: invert(0.88) hue-rotate(180deg);
+}
+.dark .oem-spreadsheet .x-spreadsheet-toolbar,
+.dark .oem-spreadsheet .x-spreadsheet-bottombar {
+  background: #1d2125;
+  border-color: #2c333a;
+  color: #c7d1db;
+}
+.dark .oem-spreadsheet .x-spreadsheet-toolbar-btn:hover,
+.dark .oem-spreadsheet .x-spreadsheet-toolbar-btn.active,
+.dark .oem-spreadsheet .x-spreadsheet-menu > li.active {
+  background: #2c333a;
+  color: #dee4ea;
+}
+.dark .oem-spreadsheet .x-spreadsheet-menu > li,
+.dark .oem-spreadsheet .x-spreadsheet-formula,
+.dark .oem-spreadsheet .x-spreadsheet-selector,
+.dark .oem-spreadsheet .x-spreadsheet-editor {
+  color: #c7d1db;
+}
+.dark .oem-spreadsheet .x-spreadsheet-editor,
+.dark .oem-spreadsheet .x-spreadsheet-editor textarea,
+.dark .oem-spreadsheet .x-spreadsheet-formula input {
+  background: #101214;
+  color: #dee4ea;
+}
+.dark .oem-spreadsheet .x-spreadsheet-suggest,
+.dark .oem-spreadsheet .x-spreadsheet-contextmenu,
+.dark .oem-spreadsheet .x-spreadsheet-sort-filter,
+.dark .oem-spreadsheet .x-spreadsheet-dropdown .x-spreadsheet-dropdown-content,
+.dark .oem-spreadsheet .x-spreadsheet-color-palette table,
+.dark .oem-spreadsheet .x-spreadsheet-border-palette table {
+  background: #1d2125;
+  color: #c7d1db;
+  border-color: #2c333a;
+}
+.dark .oem-spreadsheet .x-spreadsheet-contextmenu .x-spreadsheet-item:hover,
+.dark .oem-spreadsheet .x-spreadsheet-suggest .x-spreadsheet-item:hover {
+  background: #2c333a;
+}
+
 @layer base {
   * {
     @apply border-border;

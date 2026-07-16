@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { Download, RotateCcw } from "lucide-react";
+import { useTheme } from "next-themes";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
 import { Input } from "@/components/ui/input";
@@ -336,6 +337,8 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
 }
 
 function InvestorSpreadsheet({ investor }: { investor: Investor }) {
+  const { resolvedTheme } = useTheme();
+  const dark = resolvedTheme === "dark";
   const host = React.useRef<HTMLDivElement>(null);
   const instance = React.useRef<import("x-data-spreadsheet").default | null>(null);
   const saved = React.useRef<Record<string, unknown>[] | null>(null);
@@ -367,9 +370,9 @@ function InvestorSpreadsheet({ investor }: { investor: Investor }) {
     ws[`A${total}`]={t:'s',v:'Total'};ws[`E${total}`]={t:'n',f:`SUM(E${first}:E${last})`,z:'"R"#,##0.00'};ws[`F${total}`]={t:'n',f:`SUM(F${first}:F${last})`,z:'"R"#,##0.00'};ws[`G${total}`]={t:'n',f:`F${total}-E${total}`,z:'"R"#,##0.00'};ws[`H${total}`]={t:'n',f:`IFERROR(G${total}/E${total},0)*100`,z:'0.00"%"'};ws[`I${total}`]={t:'n',f:`E${total}+G${total}`,z:'"R"#,##0.00'};ws['!cols']=[{wch:10},{wch:26},{wch:10},{wch:12},{wch:14},{wch:14},{wch:12},{wch:13},{wch:16}];
     const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Portfolio');XLSX.writeFile(wb,`${investor.name}-${investor.strategy||'direct-securities'}-${new Date().toISOString().slice(0,10)}`.replace(/[^a-z0-9.-]+/gi,'-')+'.xlsx');
   };
-  return <div className={cn(full&&"fixed inset-4 z-[100] flex flex-col rounded-xl border border-border bg-background p-3 shadow-2xl")}>
+  return <div className={cn("oem-spreadsheet",dark&&"oem-spreadsheet-dark",full&&"fixed inset-4 z-[100] flex flex-col rounded-xl border border-border bg-background p-3 shadow-2xl")}>
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Portfolio Spreadsheet — {investor.name}{investor.strategy?` · ${investor.strategy}`:''}</div><div className="mt-1 max-w-3xl text-[9px] leading-relaxed text-muted-foreground"><b>{investor.strategy || 'Direct securities'} only</b> — fully editable and seeded from live holdings. Formula columns recalculate when Quantity or Avg Fill changes.</div></div><div className="flex gap-1.5"><button type="button" onClick={reset} className="inline-flex h-7 items-center gap-1 rounded-md bg-muted px-2 text-[9px] font-semibold"><RotateCcw className="h-3 w-3"/>Reset from live data</button><button type="button" onClick={()=>void download()} className="inline-flex h-7 items-center gap-1 rounded-md bg-emerald-700 px-2 text-[9px] font-semibold text-white"><Download className="h-3 w-3"/>Download .xlsx</button><button type="button" onClick={toggleFull} className="h-7 rounded-md bg-slate-800 px-2 text-[9px] font-semibold text-white">{full?'× Exit full screen':'✥ Full screen'}</button></div></div>
-    <div ref={host} className={cn("min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-white text-slate-900",!full&&"h-[500px]")} />
+    <div ref={host} className={cn("min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-background",!full&&"h-[500px]")} />
   </div>;
 }
 
