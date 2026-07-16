@@ -48,6 +48,7 @@ import {
   marketDataBaseUrl,
   marketDataProdEnabled,
 } from "./market-data";
+import { availableToSell } from "./pretrade-guard";
 import { fetchLiveQuote } from "./quotes";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import { type WorkerSupabase, writeHeartbeat } from "./supabase";
@@ -3023,6 +3024,43 @@ async function uatSendToMarket(
   const priceRands = audit.price_cents != null ? Number(audit.price_cents) / 100 : undefined;
   const exchange = "JSE";
   const tif = "DAY";
+
+  // ── PRE-TRADE NAKED-SHORT GUARD ──────────────────────────────────────────
+  // IRESS does NOT validate oversells — pre-trade compliance is the OEMS's job
+  // (iress-v4-docs/11-mint-oems). Every UAT dispatch passes through here, so
+  // this is the single chokepoint before the broker. For a SELL, block unless
+  // the account has enough available-to-sell. Fail-closed: a lookup error blocks.
+  if (side === 2) {
+    let avail;
+    try {
+      avail = await availableToSell(db, accountCode, symbol, audit.id);
+    } catch (guardErr) {
+      const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
+      console.warn(
+        `[iress-ingest/uat] sell guard could not verify holdings for ${symbol} on ${accountCode}: ${m}`,
+      );
+      return {
+        ok: false,
+        status: 422,
+        code: "sell_guard_unavailable",
+        message: `Sell blocked: could not verify holdings for ${symbol} on account ${accountCode} (${m}). Try again.`,
+      };
+    }
+    if (qty > avail.available) {
+      console.warn(
+        `[iress-ingest/uat] NAKED-SHORT BLOCKED ${symbol} sell ${qty} > available ${avail.available} on ${accountCode} (held ${avail.held}, inflight ${avail.inflightSells}, src ${avail.source})`,
+      );
+      return {
+        ok: false,
+        status: 422,
+        code: "naked_short_blocked",
+        message: `Sell blocked: ${qty} ${symbol} exceeds available-to-sell ${avail.available} on account ${accountCode} — held ${avail.held}, ${avail.inflightSells} in open sells (${avail.note}). We only sell stock we own.`,
+      };
+    }
+    console.info(
+      `[iress-ingest/uat] sell guard OK ${symbol} ${qty} <= available ${avail.available} on ${accountCode} (src ${avail.source})`,
+    );
+  }
 
   // IDEMPOTENCY: re-use any pre-existing tag from the audit payload, else mint a UUID.
   const payloadObj = audit.payload ?? {};
