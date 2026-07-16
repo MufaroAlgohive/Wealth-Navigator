@@ -1,110 +1,88 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import {
-  buildSoapEnvelope,
-  IRESS_NS,
-  type SoapCallSpec,
-} from "@/lib/iress/transport";
+import { createLiveIressClient } from "@/lib/iress/live";
+import { buildSoapEnvelope, type SoapCallSpec, type SoapTransport } from "@/lib/iress/transport";
 
 /**
- * Regression: OrderAmend2 wire-shape contract.
+ * OrderAmend2 wire-shape contract — verified EMPIRICALLY against the live
+ * JSE/Hermes destination (2026-07-16, order 1600159).
  *
- * 2026-07-15 walkthrough: Andre reported volume amends reached the broker
- * with no error (HTTP 200, ErrorNumber=0) but the order's volume never
- * actually changed. Root cause — the build emitted a flat envelope:
- *
+ * The doc example (`13-soap-examples/order-amend-2.request.xml`) puts
+ * `OrderNumber` inside `<Order>`. That is WRONG for this destination: Hermes
+ * then can't find the order number and returns IRESS 20037 "You must specify
+ * an order number." The working calls show the real contract:
+ *   - OrderDelete (works) resolves `OrderNumber` at the `<Parameters>` level.
+ *   - OrderCreate3 (works) nests the order fields inside `<Order>`.
+ * So OrderAmend2 must be a HYBRID:
  *   <Parameters>
- *     <OrderNumber>...</OrderNumber>
- *     <Volume>...</Volume>
+ *     <OrderNumber>1600159</OrderNumber>   <!-- flat, like OrderDelete -->
+ *     <Order><Volume>150</Volume></Order>  <!-- fields nested, like OrderCreate3 -->
  *   </Parameters>
  *
- * The IRESS V4 spec (`Documentation & Vision/iress-v4-docs/13-soap-examples/order-amend-2.request.xml`)
- * requires the amendable fields to be wrapped in a nested `<Order>` element:
- *
- *   <Parameters>
- *     <Order>
- *       <OrderNumber>...</OrderNumber>
- *       <Volume>...</Volume>
- *     </Order>
- *   </Parameters>
- *
- * Hermes's XML parser accepted the flat shape enough to return a success
- * envelope (echoing the OrderNumber), but couldn't associate Volume with
- * any field on the order — so the amend was a silent no-op at the broker.
- *
- * These tests pin the wire shape so any future refactor that drops the
- * `<Order>` wrapper fails CI before reaching Hermes.
+ * These tests call the REAL `orderAmend2` builder via a captured transport, so
+ * a refactor that moves OrderNumber back inside <Order> fails CI before Hermes.
  */
-describe("OrderAmend2 wire envelope shape", () => {
-  it("volume-only amend is wrapped under <Parameters><Order>", () => {
-    const spec: SoapCallSpec = {
+
+function makeCapturingClient() {
+  const call = vi.fn().mockResolvedValue({
+    result: {},
+    header: { ErrorNumber: 0 },
+    dataRows: [{ OrderNumber: "ok" }],
+    firstRow: { OrderNumber: "ok" },
+  });
+  const transport = { call } as unknown as SoapTransport;
+  const client = createLiveIressClient({ transport });
+  return { client, call };
+}
+
+function capturedParameters(call: ReturnType<typeof vi.fn>): Record<string, unknown> {
+  return (call.mock.calls[0]![0] as { parameters: Record<string, unknown> }).parameters;
+}
+
+describe("OrderAmend2 wire envelope shape (hybrid: OrderNumber flat, fields in <Order>)", () => {
+  it("volume-only amend: OrderNumber at <Parameters>, Volume inside <Order>", async () => {
+    const { client, call } = makeCapturingClient();
+    await client.orderAmend2({ ServiceSessionKey: "ssk", OrderNumber: "1600159", Volume: 150 });
+
+    const params = capturedParameters(call);
+    expect(params.OrderNumber).toBe("1600159");
+    expect(params.Order).toEqual({ Volume: 150 });
+
+    const xml = buildSoapEnvelope({
       method: "OrderAmend2",
-      header: {
-        ServiceSessionKey: "ssk",
-        RequestID: "amd-1",
-        Timeout: 25,
-        WaitForResponse: true,
-      },
-      parameters: {
-        Order: {
-          OrderNumber: "1500152",
-          Volume: 100,
-        },
-      },
-    };
-    const xml = buildSoapEnvelope(spec);
-    expect(xml).toContain(`<OrderAmend2 xmlns="${IRESS_NS}">`);
-    expect(xml).toContain("<Parameters>");
-    expect(xml).toContain("<Order>");
-    // OrderNumber + Volume must live inside <Order>, NOT directly in <Parameters>.
+      header: { ServiceSessionKey: "ssk", RequestID: "amd-1" },
+      parameters: params,
+    });
     expect(xml).toContain(
-      `<Order><OrderNumber>1500152</OrderNumber><Volume>100</Volume></Order>`,
+      `<Parameters><OrderNumber>1600159</OrderNumber><Order><Volume>150</Volume></Order></Parameters>`,
     );
-    // Defensive: the flat shape that previously caused silent no-ops.
-    expect(xml).not.toContain(
-      `<Parameters><OrderNumber>1500152</OrderNumber>`,
-    );
+    // The broken shape that produced IRESS 20037 (OrderNumber inside <Order>).
+    expect(xml).not.toContain(`<Order><OrderNumber>`);
   });
 
-  it("price + TIF amend stays under the same <Order> wrapper", () => {
-    const spec: SoapCallSpec = {
-      method: "OrderAmend2",
-      header: { ServiceSessionKey: "ssk", RequestID: "amd-2" },
-      parameters: {
-        Order: {
-          OrderNumber: "1500147",
-          Price: 180.5,
-          TimeInForce: "DAY",
-        },
-      },
-    };
-    const xml = buildSoapEnvelope(spec);
-    expect(xml).toContain(
-      `<Order><OrderNumber>1500147</OrderNumber><Price>180.5</Price><TimeInForce>DAY</TimeInForce></Order>`,
-    );
+  it("price + TIF amend: OrderNumber flat, both fields nested under <Order>", async () => {
+    const { client, call } = makeCapturingClient();
+    await client.orderAmend2({
+      ServiceSessionKey: "ssk",
+      OrderNumber: "1500147",
+      Price: 180.5,
+      TimeInForce: "DAY",
+    });
+    const params = capturedParameters(call);
+    expect(params.OrderNumber).toBe("1500147");
+    expect(params.Order).toEqual({ Price: 180.5, TimeInForce: "DAY" });
   });
 
-  it("amend with no fields still emits <Order><OrderNumber/></Order> (control case)", () => {
-    const spec: SoapCallSpec = {
-      method: "OrderAmend2",
-      header: { ServiceSessionKey: "ssk", RequestID: "amd-3" },
-      parameters: { Order: { OrderNumber: "1500147" } },
-    };
-    const xml = buildSoapEnvelope(spec);
-    expect(xml).toContain(
-      `<Order><OrderNumber>1500147</OrderNumber></Order>`,
-    );
+  it("no amendable fields: OrderNumber only, no <Order> wrapper", async () => {
+    const { client, call } = makeCapturingClient();
+    await client.orderAmend2({ ServiceSessionKey: "ssk", OrderNumber: "1500147" });
+    const params = capturedParameters(call);
+    expect(params.OrderNumber).toBe("1500147");
+    expect(params.Order).toBeUndefined();
   });
 });
 
 describe("OrderDelete wire envelope shape (control — flat is correct here)", () => {
-  // OrderDelete is genuinely flat per
-  // `Documentation & Vision/iress-v4-docs/13-soap-examples/order-delete.request.xml`:
-  //   <Parameters>
-  //     <OrderNumber>...</OrderNumber>
-  //     <AccountCode>...</AccountCode>
-  //   </Parameters>
-  // Pin this so a careless refactor doesn't add an <Order> wrapper here too.
   it("emits <Parameters><OrderNumber/><AccountCode/></Parameters>", () => {
     const spec: SoapCallSpec = {
       method: "OrderDelete",

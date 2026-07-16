@@ -1509,40 +1509,31 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async orderAmend2(req: OrderAmend2Request): Promise<{ OrderNumber: string }> {
       require(req.ServiceSessionKey, "ServiceSessionKey", "OrderAmend2");
       require(req.OrderNumber, "OrderNumber", "OrderAmend2");
-      // 2026-07-15: the IRESS V4 spec requires OrderAmend2's amendable
-      // fields to be wrapped in a nested `<Order>` element (per
-      // `Documentation & Vision/iress-v4-docs/13-soap-examples/order-amend-2.request.xml`):
-      //
+      // 2026-07-16: OrderAmend2 wire shape — verified EMPIRICALLY against the
+      // live JSE/Hermes destination, which diverges from the doc example:
+      //   - `OrderNumber` MUST sit at the `<Parameters>` level (a direct child),
+      //     NOT inside `<Order>`. The working OrderDelete resolves OrderNumber
+      //     there, and the doc-shaped `<Order><OrderNumber>` returns IRESS 20037
+      //     "You must specify an order number" (Hermes never sees the number).
+      //   - The AMENDABLE fields (Volume / Price / TriggerPrice / TimeInForce)
+      //     go inside `<Order>`, matching the working OrderCreate3 (which nests
+      //     all order fields in `<Order>`). A flat Volume at `<Parameters>` is
+      //     accepted but not associated with the order (silent no-op).
+      // So the correct envelope is a hybrid:
       //   <Parameters>
-      //     <Order>
-      //       <OrderNumber>...</OrderNumber>
-      //       <Volume>...</Volume>
-      //       <Price>...</Price>
-      //     </Order>
+      //     <OrderNumber>1600159</OrderNumber>
+      //     <Order><Volume>150</Volume>...</Order>
       //   </Parameters>
-      //
-      // The previous build sent a flat shape:
-      //   <Parameters><OrderNumber>...</OrderNumber><Volume>...</Volume></Parameters>
-      //
-      // which the broker's XML parser accepted enough to return a
-      // success envelope (echoing the OrderNumber) but couldn't
-      // associate the `Volume` with any field on the order. Result:
-      // Hermes confirms the amend with a 200 / ErrorNumber=0, but
-      // Hermes doesn't actually mutate the order. The OEMS UI flipped
-      // to AMEND_PENDING (correct on our side), the next worker poll
-      // showed no change on the broker side (no error either), and
-      // the operator kept guessing at why nothing updated.
-      //
-      // The fix is the nested <Order> wrapper. We send only the
-      // fields the BFF supplied; OrderAmend2 is a partial-update
-      // (untouched fields inherit from the existing order).
-      const orderObj: Record<string, unknown> = {
-        OrderNumber: req.OrderNumber,
-      };
+      // (The `13-soap-examples/order-amend-2.request.xml` example putting
+      //  OrderNumber inside <Order> is wrong for this destination.)
+      // OrderAmend2 is a partial-update — untouched fields inherit from the order.
+      const orderObj: Record<string, unknown> = {};
       if (req.Volume != null) orderObj.Volume = req.Volume;
       if (req.Price != null) orderObj.Price = req.Price;
       if (req.TriggerPrice != null) orderObj.TriggerPrice = req.TriggerPrice;
       if (req.TimeInForce != null) orderObj.TimeInForce = req.TimeInForce;
+      const amendParameters: Record<string, unknown> = { OrderNumber: req.OrderNumber };
+      if (Object.keys(orderObj).length > 0) amendParameters.Order = orderObj;
       const result = await transport.call({
         method: "OrderAmend2",
         header: makeHeader({
@@ -1551,7 +1542,7 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           timeout: 25,
           waitForResponse: true,
         }),
-        parameters: { Order: orderObj },
+        parameters: amendParameters,
       });
       const first = result.firstRow;
       const errorNumber = first && first["ErrorNumber"] !== undefined ? Number(first["ErrorNumber"]) : 0;
