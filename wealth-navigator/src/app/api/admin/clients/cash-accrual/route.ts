@@ -6,21 +6,20 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 /**
  * GET /api/admin/clients/cash-accrual?user_id=...
  *
- * Phase B5 — renders the AUM-fee accrual curve per investor so the Client
+ * Phase B5 - renders the AUM-fee accrual curve per investor so the Client
  * Studio pop-up can show "cash reacting/deducting as AUM accrues". Reads
  * `client_strategy_returns_c` (RETAIL) snapshots; computes the per-month
  * fee deduction and a cumulative accrued total in cents.
  *
  * Formula (monthly):
- *   fee_cents = (latest basket_value) × annual_fee_pct ÷ 12
+ *   fee_cents = applicable_month_end_basket_cents * annual_fee_pct / 12
  *
- * Apportion from the strategy's first in-basket snapshot (treat that as the
- * `invest_date`). Months with no snapshot are linearly interpolated when
- * possible, otherwise left as 0 — never negative (the user's example:
+ * Apportion from the client's first in-basket snapshot (the `invest_date`).
+ * The first and current months are day-prorated; sparse months carry forward
+ * the latest snapshot known by that month end and never produce negatives.
  *   invest = 2026-03-21, AUM = R6,300, fee = 0.99% annual
- *   → monthly = R6,300 × 0.0099 / 12 ≈ R5.20
- *   → 4 months (Mar → Jul 2026) ≈ R20.79 accrued
- * ).
+ *   monthly = R6,300 * 0.0099 / 12, approximately R5.20
+ *   March is day-prorated; subsequent months use their applicable basket value.
  *
  * Per strategy so a client with 3 strategies sees 3 series; for the Studio
  * pop-up we sum the latest snapshot totals.
@@ -38,7 +37,6 @@ interface Snapshot {
 interface StrategyCfg {
   strategy_id: string;
   annual_fee_pct: number;
-  invest_date: string | null;
 }
 
 interface AccrualMonth {
@@ -60,24 +58,17 @@ function monthKey(iso: string): string {
   return iso.slice(0, 7);
 }
 
-function diffMonths(from: Date, to: Date): number {
-  // Returns fractional months between two dates (inclusive of partial months).
-  const years = to.getUTCFullYear() - from.getUTCFullYear();
-  const months = to.getUTCMonth() - from.getUTCMonth();
-  const days = to.getUTCDate() - from.getUTCDate();
-  const fullMonths = years * 12 + months;
-  const daysInMonth = new Date(to.getUTCFullYear(), to.getUTCMonth() + 1, 0).getUTCDate();
-  const fractional = days / daysInMonth;
-  return Math.max(0, fullMonths + fractional);
-}
-
-function computeStrategyAccrual(cfg: StrategyCfg, snapshots: Snapshot[]): StrategyAccrual {
+export function computeStrategyAccrual(cfg: StrategyCfg, snapshots: Snapshot[], asAt = new Date()): StrategyAccrual {
   const sorted = snapshots
     .filter((s) => s.basket_value != null)
     .sort((a, b) => a.as_of_date.localeCompare(b.as_of_date));
   const latest = sorted[sorted.length - 1];
-  const latestCents = Math.round(Number(latest?.basket_value || 0) * 100 || 0);
-  const investDate = cfg.invest_date || sorted[0]?.as_of_date || null;
+  // basket_value is already integer cents. Multiplying it by 100 here was the
+  // source of the exact 100x cash-accrual inflation.
+  const latestCents = Math.round(Number(latest?.basket_value || 0) || 0);
+  // A client's fee clock starts at their first strategy snapshot, not at the
+  // strategy's global inception date.
+  const investDate = sorted[0]?.as_of_date || null;
   const annualFeePct = cfg.annual_fee_pct;
 
   if (latestCents === 0 || annualFeePct === 0 || !investDate) {
@@ -91,30 +82,34 @@ function computeStrategyAccrual(cfg: StrategyCfg, snapshots: Snapshot[]): Strate
     };
   }
 
-  // Monthly fee = basket_value × annual_fee / 12. Constant for now — the
-  // AUM is treated as stationary between snapshots; if the snapshots are
-  // sparse the monthly figure is taken from the latest basket_value.
-  const monthlyFeeCents = Math.round((latestCents * annualFeePct) / 12);
+  // Month-end AUM varies through the history; the first and current months are
+  // prorated to the exact number of active calendar days.
 
   const invest = new Date(`${investDate}T00:00:00Z`);
-  const now = new Date();
-  const totalMonths = diffMonths(invest, now);
+  const now = new Date(asAt);
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
   const months: AccrualMonth[] = [];
   let cumulative = 0;
-  for (let i = 0; i < Math.ceil(totalMonths); i++) {
-    const dt = new Date(Date.UTC(invest.getUTCFullYear(), invest.getUTCMonth() + i, 1));
-    const key = `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}`;
-    // Last month may be partial — prorate to the day-of-month ratio.
-    let monthAmount = monthlyFeeCents;
-    if (i === Math.ceil(totalMonths) - 1 && totalMonths % 1 !== 0) {
-      const lastDt = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 0));
-      const investDay = Math.max(1, Math.min(lastDt.getUTCDate(), invest.getUTCDate()));
-      const fraction = (lastDt.getUTCDate() - investDay + 1) / lastDt.getUTCDate();
-      monthAmount = Math.round(monthlyFeeCents * fraction);
-    }
+  for (
+    let monthStart = new Date(Date.UTC(invest.getUTCFullYear(), invest.getUTCMonth(), 1));
+    monthStart <= end;
+    monthStart = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1))
+  ) {
+    const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 0));
+    // Last month may be partial, so prorate to the day-of-month ratio.
+    const activeStart = invest > monthStart ? invest : monthStart;
+    const activeEnd = end < monthEnd ? end : monthEnd;
+    if (activeStart > activeEnd) continue;
+    const effectiveIso = activeEnd.toISOString().slice(0, 10);
+    const applicable = sorted.filter((snapshot) => snapshot.as_of_date <= effectiveIso).at(-1);
+    const basketCents = Math.round(Number(applicable?.basket_value || 0) || 0);
+    const daysInMonth = monthEnd.getUTCDate();
+    const activeDays = Math.floor((activeEnd.getTime() - activeStart.getTime()) / 86_400_000) + 1;
+    const activeFraction = Math.max(0, Math.min(1, activeDays / daysInMonth));
+    const monthAmount = Math.round((basketCents * annualFeePct * activeFraction) / 12);
     cumulative += monthAmount;
-    months.push({ month: key, monthly_fee_cents: monthAmount, cumulative_cents: cumulative });
+    months.push({ month: monthKey(monthStart.toISOString()), monthly_fee_cents: monthAmount, cumulative_cents: cumulative });
   }
 
   return {
@@ -152,17 +147,16 @@ export async function GET(req: Request) {
   // Fee configuration lives on strategies_c.aum_fee_pct (annual). Falls back
   // to the canonical 0.99% per the user's spec example.
   const strategyIds = [...new Set(((snapshots ?? []) as Snapshot[]).map((s) => s.strategy_id))];
-  const feeMap: Record<string, { aum_fee_pct: number; invest_date: string | null }> = {};
+  const feeMap: Record<string, { aum_fee_pct: number }> = {};
   if (strategyIds.length) {
     try {
       const { data: cfg } = await db
         .from("strategies_c")
-        .select("id, aum_fee_pct, inception_date")
+        .select("id, aum_fee_pct")
         .in("id", strategyIds);
       for (const c of cfg ?? []) {
         feeMap[c.id as string] = {
           aum_fee_pct: Number((c as { aum_fee_pct?: number | null }).aum_fee_pct ?? 0.0099),
-          invest_date: ((c as { inception_date?: string | null }).inception_date as string | null) ?? null,
         };
       }
     } catch {
@@ -179,9 +173,8 @@ export async function GET(req: Request) {
   const accruals: StrategyAccrual[] = strategyIds.map((sid) => {
     const cfg = feeMap[sid];
     const feePct = cfg?.aum_fee_pct ?? 0.0099;
-    const investDate = cfg?.invest_date || null;
     return computeStrategyAccrual(
-      { strategy_id: sid, annual_fee_pct: feePct, invest_date: investDate },
+      { strategy_id: sid, annual_fee_pct: feePct },
       byStrategy[sid] || [],
     );
   });
@@ -206,7 +199,7 @@ export async function GET(req: Request) {
             ? Math.round((first.latest_basket_value_cents * first.annual_fee_pct) / 12)
             : null,
         annual_fee_default: 0.0099,
-        note: "monthly_fee = latest_basket_value × annual_fee ÷ 12 (never negative; prorated to invest_date)",
+        note: "monthly_fee = applicable monthly basket cents * annual fee / 12; first and current months are day-prorated",
       };
     })(),
   });
