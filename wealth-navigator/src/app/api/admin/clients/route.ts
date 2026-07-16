@@ -66,6 +66,37 @@ function parseRecord(value: unknown): Record<string, unknown> {
   }
 }
 
+async function resolveCertificateUrl(db: ReturnType<typeof createRetailServiceRoleClient>, rawValue: unknown) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return null;
+  let bucket = "";
+  let path = "";
+  if (raw.startsWith("storage://")) {
+    const pointer = raw.slice("storage://".length);
+    const slash = pointer.indexOf("/");
+    if (slash > 0) { bucket = pointer.slice(0, slash); path = pointer.slice(slash + 1); }
+  } else if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      const marker = "/storage/v1/object/";
+      const index = parsed.pathname.indexOf(marker);
+      if (index >= 0) {
+        const parts = parsed.pathname.slice(index + marker.length).split("/").filter(Boolean);
+        if (parts[0] === "public" && parts.length >= 3) { bucket = parts[1] ?? ""; path = parts.slice(2).join("/"); }
+        else if (parts[0] === "sign" && parts.length >= 4) { bucket = parts[2] ?? ""; path = parts.slice(3).join("/"); }
+      }
+    } catch { /* retain the original URL below */ }
+  } else {
+    const slash = raw.indexOf("/");
+    if (slash > 0) { bucket = raw.slice(0, slash); path = raw.slice(slash + 1); }
+  }
+  if (bucket && path) {
+    const { data } = await db.storage.from(bucket).createSignedUrl(decodeURIComponent(path), 60 * 60);
+    if (data?.signedUrl) return data.signedUrl;
+  }
+  return /^https?:\/\//i.test(raw) ? raw : null;
+}
+
 function costCentsPerShare(h: { avg_fill?: number | null; Expected_fill?: number | null }): number {
   const avgCents = Number(h.avg_fill) || 0;
   const expectedRaw = Number(h.Expected_fill) || 0;
@@ -207,6 +238,7 @@ export async function GET(req: Request) {
       const { data: parent } = parentId
         ? await db.from("profiles").select("first_name,last_name,email").eq("id", parentId).maybeSingle()
         : { data: null };
+      const certificateUrl = await resolveCertificateUrl(db, member.certificate_url);
       return NextResponse.json({
         ok: true,
         profile: {
@@ -224,7 +256,7 @@ export async function GET(req: Request) {
         })),
         is_unlinked_child: true,
         child_certificate: {
-          url: member.certificate_url ?? null,
+          url: certificateUrl,
           status: member.certificate_verification_status ?? member.kyc_status ?? null,
           reviewed_at: member.kyc_reviewed_at ?? null,
         },
@@ -240,6 +272,8 @@ export async function GET(req: Request) {
       db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
       db.from("transactions").select("id, name, description, amount, direction, status, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(25),
     ]);
+    const { data: linkedChild } = await db.from("family_members").select("id,certificate_url,certificate_verification_status,kyc_status,kyc_reviewed_at").eq("linked_user_id", userId).eq("relationship", "child").maybeSingle();
+    const linkedCertificateUrl = linkedChild ? await resolveCertificateUrl(db, linkedChild.certificate_url) : null;
 
     const secIds = [...new Set((holds ?? []).map((h) => h.security_id).filter(Boolean))];
     const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
@@ -283,6 +317,12 @@ export async function GET(req: Request) {
       kyc: deriveKyc(onboarding ?? undefined, required ?? undefined, pack?.pack_details),
       holdings,
       transactions: txns ?? [],
+      child_family_member_id: linkedChild?.id ?? null,
+      child_certificate: linkedChild ? {
+        url: linkedCertificateUrl,
+        status: linkedChild.certificate_verification_status ?? linkedChild.kyc_status ?? null,
+        reviewed_at: linkedChild.kyc_reviewed_at ?? null,
+      } : null,
     });
   }
 

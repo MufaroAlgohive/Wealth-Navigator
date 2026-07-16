@@ -26,6 +26,7 @@ interface Detail {
   holdings: Holding[];
   transactions: Txn[];
   is_unlinked_child?: boolean;
+  child_family_member_id?: string | null;
   onboarding_pack?: Record<string, unknown> | null;
   mandate?: { available: boolean; data: Record<string, unknown>; signed_agreement_url?: string | null };
   child_certificate?: { url?: string | null; status?: string | null; reviewed_at?: string | null };
@@ -85,11 +86,13 @@ export default function ClientsPage() {
   };
 
   const childCertificateAction = async (decision: "approve" | "reject" | "reevaluate") => {
-    if (!sel?.family_member_id) return;
+    if (!sel) return;
+    const familyMemberId = sel?.family_member_id || detail?.child_family_member_id;
+    if (!familyMemberId) return;
     const d = await fetch("/api/admin/clients?action=child-certificate-review", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ family_member_id: sel.family_member_id, decision }),
+      body: JSON.stringify({ family_member_id: familyMemberId, decision }),
     }).then((response) => response.json()).catch(() => ({ ok: false }));
     if (!d.ok) return toast.error(d.error || "Certificate review failed");
     toast.success(decision === "approve" ? "Child certificate verified" : decision === "reject" ? "Child certificate rejected" : "Certificate returned to review");
@@ -315,7 +318,7 @@ export default function ClientsPage() {
                       <button type="button" disabled={computershareBusy} onClick={() => openComputershareDocument("download")} title="Download Computershare document" aria-label="Download Computershare document" className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"><Download className="h-3.5 w-3.5" /></button>
                     </div>}
                     <div className="flex flex-wrap items-center gap-2">
-                      {detail.is_unlinked_child ? <>
+                      {detail.is_unlinked_child || detail.child_family_member_id ? <>
                         {detail.child_certificate?.url ? <Button size="sm" variant="secondary" asChild><a href={detail.child_certificate.url} target="_blank" rel="noreferrer">View certificate</a></Button> : <span className="text-[11px] text-muted-foreground">No child certificate has been uploaded.</span>}
                         {detail.child_certificate?.url && detail.kyc !== "verified" && <Button size="sm" variant="success" onClick={() => childCertificateAction("approve")}>Accept certificate</Button>}
                         {detail.child_certificate?.url && detail.kyc !== "rejected" && <Button size="sm" variant="destructive" onClick={() => childCertificateAction("reject")}>Reject certificate</Button>}
