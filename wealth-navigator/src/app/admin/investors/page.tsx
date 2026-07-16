@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { Download, RotateCcw } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts";
 
 import { Input } from "@/components/ui/input";
@@ -9,14 +10,15 @@ import { cn } from "@/lib/cn";
 
 /* ── Types (raw payload) ── */
 interface Holding { user_id: string; family_member_id: string | null; security_id: string; strategy_id: string | null; quantity: number; avg_fill: number | null; Expected_fill: number | null; }
-interface ClosedHolding { user_id: string; quantity: number; avg_fill: number | null; avg_exit: number | null; }
-interface NavRow { user_id: string; as_of_date: string; basket_value: number | null; ytd_pct: number | null; inception_pct: number | null; inception_pnl: number | null; }
+interface ClosedHolding { user_id: string; family_member_id?: string | null; strategy_id?: string | null; quantity: number; avg_fill: number | null; avg_exit: number | null; }
+interface NavRow { user_id: string; strategy_id?: string | null; as_of_date: string; basket_value: number | null; ytd_pct: number | null; inception_pct: number | null; inception_pnl: number | null; }
 interface Profile { id: string; first_name: string | null; last_name: string | null; email: string | null; mint_number: string | null; computershare_number: string | null; }
 interface SecMeta { id: string; symbol: string; name: string | null; sector: string | null; logo_url: string | null; }
 interface SecLive { security_id: string; current_price: number | null; }
 interface Txn { id: string; user_id: string; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_consumed_cents: number | null; }
-interface Residual { user_id: string; balance_cents: number | null; }
-interface Payload { holdings: Holding[]; profiles: Profile[]; secMeta: SecMeta[]; secLive: SecLive[]; txns: Txn[]; residuals: Residual[]; closedHoldings: ClosedHolding[]; stratHist: NavRow[]; }
+interface Residual { user_id: string; family_member_id?: string | null; strategy_id?: string | null; balance_cents: number | null; }
+interface Strategy { id: string; name: string; short_name: string | null; }
+interface Payload { holdings: Holding[]; strategies: Strategy[]; profiles: Profile[]; secMeta: SecMeta[]; secLive: SecLive[]; txns: Txn[]; residuals: Residual[]; closedHoldings: ClosedHolding[]; stratHist: NavRow[]; }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const PIE = ["#7c5cff", "#22c55e", "#f59e0b", "#38bdf8", "#ec4899", "#ef4444", "#a3a3a3", "#14b8a6", "#eab308", "#8b5cf6"];
@@ -36,9 +38,9 @@ function costCentsPerShare(h: Holding): number {
   return avgCents > 0 ? avgCents : 0;
 }
 
-interface HoldingView { securityId: string; symbol: string; name: string; sector: string; qty: number; valueCents: number; investedCents: number; pnlCents: number; }
+interface HoldingView { securityId: string; symbol: string; name: string; sector: string; qty: number; priceCents: number; costCents: number; valueCents: number; investedCents: number; pnlCents: number; }
 interface Investor {
-  userId: string; name: string; email: string; mintNumber: string | null; computershare: string | null;
+  key: string; userId: string; familyMemberId: string | null; strategyId: string | null; strategy: string | null; name: string; email: string; mintNumber: string | null; computershare: string | null;
   investedCents: number; currentCents: number; residualCents: number; realizedCents: number; valueCents: number; pnlCents: number; retPct: number;
   ytdPct: number | null; inceptionPct: number | null;
   nav: { date: string; v: number }[]; holdings: HoldingView[]; txns: Txn[];
@@ -89,9 +91,10 @@ export default function InvestorsPage() {
   const [search, setSearch] = React.useState("");
   const [selId, setSelId] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState("performance");
+  const [bookType, setBookType] = React.useState<"strategies" | "single">("strategies");
 
   React.useEffect(() => {
-    fetch("/api/admin/investors/data").then((r) => r.json()).then((d) => setData(d.ok ? d : { holdings: [], profiles: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] })).catch(() => setData({ holdings: [], profiles: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] } as Payload));
+    fetch("/api/admin/investors/data").then((r) => r.json()).then((d) => setData(d.ok ? d : { holdings: [], strategies: [], profiles: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] })).catch(() => setData({ holdings: [], strategies: [], profiles: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] } as Payload));
   }, []);
 
   const investors = React.useMemo<Investor[]>(() => {
@@ -99,20 +102,23 @@ export default function InvestorsPage() {
     const secMetaById = new Map(data.secMeta.map((s) => [s.id, s]));
     const liveById = new Map(data.secLive.map((s) => [s.security_id, Number(s.current_price) || 0]));
     const profById = new Map(data.profiles.map((p) => [p.id, p]));
+    const strategyById = new Map((data.strategies || []).map((s) => [s.id, s]));
+    const scope = (user: string, family?: string | null, strategy?: string | null) => `${user}:${family || ""}:${strategy || ""}`;
     const residualByUser: Record<string, number> = {};
-    for (const r of data.residuals) residualByUser[r.user_id] = (residualByUser[r.user_id] || 0) + (Number(r.balance_cents) || 0);
+    for (const r of data.residuals) { const key=scope(r.user_id,r.family_member_id,r.strategy_id);residualByUser[key]=(residualByUser[key]||0)+(Number(r.balance_cents)||0); }
     const realizedByUser: Record<string, number> = {};
-    for (const c of data.closedHoldings) { const v = ((Number(c.avg_exit) || 0) - (Number(c.avg_fill) || 0)) * Number(c.quantity || 0); realizedByUser[c.user_id] = (realizedByUser[c.user_id] || 0) + v; }
+    for (const c of data.closedHoldings) { const key=scope(c.user_id,c.family_member_id,c.strategy_id);const v=((Number(c.avg_exit)||0)-(Number(c.avg_fill)||0))*Number(c.quantity||0);realizedByUser[key]=(realizedByUser[key]||0)+v; }
     const navByUser: Record<string, NavRow[]> = {};
-    for (const r of data.stratHist) (navByUser[r.user_id] ||= []).push(r);
+    for (const r of data.stratHist) (navByUser[scope(r.user_id,null,r.strategy_id)] ||= []).push(r);
     const txnByUser: Record<string, Txn[]> = {};
     for (const t of data.txns) (txnByUser[t.user_id] ||= []).push(t);
     const holdsByUser: Record<string, Holding[]> = {};
-    for (const h of data.holdings) (holdsByUser[h.user_id] ||= []).push(h);
+    for (const h of data.holdings) (holdsByUser[scope(h.user_id,h.family_member_id,h.strategy_id)] ||= []).push(h);
 
     const out: Investor[] = [];
-    for (const userId of Object.keys(holdsByUser)) {
-      const hs = holdsByUser[userId]!;
+    for (const key of Object.keys(holdsByUser)) {
+      const hs = holdsByUser[key]!;
+      const userId=hs[0]!.user_id, familyMemberId=hs[0]!.family_member_id, strategyId=hs[0]!.strategy_id;
       const bysecurity: Record<string, HoldingView> = {};
       let investedCents = 0, currentCents = 0;
       for (const h of hs) {
@@ -122,18 +128,19 @@ export default function InvestorsPage() {
         const inv = costCentsPerShare(h) * qty;
         investedCents += inv; currentCents += mv;
         const meta = secMetaById.get(h.security_id);
-        const v = (bysecurity[h.security_id] ||= { securityId: h.security_id, symbol: meta?.symbol || "—", name: meta?.name || meta?.symbol || "—", sector: meta?.sector || "Other", qty: 0, valueCents: 0, investedCents: 0, pnlCents: 0 });
+        const v = (bysecurity[h.security_id] ||= { securityId: h.security_id, symbol: meta?.symbol || "—", name: meta?.name || meta?.symbol || "—", sector: meta?.sector || "Other", qty: 0, priceCents: live, costCents: costCentsPerShare(h), valueCents: 0, investedCents: 0, pnlCents: 0 });
         v.qty += qty; v.valueCents += mv; v.investedCents += inv; v.pnlCents = v.valueCents - v.investedCents;
       }
-      const residualCents = residualByUser[userId] || 0;
-      const realizedCents = realizedByUser[userId] || 0;
+      const residualCents = residualByUser[key] || 0;
+      const realizedCents = realizedByUser[key] || 0;
       const valueCents = currentCents + residualCents;
       const pnlCents = currentCents - investedCents + realizedCents;
-      const nav = (navByUser[userId] || []).filter((r) => r.basket_value != null).map((r) => ({ date: r.as_of_date, v: Number(r.basket_value) }));
-      const latestNav = (navByUser[userId] || [])[(navByUser[userId] || []).length - 1];
+      const navKey=scope(userId,null,strategyId);
+      const nav = (navByUser[navKey] || []).filter((r) => r.basket_value != null).map((r) => ({ date: r.as_of_date, v: Number(r.basket_value) }));
+      const latestNav = (navByUser[navKey] || [])[(navByUser[navKey] || []).length - 1];
       const prof = profById.get(userId);
       out.push({
-        userId, name: prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0, 8) : userId.slice(0, 8),
+        key,userId,familyMemberId,strategyId,strategy:strategyId?(strategyById.get(strategyId)?.short_name||strategyById.get(strategyId)?.name||"Strategy"):null, name: prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0, 8) : userId.slice(0, 8),
         email: prof?.email || "", mintNumber: prof?.mint_number || null, computershare: prof?.computershare_number || null,
         investedCents, currentCents, residualCents, realizedCents, valueCents, pnlCents,
         retPct: investedCents > 0 ? (pnlCents / investedCents) * 100 : 0,
@@ -153,8 +160,8 @@ export default function InvestorsPage() {
     return { aum, invested, pnl, avgRet, best: sorted[0] || null, worst: sorted[sorted.length - 1] || null };
   }, [investors]);
 
-  const filtered = investors.filter((i) => !search.trim() || `${i.name} ${i.email}`.toLowerCase().includes(search.toLowerCase()));
-  const sel = investors.find((i) => i.userId === selId) || null;
+  const filtered = investors.filter((i) => (bookType === "strategies" ? !!i.strategyId : !i.strategyId) && (!search.trim() || `${i.name} ${i.email} ${i.strategy || ""}`.toLowerCase().includes(search.toLowerCase())));
+  const sel = investors.find((i) => i.key === selId) || null;
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
@@ -171,13 +178,17 @@ export default function InvestorsPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
         {/* List */}
         <div className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 grid grid-cols-2 rounded-lg border border-border bg-muted/30 p-0.5">
+            <button type="button" onClick={()=>{setBookType("strategies");setSelId(null);}} className={cn("rounded-md px-2 py-1.5 text-[10px] font-semibold",bookType==="strategies"?"bg-primary text-primary-foreground":"text-muted-foreground")}>Strategies</button>
+            <button type="button" onClick={()=>{setBookType("single");setSelId(null);}} className={cn("rounded-md px-2 py-1.5 text-[10px] font-semibold",bookType==="single"?"bg-primary text-primary-foreground":"text-muted-foreground")}>Single Securities</button>
+          </div>
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search investors…" className="mb-3 h-8" />
           <div className="max-h-[65vh] space-y-1 overflow-y-auto">
             {data === null ? <p className="py-6 text-center text-xs text-muted-foreground">Loading…</p>
               : filtered.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">No investors.</p>
               : filtered.map((i) => (
-                <button key={i.userId} onClick={() => setSelId(i.userId)} className={cn("flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left", selId === i.userId ? "bg-primary/10" : "hover:bg-accent/50")}>
-                  <div className="min-w-0"><div className="truncate text-sm font-medium text-foreground">{i.name}</div><div className="text-[11px] text-muted-foreground">{R(i.valueCents)}</div></div>
+                <button key={i.key} onClick={() => setSelId(i.key)} className={cn("flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left", selId === i.key ? "bg-primary/10" : "hover:bg-accent/50")}>
+                  <div className="min-w-0"><div className="truncate text-sm font-medium text-foreground">{i.name}</div><div className="truncate text-[10px] text-muted-foreground">{i.strategy || "Single securities"}</div><div className="text-[11px] text-muted-foreground">{R(i.valueCents)}</div></div>
                   <span className={cn("text-xs font-semibold", pctCls(i.retPct))}>{pctStr(i.retPct)}</span>
                 </button>
               ))}
@@ -213,6 +224,7 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
       <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl bg-gradient-to-br from-primary/15 to-transparent p-4">
         <div>
           <div className="text-lg font-bold text-foreground">{inv.name}</div>
+          <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-primary">{inv.strategy || "Single securities"}</div>
           <div className="text-xs text-muted-foreground">{inv.email}{inv.mintNumber ? ` · ${inv.mintNumber}` : ""}</div>
         </div>
         <div className="text-right">
@@ -234,6 +246,7 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
           <TabsTrigger value="risk">Risk &amp; Drawdown</TabsTrigger>
           <TabsTrigger value="allocations">Allocations</TabsTrigger>
           <TabsTrigger value="transactions">Transactions</TabsTrigger>
+          <TabsTrigger value="spreadsheet">Spreadsheet</TabsTrigger>
         </TabsList>
 
         <TabsContent value="performance" className="space-y-4">
@@ -313,9 +326,28 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
             </table>
           </div>
         </TabsContent>
+
+        <TabsContent value="spreadsheet">
+          <InvestorSpreadsheet investor={inv} />
+        </TabsContent>
       </Tabs>
     </div>
   );
+}
+
+function InvestorSpreadsheet({ investor }: { investor: Investor }) {
+  const seed = React.useMemo(() => investor.holdings.map((h) => ({ ...h })), [investor.key]);
+  const [rows, setRows] = React.useState(seed);
+  React.useEffect(() => setRows(seed), [seed]);
+  const edit = (id: string, field: "qty" | "costCents" | "priceCents", value: string) => setRows((current) => current.map((row) => row.securityId === id ? { ...row, [field]: Math.max(0, Number(value) || 0) } : row));
+  const download = () => {
+    const table = [["Symbol","Security","Quantity","Average Fill (ZAR)","Market Price (ZAR)","Invested (ZAR)","Market Value (ZAR)","P&L (ZAR)","Return (%)"],...rows.map((h)=>{const invested=h.qty*h.costCents/100,value=h.qty*h.priceCents/100,pnl=value-invested;return[h.symbol,h.name,h.qty,h.costCents/100,h.priceCents/100,invested,value,pnl,invested?pnl/invested*100:0]})];
+    const csv=table.map((line)=>line.map((cell)=>`"${String(cell).replaceAll('"','""')}"`).join(',')).join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=`${investor.name}-${investor.strategy||'single-securities'}`.replace(/[^a-z0-9]+/gi,'-')+'.csv';a.click();URL.revokeObjectURL(url);
+  };
+  return <div className="overflow-hidden rounded-xl border border-border">
+    <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/20 px-3 py-2"><div><div className="text-xs font-semibold">{investor.strategy || "Single securities"} spreadsheet</div><div className="text-[9px] text-muted-foreground">Only this selected basket is included. Edit inputs to preview calculations.</div></div><div className="flex gap-1"><button type="button" onClick={()=>setRows(seed)} className="inline-flex h-7 items-center gap-1 rounded-md border border-border px-2 text-[9px]"><RotateCcw className="h-3 w-3"/>Reset</button><button type="button" onClick={download} className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2 text-[9px] text-primary-foreground"><Download className="h-3 w-3"/>Download</button></div></div>
+    <div className="overflow-x-auto"><table className="w-full min-w-[850px] border-collapse text-[10px]"><thead><tr className="border-b border-border bg-muted/30">{["Security","Qty","Avg fill","Market price","Invested","Market value","P&L","Return"].map(c=><th key={c} className="px-2 py-2 text-right first:text-left">{c}</th>)}</tr></thead><tbody>{rows.map(h=>{const invested=h.qty*h.costCents,value=h.qty*h.priceCents,pnl=value-invested,ret=invested?pnl/invested*100:0;return <tr key={h.securityId} className="border-b border-border/40"><td className="px-2 py-2"><b>{h.symbol}</b><span className="ml-1 text-muted-foreground">{h.name}</span></td>{(["qty","costCents","priceCents"] as const).map(field=><td key={field} className="p-1 text-right"><input type="number" step="any" value={field==='qty'?h[field]:h[field]/100} onChange={e=>edit(h.securityId,field,field==='qty'?e.target.value:String((Number(e.target.value)||0)*100))} className="h-7 w-24 rounded border border-border bg-background px-1.5 text-right font-mono"/></td>)}<td className="px-2 text-right font-mono">{R(invested)}</td><td className="px-2 text-right font-mono">{R(value)}</td><td className={cn("px-2 text-right font-mono",pctCls(pnl))}>{R(pnl)}</td><td className={cn("px-2 text-right font-mono",pctCls(ret))}>{pctStr(ret)}</td></tr>})}</tbody></table></div>
+  </div>;
 }
 
 function HoldingsTable({ holdings, total, top }: { holdings: HoldingView[]; total: number; top?: number }) {
