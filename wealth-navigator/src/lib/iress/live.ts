@@ -1509,31 +1509,41 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async orderAmend2(req: OrderAmend2Request): Promise<{ OrderNumber: string }> {
       require(req.ServiceSessionKey, "ServiceSessionKey", "OrderAmend2");
       require(req.OrderNumber, "OrderNumber", "OrderAmend2");
-      // 2026-07-16: OrderAmend2 wire shape — verified EMPIRICALLY against the
-      // live JSE/Hermes destination, which diverges from the doc example:
-      //   - `OrderNumber` MUST sit at the `<Parameters>` level (a direct child),
-      //     NOT inside `<Order>`. The working OrderDelete resolves OrderNumber
-      //     there, and the doc-shaped `<Order><OrderNumber>` returns IRESS 20037
-      //     "You must specify an order number" (Hermes never sees the number).
-      //   - The AMENDABLE fields (Volume / Price / TriggerPrice / TimeInForce)
-      //     go inside `<Order>`, matching the working OrderCreate3 (which nests
-      //     all order fields in `<Order>`). A flat Volume at `<Parameters>` is
-      //     accepted but not associated with the order (silent no-op).
-      // So the correct envelope is a hybrid:
+      // 2026-07-16: OrderAmend2 wire shape — verified EMPIRICALLY with Andre
+      // (IRESS) against the live JSE/Hermes destination. It uses the SAME
+      // `<XxxArray><Xxx>value</Xxx></XxxArray>` convention as the WORKING
+      // OrderCreate3, with the `Order`-prefixed field names Andre named
+      // ("order number, order volume, order price"):
       //   <Parameters>
-      //     <OrderNumber>1600159</OrderNumber>
-      //     <Order><Volume>150</Volume>...</Order>
+      //     <OrderNumberArray><OrderNumber>1600160</OrderNumber></OrderNumberArray>
+      //     <OrderVolumeArray><OrderVolume>150</OrderVolume></OrderVolumeArray>
+      //     <OrderPriceArray><OrderPrice>18000</OrderPrice></OrderPriceArray>   (CENTS)
+      //     <LifetimeArray><Lifetime>0</Lifetime></LifetimeArray>
       //   </Parameters>
-      // (The `13-soap-examples/order-amend-2.request.xml` example putting
-      //  OrderNumber inside <Order> is wrong for this destination.)
-      // OrderAmend2 is a partial-update — untouched fields inherit from the order.
-      const orderObj: Record<string, unknown> = {};
-      if (req.Volume != null) orderObj.Volume = req.Volume;
-      if (req.Price != null) orderObj.Price = req.Price;
-      if (req.TriggerPrice != null) orderObj.TriggerPrice = req.TriggerPrice;
-      if (req.TimeInForce != null) orderObj.TimeInForce = req.TimeInForce;
-      const amendParameters: Record<string, unknown> = { OrderNumber: req.OrderNumber };
-      if (Object.keys(orderObj).length > 0) amendParameters.Order = orderObj;
+      // The `13-soap-examples/order-amend-2.request.xml` example (`<Order>` with
+      // a plain `<Volume>`) is WRONG for this build: it locates the order but
+      // Hermes silently ignores `<Volume>` (2026-07-16 live test — the amend
+      // returned success + OrderNumber but the volume stayed 100). The field is
+      // `OrderVolume` inside `OrderVolumeArray`, not `Volume`. OrderPrice is in
+      // WIRE CENTS (rands x 100), matching OrderCreate3. Partial-update: only
+      // send the fields being changed.
+      const lifetime: string | number | null =
+        req.TimeInForce === "GTC"
+          ? "Good Till Cancelled"
+          : req.TimeInForce === "IOC" || req.TimeInForce === "FOK"
+            ? "Fill or Kill"
+            : req.TimeInForce === "DAY"
+              ? 0
+              : null;
+      const amendParameters: Record<string, unknown> = {
+        OrderNumberArray: { OrderNumber: req.OrderNumber },
+      };
+      if (req.Volume != null) amendParameters.OrderVolumeArray = { OrderVolume: req.Volume };
+      if (req.Price != null) {
+        // req.Price is RANDS; the wire OrderPrice is CENTS (x100), per OrderCreate3.
+        amendParameters.OrderPriceArray = { OrderPrice: Math.round(req.Price * 100) };
+      }
+      if (lifetime != null) amendParameters.LifetimeArray = { Lifetime: lifetime };
       const result = await transport.call({
         method: "OrderAmend2",
         header: makeHeader({

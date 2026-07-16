@@ -4,23 +4,20 @@ import { createLiveIressClient } from "@/lib/iress/live";
 import { buildSoapEnvelope, type SoapCallSpec, type SoapTransport } from "@/lib/iress/transport";
 
 /**
- * OrderAmend2 wire-shape contract — verified EMPIRICALLY against the live
- * JSE/Hermes destination (2026-07-16, order 1600159).
+ * OrderAmend2 wire-shape contract — verified EMPIRICALLY with Andre (IRESS)
+ * against the live JSE/Hermes destination (2026-07-16, orders 1600159/1600160).
  *
- * The doc example (`13-soap-examples/order-amend-2.request.xml`) puts
- * `OrderNumber` inside `<Order>`. That is WRONG for this destination: Hermes
- * then can't find the order number and returns IRESS 20037 "You must specify
- * an order number." The working calls show the real contract:
- *   - OrderDelete (works) resolves `OrderNumber` at the `<Parameters>` level.
- *   - OrderCreate3 (works) nests the order fields inside `<Order>`.
- * So OrderAmend2 must be a HYBRID:
- *   <Parameters>
- *     <OrderNumber>1600159</OrderNumber>   <!-- flat, like OrderDelete -->
- *     <Order><Volume>150</Volume></Order>  <!-- fields nested, like OrderCreate3 -->
- *   </Parameters>
+ * Two things had to be right:
+ *   1. The order is located by OrderNumber — the doc's `<Order><OrderNumber>`
+ *      returns IRESS 20037 "You must specify an order number".
+ *   2. The amend actually MUTATES — a plain `<Volume>` is silently ignored
+ *      (Hermes returns success + OrderNumber but the volume never changes).
  *
- * These tests call the REAL `orderAmend2` builder via a captured transport, so
- * a refactor that moves OrderNumber back inside <Order> fails CI before Hermes.
+ * The fix mirrors the WORKING OrderCreate3 exactly: IRESS's `<XxxArray><Xxx>`
+ * convention with `Order`-prefixed names (OrderNumber / OrderVolume / OrderPrice
+ * / Lifetime), all at the `<Parameters>` level. OrderPrice is WIRE CENTS
+ * (rands x 100). These tests exercise the REAL orderAmend2 builder so a refactor
+ * back to `<Order><Volume>` fails CI before it reaches Hermes.
  */
 
 function makeCapturingClient() {
@@ -39,28 +36,28 @@ function capturedParameters(call: ReturnType<typeof vi.fn>): Record<string, unkn
   return (call.mock.calls[0]![0] as { parameters: Record<string, unknown> }).parameters;
 }
 
-describe("OrderAmend2 wire envelope shape (hybrid: OrderNumber flat, fields in <Order>)", () => {
-  it("volume-only amend: OrderNumber at <Parameters>, Volume inside <Order>", async () => {
+describe("OrderAmend2 wire envelope shape (IRESS *Array convention, like OrderCreate3)", () => {
+  it("volume amend → OrderNumberArray + OrderVolumeArray (not <Order><Volume>)", async () => {
     const { client, call } = makeCapturingClient();
     await client.orderAmend2({ ServiceSessionKey: "ssk", OrderNumber: "1600159", Volume: 150 });
 
     const params = capturedParameters(call);
-    expect(params.OrderNumber).toBe("1600159");
-    expect(params.Order).toEqual({ Volume: 150 });
+    expect(params.OrderNumberArray).toEqual({ OrderNumber: "1600159" });
+    expect(params.OrderVolumeArray).toEqual({ OrderVolume: 150 });
 
     const xml = buildSoapEnvelope({
       method: "OrderAmend2",
       header: { ServiceSessionKey: "ssk", RequestID: "amd-1" },
       parameters: params,
     });
-    expect(xml).toContain(
-      `<Parameters><OrderNumber>1600159</OrderNumber><Order><Volume>150</Volume></Order></Parameters>`,
-    );
-    // The broken shape that produced IRESS 20037 (OrderNumber inside <Order>).
-    expect(xml).not.toContain(`<Order><OrderNumber>`);
+    expect(xml).toContain(`<OrderNumberArray><OrderNumber>1600159</OrderNumber></OrderNumberArray>`);
+    expect(xml).toContain(`<OrderVolumeArray><OrderVolume>150</OrderVolume></OrderVolumeArray>`);
+    // The two shapes Hermes rejected / ignored.
+    expect(xml).not.toContain(`<Order><OrderNumber>`); // 20037: order not found
+    expect(xml).not.toContain(`<Order><Volume>`); // silent no-op: volume ignored
   });
 
-  it("price + TIF amend: OrderNumber flat, both fields nested under <Order>", async () => {
+  it("price amend → OrderPriceArray in CENTS (rands x 100)", async () => {
     const { client, call } = makeCapturingClient();
     await client.orderAmend2({
       ServiceSessionKey: "ssk",
@@ -69,16 +66,18 @@ describe("OrderAmend2 wire envelope shape (hybrid: OrderNumber flat, fields in <
       TimeInForce: "DAY",
     });
     const params = capturedParameters(call);
-    expect(params.OrderNumber).toBe("1500147");
-    expect(params.Order).toEqual({ Price: 180.5, TimeInForce: "DAY" });
+    expect(params.OrderNumberArray).toEqual({ OrderNumber: "1500147" });
+    expect(params.OrderPriceArray).toEqual({ OrderPrice: 18050 }); // 180.50 rands → 18050 cents
+    expect(params.LifetimeArray).toEqual({ Lifetime: 0 }); // DAY → 0
   });
 
-  it("no amendable fields: OrderNumber only, no <Order> wrapper", async () => {
+  it("no amendable fields → only OrderNumberArray is sent", async () => {
     const { client, call } = makeCapturingClient();
     await client.orderAmend2({ ServiceSessionKey: "ssk", OrderNumber: "1500147" });
     const params = capturedParameters(call);
-    expect(params.OrderNumber).toBe("1500147");
-    expect(params.Order).toBeUndefined();
+    expect(params.OrderNumberArray).toEqual({ OrderNumber: "1500147" });
+    expect(params.OrderVolumeArray).toBeUndefined();
+    expect(params.OrderPriceArray).toBeUndefined();
   });
 });
 
@@ -93,6 +92,5 @@ describe("OrderDelete wire envelope shape (control — flat is correct here)", (
     expect(xml).toContain(
       `<Parameters><OrderNumber>1500150</OrderNumber><AccountCode>56378</AccountCode></Parameters>`,
     );
-    expect(xml).not.toContain("<Order><OrderNumber");
   });
 });
