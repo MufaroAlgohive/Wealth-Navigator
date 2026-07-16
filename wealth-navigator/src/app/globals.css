@@ -183,7 +183,7 @@
   color: #c7d1db;
 }
 .dark .oem-spreadsheet .x-spreadsheet-table {
-  filter: invert(0.88) hue-rotate(180deg);
+  background: #211442;
 }
 .dark .oem-spreadsheet .x-spreadsheet-toolbar,
 .dark .oem-spreadsheet .x-spreadsheet-bottombar {
@@ -222,6 +222,15 @@
 .dark .oem-spreadsheet .x-spreadsheet-contextmenu .x-spreadsheet-item:hover,
 .dark .oem-spreadsheet .x-spreadsheet-suggest .x-spreadsheet-item:hover {
   background: #2c333a;
+}
+.dark .oem-spreadsheet .x-spreadsheet-icon-img {
+  filter: invert(1) brightness(1.7);
+}
+.dark .oem-spreadsheet .x-spreadsheet-scrollbar {
+  background: #19102f;
+}
+.dark .oem-spreadsheet .x-spreadsheet-scrollbar > div {
+  background: #6f5aa8;
 }
 
 @layer base {

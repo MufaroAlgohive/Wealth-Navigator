@@ -343,7 +343,7 @@ function InvestorSpreadsheet({ investor }: { investor: Investor }) {
   const instance = React.useRef<import("x-data-spreadsheet").default | null>(null);
   const saved = React.useRef<Record<string, unknown>[] | null>(null);
   const [full, setFull] = React.useState(false);
-  const seed = React.useMemo(() => spreadsheetGridData(investor), [investor.key]);
+  const seed = React.useMemo(() => spreadsheetGridData(investor, dark), [investor.key, dark]);
 
   const mount = React.useCallback(async (data?: Record<string, unknown>[]) => {
     if (!host.current) return;
@@ -353,7 +353,9 @@ function InvestorSpreadsheet({ investor }: { investor: Investor }) {
       mode: "edit", showToolbar: true, showGrid: true, showContextmenu: true,
       view: { height: () => full ? Math.max(500, window.innerHeight - 190) : 500, width: () => host.current?.clientWidth || 820 },
       row: { len: 100, height: 25 }, col: { len: 26, width: 100, indexWidth: 45, minWidth: 60 },
+      ...(dark ? { style: { bgcolor: "#211442", align: "left" as const, valign: "middle" as const, textwrap: false, strike: false, underline: false, color: "#ffffff", font: { name: "Helvetica" as const, size: 10, bold: false, italic: false as const } } } : {}),
     });
+    if (dark) themeSpreadsheetCanvas(sheet);
     instance.current = sheet.loadData((data || seed) as unknown as Record<string, unknown>);
     attachSpreadsheetScrollDamping(host.current);
   }, [full, seed]);
@@ -376,13 +378,19 @@ function InvestorSpreadsheet({ investor }: { investor: Investor }) {
   </div>;
 }
 
-function spreadsheetGridData(investor: Investor): Record<string, unknown>[] {
+function spreadsheetGridData(investor: Investor, dark = false): Record<string, unknown>[] {
   const headers=['Symbol','Name','Quantity','Avg Fill','Total Avg Fill','Market Value','Total P&L','Total P&L %','Total Value w/ P&L'];
   const cells=(values:(string|number)[])=>Object.fromEntries(values.map((text,index)=>[index,{text:String(text)}]));
   const rows:Record<string,unknown>={0:{cells:Object.fromEntries(Object.entries(cells(headers)).map(([key,cell])=>[key,{...(cell as object),style:0}]))}};
   investor.holdings.forEach((h,index)=>{const grid=index+1,excel=grid+1;rows[grid]={cells:{0:{text:h.symbol},1:{text:h.name},2:{text:String(h.qty)},3:{text:String(h.costCents/100)},4:{text:`=C${excel}*D${excel}`},5:{text:String(h.qty*h.priceCents/100)},6:{text:`=F${excel}-E${excel}`},7:{text:`=G${excel}/E${excel}*100`},8:{text:`=E${excel}+G${excel}`}}};});
   const total=investor.holdings.length+1,first=2,last=investor.holdings.length+1;rows[total]={cells:{0:{text:'Total',style:1},4:{text:`=SUM(E${first}:E${last})`,style:1},5:{text:`=SUM(F${first}:F${last})`,style:1},6:{text:`=F${total+1}-E${total+1}`,style:1},7:{text:`=G${total+1}/E${total+1}*100`,style:1},8:{text:`=E${total+1}+G${total+1}`,style:1}}};rows.len=Math.max(100,total+20);
-  return [{name:'Portfolio',freeze:'A1',styles:[{font:{bold:true},bgcolor:'#f1f5f9',color:'#334155'},{font:{bold:true},bgcolor:'#f8fafc'}],merges:[],rows,cols:{len:26,0:{width:90},1:{width:170},4:{width:110},5:{width:110},6:{width:100},7:{width:100},8:{width:140}}}];
+  return [{name:'Portfolio',freeze:'A1',styles:dark?[{font:{bold:true},bgcolor:'#352064',color:'#ffffff'},{font:{bold:true},bgcolor:'#2b1a52',color:'#ffffff'}]:[{font:{bold:true},bgcolor:'#f1f5f9',color:'#334155'},{font:{bold:true},bgcolor:'#f8fafc'}],merges:[],rows,cols:{len:26,0:{width:90},1:{width:170},4:{width:110},5:{width:110},6:{width:100},7:{width:100},8:{width:140}}}];
+}
+
+function themeSpreadsheetCanvas(spreadsheet: import("x-data-spreadsheet").default) {
+  const internal=spreadsheet as unknown as {sheet?:{table?:{draw?:{attr?:(options:Record<string,unknown>)=>unknown}}}};
+  const draw=internal.sheet?.table?.draw;if(!draw?.attr)return;const original=draw.attr.bind(draw);
+  draw.attr=(options:Record<string,unknown>)=>{const themed={...options};if(themed.fillStyle==="#f4f5f8")themed.fillStyle="#2a1850";if(themed.fillStyle==="#585757"||themed.fillStyle==="#fff"||themed.fillStyle==="#ffffff")themed.fillStyle="#ffffff";if(themed.strokeStyle==="#e6e6e6")themed.strokeStyle="rgba(255,255,255,0.42)";return original(themed);};
 }
 
 function attachSpreadsheetScrollDamping(element: HTMLElement) {
