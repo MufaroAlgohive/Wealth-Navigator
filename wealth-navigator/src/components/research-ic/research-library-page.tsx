@@ -16,7 +16,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Plus, Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
@@ -174,23 +174,17 @@ export function ResearchLibraryPage({
         </p>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[400px_1fr]">
         {/* library list */}
-        <GlassSection
-          title="Library"
-          right={<span className="font-mono text-xs text-muted-foreground">{filtered.length}</span>}
-        >
-          <div className="space-y-2.5">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Ticker, name, strategy…"
-                className="w-full rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] py-1.5 pl-7 pr-3 text-xs outline-none focus:border-primary/50"
-              />
-            </div>
-            <div className="flex flex-wrap gap-1">
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.015)]">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[hsl(var(--glass-border))] px-3 py-2">
+            <h2 className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Library
+              <span className="ml-1.5 font-mono text-[10px] tabular-nums text-muted-foreground/70">
+                {filtered.length}
+              </span>
+            </h2>
+            <div className="flex items-center gap-1">
               {STATUS_FILTERS.map((f) => {
                 const n = counts[f.id];
                 const active = filter === f.id;
@@ -199,18 +193,19 @@ export function ResearchLibraryPage({
                     key={f.id}
                     type="button"
                     onClick={() => setFilter(f.id)}
+                    title={`${f.label} (${n})`}
                     className={cn(
-                      "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide transition-colors",
+                      "inline-flex h-5 min-w-[28px] items-center justify-center gap-1 rounded px-1.5 text-[9px] font-semibold uppercase tracking-wide transition-colors",
                       active
-                        ? "border-primary/50 bg-primary/15 text-primary"
-                        : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground",
+                        ? "bg-primary/20 text-primary"
+                        : "text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] hover:text-foreground",
                     )}
                   >
-                    {f.label}
+                    <span>{f.label}</span>
                     <span
                       className={cn(
                         "rounded px-1 text-[9px] tabular-nums",
-                        active ? "bg-primary/15" : "bg-[hsl(var(--foreground)/0.05)]",
+                        active ? "bg-primary/30" : "bg-[hsl(var(--foreground)/0.05)]",
                       )}
                     >
                       {n}
@@ -219,116 +214,155 @@ export function ResearchLibraryPage({
                 );
               })}
             </div>
+          </div>
 
-            <div className="max-h-[640px] space-y-1.5 overflow-y-auto pr-1">
-              {notesQuery.isLoading && <p className="text-caption">Loading notes…</p>}
-              {!notesQuery.isLoading && filtered.length === 0 && (
-                <p className="text-caption">No notes match.</p>
-              )}
-              {filtered.map((n) => {
-                const up = upsideFor(n);
-                const cur = currentFor(n);
-                const tgt = n.thesis?.targetPrice ?? null;
-                const active = n.id === selectedId && mode.kind === "view";
-                const linked = (n.thesis?.linkedStrategies ?? []).filter(Boolean);
-                return (
-                  <button
-                    key={n.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedId(n.id);
-                      setMode({ kind: "view" });
-                    }}
-                    className={cn(
-                      "flex w-full items-stretch gap-2 rounded-md border px-2.5 py-2 text-left transition-colors",
-                      active
-                        ? "border-primary/45 bg-primary/8 shadow-[0_0_0_1px_hsl(var(--primary)/0.15)]"
-                        : "border-transparent hover:border-[hsl(var(--glass-border))] hover:bg-[hsl(var(--foreground)/0.03)]",
-                    )}
-                  >
-                    {/* ticker + company + analyst block */}
-                    <div className="min-w-0 flex-1 space-y-0.5">
-                      <div className="flex flex-wrap items-center gap-1">
-                        <span className="text-sm font-semibold tracking-tight text-primary">
-                          {n.symbol}
-                        </span>
+          <div className="shrink-0 px-3 py-1.5">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1.5 h-3 w-3 text-muted-foreground" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search ticker, name, strategy…"
+                className="w-full rounded-md border border-transparent bg-[hsl(var(--foreground)/0.04)] py-1 pl-7 pr-2 text-[11px] outline-none focus:border-primary/40"
+              />
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <table className="w-full border-collapse text-[11px]">
+              <thead className="sticky top-0 z-[1] bg-[hsl(var(--background)/0.85)] backdrop-blur">
+                <tr className="text-left text-[9px] uppercase tracking-wide text-muted-foreground">
+                  <th className="px-2 py-1.5 font-medium">Symbol</th>
+                  <th className="px-1.5 py-1.5 font-medium">Rating</th>
+                  <th className="px-1.5 py-1.5 font-medium">Status</th>
+                  <th className="px-1.5 py-1.5 text-right font-medium">Price</th>
+                  <th className="px-1.5 py-1.5 text-right font-medium">Upside</th>
+                  <th className="px-1.5 py-1.5 font-medium">Strategy</th>
+                  <th className="px-2 py-1.5 font-medium">Analyst</th>
+                </tr>
+              </thead>
+              <tbody>
+                {notesQuery.isLoading && (
+                  <tr>
+                    <td colSpan={7} className="px-2 py-3 text-caption">
+                      Loading notes…
+                    </td>
+                  </tr>
+                )}
+                {!notesQuery.isLoading && filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-2 py-3 text-caption">
+                      No notes match.
+                    </td>
+                  </tr>
+                )}
+                {filtered.map((n) => {
+                  const up = upsideFor(n);
+                  const cur = currentFor(n);
+                  const active = n.id === selectedId && mode.kind === "view";
+                  const linked = (n.thesis?.linkedStrategies ?? []).filter(Boolean);
+                  const analyst =
+                    n.thesis?.analystName ?? n.author_email.split("@")[0] ?? "—";
+                  return (
+                    <tr
+                      key={n.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        setSelectedId(n.id);
+                        setMode({ kind: "view" });
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedId(n.id);
+                          setMode({ kind: "view" });
+                        }
+                      }}
+                      title={`${n.symbol} · ${n.thesis?.companyName ?? ""}`}
+                      className={cn(
+                        "cursor-pointer border-b border-[hsl(var(--glass-border)/0.5)] transition-colors last:border-b-0",
+                        active
+                          ? "bg-primary/10"
+                          : "hover:bg-[hsl(var(--foreground)/0.04)]",
+                      )}
+                    >
+                      <td className="px-2 py-1 align-middle">
+                        <div className="flex min-w-0 items-baseline gap-1">
+                          <span className="truncate font-mono text-[11px] font-semibold text-primary">
+                            {n.symbol}
+                          </span>
+                          {n.thesis?.conviction && (
+                            <ConvictionBadge conviction={n.thesis.conviction} />
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-1.5 py-1 align-middle">
                         <RatingBadge rating={n.thesis?.rating} />
-                        {n.thesis?.style && (
-                          <span className="rounded border border-[hsl(var(--glass-border))] px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
-                            {n.thesis.style}
-                          </span>
+                      </td>
+                      <td className="px-1.5 py-1 align-middle">
+                        <StatusChip status={n.status} />
+                      </td>
+                      <td className="px-1.5 py-1 text-right align-middle font-mono tabular-nums">
+                        {cur != null
+                          ? moneyR(cur, 0)
+                          : quotes.isLoading
+                            ? <span className="text-muted-foreground">…</span>
+                            : <span className="text-muted-foreground">—</span>}
+                      </td>
+                      <td
+                        className={cn(
+                          "px-1.5 py-1 text-right align-middle font-mono tabular-nums",
+                          up == null
+                            ? "text-muted-foreground"
+                            : up >= 0
+                              ? "text-up"
+                              : "text-down",
                         )}
-                        {n.thesis?.conviction && <ConvictionBadge conviction={n.thesis.conviction} />}
-                      </div>
-                      <p className="truncate text-[11px] font-medium text-foreground/85">
-                        {n.thesis?.companyName ?? n.symbol}
-                      </p>
-                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <span
-                            aria-hidden
-                            className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.08)] text-[8px] font-semibold text-muted-foreground"
-                          >
-                            {initialsOf(n.thesis?.analystName ?? n.author_email)}
-                          </span>
-                          {n.thesis?.analystName ?? n.author_email.split("@")[0]}
-                        </span>
-                        {typeof n.thesis?.version === "number" && (
-                          <span>· v{n.thesis.version}</span>
-                        )}
+                      >
+                        {up == null
+                          ? quotes.isLoading
+                            ? "…"
+                            : "—"
+                          : signedPct(up)}
+                      </td>
+                      <td className="px-1.5 py-1 align-middle">
                         {linked.length > 0 ? (
                           <span
-                            className="inline-flex items-center gap-1 rounded border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.08)] px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-up"
+                            className="inline-flex max-w-full truncate rounded border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.08)] px-1 text-[9px] font-semibold uppercase tracking-wide text-up"
                             title={`In strategy: ${linked.join(", ")}`}
                           >
-                            In strategy · {linked.length}
+                            {linked.length}
                           </span>
                         ) : (
                           <span
-                            className="inline-flex items-center gap-1 rounded border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
-                            title="No strategy linkage yet — shortlist."
+                            className="text-[9px] uppercase tracking-wide text-muted-foreground/70"
+                            title="Shortlist — not yet in a strategy"
                           >
-                            Shortlist
+                            —
                           </span>
                         )}
-                      </div>
-                    </div>
-
-                    {/* right block: status + stat */}
-                    <div className="flex shrink-0 flex-col items-end justify-between gap-0.5 text-right">
-                      <StatusChip status={n.status} />
-                      <div className="space-y-0">
-                        {tgt != null && (
-                          <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">
-                            TP {moneyR(tgt, 0)}
-                          </p>
-                        )}
-                        <p
-                          className={cn(
-                            "font-mono text-xs font-semibold tabular-nums leading-tight",
-                            up == null ? "text-muted-foreground" : up >= 0 ? "text-up" : "text-down",
-                          )}
-                        >
-                          {cur != null ? moneyR(cur, 0) : quotes.isLoading ? "…" : "—"}
-                        </p>
-                        <p
-                          className={cn(
-                            "font-mono text-[10px] tabular-nums leading-tight",
-                            up == null ? "text-muted-foreground" : up >= 0 ? "text-up" : "text-down",
-                          )}
-                        >
-                          {up == null ? (quotes.isLoading ? "…" : "—") : signedPct(up)}
-                        </p>
-                      </div>
-                    </div>
-
-                    <ChevronRight className="self-center text-muted-foreground h-3.5 w-3.5 shrink-0" />
-                  </button>
-                );
-              })}
-            </div>
+                      </td>
+                      <td className="px-2 py-1 align-middle">
+                        <div className="flex min-w-0 items-center gap-1">
+                          <span
+                            aria-hidden
+                            className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.08)] text-[8px] font-semibold uppercase text-muted-foreground"
+                          >
+                            {initialsOf(analyst)}
+                          </span>
+                          <span className="truncate text-[11px] text-muted-foreground">
+                            {analyst}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        </GlassSection>
+        </section>
 
         {/* detail / editor */}
         <div>
