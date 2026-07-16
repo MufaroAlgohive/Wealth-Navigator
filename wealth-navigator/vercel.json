@@ -8,6 +8,10 @@
     {
       "path": "/api/cron/yahoo-fundamentals",
       "schedule": "0 16 * * 1-5"
+    },
+    {
+      "path": "/api/cron/iress-validation",
+      "schedule": "0 13 * * 1-5"
     }
   ]
 }
