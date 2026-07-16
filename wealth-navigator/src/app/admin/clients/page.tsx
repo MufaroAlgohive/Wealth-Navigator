@@ -55,6 +55,7 @@ export default function ClientsPage() {
   const [documentsBusy, setDocumentsBusy] = React.useState(false);
   const [packBusy, setPackBusy] = React.useState(false);
   const [computershareBusy, setComputershareBusy] = React.useState(false);
+  const [mandateBusy, setMandateBusy] = React.useState(false);
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => {
@@ -175,6 +176,25 @@ export default function ClientsPage() {
     }
   };
 
+  const openMandateDocument = async (mode: "view" | "download") => {
+    if (!detail?.mandate?.available) return;
+    setMandateBusy(true);
+    try {
+      const report = await buildMandatePdf(p, ob, detail.mandate.data);
+      if (mode === "download") report.doc.save(report.filename);
+      else {
+        const blobUrl = URL.createObjectURL(report.doc.output("blob"));
+        const opened = window.open(blobUrl, "_blank", "noopener,noreferrer");
+        if (!opened) report.doc.save(report.filename);
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not generate mandate document");
+    } finally {
+      setMandateBusy(false);
+    }
+  };
+
   const filtered = (clients ?? [])
     .filter((c) => kycFilter === "all" || c.kyc === kycFilter)
     .filter((c) => familyFilter === "all" || c.family_role === familyFilter)
@@ -271,10 +291,12 @@ export default function ClientsPage() {
 
                   <TabsContent value="mandate" className="space-y-3">
                     {!detail.mandate?.available ? <p className="rounded-xl border border-dashed border-border py-8 text-center text-xs text-muted-foreground">No captured mandate is available for this client.</p> : <>
-                      <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
-                        {Object.entries(detail.mandate.data).map(([key, value]) => <Row key={key} label={key.replaceAll("_", " ")} value={formatDetailValue(value)} />)}
-                      </dl>
-                      {detail.mandate.signed_agreement_url && <Button size="sm" variant="secondary" asChild><a href={detail.mandate.signed_agreement_url} target="_blank" rel="noreferrer">View signed agreement</a></Button>}
+                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-gradient-to-br from-primary/10 to-transparent p-3">
+                        <div><p className="text-xs font-semibold text-foreground">Client investment mandate</p><p className="text-[10px] text-muted-foreground">Captured authorisations, discretion and client acknowledgements</p></div>
+                        <div className="flex gap-2"><Button size="sm" variant="secondary" disabled={mandateBusy} onClick={()=>openMandateDocument("view")}><Eye />{mandateBusy?"Preparing…":"View mandate"}</Button><Button size="sm" disabled={mandateBusy} onClick={()=>openMandateDocument("download")}><Download />Download PDF</Button></div>
+                      </div>
+                      <MandateView data={detail.mandate.data} profile={p} />
+                      {detail.mandate.signed_agreement_url && <a href={detail.mandate.signed_agreement_url} target="_blank" rel="noreferrer" className="block text-[10px] text-primary underline underline-offset-2">Open separately stored signed agreement</a>}
                     </>}
                     {detail.onboarding_pack && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer text-xs font-semibold text-foreground">Captured onboarding pack</summary><dl className="mt-3 grid grid-cols-1 gap-px overflow-hidden rounded-lg bg-border sm:grid-cols-2">{Object.entries(detail.onboarding_pack).map(([key, value]) => <Row key={key} label={key.replaceAll("_", " ")} value={formatDetailValue(value)} />)}</dl></details>}
                   </TabsContent>
@@ -376,6 +398,52 @@ function DocumentSection({ title, items, empty }: { title: string; items: Client
 
 function safeFilename(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "document";
+}
+
+function mandateLabel(key: string) {
+  return key.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function mandateEntries(data: Record<string, unknown>) {
+  const checked = objectValue(data.checkedBoxes);
+  const details = Object.entries(data).filter(([key]) => key !== "checkedBoxes");
+  return { checked, details };
+}
+
+function MandateView({ data, profile }: { data: Record<string, unknown>; profile: Record<string, unknown> }) {
+  const { checked, details } = mandateEntries(data);
+  const fullName = `${String(profile.first_name || "")} ${String(profile.last_name || "")}`.trim() || String(profile.email || "Client");
+  const accepted = Object.entries(checked).filter(([, value]) => value === true || String(value).toLowerCase() === "true");
+  return <div className="space-y-3">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+      <MandateMetric label="Client" value={fullName} />
+      <MandateMetric label="Discretion" value={mandateLabel(String(data.discretionType || data.discretion_type || "Full discretion"))} />
+      <MandateMetric label="Acknowledgements" value={`${accepted.length} accepted`} />
+    </div>
+    {details.length > 0 && <section className="overflow-hidden rounded-xl border border-border"><div className="border-b border-border bg-muted/30 px-3 py-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Mandate instructions</div><dl className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2">{details.map(([key,value])=><Row key={key} label={mandateLabel(key)} value={formatDetailValue(value)} />)}</dl></section>}
+    <section className="overflow-hidden rounded-xl border border-border"><div className="border-b border-border bg-muted/30 px-3 py-2 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Client acknowledgements</div>{Object.keys(checked).length?<div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2">{Object.entries(checked).map(([key,value])=><div key={key} className="flex items-start gap-2 bg-card px-3 py-2"><span className={cn("mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold",value===true||String(value).toLowerCase()==="true"?"bg-success/15 text-success":"bg-muted text-muted-foreground")}>{value===true||String(value).toLowerCase()==="true"?"✓":"—"}</span><span className="text-[10px] leading-relaxed text-foreground">{mandateLabel(key)}</span></div>)}</div>:<p className="p-3 text-xs text-muted-foreground">No checkbox acknowledgements were captured.</p>}</section>
+  </div>;
+}
+
+function MandateMetric({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-lg border border-border bg-card px-3 py-2"><p className="text-[8px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p><p className="mt-1 truncate text-xs font-semibold text-foreground">{value}</p></div>;
+}
+
+async function buildMandatePdf(profile: Record<string, unknown>, onboarding: Record<string, unknown>, mandate: Record<string, unknown>) {
+  const { jsPDF } = await import("jspdf");
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const width=doc.internal.pageSize.getWidth(),height=doc.internal.pageSize.getHeight(),margin=44,content=width-margin*2;
+  const fullName=`${String(profile.first_name||"")} ${String(profile.last_name||"")}`.trim()||String(profile.email||"Client");
+  const {checked,details}=mandateEntries(mandate);let y=46;
+  const ensure=(needed:number)=>{if(y+needed>height-46){doc.addPage();y=46;}};
+  const heading=(title:string)=>{ensure(38);doc.setFillColor(38,20,74);doc.roundedRect(margin,y,content,28,4,4,"F");doc.setTextColor(255,255,255);doc.setFont("helvetica","bold");doc.setFontSize(11);doc.text(title.toUpperCase(),margin+10,y+18);doc.setTextColor(25,25,30);y+=38;};
+  const row=(label:string,value:string)=>{const valueLines=doc.splitTextToSize(value||"Not captured",content*0.62-16),h=Math.max(28,valueLines.length*12+12);ensure(h);doc.setDrawColor(220,220,228);doc.rect(margin,y,content*0.34,h);doc.rect(margin+content*0.34,y,content*0.66,h);doc.setFont("helvetica","bold");doc.setFontSize(8);doc.setTextColor(90,90,105);doc.text(label.toUpperCase(),margin+8,y+16);doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(25,25,30);doc.text(valueLines,margin+content*0.34+8,y+16);y+=h;};
+  doc.setFont("helvetica","bold");doc.setFontSize(17);doc.setTextColor(38,20,74);doc.text("DISCRETIONARY INVESTMENT MANAGEMENT MANDATE",width/2,y,{align:"center"});y+=22;doc.setFont("helvetica","normal");doc.setFontSize(8);doc.setTextColor(95,95,110);doc.text("Captured client mandate record · ALGOHIVE / MINT",width/2,y,{align:"center"});y+=30;
+  heading("Client details");row("Client",fullName);row("Email",String(profile.email||onboarding.email||"Not captured"));row("Identity number",String(profile.id_number||profile.identity_number||mandate.id_number||"Not captured"));row("MINT number",String(profile.mint_number||"Not captured"));row("Captured / signed at",String(mandate.signed_at||mandate.completed_at||onboarding.updated_at||onboarding.created_at||"Not captured"));
+  heading("Mandate authority and instructions");doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(45,45,55);const intro=doc.splitTextToSize("The client authorises ALGOHIVE to manage investments in accordance with the discretion, objectives, restrictions and acknowledgements captured below. This document is generated from the client’s stored onboarding mandate record.",content);doc.text(intro,margin,y);y+=intro.length*12+12;for(const [key,value] of details)row(mandateLabel(key),formatDetailValue(value));
+  heading("Client acknowledgements");if(!Object.keys(checked).length){row("Status","No checkbox acknowledgements were captured.");}else for(const [key,value] of Object.entries(checked))row(value===true||String(value).toLowerCase()==="true"?"Accepted":"Not accepted",mandateLabel(key));
+  ensure(75);y+=14;doc.setDrawColor(120,120,135);doc.line(margin,y,margin+190,y);doc.line(width-margin-190,y,width-margin,y);doc.setFontSize(8);doc.setTextColor(90,90,105);doc.text("Client signature / captured electronic acceptance",margin,y+13);doc.text("Authorised representative",width-margin-190,y+13);y+=35;doc.setFontSize(7);doc.text(`Generated ${new Date().toISOString()} · UID ${String(profile.id||"—")}`,margin,y);
+  return {doc,filename:`mandate-${safeFilename(fullName||String(profile.id||"client"))}.pdf`};
 }
 
 function extensionForDocument(document: ClientDocument, mimeType: string): string {
