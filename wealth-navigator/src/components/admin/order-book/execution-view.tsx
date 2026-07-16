@@ -511,10 +511,6 @@ export function ExecutionView({ bookId }: { bookId: string }) {
     [lastBySymbol],
   );
 
-  // Track which audit rows have ever received an SSE delta so we can show
-  // a "LIVE" badge next to them.
-  const liveIds = React.useMemo(() => new Set(Object.keys(liveOverrides)), [liveOverrides]);
-
   // 2026-07-15: group rows by `order_id` (the IRESS OrderNumber). The
   // ExecutionView shows audit rows from two producers — the BFF-seeded
   // UAT row (stamped BEFORE the worker call, status="pending_ack") and
@@ -880,31 +876,24 @@ export function ExecutionView({ bookId }: { bookId: string }) {
       )}
 
       <div className="w-full overflow-x-auto">
-        <table className="w-full min-w-[1180px] border-collapse">
+        <table className="w-full min-w-[960px] border-collapse">
           <thead>
             <tr className="border-b border-border bg-card/60 text-left">
               {[
                 "",
                 "Order ID",
                 "Timestamp",
-                "Strategy",
                 "Side",
                 "Symbol",
                 "Qty",
                 "Order Value",
                 "% Filled",
-                "Remaining",
                 "Limit",
                 "Avg Price",
                 "Last",
-                "VWAP",
                 "Slip / Day-1 P&L",
-                "Venue",
                 "TIF",
-                "Sent by",
                 "State",
-                "Action",
-                "Tracking",
                 "Actions",
               ].map((h) => (
                 <th
@@ -919,13 +908,13 @@ export function ExecutionView({ bookId }: { bookId: string }) {
           <tbody>
             {showLoading ? (
               <tr>
-                <td colSpan={22} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={15} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   Loading executions…
                 </td>
               </tr>
             ) : groupedRows.length === 0 ? (
               <tr>
-                <td colSpan={22} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
+                <td colSpan={15} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   No execution rows for this book yet — click <em>Send to Market</em> to dispatch.
                 </td>
               </tr>
@@ -943,7 +932,6 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                   liveSlipCents == null
                     ? "—"
                     : `${liveSlipCents > 0 ? "+" : ""}${(liveSlipCents / 100).toFixed(2)}`;
-                const tracked = liveIds.has(r.id);
                 const groupKey = (r.order_id || r.id || "").trim();
                 const isExpanded = !!expanded[groupKey];
                 const toggle = () =>
@@ -994,9 +982,6 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
                       {fmtTs(r.ts)}
                     </td>
-                    <td className="px-3 py-1.5 text-[11px] text-foreground whitespace-nowrap">
-                      {r.strategy ?? "—"}
-                    </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
                       <Badge variant={r.side === "SELL" ? "destructive" : "success"}>{r.side}</Badge>
                     </td>
@@ -1020,9 +1005,6 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       {fmtPct(r.filled_pct)}
-                    </td>
-                    <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
-                      {fmtQty(Math.max(0, r.qty - r.filled))}
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       <div className="flex flex-col items-start gap-0.5">
@@ -1052,9 +1034,6 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
                     </td>
-                    <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
-                      {fmtMoney(r.vwap)}
-                    </td>
                     <td
                       className={cn(
                         "px-3 py-1.5 text-[12px] font-semibold whitespace-nowrap",
@@ -1064,13 +1043,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       {slipDisplay}
                     </td>
                     <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
-                      {r.venue}
-                    </td>
-                    <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
                       {r.tif}
-                    </td>
-                    <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
-                      {r.sent_by ?? "—"}
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
                       <div className="flex flex-col items-start gap-0.5">
@@ -1138,69 +1111,6 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                         ) : null}
                       </div>
                     </td>
-                    <td
-                      className="px-3 py-1.5 text-[11px] text-foreground whitespace-nowrap"
-                      title={
-                        r.action_status || r.last_action
-                          ? [
-                              r.action_status ? `Hermes ActionStatus: ${r.action_status}` : null,
-                              r.internal_order_status
-                                ? `Hermes InternalOrderStatus: ${r.internal_order_status}`
-                                : null,
-                              r.last_action ? `Last action: ${r.last_action}` : null,
-                              r.last_action_at
-                                ? `@ ${fmtTs(r.last_action_at)}`
-                                : null,
-                              r.iress_error_description
-                                ? `IRESS error: ${r.iress_error_description}`
-                                : null,
-                            ]
-                              .filter(Boolean)
-                              .join("\n")
-                          : "—"
-                      }
-                    >
-                      {r.iress_error_number != null ? (
-                        <div className="flex flex-col gap-0.5">
-                          <Badge variant="destructive" className="text-[9px]">
-                            IRESS {r.iress_error_number}
-                          </Badge>
-                          {r.iress_error_description ? (
-                            <span className="text-[10px] text-destructive/90 line-clamp-1 max-w-[160px]">
-                              {r.iress_error_description}
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : r.action_status || r.last_action ? (
-                        <div className="flex flex-col gap-0.5">
-                          {r.action_status ? (
-                            <span className="text-[11px] font-medium text-foreground">
-                              {r.action_status}
-                            </span>
-                          ) : null}
-                          {r.last_action ? (
-                            <span className="text-[10px] text-muted-foreground line-clamp-1 max-w-[160px]">
-                              {r.last_action}
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">
-                      {tracked ? (
-                        <span
-                          className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-success"
-                          title={`Last fill ${r.ts ? timeSince(r.ts) : "—"}`}
-                        >
-                          <Radio className="h-2.5 w-2.5 animate-pulse" />
-                          live
-                        </span>
-                      ) : (
-                        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
-                      )}
-                    </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
                       {isCancellable(r.state) ? (
                         <div className="flex flex-col gap-1">
@@ -1263,7 +1173,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       key={`${groupKey}-lifecycle`}
                       className="border-b border-border/40 bg-accent/10"
                     >
-                      <td colSpan={22} className="px-3 py-2">
+                      <td colSpan={15} className="px-3 py-2">
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center gap-2">
                             <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1349,7 +1259,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                   ) : null}
                   {amendOpen[r.id] ? (
                     <tr key={`${r.id}-amend`} className="border-b border-border/40 bg-muted/30">
-                      <td colSpan={22} className="px-3 py-2">
+                      <td colSpan={15} className="px-3 py-2">
                         <div className="flex flex-col gap-1">
                           <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                             Amend order {r.order_id} — OrderAmend2 via worker
