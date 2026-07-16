@@ -3,105 +3,61 @@ import { NextResponse } from "next/server";
 import { getAdminContext, isAdminRole } from "@/lib/admin/rbac";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
-/**
- * Client View Studio. Ports `/api/studio-config` + the client/portfolio reads
- * studio.html did directly against Supabase. Impersonation (`/api/team?action=
- * impersonate`) is a Supabase auth-admin generateLink → DEFERRED (auth bucket).
- * Studio is admin-only.
- */
-
+/** Admin-only Client View Studio. Every monetary response is ZAR, not cents. */
 export const dynamic = "force-dynamic";
 
-export async function GET(req: Request) {
-  const auth = await getAdminContext();
-  if (auth.status === "no-session") return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
-  if (auth.status !== "ok" || !isAdminRole(auth.ctx)) return NextResponse.json({ ok: false, error: "Admins only" }, { status: 403 });
-
-  const url = new URL(req.url);
-  const action = url.searchParams.get("action") || "config";
-
-  if (action === "config") {
-    return NextResponse.json({
-      ok: true,
-      dev: process.env.MINT_APP_URL_DEV || "",
-      live: process.env.MINT_APP_URL_LIVE || "",
-    });
-  }
-
-  let db;
-  try {
-    db = createRetailServiceRoleClient();
-  } catch {
-    return NextResponse.json({ ok: true, clients: [], notice: "RETAIL database not configured." });
-  }
-
-  if (action === "clients") {
-    const scope = url.searchParams.get("scope") === "all" ? "all" : "invested";
-    if (scope === "all") {
-      const { data } = await db.from("profiles").select("id, first_name, last_name, email, mint_number").order("created_at", { ascending: false }).limit(1000);
-      return NextResponse.json({ ok: true, clients: (data ?? []).map((p) => ({ id: p.id, name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email, email: p.email, strategy: null })) });
-    }
-    // invested: distinct holders + a strategy label
-    const { data: holds } = await db.from("stock_holdings_c").select("user_id, strategy_name_snapshot").eq("is_active", true).limit(5000);
-    const stratByUser: Record<string, string> = {};
-    const ids = new Set<string>();
-    for (const h of holds ?? []) {
-      if (!h.user_id) continue;
-      ids.add(h.user_id as string);
-      if (!stratByUser[h.user_id as string] && h.strategy_name_snapshot) stratByUser[h.user_id as string] = h.strategy_name_snapshot as string;
-    }
-    if (ids.size === 0) return NextResponse.json({ ok: true, clients: [] });
-    const { data: profiles } = await db.from("profiles").select("id, first_name, last_name, email, mint_number").in("id", [...ids]);
-    const clients = (profiles ?? []).map((p) => ({ id: p.id, name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email, email: p.email, strategy: stratByUser[p.id as string] ?? null }));
-    return NextResponse.json({ ok: true, clients });
-  }
-
-  if (action === "portfolio") {
-    const userId = url.searchParams.get("user_id") || "";
-    if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
-    const { data: holds } = await db
-      .from("stock_holdings_c")
-      .select("id, security_id, quantity, avg_fill, Expected_fill, market_value, strategy_id, strategy_name_snapshot")
-      .eq("user_id", userId)
-      .eq("is_active", true);
-    const secIds = [...new Set((holds ?? []).map((h) => h.security_id).filter(Boolean))];
-    const secMap: Record<string, { symbol: string; name: string | null; logo_url: string | null; last_price: number | null }> = {};
-    if (secIds.length) {
-      const { data: secs } = await db.from("securities_c").select("id, symbol, name, logo_url, last_price").in("id", secIds);
-      for (const s of secs ?? []) secMap[s.id as string] = s as never;
-    }
-    const holdings = (holds ?? []).map((h) => {
-      const sec = secMap[h.security_id as string];
-      const qty = Number(h.quantity || 0);
-      const expected = Number(h.Expected_fill || 0);
-      const avg = Number(h.avg_fill || 0);
-      const cost = expected > 0 && !(avg > 0 && expected > avg * 5) ? expected : avg || expected;
-      const live = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) : cost;
-      const marketValue = qty * live;
-      const costTotal = qty * cost;
-      return {
-        id: h.id, symbol: sec?.symbol ?? "—", name: sec?.name ?? sec?.symbol ?? "—", logo_url: sec?.logo_url ?? null,
-        quantity: qty, cost, live, marketValue, pnl: marketValue - costTotal, strategy: h.strategy_name_snapshot ?? null,
-      };
-    });
-    const totalValue = holdings.reduce((s, h) => s + h.marketValue, 0);
-    const totalPnl = holdings.reduce((s, h) => s + h.pnl, 0);
-    const invested = totalValue - totalPnl;
-    const { data: txns } = await db.from("transactions").select("id, name, description, amount, direction, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(6);
-    const strategies = [...new Set(holdings.map((h) => h.strategy).filter(Boolean))];
-    return NextResponse.json({
-      ok: true,
-      holdings: holdings.sort((a, b) => b.marketValue - a.marketValue),
-      transactions: txns ?? [],
-      totalValue, totalPnl, pnlPct: invested > 0 ? (totalPnl / invested) * 100 : 0,
-      strategyCount: strategies.length,
-    });
-  }
-
-  return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
+async function requireAdmin() {
+  const auth=await getAdminContext();
+  if(auth.status==="no-session")return {error:NextResponse.json({ok:false,error:"no-session"},{status:401})};
+  if(auth.status!=="ok"||!isAdminRole(auth.ctx))return {error:NextResponse.json({ok:false,error:"Admins only"},{status:403})};
+  return {auth};
 }
 
-export async function POST() {
-  // impersonate → Supabase auth-admin generateLink. Deferred to the auth/backend phase.
-  return NextResponse.json({ ok: false, error: "Client impersonation (auth sign-in link) is deferred to the auth/backend phase.", deferred: true }, { status: 501 });
+export async function GET(req:Request) {
+  const access=await requireAdmin();if("error" in access)return access.error;
+  const url=new URL(req.url),action=url.searchParams.get("action")||"config";
+  if(action==="config")return NextResponse.json({ok:true,dev:process.env.MINT_APP_URL_DEV||"",live:process.env.MINT_APP_URL_LIVE||""});
+  let db;try{db=createRetailServiceRoleClient()}catch{return NextResponse.json({ok:false,error:"RETAIL database not configured"},{status:503})}
+
+  if(action==="clients"){
+    const scope=url.searchParams.get("scope")==="all"?"all":"invested";
+    if(scope==="all"){
+      const {data,error}=await db.from("profiles").select("id,first_name,last_name,email,mint_number,is_test").order("first_name").limit(5000);
+      if(error)return NextResponse.json({ok:false,error:error.message},{status:500});
+      return NextResponse.json({ok:true,clients:(data??[]).map(p=>({id:p.id,name:`${p.first_name||""} ${p.last_name||""}`.trim()||p.email,email:p.email,strategy:null,isTest:p.is_test===true}))});
+    }
+    const {data:holds,error}=await db.from("stock_holdings_c").select("user_id,strategy_id,strategy_name_snapshot").eq("is_active",true).eq("trade_side","BUY").limit(10000);
+    if(error)return NextResponse.json({ok:false,error:error.message},{status:500});
+    const ids=[...new Set((holds??[]).map(h=>String(h.user_id||"")).filter(Boolean))];if(!ids.length)return NextResponse.json({ok:true,clients:[]});
+    const strategyByUser=new Map<string,Set<string>>();for(const h of holds??[]){const id=String(h.user_id||"");if(!id)continue;const set=strategyByUser.get(id)??new Set<string>();if(h.strategy_name_snapshot)set.add(String(h.strategy_name_snapshot));strategyByUser.set(id,set)}
+    const {data:profiles,error:profileError}=await db.from("profiles").select("id,first_name,last_name,email,mint_number,is_test").in("id",ids);
+    if(profileError)return NextResponse.json({ok:false,error:profileError.message},{status:500});
+    const clients=(profiles??[]).map(p=>({id:p.id,name:`${p.first_name||""} ${p.last_name||""}`.trim()||p.email,email:p.email,strategy:[...(strategyByUser.get(String(p.id))??[])].join(", ")||null,isTest:p.is_test===true})).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+    return NextResponse.json({ok:true,clients});
+  }
+
+  if(action==="portfolio"){
+    const userId=url.searchParams.get("user_id")||"";if(!userId)return NextResponse.json({ok:false,error:"user_id required"},{status:400});
+    const {data:holds,error}=await db.from("stock_holdings_c").select("id,security_id,quantity,avg_fill,Expected_fill,strategy_id,strategy_name_snapshot,transaction_id").eq("user_id",userId).eq("is_active",true).eq("trade_side","BUY");
+    if(error)return NextResponse.json({ok:false,error:error.message},{status:500});
+    const secIds=[...new Set((holds??[]).map(h=>h.security_id).filter(Boolean))],secMap:Record<string,{symbol:string;name:string|null;logo_url:string|null;last_price:number|null}>={},intradayMap=new Map<string,number>();
+    if(secIds.length){const [{data:securities},{data:intraday}]=await Promise.all([db.from("securities_c").select("id,symbol,name,logo_url,last_price").in("id",secIds),db.from("stock_intraday_c").select("security_id,current_price,timestamp").in("security_id",secIds).order("timestamp",{ascending:false}).limit(5000)]);for(const security of securities??[])secMap[String(security.id)]=security as never;for(const row of intraday??[]){const id=String(row.security_id);if(!intradayMap.has(id)&&Number(row.current_price)>0)intradayMap.set(id,Number(row.current_price)/100)}}
+    const holdings=(holds??[]).map(h=>{const security=secMap[String(h.security_id)],quantity=Number(h.quantity)||0,avgRands=(Number(h.avg_fill)||0)/100,expected=Number(h.Expected_fill)||0,lastPrice=Number(security?.last_price)||0,cost=expected>0?(avgRands>0&&expected>avgRands*5?expected/100:expected):avgRands,live=intradayMap.get(String(h.security_id))??(lastPrice>0?lastPrice/100:cost),marketValue=quantity*live,costTotal=quantity*cost;return{id:h.id,symbol:security?.symbol??"—",name:security?.name??security?.symbol??"—",logo_url:security?.logo_url??null,quantity,cost,live,marketValue,pnl:marketValue-costTotal,pnlPct:costTotal>0?((marketValue-costTotal)/costTotal)*100:0,pending:!(Number(h.avg_fill)>0),strategyId:h.strategy_id,strategy:h.strategy_name_snapshot??null}}).sort((a,b)=>b.marketValue-a.marketValue);
+    const totalValue=holdings.reduce((sum,h)=>sum+h.marketValue,0),totalPnl=holdings.reduce((sum,h)=>sum+h.pnl,0),invested=totalValue-totalPnl;
+    const {data:transactions}=await db.from("transactions").select("id,name,description,amount,direction,status,transaction_date,created_at").eq("user_id",userId).order("created_at",{ascending:false}).limit(6);
+    const strategyMap=new Map<string,{id:string;name:string;value:number;holdings:number}>();for(const h of holdings){if(!h.strategyId)continue;const id=String(h.strategyId),item=strategyMap.get(id)??{id,name:String(h.strategy||"Strategy"),value:0,holdings:0};if(!h.pending)item.value+=h.marketValue;item.holdings+=1;strategyMap.set(id,item)}
+    return NextResponse.json({ok:true,holdings,transactions:(transactions??[]).map(t=>({...t,amount:(Number(t.amount)||0)/100})),totalValue,totalPnl,pnlPct:invested>0?(totalPnl/invested)*100:0,strategyCount:strategyMap.size,strategies:[...strategyMap.values()],units:{money:"ZAR",sourcePrices:"ZAc normalized once on server"}});
+  }
+  return NextResponse.json({ok:false,error:`Unknown action: ${action}`},{status:400});
+}
+
+export async function POST(req:Request) {
+  const access=await requireAdmin();if("error" in access)return access.error;
+  let body:Record<string,unknown>;try{body=await req.json()}catch{return NextResponse.json({ok:false,error:"Invalid JSON"},{status:400})}
+  const userId=String(body.user_id||""),target=body.target==="live"?"live":"dev";if(!userId)return NextResponse.json({ok:false,error:"user_id required"},{status:400});
+  const targetUrl=target==="live"?process.env.MINT_APP_URL_LIVE:process.env.MINT_APP_URL_DEV;if(!targetUrl)return NextResponse.json({ok:false,error:`MINT_APP_URL_${target.toUpperCase()} is not configured`},{status:503});
+  let db;try{db=createRetailServiceRoleClient()}catch{return NextResponse.json({ok:false,error:"RETAIL database not configured"},{status:503})}
+  const {data:profile,error:profileError}=await db.from("profiles").select("id,email,first_name,last_name").eq("id",userId).maybeSingle();if(profileError||!profile?.email)return NextResponse.json({ok:false,error:profileError?.message||"Client email not found"},{status:404});
+  const {data,error}=await db.auth.admin.generateLink({type:"magiclink",email:profile.email,options:{redirectTo:targetUrl}});const actionLink=(data as {properties?:{action_link?:string}}|null)?.properties?.action_link??null;if(error||!actionLink)return NextResponse.json({ok:false,error:error?.message||"Could not generate client sign-in link"},{status:500});
+  return NextResponse.json({ok:true,actionLink,target,client:{id:profile.id,name:`${profile.first_name||""} ${profile.last_name||""}`.trim(),email:profile.email}});
 }
