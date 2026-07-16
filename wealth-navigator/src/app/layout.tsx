@@ -8,6 +8,7 @@ import { TickStreamProvider } from "@/lib/store/tick-stream-provider";
 import { QueryProvider } from "@/lib/store/query-provider";
 import { cn } from "@/lib/cn";
 import "./globals.css";
+import "x-data-spreadsheet/dist/xspreadsheet.css";
 
 const inter = Inter({
   subsets: ["latin"],

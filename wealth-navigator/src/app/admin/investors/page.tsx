@@ -336,18 +336,54 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
 }
 
 function InvestorSpreadsheet({ investor }: { investor: Investor }) {
-  const seed = React.useMemo(() => investor.holdings.map((h) => ({ ...h })), [investor.key]);
-  const [rows, setRows] = React.useState(seed);
-  React.useEffect(() => setRows(seed), [seed]);
-  const edit = (id: string, field: "qty" | "costCents" | "priceCents", value: string) => setRows((current) => current.map((row) => row.securityId === id ? { ...row, [field]: Math.max(0, Number(value) || 0) } : row));
-  const download = () => {
-    const table = [["Symbol","Security","Quantity","Average Fill (ZAR)","Market Price (ZAR)","Invested (ZAR)","Market Value (ZAR)","P&L (ZAR)","Return (%)"],...rows.map((h)=>{const invested=h.qty*h.costCents/100,value=h.qty*h.priceCents/100,pnl=value-invested;return[h.symbol,h.name,h.qty,h.costCents/100,h.priceCents/100,invested,value,pnl,invested?pnl/invested*100:0]})];
-    const csv=table.map((line)=>line.map((cell)=>`"${String(cell).replaceAll('"','""')}"`).join(',')).join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=`${investor.name}-${investor.strategy||'single-securities'}`.replace(/[^a-z0-9]+/gi,'-')+'.csv';a.click();URL.revokeObjectURL(url);
+  const host = React.useRef<HTMLDivElement>(null);
+  const instance = React.useRef<import("x-data-spreadsheet").default | null>(null);
+  const saved = React.useRef<Record<string, unknown>[] | null>(null);
+  const [full, setFull] = React.useState(false);
+  const seed = React.useMemo(() => spreadsheetGridData(investor), [investor.key]);
+
+  const mount = React.useCallback(async (data?: Record<string, unknown>[]) => {
+    if (!host.current) return;
+    host.current.innerHTML = "";
+    await import("x-data-spreadsheet/dist/xspreadsheet.js");
+    const sheet = window.x_spreadsheet(host.current, {
+      mode: "edit", showToolbar: true, showGrid: true, showContextmenu: true,
+      view: { height: () => full ? Math.max(500, window.innerHeight - 190) : 500, width: () => host.current?.clientWidth || 820 },
+      row: { len: 100, height: 25 }, col: { len: 26, width: 100, indexWidth: 45, minWidth: 60 },
+    });
+    instance.current = sheet.loadData((data || seed) as unknown as Record<string, unknown>);
+    attachSpreadsheetScrollDamping(host.current);
+  }, [full, seed]);
+
+  React.useEffect(() => { const timer=window.setTimeout(()=>void mount(saved.current || seed),80);return()=>window.clearTimeout(timer); }, [mount, seed]);
+  React.useEffect(() => { const escape=(event:KeyboardEvent)=>{if(event.key==="Escape"&&full){saved.current=instance.current?.getData() as Record<string,unknown>[];setFull(false);}};document.addEventListener("keydown",escape);return()=>document.removeEventListener("keydown",escape);},[full]);
+  const reset = () => { saved.current=seed;void mount(seed); };
+  const toggleFull = () => { saved.current=instance.current?.getData() as Record<string,unknown>[];setFull(value=>!value); };
+  const download = async () => {
+    const XLSX=await import("xlsx"),headers=['Symbol','Name','Quantity','Avg Fill','Total Avg Fill','Market Value','Total P&L','Total P&L %','Total Value w/ P&L'];
+    const aoa:(string|number|null)[][]=[headers,...investor.holdings.map(h=>[h.symbol,h.name,h.qty,h.costCents/100,null,null,null,null,null]),['Total','',null,null,null,null,null,null,null]];
+    const ws=XLSX.utils.aoa_to_sheet(aoa),first=2,last=investor.holdings.length+1,total=last+1;
+    investor.holdings.forEach((h,index)=>{const row=index+2,market=h.qty*h.priceCents/100,cost=h.qty*h.costCents/100;ws[`F${row}`]={t:'n',v:market};ws[`E${row}`]={t:'n',f:`C${row}*D${row}`,v:cost};ws[`G${row}`]={t:'n',f:`F${row}-E${row}`,v:market-cost};ws[`H${row}`]={t:'n',f:`IFERROR(G${row}/E${row},0)*100`,v:cost?(market-cost)/cost*100:0,z:'0.00"%"'};ws[`I${row}`]={t:'n',f:`E${row}+G${row}`,v:market};for(const col of['D','E','F','G','I'])if(ws[`${col}${row}`])ws[`${col}${row}`]!.z='"R"#,##0.00';});
+    ws[`A${total}`]={t:'s',v:'Total'};ws[`E${total}`]={t:'n',f:`SUM(E${first}:E${last})`,z:'"R"#,##0.00'};ws[`F${total}`]={t:'n',f:`SUM(F${first}:F${last})`,z:'"R"#,##0.00'};ws[`G${total}`]={t:'n',f:`F${total}-E${total}`,z:'"R"#,##0.00'};ws[`H${total}`]={t:'n',f:`IFERROR(G${total}/E${total},0)*100`,z:'0.00"%"'};ws[`I${total}`]={t:'n',f:`E${total}+G${total}`,z:'"R"#,##0.00'};ws['!cols']=[{wch:10},{wch:26},{wch:10},{wch:12},{wch:14},{wch:14},{wch:12},{wch:13},{wch:16}];
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Portfolio');XLSX.writeFile(wb,`${investor.name}-${investor.strategy||'direct-securities'}-${new Date().toISOString().slice(0,10)}`.replace(/[^a-z0-9.-]+/gi,'-')+'.xlsx');
   };
-  return <div className="overflow-hidden rounded-xl border border-border">
-    <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/20 px-3 py-2"><div><div className="text-xs font-semibold">{investor.strategy || "Single securities"} spreadsheet</div><div className="text-[9px] text-muted-foreground">Only this selected basket is included. Edit inputs to preview calculations.</div></div><div className="flex gap-1"><button type="button" onClick={()=>setRows(seed)} className="inline-flex h-7 items-center gap-1 rounded-md border border-border px-2 text-[9px]"><RotateCcw className="h-3 w-3"/>Reset</button><button type="button" onClick={download} className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2 text-[9px] text-primary-foreground"><Download className="h-3 w-3"/>Download</button></div></div>
-    <div className="overflow-x-auto"><table className="w-full min-w-[850px] border-collapse text-[10px]"><thead><tr className="border-b border-border bg-muted/30">{["Security","Qty","Avg fill","Market price","Invested","Market value","P&L","Return"].map(c=><th key={c} className="px-2 py-2 text-right first:text-left">{c}</th>)}</tr></thead><tbody>{rows.map(h=>{const invested=h.qty*h.costCents,value=h.qty*h.priceCents,pnl=value-invested,ret=invested?pnl/invested*100:0;return <tr key={h.securityId} className="border-b border-border/40"><td className="px-2 py-2"><b>{h.symbol}</b><span className="ml-1 text-muted-foreground">{h.name}</span></td>{(["qty","costCents","priceCents"] as const).map(field=><td key={field} className="p-1 text-right"><input type="number" step="any" value={field==='qty'?h[field]:h[field]/100} onChange={e=>edit(h.securityId,field,field==='qty'?e.target.value:String((Number(e.target.value)||0)*100))} className="h-7 w-24 rounded border border-border bg-background px-1.5 text-right font-mono"/></td>)}<td className="px-2 text-right font-mono">{R(invested)}</td><td className="px-2 text-right font-mono">{R(value)}</td><td className={cn("px-2 text-right font-mono",pctCls(pnl))}>{R(pnl)}</td><td className={cn("px-2 text-right font-mono",pctCls(ret))}>{pctStr(ret)}</td></tr>})}</tbody></table></div>
+  return <div className={cn(full&&"fixed inset-4 z-[100] flex flex-col rounded-xl border border-border bg-background p-3 shadow-2xl")}>
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Portfolio Spreadsheet — {investor.name}{investor.strategy?` · ${investor.strategy}`:''}</div><div className="mt-1 max-w-3xl text-[9px] leading-relaxed text-muted-foreground"><b>{investor.strategy || 'Direct securities'} only</b> — fully editable and seeded from live holdings. Formula columns recalculate when Quantity or Avg Fill changes.</div></div><div className="flex gap-1.5"><button type="button" onClick={reset} className="inline-flex h-7 items-center gap-1 rounded-md bg-muted px-2 text-[9px] font-semibold"><RotateCcw className="h-3 w-3"/>Reset from live data</button><button type="button" onClick={()=>void download()} className="inline-flex h-7 items-center gap-1 rounded-md bg-emerald-700 px-2 text-[9px] font-semibold text-white"><Download className="h-3 w-3"/>Download .xlsx</button><button type="button" onClick={toggleFull} className="h-7 rounded-md bg-slate-800 px-2 text-[9px] font-semibold text-white">{full?'× Exit full screen':'✥ Full screen'}</button></div></div>
+    <div ref={host} className={cn("min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-white text-slate-900",!full&&"h-[500px]")} />
   </div>;
+}
+
+function spreadsheetGridData(investor: Investor): Record<string, unknown>[] {
+  const headers=['Symbol','Name','Quantity','Avg Fill','Total Avg Fill','Market Value','Total P&L','Total P&L %','Total Value w/ P&L'];
+  const cells=(values:(string|number)[])=>Object.fromEntries(values.map((text,index)=>[index,{text:String(text)}]));
+  const rows:Record<string,unknown>={0:{cells:Object.fromEntries(Object.entries(cells(headers)).map(([key,cell])=>[key,{...(cell as object),style:0}]))}};
+  investor.holdings.forEach((h,index)=>{const grid=index+1,excel=grid+1;rows[grid]={cells:{0:{text:h.symbol},1:{text:h.name},2:{text:String(h.qty)},3:{text:String(h.costCents/100)},4:{text:`=C${excel}*D${excel}`},5:{text:String(h.qty*h.priceCents/100)},6:{text:`=F${excel}-E${excel}`},7:{text:`=G${excel}/E${excel}*100`},8:{text:`=E${excel}+G${excel}`}}};});
+  const total=investor.holdings.length+1,first=2,last=investor.holdings.length+1;rows[total]={cells:{0:{text:'Total',style:1},4:{text:`=SUM(E${first}:E${last})`,style:1},5:{text:`=SUM(F${first}:F${last})`,style:1},6:{text:`=F${total+1}-E${total+1}`,style:1},7:{text:`=G${total+1}/E${total+1}*100`,style:1},8:{text:`=E${total+1}+G${total+1}`,style:1}}};rows.len=Math.max(100,total+20);
+  return [{name:'Portfolio',freeze:'A1',styles:[{font:{bold:true},bgcolor:'#f1f5f9',color:'#334155'},{font:{bold:true},bgcolor:'#f8fafc'}],merges:[],rows,cols:{len:26,0:{width:90},1:{width:170},4:{width:110},5:{width:110},6:{width:100},7:{width:100},8:{width:140}}}];
+}
+
+function attachSpreadsheetScrollDamping(element: HTMLElement) {
+  if (element.dataset.scrollDamped) return;element.dataset.scrollDamped='true';let lastV=0,lastH=0;element.addEventListener('wheel',(event)=>{const horizontal=Math.abs(event.deltaX)>Math.abs(event.deltaY),now=Date.now();if(horizontal){if(now-lastH<220){event.stopPropagation();event.preventDefault();return}lastH=now}else{if(now-lastV<70){event.stopPropagation();event.preventDefault();return}lastV=now}},{capture:true,passive:false});
 }
 
 function HoldingsTable({ holdings, total, top }: { holdings: HoldingView[]; total: number; top?: number }) {
