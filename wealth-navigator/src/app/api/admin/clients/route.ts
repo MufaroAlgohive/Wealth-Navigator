@@ -182,15 +182,23 @@ export async function GET(req: Request) {
       if (!member) return NextResponse.json({ ok: false, error: "Family member not found" }, { status: 404 });
       const secIds = [...new Set((holds ?? []).map((holding) => holding.security_id).filter(Boolean))];
       const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
+      const intradayMap = new Map<string, number>();
       if (secIds.length) {
-        const { data: securities } = await db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds);
+        const [{ data: securities }, { data: intraday }] = await Promise.all([
+          db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds),
+          db.from("stock_intraday_c").select("security_id,current_price,timestamp").in("security_id", secIds).order("timestamp", { ascending: false }).limit(5000),
+        ]);
         for (const security of securities ?? []) secMap[security.id as string] = security as never;
+        for (const quote of intraday ?? []) {
+          const securityId = String(quote.security_id);
+          if (!intradayMap.has(securityId) && Number(quote.current_price) > 0) intradayMap.set(securityId, Number(quote.current_price));
+        }
       }
       const holdings = (holds ?? []).map((holding) => {
         const security = secMap[holding.security_id as string];
         const qty = Number(holding.quantity) || 0;
         const costCents = costCentsPerShare(holding);
-        const priceCents = Number(security?.last_price) > 0 ? Number(security?.last_price) : costCents;
+        const priceCents = intradayMap.get(String(holding.security_id)) ?? (Number(security?.last_price) > 0 ? Number(security?.last_price) : costCents);
         const valueCents = qty * priceCents;
         const purchaseValueCents = qty * costCents;
         return { symbol: security?.symbol ?? "—", name: security?.name ?? "—", qty, valueCents, purchaseValueCents, pnlCents: valueCents - purchaseValueCents, strategy: holding.strategy_name_snapshot ?? null };
@@ -235,16 +243,25 @@ export async function GET(req: Request) {
 
     const secIds = [...new Set((holds ?? []).map((h) => h.security_id).filter(Boolean))];
     const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
+    const intradayMap = new Map<string, number>();
     if (secIds.length) {
-      const { data: secs } = await db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds);
+      const [{ data: secs }, { data: intraday }] = await Promise.all([
+        db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds),
+        db.from("stock_intraday_c").select("security_id,current_price,timestamp").in("security_id", secIds).order("timestamp", { ascending: false }).limit(5000),
+      ]);
       for (const s of secs ?? []) secMap[s.id as string] = s as never;
+      for (const quote of intraday ?? []) {
+        const securityId = String(quote.security_id);
+        if (!intradayMap.has(securityId) && Number(quote.current_price) > 0) intradayMap.set(securityId, Number(quote.current_price));
+      }
     }
     const holdings = (holds ?? []).map((h) => {
       const sec = secMap[h.security_id as string];
       const qty = Number(h.quantity) || 0;
       const costCents = costCentsPerShare(h);
       // securities_c.last_price is INTEGER CENTS (ZAc) -> divide by 100 for Rands.
-      const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) / 100 : costCents / 100;
+      const priceCents = intradayMap.get(String(h.security_id)) ?? (sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) : costCents);
+      const liveRands = priceCents / 100;
       const valueCents = qty * Math.round(liveRands * 100);
       const investedCents = qty * costCents;
       return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };
