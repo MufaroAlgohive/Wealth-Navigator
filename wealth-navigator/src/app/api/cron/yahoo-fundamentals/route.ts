@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext, isAdminRole } from "@/lib/admin/rbac";
-import { createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { loadApprovedIressSymbols } from "@/lib/iress/approved-symbols";
+import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * THIN Yahoo bridge — the only remaining Yahoo use after the Iress cutover.
@@ -82,8 +83,21 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
   }
 
-  const { data: securities, error } = await db.from("securities_c").select("id, symbol").eq("is_active", true).limit(500);
+  const { data: securities, error } = await db.from("securities_c").select("id, symbol, updated_at").eq("is_active", true).limit(500);
   if (error) return NextResponse.json({ ok: false, error: error.message });
+
+  // Symbols cut over to IRESS (approved + backend-validated): Yahoo must NOT
+  // overwrite their price/tick — the worker owns them. EXCEPTION (stale
+  // fallback): if the IRESS value has gone cold (worker down) beyond
+  // IRESS_STALE_FALLBACK_HOURS, Yahoo writes it so client valuations never
+  // freeze. Fail-closed: empty set -> Yahoo owns everything (current behaviour).
+  let approvedIress = new Set<string>();
+  try {
+    approvedIress = await loadApprovedIressSymbols(createInstitutionalServiceRoleClient());
+  } catch {
+    /* fail-closed */
+  }
+  const staleFallbackMs = (Number(process.env.IRESS_STALE_FALLBACK_HOURS) || 3) * 3_600_000;
 
   const session = await yahooCrumb();
   if (!session) return NextResponse.json({ ok: false, error: "Could not establish a Yahoo session (cookie/crumb)" }, { status: 502 });
@@ -132,10 +146,18 @@ export async function GET(req: Request) {
       // accurate. JSE Yahoo quotes are in ZAc (cents) and securities_c.last_price
       // is cents, so regularMarketPrice is stored directly. In production the
       // IRESS worker owns these fields, so we leave them untouched there.
+      // Does Yahoo own this symbol's price this cycle? Yes unless IRESS has been
+      // approved+validated AND its last write is still fresh (not stale).
+      const bareSym = sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
+      const iressOwns = approvedIress.has(bareSym);
+      const secUpdatedMs = sec.updated_at ? new Date(sec.updated_at as string).getTime() : 0;
+      const iressStale = !secUpdatedMs || Date.now() - secUpdatedMs > staleFallbackMs;
+      const yahooOwnsPrice = !iressOwns || iressStale;
+
       let tickRow:
         | { security_id: string; symbol: string; current_price: number; "1d_pct": number | null; "1d_abs": number | null; timestamp: string }
         | null = null;
-      if (process.env.IRESS_PRICE_OVERLAY === "0") {
+      if (process.env.IRESS_PRICE_OVERLAY === "0" && yahooOwnsPrice) {
         const px = res.price?.regularMarketPrice?.raw;
         const chg = res.price?.regularMarketChangePercent?.raw;
         if (px != null && px > 0) {

@@ -27,7 +27,9 @@
  */
 import { fetchLiveQuote, normaliseSymbol } from "./quotes";
 import { chooseDisplayCents } from "./scale";
+import { iressOwnsSymbol, loadApprovedIressSymbols, withinWriteGuard } from "./cutover";
 import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
+import { isUatEnv } from "../../../src/lib/oems/uat-scope";
 import type { WorkerEnv } from "./env";
 import type { WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
@@ -96,11 +98,17 @@ export async function syncRetailPrices(opts: {
   // Those are TEST prices and corrupt the live consumer's securities_c.last_price
   // / stock_intraday_c. This cannot be overridden by IRESS_RETAIL_DRY_RUN; only a
   // real PROD market-data feed may ever write retail.
-  const iressBaseUrl = process.env.IRESS_BASE_URL ?? "";
-  const onUatEndpoint =
-    /webservices-ct/i.test(iressBaseUrl) ||
-    ["1", "true"].includes((process.env.IRESS_UAT_MODE ?? "").trim().toLowerCase());
-  const writesOn = process.env.IRESS_RETAIL_DRY_RUN === "0" && Boolean(retail) && !onUatEndpoint;
+  // FAIL-CLOSED endpoint check (single source of truth). An UNSET IRESS_BASE_URL
+  // resolves to the CT/UAT endpoint in the session, so it must count as UAT — a
+  // naive /webservices-ct/ test on "" would misread the default as full prod and
+  // bypass the per-symbol approval gate (adversarial-review finding, high sev).
+  const onUatEndpoint = isUatEnv();
+  // Writes are CONFIGURED on when the retail dry-run gate is off. Whether a
+  // GIVEN symbol is actually written is now a PER-SYMBOL decision (see the loop):
+  // on the CT/UAT endpoint only approved+validated symbols priced by the PROD
+  // market-data seat write; on a full prod endpoint everything writes. The
+  // approved set is loaded below and fail-closed to empty.
+  const retailWritesEnabled = process.env.IRESS_RETAIL_DRY_RUN === "0" && Boolean(retail);
   // UAT phase: IRESS returns TEST prices, so do not persist them to the
   // institutional quote_snapshot_c either (it is read-gated today, but writing
   // test prices to a shared table is a latent leak for any future reader).
@@ -114,6 +122,11 @@ export async function syncRetailPrices(opts: {
   const universe = await loadRetailUniverse(retail);
   const list = opts.limit && opts.limit > 0 ? universe.slice(0, opts.limit) : universe;
   const ts = new Date().toISOString();
+
+  // Per-symbol cutover allowlist (approved + backend-validated), from the
+  // institutional scoreboard. Fail-closed to empty: if it can't be read, NOTHING
+  // cuts over and Yahoo keeps the whole universe.
+  const approvedIress = await loadApprovedIressSymbols(institutional);
 
   let covered = 0;
   let written = 0;
@@ -178,7 +191,17 @@ export async function syncRetailPrices(opts: {
         });
       }
 
-      if (!writesOn) continue; // shadow: comparison captured, nothing written to RETAIL
+      // PER-SYMBOL CUTOVER GATE. Write this symbol's money-track price only when
+      // retail writes are enabled AND either we're on a full prod endpoint OR
+      // IRESS is the approved+validated source for it (dual-seat), AND the live
+      // tick passes the runtime divergence guard vs the last known reference.
+      // Otherwise: shadow only — Yahoo keeps this symbol. Never overwrites Yahoo
+      // without backend validation + approval.
+      const writeThisSymbol =
+        retailWritesEnabled &&
+        (!onUatEndpoint || iressOwnsSymbol(sec.symbol, approvedIress)) &&
+        withinWriteGuard(choice.cents, refCents);
+      if (!writeThisSymbol) continue; // shadow: comparison captured, nothing written to RETAIL
 
       // `symbol` is NOT NULL on the production stock_intraday_c (a denormalised
       // column the legacy Yahoo feed populated). Omitting it makes every insert
@@ -252,12 +275,26 @@ export async function syncRetailPrices(opts: {
     }
   }
 
+  const mode = !retailWritesEnabled
+    ? "shadow (dry-run)"
+    : onUatEndpoint
+      ? `per-symbol cutover (${approvedIress.size} approved)`
+      : "full prod";
   recordWorkerEvent({
     level: "info",
     event: "retail_ingest_complete",
-    msg: `retail price ingest ${writesOn ? "WRITE" : "shadow"}: ${covered}/${list.length} covered, ${written} written, ${skipped} skipped`,
-    data: { requested: list.length, covered, written, skipped, writesOn, sample: sample.slice(0, 5) },
+    msg: `retail price ingest ${mode}: ${covered}/${list.length} covered, ${written} written, ${skipped} skipped`,
+    data: {
+      requested: list.length,
+      covered,
+      written,
+      skipped,
+      retailWritesEnabled,
+      approvedCount: approvedIress.size,
+      mode,
+      sample: sample.slice(0, 5),
+    },
   });
 
-  return { requested: list.length, covered, written, skipped, dryRun: !writesOn, sample };
+  return { requested: list.length, covered, written, skipped, dryRun: written === 0, sample };
 }

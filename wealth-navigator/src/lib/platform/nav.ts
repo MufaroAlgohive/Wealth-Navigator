@@ -87,6 +87,7 @@ export const PLATFORM_NAV: NavSection[] = [
       { label: "Money Market", href: "/oems/money-market", icon: Banknote, roles: [DESK, STRAT] },
       { label: "Curves", href: "/oems/curves", icon: Activity, roles: [DESK, STRAT] },
       { label: "Macro", href: "/oems/macro", icon: Globe2, roles: [DESK, STRAT, BIZ] },
+      { label: "IRESS Migration", href: "/oems/iress-migration", icon: Cable, roles: [DESK] },
     ],
   },
   {

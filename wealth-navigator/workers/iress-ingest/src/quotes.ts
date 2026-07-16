@@ -12,6 +12,7 @@ import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
 import { getMarketDataSession, marketDataProdEnabled, noteMarketDataError } from "./market-data";
+import { isUatEnv } from "../../../src/lib/oems/uat-scope";
 import { chooseDisplayCents } from "./scale";
 
 function newRequestID(prefix: string): string {
@@ -569,6 +570,15 @@ export async function syncWatchlistQuotes(
       await upsertInstrumentFromQuote(supabase, symbol, priceCents, env);
       continue;
     }
+
+    // MONEY-TRACK CUTOVER GUARD (fail-closed): the watchlist loop must NOT write
+    // securities_c / stock_intraday_c while on the UAT/dual-seat endpoint. Keyed
+    // on isUatEnv() (endpoint-based, treats unset as UAT) rather than the
+    // IRESS_PRICE_OVERLAY env default, which is fail-OPEN when unset. Per-symbol
+    // Yahoo->IRESS cutover for approved+validated symbols is handled by
+    // retail-ingest; the watchlist writes the money track only at full prod
+    // cutover. Closes the latent path where CT/test prices reach the money track.
+    if (isUatEnv()) continue;
 
     const { error: intradayErr } = await supabase.from("stock_intraday_c").insert({
       security_id: securityId,
