@@ -102,8 +102,21 @@ export async function POST(req: Request) {
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!can(auth.ctx, "research-lab", "create_research_note")) {
-    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  // Admins / superadmins implicitly have create-note permission. Staff analysts
+  // still need the explicit `research-lab/create_research_note` grant on their
+  // `admin_team.permissions` row — this mirrors the UI gate in
+  // `resolveResearchSession()` so the button stays in sync with the API.
+  const isAdmin = auth.ctx.role === "admin" || auth.ctx.role === "superadmin";
+  if (!isAdmin && !can(auth.ctx, "research-lab", "create_research_note")) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "forbidden",
+        message:
+          "Your account does not have research-lab/create_research_note yet. Ask an admin to grant it on /admin/team.",
+      },
+      { status: 403 },
+    );
   }
 
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;

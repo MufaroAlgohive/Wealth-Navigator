@@ -132,16 +132,16 @@ export function ResearchLibraryPage({
   }
 
   return (
-    <ResearchLabCanvas>
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div className="space-y-1">
-          <h1 className="text-xl font-semibold tracking-tight">Research Library</h1>
+    <ResearchLabCanvas className="space-y-3.5">
+      <header className="flex flex-wrap items-end justify-between gap-2.5">
+        <div className="space-y-0.5">
+          <h1 className="text-lg font-semibold tracking-tight">Research Library</h1>
           <p className="text-caption">
             Institutional-grade notes · thesis, valuation, triggers &amp; IC log for every position.
           </p>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5 text-[11px] text-muted-foreground">
             <span>
               <b className="text-foreground">{notes.length}</b> notes
             </span>
@@ -156,9 +156,14 @@ export function ResearchLibraryPage({
             type="button"
             onClick={() => setMode({ kind: "new" })}
             disabled={!perms.createNote}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            title={
+              perms.createNote
+                ? "Draft a new research note"
+                : "Your role does not have create-note permission yet — ask an admin to grant research-lab/create_research_note."
+            }
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-[11px] font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Plus className="h-3.5 w-3.5" /> New Note
+            <Plus className="h-3 w-3" /> New Note
           </button>
         </div>
       </header>
@@ -169,23 +174,23 @@ export function ResearchLibraryPage({
         </p>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-[420px_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[380px_1fr]">
         {/* library list */}
         <GlassSection
           title="Library"
           right={<span className="font-mono text-xs text-muted-foreground">{filtered.length}</span>}
         >
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+              <Search className="pointer-events-none absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Ticker, name, strategy…"
-                className="w-full rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] py-2 pl-8 pr-3 text-sm outline-none focus:border-primary/50"
+                className="w-full rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] py-1.5 pl-7 pr-3 text-xs outline-none focus:border-primary/50"
               />
             </div>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex flex-wrap gap-1">
               {STATUS_FILTERS.map((f) => {
                 const n = counts[f.id];
                 const active = filter === f.id;
@@ -195,7 +200,7 @@ export function ResearchLibraryPage({
                     type="button"
                     onClick={() => setFilter(f.id)}
                     className={cn(
-                      "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors",
+                      "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide transition-colors",
                       active
                         ? "border-primary/50 bg-primary/15 text-primary"
                         : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground",
@@ -215,7 +220,7 @@ export function ResearchLibraryPage({
               })}
             </div>
 
-            <div className="max-h-[640px] space-y-2 overflow-y-auto pr-1">
+            <div className="max-h-[640px] space-y-1.5 overflow-y-auto pr-1">
               {notesQuery.isLoading && <p className="text-caption">Loading notes…</p>}
               {!notesQuery.isLoading && filtered.length === 0 && (
                 <p className="text-caption">No notes match.</p>
@@ -235,34 +240,34 @@ export function ResearchLibraryPage({
                       setMode({ kind: "view" });
                     }}
                     className={cn(
-                      "flex w-full items-stretch gap-3 rounded-lg border px-3 py-3 text-left transition-colors",
+                      "flex w-full items-stretch gap-2 rounded-md border px-2.5 py-2 text-left transition-colors",
                       active
                         ? "border-primary/45 bg-primary/8 shadow-[0_0_0_1px_hsl(var(--primary)/0.15)]"
                         : "border-transparent hover:border-[hsl(var(--glass-border))] hover:bg-[hsl(var(--foreground)/0.03)]",
                     )}
                   >
                     {/* ticker + company + analyst block */}
-                    <div className="min-w-0 flex-1 space-y-1">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-base font-semibold tracking-tight text-primary">
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className="text-sm font-semibold tracking-tight text-primary">
                           {n.symbol}
                         </span>
                         <RatingBadge rating={n.thesis?.rating} />
                         {n.thesis?.style && (
-                          <span className="rounded-md border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          <span className="rounded border border-[hsl(var(--glass-border))] px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
                             {n.thesis.style}
                           </span>
                         )}
                         {n.thesis?.conviction && <ConvictionBadge conviction={n.thesis.conviction} />}
                       </div>
-                      <p className="truncate text-xs font-medium text-foreground/85">
+                      <p className="truncate text-[11px] font-medium text-foreground/85">
                         {n.thesis?.companyName ?? n.symbol}
                       </p>
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] text-muted-foreground">
                         <span className="flex items-center gap-1">
                           <span
                             aria-hidden
-                            className="flex h-4 w-4 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.08)] text-[9px] font-semibold text-muted-foreground"
+                            className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.08)] text-[8px] font-semibold text-muted-foreground"
                           >
                             {initialsOf(n.thesis?.analystName ?? n.author_email)}
                           </span>
@@ -273,14 +278,14 @@ export function ResearchLibraryPage({
                         )}
                         {linked.length > 0 ? (
                           <span
-                            className="inline-flex items-center gap-1 rounded-md border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.08)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-up"
+                            className="inline-flex items-center gap-1 rounded border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.08)] px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-up"
                             title={`In strategy: ${linked.join(", ")}`}
                           >
                             In strategy · {linked.length}
                           </span>
                         ) : (
                           <span
-                            className="inline-flex items-center gap-1 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                            className="inline-flex items-center gap-1 rounded border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] px-1 py-px text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
                             title="No strategy linkage yet — shortlist."
                           >
                             Shortlist
@@ -290,17 +295,17 @@ export function ResearchLibraryPage({
                     </div>
 
                     {/* right block: status + stat */}
-                    <div className="flex shrink-0 flex-col items-end justify-between text-right">
+                    <div className="flex shrink-0 flex-col items-end justify-between gap-0.5 text-right">
                       <StatusChip status={n.status} />
-                      <div className="space-y-0.5">
+                      <div className="space-y-0">
                         {tgt != null && (
-                          <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                          <p className="font-mono text-[9px] uppercase tracking-wide text-muted-foreground">
                             TP {moneyR(tgt, 0)}
                           </p>
                         )}
                         <p
                           className={cn(
-                            "font-mono text-sm font-semibold tabular-nums",
+                            "font-mono text-xs font-semibold tabular-nums leading-tight",
                             up == null ? "text-muted-foreground" : up >= 0 ? "text-up" : "text-down",
                           )}
                         >
@@ -308,7 +313,7 @@ export function ResearchLibraryPage({
                         </p>
                         <p
                           className={cn(
-                            "font-mono text-[11px] tabular-nums",
+                            "font-mono text-[10px] tabular-nums leading-tight",
                             up == null ? "text-muted-foreground" : up >= 0 ? "text-up" : "text-down",
                           )}
                         >
@@ -317,7 +322,7 @@ export function ResearchLibraryPage({
                       </div>
                     </div>
 
-                    <ChevronRight className="self-center text-muted-foreground h-4 w-4 shrink-0" />
+                    <ChevronRight className="self-center text-muted-foreground h-3.5 w-3.5 shrink-0" />
                   </button>
                 );
               })}

@@ -33,16 +33,21 @@ export async function resolveResearchSession(): Promise<ResearchSession> {
   }
   const ctx = res.ctx;
   const b = (v: boolean | "pending" | "direct") => v === true || v === "direct";
+  // Admins and superadmins implicitly get every Research & IC action — they don't
+  // need the granular `permissions.research-lab.*` row set on their `admin_team`
+  // record to create a note or push a rebalance. Staff analysts still need the
+  // explicit grant, which is what we want.
+  const isAdmin = ctx.role === "admin" || ctx.role === "superadmin";
   return {
     viewerEmail: ctx.email,
     viewerName: ctx.fullName ?? ctx.email,
     perms: {
-      createNote: b(can(ctx, "research-lab", "create_research_note")),
-      approveNote: b(can(ctx, "research-lab", "approve_note")),
-      castVote: b(can(ctx, "research-lab", "cast_vote")),
-      raiseRebalance: b(can(ctx, "rebalance", "raise_rebalance")),
-      approveRebalance: b(can(ctx, "rebalance", "approve_rebalance")),
-      pushRebalance: b(can(ctx, "rebalance", "push_rebalance")),
+      createNote: isAdmin || b(can(ctx, "research-lab", "create_research_note")),
+      approveNote: isAdmin || b(can(ctx, "research-lab", "approve_note")),
+      castVote: isAdmin || b(can(ctx, "research-lab", "cast_vote")),
+      raiseRebalance: isAdmin || b(can(ctx, "rebalance", "raise_rebalance")),
+      approveRebalance: isAdmin || b(can(ctx, "rebalance", "approve_rebalance")),
+      pushRebalance: isAdmin || b(can(ctx, "rebalance", "push_rebalance")),
     },
   };
 }

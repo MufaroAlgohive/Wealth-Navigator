@@ -7,8 +7,16 @@ import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge"
 import { useDevTools } from "@/lib/dev/dev-tools";
 
 /** Full-page ambient wrapper for OEMS pages */
-export function ResearchLabCanvas({ children }: { children: React.ReactNode }) {
-  return <div className="relative space-y-5 pb-8">{children}</div>;
+export function ResearchLabCanvas({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("relative space-y-5 pb-8", className)}>{children}</div>
+  );
 }
 
 /** Alias for non–Research Lab pages */

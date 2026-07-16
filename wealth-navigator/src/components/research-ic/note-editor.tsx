@@ -7,7 +7,7 @@
  * the detail view renders so a note authored here shows up complete.
  */
 
-import { Plus, Save, X } from "lucide-react";
+import { ChevronDown, Plus, Save, X } from "lucide-react";
 import * as React from "react";
 
 import { GlassSection } from "@/components/oems/primitives/glass";
@@ -24,8 +24,8 @@ import type {
 } from "./types";
 
 const INPUT =
-  "w-full rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-2 text-sm outline-none focus:border-primary/50";
-const LABEL = "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground";
+  "w-full rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2.5 py-1.5 text-xs outline-none focus:border-primary/50";
+const LABEL = "text-[10px] font-semibold uppercase tracking-wide text-muted-foreground";
 
 function Field({
   label,
@@ -37,6 +37,46 @@ function Field({
       <span className={LABEL}>{label}</span>
       {children}
     </div>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  hint,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  return (
+    <section className="rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.015)]">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+        aria-expanded={open}
+      >
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
+            {title}
+          </span>
+          {hint && (
+            <span className="truncate text-[10px] font-normal text-muted-foreground">{hint}</span>
+          )}
+        </span>
+        <ChevronDown
+          className={cn(
+            "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      {open && <div className="space-y-3 border-t border-[hsl(var(--glass-border))] px-3 py-3">{children}</div>}
+    </section>
   );
 }
 
@@ -184,28 +224,50 @@ export function NoteEditor({
         ok?: boolean;
         note?: { id: string };
         error?: string;
+        message?: string;
       };
       if (!res.ok || !json.ok || !json.note?.id) {
-        setError(json.error ?? `Save failed (${res.status}).`);
+        setError(friendlySaveError(res.status, json.error, json.message));
         return;
       }
       onSaved(json.note.id);
     } catch (e) {
-      setError((e as Error).message);
+      setError(
+        `Could not reach the research service. ${(e as Error).message ?? "Check your connection and retry."}`,
+      );
     } finally {
       setBusy(false);
     }
+  }
+
+  function friendlySaveError(status: number, code?: string, detail?: string): string {
+    if (status === 401 || code === "no-session") {
+      return "Your session has expired. Sign in again and retry.";
+    }
+    if (status === 403 || code === "forbidden") {
+      return "Your account does not have permission to create research notes yet. Ask an admin to grant research-lab / create_research_note.";
+    }
+    if (status === 409) {
+      return detail ?? "The research_note_c table isn't migrated yet on the institutional DB.";
+    }
+    if (status === 503) {
+      return detail ?? "The institutional database is not configured.";
+    }
+    if (status === 422 && code === "symbol is required") {
+      return "Add a ticker before saving.";
+    }
+    return detail ?? code ?? `Save failed (${status}).`;
   }
 
   return (
     <GlassSection
       title={note ? `Edit note · ${note.symbol}` : "New research note"}
       right={
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)]"
+            className="rounded-md border border-[hsl(var(--glass-border))] px-2.5 py-1 text-[11px] hover:bg-[hsl(var(--foreground)/0.05)]"
           >
             Cancel
           </button>
@@ -213,359 +275,381 @@ export function NoteEditor({
             type="button"
             onClick={save}
             disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground disabled:opacity-50"
           >
-            <Save className="h-3.5 w-3.5" /> {busy ? "Saving…" : "Save draft"}
+            <Save className="h-3 w-3" /> {busy ? "Saving…" : "Save draft"}
           </button>
         </div>
       }
     >
       {error && (
-        <p className="mb-3 rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-3 py-2 text-xs text-down">
+        <p className="mb-2.5 rounded-md border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-2.5 py-1.5 text-[11px] text-down">
           {error}
         </p>
       )}
 
-      <div className="space-y-5">
-        <div className="grid gap-3 sm:grid-cols-3">
-          <Field label="Ticker">
-            <input
-              className={INPUT}
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value)}
-              placeholder="NPN"
-              disabled={editing}
-            />
-          </Field>
-          <Field label="Company" className="sm:col-span-2">
-            <input
-              className={INPUT}
-              value={companyName}
-              onChange={(e) => setCompanyName(e.target.value)}
-              placeholder="Naspers"
-            />
-          </Field>
-          <Field label="Sector">
-            <input className={INPUT} value={sector} onChange={(e) => setSector(e.target.value)} />
-          </Field>
-          <Field label="ISIN">
-            <input className={INPUT} value={isin} onChange={(e) => setIsin(e.target.value)} />
-          </Field>
-          <Field label="Horizon">
-            <input
-              className={INPUT}
-              value={horizon}
-              onChange={(e) => setHorizon(e.target.value)}
-              placeholder="12M"
-            />
-          </Field>
-          <Field label="Rating">
-            <select className={INPUT} value={rating} onChange={(e) => setRating(e.target.value as Rating)}>
-              {RATINGS.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Conviction">
-            <input
-              className={INPUT}
-              value={conviction}
-              onChange={(e) => setConviction(e.target.value)}
-              placeholder="HIGH CONVICTION"
-            />
-          </Field>
-          <Field label="ESG">
-            <select className={INPUT} value={esg} onChange={(e) => setEsg(e.target.value as Esg | "")}>
-              {ESGS.map((v) => (
-                <option key={v || "none"} value={v}>
-                  {v || "—"}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Style tag">
-            <input
-              className={INPUT}
-              value={style}
-              onChange={(e) => setStyle(e.target.value)}
-              placeholder="BUY & HOLD"
-            />
-          </Field>
-          <Field label="Target price (R)">
-            <input
-              className={INPUT}
-              value={targetPrice}
-              onChange={(e) => setTargetPrice(e.target.value)}
-              inputMode="decimal"
-            />
-          </Field>
-          <Field label="P/E multiple">
-            <input
-              className={INPUT}
-              value={peMultiple}
-              onChange={(e) => setPeMultiple(e.target.value)}
-              inputMode="decimal"
-            />
-          </Field>
-          <Field label="EV/EBITDA">
-            <input
-              className={INPUT}
-              value={evEbitda}
-              onChange={(e) => setEvEbitda(e.target.value)}
-              inputMode="decimal"
-            />
-          </Field>
-          <Field label="ROE (%)">
-            <input
-              className={INPUT}
-              value={roePct}
-              onChange={(e) => setRoePct(e.target.value)}
-              inputMode="decimal"
-            />
-          </Field>
-          <Field label="Dividend yield (%)">
-            <input
-              className={INPUT}
-              value={divYieldPct}
-              onChange={(e) => setDivYieldPct(e.target.value)}
-              inputMode="decimal"
-            />
-          </Field>
-          <Field label="Linked strategies (comma-sep)" className="sm:col-span-3">
-            <input
-              className={INPUT}
-              value={linkedStrategies}
-              onChange={(e) => setLinkedStrategies(e.target.value)}
-              placeholder="MINT SA Equity Alpha"
-            />
-          </Field>
-        </div>
-
-        <div className="grid gap-3 lg:grid-cols-2">
-          <Field label="Bull thesis">
-            <textarea
-              className={cn(INPUT, "min-h-[96px]")}
-              value={bull}
-              onChange={(e) => setBull(e.target.value)}
-            />
-          </Field>
-          <Field label="Bear case / risks">
-            <textarea
-              className={cn(INPUT, "min-h-[96px]")}
-              value={bear}
-              onChange={(e) => setBear(e.target.value)}
-            />
-          </Field>
-          <Field label="Catalysts (one per line)">
-            <textarea
-              className={cn(INPUT, "min-h-[72px]")}
-              value={catalysts}
-              onChange={(e) => setCatalysts(e.target.value)}
-            />
-          </Field>
-          <Field label="Risks (one per line)">
-            <textarea
-              className={cn(INPUT, "min-h-[72px]")}
-              value={risks}
-              onChange={(e) => setRisks(e.target.value)}
-            />
-          </Field>
-          <Field label="Management — what we love">
-            <textarea
-              className={cn(INPUT, "min-h-[72px]")}
-              value={likes}
-              onChange={(e) => setLikes(e.target.value)}
-            />
-          </Field>
-          <Field label="Management — what worries us">
-            <textarea
-              className={cn(INPUT, "min-h-[72px]")}
-              value={dislikes}
-              onChange={(e) => setDislikes(e.target.value)}
-            />
-          </Field>
-        </div>
-
-        {/* triggers */}
-        <div>
-          <p className={LABEL}>Triggers</p>
-          <div className="mt-2 space-y-2">
-            {(
-              [
-                ["buy_below", "Buy below"],
-                ["add_below", "Add below"],
-                ["trim_above", "Trim above"],
-                ["sell_above", "Sell above"],
-                ["stop_loss", "Stop loss"],
-              ] as const
-            ).map(([k, label]) => (
-              <div key={k} className="grid grid-cols-[110px_100px_1fr] items-center gap-2">
-                <span className="text-xs text-muted-foreground">{label}</span>
-                <input
-                  className={INPUT}
-                  value={triggers[k].price}
-                  onChange={(e) => setTrig(k, { price: e.target.value })}
-                  placeholder="price"
-                  inputMode="decimal"
-                />
-                <input
-                  className={INPUT}
-                  value={triggers[k].note}
-                  onChange={(e) => setTrig(k, { note: e.target.value })}
-                  placeholder="note"
-                />
-              </div>
-            ))}
+      <div className="space-y-3">
+        <CollapsibleSection
+          title="Headline"
+          hint="Ticker, company, rating, target price — keep it punchy"
+          defaultOpen
+        >
+          <div className="grid gap-2.5 sm:grid-cols-3">
+            <Field label="Ticker">
+              <input
+                className={INPUT}
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                placeholder="NPN"
+                disabled={editing}
+              />
+            </Field>
+            <Field label="Company" className="sm:col-span-2">
+              <input
+                className={INPUT}
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                placeholder="Naspers"
+              />
+            </Field>
+            <Field label="Sector">
+              <input className={INPUT} value={sector} onChange={(e) => setSector(e.target.value)} />
+            </Field>
+            <Field label="ISIN">
+              <input className={INPUT} value={isin} onChange={(e) => setIsin(e.target.value)} />
+            </Field>
+            <Field label="Horizon">
+              <input
+                className={INPUT}
+                value={horizon}
+                onChange={(e) => setHorizon(e.target.value)}
+                placeholder="12M"
+              />
+            </Field>
+            <Field label="Rating">
+              <select className={INPUT} value={rating} onChange={(e) => setRating(e.target.value as Rating)}>
+                {RATINGS.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Conviction">
+              <input
+                className={INPUT}
+                value={conviction}
+                onChange={(e) => setConviction(e.target.value)}
+                placeholder="HIGH CONVICTION"
+              />
+            </Field>
+            <Field label="ESG">
+              <select className={INPUT} value={esg} onChange={(e) => setEsg(e.target.value as Esg | "")}>
+                {ESGS.map((v) => (
+                  <option key={v || "none"} value={v}>
+                    {v || "—"}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Style tag">
+              <input
+                className={INPUT}
+                value={style}
+                onChange={(e) => setStyle(e.target.value)}
+                placeholder="BUY & HOLD"
+              />
+            </Field>
+            <Field label="Target price (R)">
+              <input
+                className={INPUT}
+                value={targetPrice}
+                onChange={(e) => setTargetPrice(e.target.value)}
+                inputMode="decimal"
+              />
+            </Field>
+            <Field label="Linked strategies" className="sm:col-span-3">
+              <input
+                className={INPUT}
+                value={linkedStrategies}
+                onChange={(e) => setLinkedStrategies(e.target.value)}
+                placeholder="MINT SA Equity Alpha"
+              />
+            </Field>
           </div>
-        </div>
+        </CollapsibleSection>
 
-        {/* fundamentals */}
-        <ListEditor
-          label="Fundamentals (Prior / Current / Y1 / Y2 / Y3 + trend)"
-          rows={funds}
-          onAdd={() =>
-            setFunds((p) => [
-              ...p,
-              { metric: "", prior: "", current: "", forecast: "", forecastYears: ["", "", ""], trend: "flat" },
-            ])
-          }
-          onRemove={(i) => setFunds((p) => p.filter((_, idx) => idx !== i))}
-          render={(f, i) => {
-            const y = Array.isArray(f.forecastYears) ? f.forecastYears : ["", "", ""];
-            const setY = (idx: 0 | 1 | 2, v: string) => {
-              const next = [...y];
-              next[idx] = v;
-              setFunds((p) => p.map((x, k) => (k === i ? { ...x, forecastYears: next } : x)));
-            };
-            return (
-              <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr_90px] gap-2">
+        <CollapsibleSection
+          title="Thesis"
+          hint="Bull, bear, catalysts, risks, management view"
+          defaultOpen
+        >
+          <div className="grid gap-2.5 lg:grid-cols-2">
+            <Field label="Bull thesis">
+              <textarea
+                className={cn(INPUT, "min-h-[88px]")}
+                value={bull}
+                onChange={(e) => setBull(e.target.value)}
+              />
+            </Field>
+            <Field label="Bear case / risks">
+              <textarea
+                className={cn(INPUT, "min-h-[88px]")}
+                value={bear}
+                onChange={(e) => setBear(e.target.value)}
+              />
+            </Field>
+            <Field label="Catalysts (one per line)">
+              <textarea
+                className={cn(INPUT, "min-h-[64px]")}
+                value={catalysts}
+                onChange={(e) => setCatalysts(e.target.value)}
+              />
+            </Field>
+            <Field label="Risks (one per line)">
+              <textarea
+                className={cn(INPUT, "min-h-[64px]")}
+                value={risks}
+                onChange={(e) => setRisks(e.target.value)}
+              />
+            </Field>
+            <Field label="Management — what we love">
+              <textarea
+                className={cn(INPUT, "min-h-[64px]")}
+                value={likes}
+                onChange={(e) => setLikes(e.target.value)}
+              />
+            </Field>
+            <Field label="Management — what worries us">
+              <textarea
+                className={cn(INPUT, "min-h-[64px]")}
+                value={dislikes}
+                onChange={(e) => setDislikes(e.target.value)}
+              />
+            </Field>
+          </div>
+        </CollapsibleSection>
+
+        <CollapsibleSection
+          title="Quant & valuation"
+          hint="Triggers, valuation multiples, fundamentals, peer comp"
+          defaultOpen={false}
+        >
+          {/* triggers */}
+          <div>
+            <p className={LABEL}>Triggers</p>
+            <div className="mt-2 space-y-1.5">
+              {(
+                [
+                  ["buy_below", "Buy below"],
+                  ["add_below", "Add below"],
+                  ["trim_above", "Trim above"],
+                  ["sell_above", "Sell above"],
+                  ["stop_loss", "Stop loss"],
+                ] as const
+              ).map(([k, label]) => (
+                <div key={k} className="grid grid-cols-[90px_80px_1fr] items-center gap-2">
+                  <span className="text-[11px] text-muted-foreground">{label}</span>
+                  <input
+                    className={INPUT}
+                    value={triggers[k].price}
+                    onChange={(e) => setTrig(k, { price: e.target.value })}
+                    placeholder="price"
+                    inputMode="decimal"
+                  />
+                  <input
+                    className={INPUT}
+                    value={triggers[k].note}
+                    onChange={(e) => setTrig(k, { note: e.target.value })}
+                    placeholder="note"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* valuation */}
+          <div className="grid gap-2.5 sm:grid-cols-4">
+            <Field label="P/E multiple">
+              <input
+                className={INPUT}
+                value={peMultiple}
+                onChange={(e) => setPeMultiple(e.target.value)}
+                inputMode="decimal"
+              />
+            </Field>
+            <Field label="EV/EBITDA">
+              <input
+                className={INPUT}
+                value={evEbitda}
+                onChange={(e) => setEvEbitda(e.target.value)}
+                inputMode="decimal"
+              />
+            </Field>
+            <Field label="ROE (%)">
+              <input
+                className={INPUT}
+                value={roePct}
+                onChange={(e) => setRoePct(e.target.value)}
+                inputMode="decimal"
+              />
+            </Field>
+            <Field label="Dividend yield (%)">
+              <input
+                className={INPUT}
+                value={divYieldPct}
+                onChange={(e) => setDivYieldPct(e.target.value)}
+                inputMode="decimal"
+              />
+            </Field>
+          </div>
+
+          {/* fundamentals */}
+          <ListEditor
+            label="Fundamentals (Prior / Current / Y1 / Y2 / Y3 + trend)"
+            rows={funds}
+            onAdd={() =>
+              setFunds((p) => [
+                ...p,
+                { metric: "", prior: "", current: "", forecast: "", forecastYears: ["", "", ""], trend: "flat" },
+              ])
+            }
+            onRemove={(i) => setFunds((p) => p.filter((_, idx) => idx !== i))}
+            render={(f, i) => {
+              const y = Array.isArray(f.forecastYears) ? f.forecastYears : ["", "", ""];
+              const setY = (idx: 0 | 1 | 2, v: string) => {
+                const next = [...y];
+                next[idx] = v;
+                setFunds((p) => p.map((x, k) => (k === i ? { ...x, forecastYears: next } : x)));
+              };
+              return (
+                <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr_70px] gap-1.5">
+                  <input
+                    className={INPUT}
+                    value={f.metric}
+                    placeholder="Metric"
+                    onChange={(e) =>
+                      setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, metric: e.target.value } : x)))
+                    }
+                  />
+                  <input
+                    className={INPUT}
+                    value={String(f.prior)}
+                    placeholder="Prior"
+                    onChange={(e) =>
+                      setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, prior: e.target.value } : x)))
+                    }
+                  />
+                  <input
+                    className={INPUT}
+                    value={String(f.current)}
+                    placeholder="Current"
+                    onChange={(e) =>
+                      setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, current: e.target.value } : x)))
+                    }
+                  />
+                  <input
+                    className={INPUT}
+                    value={y[0] ?? ""}
+                    placeholder="Year 1"
+                    onChange={(e) => setY(0, e.target.value)}
+                  />
+                  <input
+                    className={INPUT}
+                    value={y[1] ?? ""}
+                    placeholder="Year 2"
+                    onChange={(e) => setY(1, e.target.value)}
+                  />
+                  <input
+                    className={INPUT}
+                    value={y[2] ?? ""}
+                    placeholder="Year 3"
+                    onChange={(e) => setY(2, e.target.value)}
+                  />
+                  <select
+                    className={INPUT}
+                    value={f.trend ?? "flat"}
+                    onChange={(e) =>
+                      setFunds((p) =>
+                        p.map((x, idx) =>
+                          idx === i ? { ...x, trend: e.target.value as Fundamental["trend"] } : x,
+                        ),
+                      )
+                    }
+                  >
+                    <option value="up">up</option>
+                    <option value="flat">flat</option>
+                    <option value="down">down</option>
+                  </select>
+                </div>
+              );
+            }}
+          />
+
+          {/* peers */}
+          <ListEditor
+            label="Valuation vs peers (P/E · EV/EBITDA · ROE · Div yield)"
+            rows={peers}
+            onAdd={() => setPeers((p) => [...p, { name: "", pe: 0 }])}
+            onRemove={(i) => setPeers((p) => p.filter((_, idx) => idx !== i))}
+            render={(p, i) => (
+              <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr] gap-1.5">
                 <input
                   className={INPUT}
-                  value={f.metric}
-                  placeholder="Metric"
+                  value={p.name}
+                  placeholder="Peer"
                   onChange={(e) =>
-                    setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, metric: e.target.value } : x)))
+                    setPeers((prev) => prev.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))
                   }
                 />
                 <input
                   className={INPUT}
-                  value={String(f.prior)}
-                  placeholder="Prior"
+                  value={String(p.pe ?? "")}
+                  placeholder="P/E"
+                  inputMode="decimal"
                   onChange={(e) =>
-                    setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, prior: e.target.value } : x)))
-                  }
-                />
-                <input
-                  className={INPUT}
-                  value={String(f.current)}
-                  placeholder="Current"
-                  onChange={(e) =>
-                    setFunds((p) => p.map((x, idx) => (idx === i ? { ...x, current: e.target.value } : x)))
-                  }
-                />
-                <input
-                  className={INPUT}
-                  value={y[0] ?? ""}
-                  placeholder="Year 1"
-                  onChange={(e) => setY(0, e.target.value)}
-                />
-                <input
-                  className={INPUT}
-                  value={y[1] ?? ""}
-                  placeholder="Year 2"
-                  onChange={(e) => setY(1, e.target.value)}
-                />
-                <input
-                  className={INPUT}
-                  value={y[2] ?? ""}
-                  placeholder="Year 3"
-                  onChange={(e) => setY(2, e.target.value)}
-                />
-                <select
-                  className={INPUT}
-                  value={f.trend ?? "flat"}
-                  onChange={(e) =>
-                    setFunds((p) =>
-                      p.map((x, idx) =>
-                        idx === i ? { ...x, trend: e.target.value as Fundamental["trend"] } : x,
-                      ),
+                    setPeers((prev) =>
+                      prev.map((x, idx) => (idx === i ? { ...x, pe: Number(e.target.value) } : x)),
                     )
                   }
-                >
-                  <option value="up">up</option>
-                  <option value="flat">flat</option>
-                  <option value="down">down</option>
-                </select>
+                />
+                <input
+                  className={INPUT}
+                  value={String(p.evEbitda ?? "")}
+                  placeholder="EV/EBITDA"
+                  inputMode="decimal"
+                  onChange={(e) =>
+                    setPeers((prev) =>
+                      prev.map((x, idx) => (idx === i ? { ...x, evEbitda: Number(e.target.value) } : x)),
+                    )
+                  }
+                />
+                <input
+                  className={INPUT}
+                  value={String(p.roe ?? "")}
+                  placeholder="ROE %"
+                  inputMode="decimal"
+                  onChange={(e) =>
+                    setPeers((prev) =>
+                      prev.map((x, idx) => (idx === i ? { ...x, roe: Number(e.target.value) } : x)),
+                    )
+                  }
+                />
+                <input
+                  className={INPUT}
+                  value={String(p.divYield ?? "")}
+                  placeholder="Div %"
+                  inputMode="decimal"
+                  onChange={(e) =>
+                    setPeers((prev) =>
+                      prev.map((x, idx) => (idx === i ? { ...x, divYield: Number(e.target.value) } : x)),
+                    )
+                  }
+                />
               </div>
-            );
-          }}
-        />
-
-        {/* peers */}
-        <ListEditor
-          label="Valuation vs peers (P/E · EV/EBITDA · ROE · Div yield)"
-          rows={peers}
-          onAdd={() => setPeers((p) => [...p, { name: "", pe: 0 }])}
-          onRemove={(i) => setPeers((p) => p.filter((_, idx) => idx !== i))}
-          render={(p, i) => (
-            <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr] gap-2">
-              <input
-                className={INPUT}
-                value={p.name}
-                placeholder="Peer"
-                onChange={(e) =>
-                  setPeers((prev) => prev.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))
-                }
-              />
-              <input
-                className={INPUT}
-                value={String(p.pe ?? "")}
-                placeholder="P/E"
-                inputMode="decimal"
-                onChange={(e) =>
-                  setPeers((prev) =>
-                    prev.map((x, idx) => (idx === i ? { ...x, pe: Number(e.target.value) } : x)),
-                  )
-                }
-              />
-              <input
-                className={INPUT}
-                value={String(p.evEbitda ?? "")}
-                placeholder="EV/EBITDA"
-                inputMode="decimal"
-                onChange={(e) =>
-                  setPeers((prev) =>
-                    prev.map((x, idx) => (idx === i ? { ...x, evEbitda: Number(e.target.value) } : x)),
-                  )
-                }
-              />
-              <input
-                className={INPUT}
-                value={String(p.roe ?? "")}
-                placeholder="ROE %"
-                inputMode="decimal"
-                onChange={(e) =>
-                  setPeers((prev) =>
-                    prev.map((x, idx) => (idx === i ? { ...x, roe: Number(e.target.value) } : x)),
-                  )
-                }
-              />
-              <input
-                className={INPUT}
-                value={String(p.divYield ?? "")}
-                placeholder="Div %"
-                inputMode="decimal"
-                onChange={(e) =>
-                  setPeers((prev) =>
-                    prev.map((x, idx) => (idx === i ? { ...x, divYield: Number(e.target.value) } : x)),
-                  )
-                }
-              />
-            </div>
-          )}
-        />
+            )}
+          />
+        </CollapsibleSection>
       </div>
     </GlassSection>
   );
