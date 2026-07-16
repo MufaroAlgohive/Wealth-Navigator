@@ -602,11 +602,35 @@ export async function POST(req: Request) {
     );
   }
   if (!guard.enforced) {
-    // Guard could not run (no account row, bad status, etc.). Log and
-    // continue — the audit row will carry limits_enforced=false so the
-    // operator sees the gap.
+    // 2026-07-16: FAIL CLOSED for SELLS. IRESS does not validate oversells
+    // (iress-v4-docs/11-mint-oems) and the guard's position feed (IPS
+    // oems_position_c) is often empty, so the old "log and continue" path let
+    // a sell we can't prove coverage for reach the broker — a possible naked
+    // short. If the book contains ANY sell and the guard could not run, refuse
+    // the dispatch. (BUY-only books still proceed with limits_enforced=false —
+    // a cash-feed gap shouldn't halt legitimate buying, and an overspend is a
+    // settlement issue, not a naked short; the naked-short case is the sell.)
+    const hasSell = holdings.some((h) => (h.trade_side ?? "").toLowerCase() === "sell");
+    if (hasSell) {
+      console.warn(
+        `[orderbook/send-to-market] limit guard could not verify a SELL book=${bookId} account=${deskAccountCode}: ${guard.skipReason ?? "unknown"} — BLOCKING (fail-closed)`,
+      );
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Sell dispatch blocked: holdings could not be verified for this account, so we can't confirm the shares are held. Ingest positions (IPS) for this account, or dispatch a sell only once coverage is provable.",
+          code: "limit_guard_unverified_sell",
+          account_code: deskAccountCode,
+          enforced: false,
+          skip_reason: guard.skipReason ?? null,
+          guard_verdict: { enforced: false, blocked: true, checked_at: limitsCheckedAt },
+        },
+        { status: 422 },
+      );
+    }
     console.warn(
-      `[orderbook/send-to-market] limit guard SKIPPED for book=${bookId}: ${guard.skipReason ?? "unknown"}`,
+      `[orderbook/send-to-market] limit guard SKIPPED (buy-only book) for book=${bookId}: ${guard.skipReason ?? "unknown"}`,
     );
   }
 
