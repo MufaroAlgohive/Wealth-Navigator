@@ -488,13 +488,28 @@ export function ExecutionView({ bookId }: { bookId: string }) {
     query: { enabled: symbols.length > 0 },
   });
 
+  // Key the quote map by BOTH the raw symbol and its bare (.JO-stripped) form.
+  // The row symbols carry the `.JO` suffix (e.g. "SOL.JO") but /api/quotes may
+  // return either form depending on the provider — keying both ways makes the
+  // Last-price lookup robust to that mismatch (which was showing "—" for every
+  // row even when a live price existed).
   const lastBySymbol = React.useMemo(() => {
-    const m = new Map<string, number | null>();
+    const m = new Map<string, number>();
     for (const q of quotes.data?.quotes ?? []) {
-      if (q.symbol) m.set(q.symbol, q.last_price);
+      if (!q.symbol || q.last_price == null || !Number.isFinite(q.last_price)) continue;
+      const raw = q.symbol.toUpperCase();
+      m.set(raw, q.last_price);
+      m.set(raw.replace(/\.(JO|JSE)$/i, ""), q.last_price);
     }
     return m;
   }, [quotes.data]);
+  const lookupLast = React.useCallback(
+    (symbol: string): number | null => {
+      const raw = (symbol ?? "").toUpperCase();
+      return lastBySymbol.get(raw) ?? lastBySymbol.get(raw.replace(/\.(JO|JSE)$/i, "")) ?? null;
+    },
+    [lastBySymbol],
+  );
 
   // Track which audit rows have ever received an SSE delta so we can show
   // a "LIVE" badge next to them.
@@ -812,7 +827,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   const hasNotice = !!executions.data?.notice;
 
   return (
-    <div className="rounded-xl border border-border bg-card/40 overflow-hidden">
+    <div className="w-full min-w-0 max-w-full rounded-xl border border-border bg-card/40 overflow-hidden">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -917,7 +932,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
             ) : (
               groupedRows.map((g) => {
                 const r = g.parent;
-                const liveLast = lastBySymbol.get(r.symbol);
+                const liveLast = lookupLast(r.symbol);
                 const effectiveLast =
                   typeof liveLast === "number" && Number.isFinite(liveLast) ? liveLast : r.avg_fill_price;
                 const liveSlipCents =
@@ -993,8 +1008,14 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                     </td>
                     <td className="px-3 py-1.5 text-[12px] font-medium text-foreground whitespace-nowrap">
                       {(() => {
-                        const px = r.limit_price ?? r.avg_fill_price;
-                        return px != null ? fmtMoney(px * r.qty) : "—";
+                        // Prefer the limit, then the actual fill, then the live
+                        // last price — so MARKET orders (no limit, unfilled)
+                        // still show an estimated notional instead of "—".
+                        const px =
+                          r.limit_price ??
+                          (r.filled > 0 ? r.avg_fill_price : null) ??
+                          (typeof liveLast === "number" ? liveLast : null);
+                        return px != null && Number.isFinite(px) ? fmtMoney(px * r.qty) : "—";
                       })()}
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
@@ -1026,7 +1047,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
                       </div>
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
-                      {fmtMoney(r.avg_fill_price)}
+                      {r.filled > 0 && r.avg_fill_price ? fmtMoney(r.avg_fill_price) : "—"}
                     </td>
                     <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                       {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
