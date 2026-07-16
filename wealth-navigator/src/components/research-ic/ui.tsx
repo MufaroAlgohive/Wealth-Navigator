@@ -193,6 +193,16 @@ export interface ChartTrigger {
   price: number;
   tone: "buy" | "sell" | "neutral";
 }
+
+/** Format a price for chart axis / trigger labels (Rands, no symbol, compact). */
+function fmtR(v: number): string {
+  if (!Number.isFinite(v)) return "—";
+  const abs = Math.abs(v);
+  if (abs >= 1000) return v.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  if (abs >= 100) return v.toFixed(0);
+  return v.toFixed(2);
+}
+
 export function PriceTriggerChart({
   points,
   triggers,
@@ -202,37 +212,84 @@ export function PriceTriggerChart({
   triggers: ChartTrigger[];
   current?: number | null;
 }) {
-  const W = 640;
-  const H = 220;
-  const padL = 6;
-  const padR = 92;
-  const padT = 12;
-  const padB = 10;
+  const W = 720;
+  const H = 260;
+  const padL = 56; // room for y-axis labels
+  const padR = 132; // room for trigger labels
+  const padT = 14;
+  const padB = 22; // room for x-axis date labels
 
   const trigPrices = triggers.map((t) => t.price).filter((n) => Number.isFinite(n));
   const pricePts = points.map((p) => p.v).filter((n) => Number.isFinite(n) && n > 0);
+
+  // Y-range with a sane fallback when the data is flat or sparse. Anchor on
+  // current price first so an isolated intraday tick still renders usefully,
+  // then widen to fit triggers + data range, then add 8% headroom.
+  const anchor =
+    current != null && Number.isFinite(current)
+      ? current
+      : pricePts.length > 0
+        ? pricePts[pricePts.length - 1] ?? null
+        : trigPrices.length > 0
+          ? trigPrices.slice().sort((a, b) => a - b)[Math.floor(trigPrices.length / 2)] ?? null
+          : null;
   const allV = [...pricePts, ...trigPrices, ...(current != null ? [current] : [])].filter((n) =>
     Number.isFinite(n),
   );
-  if (allV.length === 0) {
+  if (anchor == null && allV.length === 0) {
     return (
       <div className="flex h-full w-full items-center justify-center text-caption">
-        No price or trigger data.
+        Live series pending — no price or trigger data.
       </div>
     );
   }
-  const lo = Math.min(...allV);
-  const hi = Math.max(...allV);
-  const min = lo - (hi - lo || lo * 0.02) * 0.08;
-  const max = hi + (hi - lo || lo * 0.02) * 0.08;
-  const span = max - min || 1;
-  const x = (i: number) => padL + (points.length > 1 ? (i / (points.length - 1)) * (W - padL - padR) : 0);
-  const y = (v: number) => padT + (1 - (v - min) / span) * (H - padT - padB);
+
+  const dataLo = pricePts.length > 0 ? Math.min(...pricePts) : anchor ?? 0;
+  const dataHi = pricePts.length > 0 ? Math.max(...pricePts) : anchor ?? 0;
+  const lo = Math.min(dataLo, ...trigPrices, anchor ?? Number.POSITIVE_INFINITY);
+  const hi = Math.max(dataHi, ...trigPrices, anchor ?? Number.NEGATIVE_INFINITY);
+  const baseSpan = hi - lo;
+  // If everything is at the same value (flat data, single point), give the
+  // chart a ±5% band so the line and current marker are still readable.
+  const span = baseSpan > 0 ? baseSpan : (anchor ?? 1) * 0.05 || 1;
+  const min = lo - span * 0.08;
+  const max = hi + span * 0.08;
+  const range = max - min || 1;
+
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const xAt = (i: number) =>
+    padL + (points.length > 1 ? (i / (points.length - 1)) * innerW : 0);
+  const yAt = (v: number) => padT + (1 - (v - min) / range) * innerH;
+
   const path = points
-    .map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`)
+    .map((p, i) => `${i === 0 ? "M" : "L"}${xAt(i).toFixed(1)},${yAt(p.v).toFixed(1)}`)
     .join(" ");
-  const toneClass = (t: ChartTrigger["tone"]) =>
-    t === "buy" ? "text-up" : t === "sell" ? "text-down" : "text-muted-foreground";
+
+  // Y-axis ticks: 5 evenly spaced values.
+  const yTicks = [0, 0.25, 0.5, 0.75, 1].map((frac) => {
+    const v = min + frac * range;
+    return { v, y: yAt(v) };
+  });
+
+  // X-axis date ticks: first, mid, last (if we have > 1 point).
+  const xTicks: { x: number; label: string }[] = [];
+  if (points.length >= 2) {
+    const fmt = (ms: number) => {
+      const d = new Date(ms);
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+    };
+    xTicks.push({ x: xAt(0), label: fmt(points[0]?.t ?? 0) });
+    if (points.length > 2) {
+      const mid = Math.floor((points.length - 1) / 2);
+      xTicks.push({ x: xAt(mid), label: fmt(points[mid]?.t ?? 0) });
+    }
+    xTicks.push({ x: xAt(points.length - 1), label: fmt(points[points.length - 1]?.t ?? 0) });
+  }
+
+  const lastPoint = points.length > 0 ? points[points.length - 1] : null;
+  const lastX = points.length > 0 ? xAt(points.length - 1) : null;
 
   return (
     <svg
@@ -243,12 +300,59 @@ export function PriceTriggerChart({
       aria-label="Price history with trigger levels"
     >
       <title>Price history with trigger levels</title>
+
+      {/* y-axis ticks + labels */}
+      {yTicks.map((tk, i) => (
+        <g key={`yt-${i}`} className="text-muted-foreground">
+          <line
+            x1={padL}
+            x2={W - padR}
+            y1={tk.y}
+            y2={tk.y}
+            stroke="currentColor"
+            strokeWidth={0.5}
+            opacity={0.18}
+          />
+          <text
+            x={padL - 6}
+            y={tk.y + 3}
+            fill="currentColor"
+            fontSize={10}
+            textAnchor="end"
+            className="font-mono tabular-nums"
+          >
+            R{fmtR(tk.v)}
+          </text>
+        </g>
+      ))}
+
+      {/* x-axis date labels */}
+      {xTicks.map((tk, i) => (
+        <text
+          key={`xt-${i}`}
+          x={tk.x}
+          y={H - 6}
+          fill="currentColor"
+          fontSize={10}
+          textAnchor="middle"
+          className="font-mono text-muted-foreground"
+        >
+          {tk.label}
+        </text>
+      ))}
+
       {/* trigger levels */}
       {triggers.map((t) => {
-        const yy = y(t.price);
+        const yy = yAt(t.price);
         if (!Number.isFinite(yy)) return null;
+        const cls =
+          t.tone === "buy"
+            ? "text-up"
+            : t.tone === "sell"
+              ? "text-down"
+              : "text-muted-foreground";
         return (
-          <g key={t.label} className={toneClass(t.tone)}>
+          <g key={t.label} className={cls}>
             <line
               x1={padL}
               x2={W - padR}
@@ -256,32 +360,64 @@ export function PriceTriggerChart({
               y2={yy}
               stroke="currentColor"
               strokeWidth={1}
-              strokeDasharray="3 3"
-              opacity={0.5}
+              strokeDasharray="4 3"
+              opacity={0.65}
             />
-            <text x={W - padR + 6} y={yy + 3} fill="currentColor" fontSize={10} className="font-mono">
-              {t.label}
+            <text
+              x={W - padR + 6}
+              y={yy + 3}
+              fill="currentColor"
+              fontSize={10}
+              className="font-mono tabular-nums"
+            >
+              {t.label} · R{fmtR(t.price)}
             </text>
           </g>
         );
       })}
-      {/* current price marker */}
-      {current != null && Number.isFinite(y(current)) && (
+
+      {/* price line */}
+      {points.length > 1 && (
+        <path d={path} fill="none" stroke="currentColor" strokeWidth={1.75} className="text-primary" />
+      )}
+
+      {/* last data point dot */}
+      {lastPoint && lastX != null && Number.isFinite(yAt(lastPoint.v)) && (
+        <g className="text-primary">
+          <circle cx={lastX} cy={yAt(lastPoint.v)} r={3} fill="currentColor" />
+        </g>
+      )}
+
+      {/* current price: solid horizontal line + dot at right edge + label */}
+      {current != null && Number.isFinite(yAt(current)) && (
         <g className="text-foreground">
           <line
             x1={padL}
             x2={W - padR}
-            y1={y(current)}
-            y2={y(current)}
+            y1={yAt(current)}
+            y2={yAt(current)}
             stroke="currentColor"
-            strokeWidth={1}
-            opacity={0.25}
+            strokeWidth={1.25}
+            opacity={0.55}
           />
+          <circle
+            cx={W - padR}
+            cy={yAt(current)}
+            r={4}
+            fill="currentColor"
+            stroke="hsl(var(--background))"
+            strokeWidth={1.5}
+          />
+          <text
+            x={W - padR + 8}
+            y={yAt(current) + 3}
+            fill="currentColor"
+            fontSize={11}
+            className="font-mono font-semibold tabular-nums"
+          >
+            NOW · R{fmtR(current)}
+          </text>
         </g>
-      )}
-      {/* price line */}
-      {points.length > 1 && (
-        <path d={path} fill="none" stroke="currentColor" strokeWidth={1.75} className="text-primary" />
       )}
     </svg>
   );
