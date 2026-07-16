@@ -13,10 +13,57 @@ import { getApplicantByExternalId, sumsubConfigured } from "@/lib/admin/sumsub";
 
 export const dynamic = "force-dynamic";
 
-function deriveKyc(ob?: { kyc_status?: string | null; sumsub_review_answer?: string | null }, ra?: { kyc_verified?: boolean | null }): "verified" | "pending" | "rejected" {
-  if (ra?.kyc_verified || ob?.kyc_status === "verified" || ob?.kyc_status === "completed" || ob?.sumsub_review_answer === "GREEN") return "verified";
-  if (ob?.sumsub_review_answer === "RED" || ob?.kyc_status === "rejected") return "rejected";
-  return "pending";
+type KycState = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
+
+export function deriveKyc(
+  ob?: { kyc_status?: string | null; sumsub_review_answer?: string | null; sumsub_review_status?: string | null },
+  ra?: { kyc_verified?: boolean | null; kyc_needs_resubmission?: boolean | null },
+  pack?: unknown,
+): KycState {
+  const status = String(ob?.kyc_status || "").trim().toLowerCase();
+  const answer = String(ob?.sumsub_review_answer || "").trim().toLowerCase();
+  const review = String(ob?.sumsub_review_status || "").trim().toLowerCase();
+  const packRecord = parseRecord(pack);
+  const packReview = parseRecord(packRecord.review);
+  const packResult = parseRecord(packReview.result);
+  const packAnswer = String(packResult.reviewAnswer || packReview.reviewAnswer || packRecord.reviewAnswer || "").trim().toLowerCase();
+  const packStatus = String(packReview.reviewStatus || packRecord.reviewStatus || packRecord.status || "").trim().toLowerCase();
+  if (packAnswer === "red" || (!packAnswer && status.includes("reject"))) return "rejected";
+  if (packAnswer === "yellow" || packAnswer === "orange" || (!packAnswer && /pending|init|review|process/.test(packStatus))) return "pending";
+  if (packAnswer === "green" || (!packAnswer && /completed|approved/.test(packStatus))) return "verified";
+  if (/verified|completed|approved|done/.test(status)) return "verified";
+  if (/pending|in.progress|review|processing|queued/.test(status)) return "pending";
+  // These fields are fallbacks only when CRM's onboarding + pack sources are empty.
+  if (ra?.kyc_verified) return "verified";
+  if (ra?.kyc_needs_resubmission) return "resubmission_required";
+  if (answer === "red") return "rejected";
+  if (answer === "green") return "verified";
+  if (answer === "yellow" || answer === "orange" || /pending|review|process|init/.test(review)) return "pending";
+  if (status || answer || review || packStatus) return "pending";
+  return "not_initiated";
+}
+
+function deriveChildKyc(member: Record<string, unknown>): KycState {
+  const status = String(member.certificate_verification_status || member.kyc_status || "")
+    .trim()
+    .toLowerCase();
+  if (/verified|approved|accepted|completed/.test(status)) return "verified";
+  if (/reject|declined/.test(status)) return "rejected";
+  if (/pending|review|submitted|uploaded/.test(status)) return "pending";
+  return "not_initiated";
+}
+
+function parseRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function costCentsPerShare(h: { avg_fill?: number | null; Expected_fill?: number | null }): number {
@@ -38,7 +85,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const action = url.searchParams.get("action") || "list";
 
-  let db;
+  let db: ReturnType<typeof createRetailServiceRoleClient>;
   try {
     db = createRetailServiceRoleClient();
   } catch {
@@ -53,37 +100,135 @@ export async function GET(req: Request) {
       .limit(2000);
     const rows = profiles ?? [];
     const ids = rows.map((p) => p.id);
-    const obMap: Record<string, { kyc_status?: string | null; sumsub_review_answer?: string | null }> = {};
-    const raMap: Record<string, { kyc_verified?: boolean | null; bank_linked?: boolean | null }> = {};
+    const obMap: Record<string, { kyc_status?: string | null; sumsub_review_answer?: string | null; sumsub_review_status?: string | null }> = {};
+    const raMap: Record<string, { kyc_verified?: boolean | null; kyc_needs_resubmission?: boolean | null; bank_linked?: boolean | null }> = {};
+    const packMap: Record<string, unknown> = {};
+    const parentIds = new Set<string>();
+    const childProfileIds = new Set<string>();
+    let familyRows: Record<string, unknown>[] = [];
     if (ids.length) {
-      const [{ data: ob }, { data: ra }] = await Promise.all([
-        db.from("user_onboarding").select("user_id, kyc_status, sumsub_review_answer").in("user_id", ids),
-        db.from("required_actions").select("user_id, kyc_verified, bank_linked").in("user_id", ids),
+      const [{ data: ob }, { data: ra }, { data: packs }, { data: family }] = await Promise.all([
+        db.from("user_onboarding").select("user_id, kyc_status, sumsub_review_answer, sumsub_review_status").in("user_id", ids),
+        db.from("required_actions").select("user_id, kyc_verified, kyc_needs_resubmission, bank_linked").in("user_id", ids),
+        db.from("user_onboarding_pack_details").select("user_id,pack_details").in("user_id", ids),
+        db.from("family_members").select("*"),
       ]);
       for (const o of ob ?? []) obMap[o.user_id as string] = o;
       for (const r of ra ?? []) raMap[r.user_id as string] = r;
+      for (const pack of packs ?? []) packMap[pack.user_id as string] = pack.pack_details;
+      familyRows = (family ?? []) as Record<string, unknown>[];
+      for (const member of family ?? []) {
+        if (String(member.relationship || "").trim().toLowerCase() !== "child") continue;
+        const parentId = String(member.primary_user_id || member.parent_id || "").trim();
+        const linkedUserId = String(member.linked_user_id || "").trim();
+        if (parentId) parentIds.add(parentId);
+        if (linkedUserId) childProfileIds.add(linkedUserId);
+      }
     }
-    const clients = rows.map((p) => ({
+    const profileClients = rows.map((p) => ({
       id: p.id,
       name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email || p.id.slice(0, 8),
       email: p.email,
       mint_number: p.mint_number,
       is_test: p.is_test,
       created_at: p.created_at,
-      kyc: deriveKyc(obMap[p.id], raMap[p.id]),
+      kyc: deriveKyc(obMap[p.id], raMap[p.id], packMap[p.id]),
       bank_linked: !!raMap[p.id]?.bank_linked,
+      family_role: childProfileIds.has(String(p.id)) ? "child" : parentIds.has(String(p.id)) ? "parent" : "other",
+      family_member_id: null,
+      is_linked_child: childProfileIds.has(String(p.id)),
     }));
-    return NextResponse.json({ ok: true, clients });
+    const unlinkedChildren = familyRows
+      .filter((member) => String(member.relationship || "").trim().toLowerCase() === "child")
+      .filter((member) => !String(member.linked_user_id || "").trim())
+      .map((member) => {
+        const familyMemberId = String(member.id || "");
+        const firstName = String(member.first_name || "");
+        const lastName = String(member.last_name || "");
+        return {
+          id: `family:${familyMemberId}`,
+          name: `${firstName} ${lastName}`.trim() || `Child ${familyMemberId.slice(0, 8)}`,
+          email: (member.email as string | null) ?? null,
+          mint_number: (member.mint_number as string | null) ?? null,
+          is_test: false,
+          created_at: member.created_at ?? null,
+          kyc: deriveChildKyc(member),
+          bank_linked: false,
+          family_role: "child" as const,
+          family_member_id: familyMemberId,
+          is_linked_child: false,
+        };
+      });
+    const clients = [...profileClients, ...unlinkedChildren];
+    const stats = profileClients.reduce((counts, client) => {
+      counts.total += 1;
+      if (client.kyc === "verified") counts.completed += 1;
+      else if (client.kyc === "pending" || client.kyc === "resubmission_required") counts.pending += 1;
+      else if (client.kyc === "rejected") counts.rejected += 1;
+      return counts;
+    }, { total: 0, completed: 0, pending: 0, rejected: 0 });
+    return NextResponse.json({ ok: true, clients, stats });
   }
 
   if (action === "detail") {
     const userId = url.searchParams.get("user_id") || "";
+    const familyMemberId = url.searchParams.get("family_member_id") || "";
+    if (familyMemberId) {
+      const [{ data: member }, { data: holds }, { data: txns }] = await Promise.all([
+        db.from("family_members").select("*").eq("id", familyMemberId).maybeSingle(),
+        db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("family_member_id", familyMemberId).eq("is_active", true).eq("trade_side", "BUY"),
+        db.from("family_transactions").select("*").eq("member_id", familyMemberId).order("created_at", { ascending: false }).limit(25),
+      ]);
+      if (!member) return NextResponse.json({ ok: false, error: "Family member not found" }, { status: 404 });
+      const secIds = [...new Set((holds ?? []).map((holding) => holding.security_id).filter(Boolean))];
+      const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
+      if (secIds.length) {
+        const { data: securities } = await db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds);
+        for (const security of securities ?? []) secMap[security.id as string] = security as never;
+      }
+      const holdings = (holds ?? []).map((holding) => {
+        const security = secMap[holding.security_id as string];
+        const qty = Number(holding.quantity) || 0;
+        const costCents = costCentsPerShare(holding);
+        const priceCents = Number(security?.last_price) > 0 ? Number(security?.last_price) : costCents;
+        const valueCents = qty * priceCents;
+        const purchaseValueCents = qty * costCents;
+        return { symbol: security?.symbol ?? "—", name: security?.name ?? "—", qty, valueCents, purchaseValueCents, pnlCents: valueCents - purchaseValueCents, strategy: holding.strategy_name_snapshot ?? null };
+      });
+      const parentId = String(member.primary_user_id || member.parent_id || "");
+      const { data: parent } = parentId
+        ? await db.from("profiles").select("first_name,last_name,email").eq("id", parentId).maybeSingle()
+        : { data: null };
+      return NextResponse.json({
+        ok: true,
+        profile: {
+          ...member,
+          managing_parent: parent ? `${parent.first_name || ""} ${parent.last_name || ""}`.trim() : parentId || null,
+          guardian_email: parent?.email ?? null,
+        },
+        onboarding: null,
+        required: null,
+        kyc: deriveChildKyc(member as Record<string, unknown>),
+        holdings,
+        transactions: (txns ?? []).map((transaction) => ({
+          ...transaction,
+          transaction_date: transaction.transaction_date || transaction.created_at || null,
+        })),
+        is_unlinked_child: true,
+        child_certificate: {
+          url: member.certificate_url ?? null,
+          status: member.certificate_verification_status ?? member.kyc_status ?? null,
+          reviewed_at: member.kyc_reviewed_at ?? null,
+        },
+      });
+    }
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
 
-    const [{ data: profile }, { data: onboarding }, { data: required }, { data: holds }, { data: txns }] = await Promise.all([
+    const [{ data: profile }, { data: onboarding }, { data: required }, { data: pack }, { data: holds }, { data: txns }] = await Promise.all([
       db.from("profiles").select("*").eq("id", userId).maybeSingle(),
       db.from("user_onboarding").select("*").eq("user_id", userId).maybeSingle(),
       db.from("required_actions").select("*").eq("user_id", userId).maybeSingle(),
+      db.from("user_onboarding_pack_details").select("pack_details").eq("user_id", userId).maybeSingle(),
       db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
       db.from("transactions").select("id, name, description, amount, direction, status, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(25),
     ]);
@@ -105,12 +250,20 @@ export async function GET(req: Request) {
       return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };
     }).sort((a, b) => b.valueCents - a.valueCents);
 
+    const sumsubRaw = parseRecord(onboarding?.sumsub_raw);
+    const mandateData = parseRecord(sumsubRaw.mandate_data);
     return NextResponse.json({
       ok: true,
       profile: profile ?? null,
       onboarding: onboarding ?? null,
       required: required ?? null,
-      kyc: deriveKyc(onboarding ?? undefined, required ?? undefined),
+      onboarding_pack: pack?.pack_details ?? null,
+      mandate: {
+        available: Object.keys(mandateData).length > 0 || Boolean(onboarding?.signed_agreement_url),
+        data: mandateData,
+        signed_agreement_url: onboarding?.signed_agreement_url ?? null,
+      },
+      kyc: deriveKyc(onboarding ?? undefined, required ?? undefined, pack?.pack_details),
       holdings,
       transactions: txns ?? [],
     });
@@ -139,13 +292,38 @@ export async function POST(req: Request) {
   }
 
   const action = new URL(req.url).searchParams.get("action") || "";
-  const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; decision?: string };
+  const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; family_member_id?: string; decision?: string };
+
+  if (action === "child-certificate-review") {
+    const familyMemberId = String(body.family_member_id || "");
+    const decision = body.decision === "approve" ? "verified" : body.decision === "reject" ? "rejected" : "pending";
+    if (!familyMemberId) return NextResponse.json({ ok: false, error: "family_member_id required" }, { status: 400 });
+    let db: ReturnType<typeof createRetailServiceRoleClient>;
+    try {
+      db = createRetailServiceRoleClient();
+    } catch {
+      return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
+    }
+    const updatePayload: { certificate_verification_status: string; kyc_pending?: boolean } = {
+      certificate_verification_status: decision,
+    };
+    if (decision === "verified") updatePayload.kyc_pending = true;
+    const { data: member, error } = await db
+      .from("family_members")
+      .update(updatePayload)
+      .eq("id", familyMemberId)
+      .select("id,certificate_verification_status,kyc_status,kyc_pending")
+      .maybeSingle();
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    if (!member) return NextResponse.json({ ok: false, error: "Family member not found" }, { status: 404 });
+    return NextResponse.json({ ok: true, decision, member });
+  }
 
   if (action === "kyc-review") {
     const userId = String(body.user_id || "");
     const decision = body.decision === "approve" ? "approve" : "reject";
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
-    let db;
+    let db: ReturnType<typeof createRetailServiceRoleClient>;
     try {
       db = createRetailServiceRoleClient();
     } catch {
