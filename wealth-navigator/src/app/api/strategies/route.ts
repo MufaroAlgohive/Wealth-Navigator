@@ -47,20 +47,72 @@ interface RetailStrategyRow {
   benchmark_name: string | null;
   benchmark_symbol: string | null;
   status: string | null;
+  short_name: string | null;
+  description: string | null;
+  objective: string | null;
+  risk_level: string | null;
+  base_currency: string | null;
+  is_public: boolean | null;
+  is_featured: boolean | null;
+  investor_environment: string | null;
   holdings: unknown;
   updated_at: string | null;
 }
 
 async function loadRetailStrategies(
   retail: ReturnType<typeof createRetailServiceRoleClient>,
-): Promise<{ strategies: ReturnType<typeof mapRow>[]; source: string; count: number; lastUpdatedAt: string | null }> {
+): Promise<{ strategies: ReturnType<typeof mapRow>[]; market: Array<{ symbol: string; price: number | null; changePct: number | null }>; source: string; count: number; lastUpdatedAt: string | null }> {
   const { data: stratData, error: stratErr } = await retail
     .from("strategies_c")
     .select(
-      "id,name,slug,sector,provider_name,benchmark_name,benchmark_symbol,status,holdings,updated_at",
+      "id,name,slug,short_name,description,objective,risk_level,sector,base_currency,provider_name,benchmark_name,benchmark_symbol,status,is_public,is_featured,investor_environment,holdings,updated_at",
     );
   if (stratErr) throw stratErr;
   const strategies = (stratData ?? []) as RetailStrategyRow[];
+  const holdingSymbols = Array.from(new Set(strategies.flatMap((strategy) => {
+    if (!Array.isArray(strategy.holdings)) return [];
+    return strategy.holdings.map((holding) => {
+      if (typeof holding === "string") return holding;
+      if (!holding || typeof holding !== "object") return "";
+      const row = holding as Record<string, unknown>;
+      return String(row.ticker ?? row.symbol ?? "");
+    });
+  }).map((symbol) => symbol.trim()).filter(Boolean)));
+  const market: Array<{ symbol: string; price: number | null; changePct: number | null }> = [];
+  const securityBySymbol = new Map<string, { symbol: string; logoUrl: string | null; priceR: number | null }>();
+  if (holdingSymbols.length) {
+    const { data: securities } = await retail
+      .from("securities_c")
+      .select("id,symbol,last_price,change_percent,logo_url")
+      .in("symbol", holdingSymbols);
+    const securityIds = (securities ?? []).map((security) => security.id).filter(Boolean);
+    const { data: intraday } = securityIds.length
+      ? await retail
+          .from("stock_intraday_c")
+          .select('security_id,current_price,"1d_pct",timestamp')
+          .in("security_id", securityIds)
+          .order("timestamp", { ascending: false })
+          .limit(5000)
+      : { data: [] };
+    const latest = new Map<string, Record<string, unknown>>();
+    for (const quote of (intraday ?? []) as Array<Record<string, unknown>>) {
+      const id = String(quote.security_id ?? "");
+      if (id && !latest.has(id)) latest.set(id, quote);
+    }
+    for (const security of (securities ?? []) as Array<Record<string, unknown>>) {
+      const quote = latest.get(String(security.id));
+      const rawPrice = Number(quote?.current_price ?? security.last_price);
+      const rawChange = Number(quote?.["1d_pct"] ?? security.change_percent);
+      market.push({
+        symbol: String(security.symbol ?? "").replace(/\.JO$/i, ""),
+        price: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null,
+        changePct: Number.isFinite(rawChange) ? rawChange : null,
+      });
+      const normalizedSymbol = String(security.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
+      securityBySymbol.set(normalizedSymbol, { symbol: normalizedSymbol, logoUrl: security.logo_url ? String(security.logo_url) : null, priceR: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null });
+    }
+    market.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }
 
   // Aggregate AUM / day-PnL / YTD-PnL / investors per strategy at the latest date.
   const agg = new Map<string, { aum: number; day: number; ytd: number; users: Set<string> }>();
@@ -102,9 +154,30 @@ async function loadRetailStrategies(
           ? "balanced"
           : "equity";
     const st = String(s.status ?? "").toLowerCase();
+    const previewSymbols = Array.isArray(s.holdings) ? s.holdings.map((holding) => {
+      if (typeof holding === "string") return holding;
+      if (!holding || typeof holding !== "object") return "";
+      const row = holding as Record<string, unknown>;
+      return String(row.ticker ?? row.symbol ?? "");
+    }).map((symbol) => symbol.replace(/\.JO$/i, "").toUpperCase()).filter(Boolean) : [];
+    const minValue = Array.isArray(s.holdings) ? s.holdings.reduce((total, holding) => {
+      const row = typeof holding === "object" && holding ? holding as Record<string, unknown> : {};
+      const symbol = String(typeof holding === "string" ? holding : row.ticker ?? row.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
+      const units = Number(row.shares ?? row.quantity ?? row.units ?? 1);
+      const price = securityBySymbol.get(symbol)?.priceR;
+      return total + (price != null && Number.isFinite(units) ? price * units : 0);
+    }, 0) : 0;
     return {
       id: s.id,
       name: s.name ?? s.slug ?? "Strategy",
+      shortName: s.short_name,
+      description: s.description ?? s.objective,
+      riskLevel: s.risk_level,
+      sector: s.sector,
+      baseCurrency: s.base_currency ?? "ZAR",
+      isPublic: Boolean(s.is_public),
+      isFeatured: Boolean(s.is_featured),
+      investorEnvironment: String(s.investor_environment || "LIVE").toUpperCase() === "UAT" ? "UAT" : "LIVE",
       status: (st === "active" || st === "live" ? "live" : "paper") as "live" | "paper" | "halted",
       kind: kind as "equity" | "money_market" | "balanced" | "fixed_income",
       manager: s.provider_name ?? "—",
@@ -121,6 +194,8 @@ async function loadRetailStrategies(
       nav: aumR,
       investorCount: a.users.size,
       holdingsCount: Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0,
+      holdingsPreview: previewSymbols.map((symbol) => securityBySymbol.get(symbol) ?? { symbol, logoUrl: null }),
+      minValue,
       lastRebalanced: s.updated_at ? new Date(s.updated_at).toISOString().slice(0, 10) : "—",
       deployedAt: null as string | null,
       sharpe: 0,
@@ -133,6 +208,7 @@ async function loadRetailStrategies(
   view.sort((x, y) => y.aum - x.aum);
   return {
     strategies: view,
+    market,
     source: "supabase",
     count: view.length,
     lastUpdatedAt: asOf ? new Date(asOf).toISOString() : null,

@@ -1,15 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Layers, Lock, RefreshCw, ShieldCheck } from "lucide-react";
+import type { Route } from "next";
+import { ArrowDownRight, ArrowUpRight, ChevronDown, ExternalLink, Eye, Lock, Minus, Newspaper, ShieldCheck, TrendingUp } from "lucide-react";
 
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
-import { GlassBadge, GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
-import { Button } from "@/components/ui/button";
+import { GlassSection } from "@/components/oems/primitives/glass";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatPct, formatZAR } from "@/lib/format";
@@ -42,12 +42,15 @@ interface StrategyRow {
   nav: number; // Rands
   investorCount: number;
   holdingsCount: number;
+  holdingsPreview: Array<{ symbol: string; logoUrl: string | null }>;
+  minValue: number;
   lastRebalanced: string; // "YYYY-MM-DD" or "—" (already formatted by the BFF)
   deployedAt: string | null;
 }
 
 interface StrategiesResponse {
   strategies: StrategyRow[];
+  market?: Array<{ symbol: string; price: number | null; changePct: number | null }>;
   source: string;
   message?: string;
   // Audit #12 — the BFF returns the typed reason + migration hint
@@ -66,13 +69,7 @@ function kindTone(kind: string | null | undefined): "primary" | "warning" | "neu
   return kind === "equity" ? "primary" : kind === "money_market" ? "warning" : "neutral";
 }
 
-function StrategiesHero({
-  strategies,
-  source,
-}: {
-  strategies: StrategyRow[];
-  source?: string;
-}) {
+function StrategiesHero({ strategies }: { strategies: StrategyRow[] }) {
   const stats = useMemo(() => {
     const live = strategies.filter((s) => s.status === "live").length;
     const totalAum = strategies.reduce((sum, s) => sum + s.aum, 0);
@@ -82,53 +79,33 @@ function StrategiesHero({
   }, [strategies]);
 
   return (
-    <header className="glass-panel relative overflow-hidden p-6 md:p-8">
-      <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
-      <div className="relative flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1 space-y-4">
-          <GlassBadge tone="primary">
-            <Layers className="h-3.5 w-3.5" />
-            Strategy mandates
-          </GlassBadge>
-          <div>
-            <h1 className="text-display">Mandates</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-              Live book · rebalance gated on linked investors · pre-trade mandate &amp; halt checks via IRESS
-            </p>
-          </div>
-        </div>
-        <GlassBadge tone={strategies.length > 0 ? "success" : "neutral"}>
-          <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />
-          {source === "supabase" ? "Supabase" : strategies.length > 0 ? "Loaded" : "Awaiting data"}
-        </GlassBadge>
-      </div>
-
+    <header className="glass-panel relative overflow-hidden px-3 py-3 sm:px-4">
       {strategies.length > 0 && (
-        <div className="relative mt-6 grid grid-cols-2 gap-3 border-t border-[hsl(var(--glass-border))] pt-5 sm:grid-cols-4">
-          <GlassKpi label="Mandates" value={String(strategies.length)} accent="primary" />
-          <GlassKpi
-            label="Live"
-            value={String(stats.live)}
-            accent={stats.live > 0 ? "positive" : "default"}
-          />
-          <GlassKpi
-            label="Total AUM"
-            value={stats.totalAum > 0 ? formatZAR(stats.totalAum) : "—"}
-          />
-          <GlassKpi label="Investors" value={String(stats.totalInvestors)} />
-          <GlassKpi
-            label="Day P&L"
-            value={stats.dayPnl !== 0 ? formatZAR(stats.dayPnl) : "—"}
-            accent={stats.dayPnl > 0 ? "positive" : stats.dayPnl < 0 ? "negative" : "default"}
-          />
+        <div className="grid grid-cols-5 divide-x divide-border/60 rounded-xl border border-border/70 bg-background/35">
+          <SlimStat label="Mandates" value={String(strategies.length)} tone="primary" />
+          <SlimStat label="Live" value={String(stats.live)} tone={stats.live > 0 ? "positive" : "default"} />
+          <SlimStat label="Total AUM" value={stats.totalAum > 0 ? formatZAR(stats.totalAum) : "—"} />
+          <SlimStat label="Investors" value={String(stats.totalInvestors)} />
+          <SlimStat label="Day P&L" value={stats.dayPnl !== 0 ? formatZAR(stats.dayPnl) : "—"} tone={stats.dayPnl > 0 ? "positive" : stats.dayPnl < 0 ? "negative" : "default"} />
         </div>
       )}
     </header>
   );
 }
 
+function SlimStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "primary" | "positive" | "negative" }) {
+  return <div className="flex min-w-0 flex-col items-center justify-center px-1 py-2 text-center sm:px-3"><span className="text-[8px] font-bold uppercase tracking-[.12em] text-muted-foreground sm:text-[9px]">{label}</span><span className={cn("mt-0.5 truncate font-mono text-xs font-bold sm:text-sm", tone === "positive" ? "text-success" : tone === "negative" ? "text-destructive" : tone === "primary" ? "text-primary" : "text-foreground")}>{value}</span></div>;
+}
+
+function MarketTicker({ items }: { items: Array<{ symbol: string; price: number | null; changePct: number | null }> }) {
+  if (!items.length) return <div className="flex h-10 items-center justify-center border-y border-border/60 bg-background/35 text-[10px] text-muted-foreground">Live market prices unavailable</div>;
+  const display = [...items, ...items];
+  return <div className="overflow-hidden border-y border-border/60 bg-background/35"><div className="strategy-market-ticker flex w-max items-center whitespace-nowrap" style={{ animationDuration: `${Math.max(24, items.length * 3)}s` }}>{display.map((item, index) => { const up=(item.changePct??0)>0, down=(item.changePct??0)<0; const Icon=up?ArrowUpRight:down?ArrowDownRight:Minus; return <div key={`${item.symbol}-${index}`} className="flex h-10 items-center gap-2 border-r border-border/60 px-5"><span className="font-mono text-[10px] font-bold tracking-wide text-foreground">{item.symbol}</span><span className="font-mono text-[10px] text-muted-foreground">{item.price == null ? "—" : formatZAR(item.price)}</span><span className={cn("inline-flex items-center gap-0.5 font-mono text-[10px] font-semibold",up?"text-success":down?"text-destructive":"text-muted-foreground")}><Icon className="h-3 w-3"/>{item.changePct == null ? "—" : `${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}%`}</span></div>})}</div></div>;
+}
+
 /** The "Mandates" tab body — was `/oems/strategies`. Must render inside a Suspense boundary (uses `useSearchParams`). */
 export function StrategiesMonitor() {
+  const router = useRouter();
   const realDataOnly = isRealDataOnlyClient();
   const strategiesQ = useQuery<StrategiesResponse>({
     queryKey: ["bff-strategies"],
@@ -143,9 +120,22 @@ export function StrategiesMonitor() {
   });
   const strategies = strategiesQ.data?.strategies ?? [];
   const focusId = useSearchParams().get("focus");
-  const [selected, setSelected] = useState<string>(
-    (focusId && strategies.find((s) => s.id === focusId)?.id) || strategies[0]?.id || "",
-  );
+  const [selected, setSelected] = useState("");
+  const [firstReveal, setFirstReveal] = useState(false);
+  const hasRevealed = useRef(false);
+  const reveal = (id: string) => {
+    setSelected(id);
+    if (!hasRevealed.current) {
+      hasRevealed.current = true;
+      setFirstReveal(true);
+      window.setTimeout(() => setFirstReveal(false), 650);
+    }
+  };
+  useEffect(() => {
+    if (focusId && strategies.some((strategy) => strategy.id === focusId)) reveal(focusId);
+    // A focus query represents an explicit choice from the global strategy selector.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId, strategies]);
   const active = strategies.find((s) => s.id === selected) ?? strategies[0];
 
   if (!realDataOnly) {
@@ -165,7 +155,8 @@ export function StrategiesMonitor() {
 
   return (
     <div className="space-y-5 pb-8">
-      <StrategiesHero strategies={strategies} source={strategiesQ.data?.source} />
+      <div className="-mx-4 -mt-4 sm:-mx-6 sm:-mt-6"><MarketTicker items={strategiesQ.data?.market ?? []} /></div>
+      <StrategiesHero strategies={strategies} />
 
       {strategiesQ.isLoading ? (
         <div className="grid grid-cols-12 gap-3">
@@ -215,11 +206,11 @@ export function StrategiesMonitor() {
         <div className="grid grid-cols-12 items-start gap-3">
           <div className="col-span-12 space-y-2 lg:col-span-5">
             {strategies.map((s) => (
-              <StrategyCard key={s.id} s={s} active={selected === s.id} onSelect={() => setSelected(s.id)} />
+              <StrategyCard key={s.id} s={s} active={selected === s.id} onSelect={() => reveal(s.id)} />
             ))}
           </div>
 
-          {active && <StrategyDetail strategy={active} />}
+          {active && <StrategyDetail strategy={active} showSummary={Boolean(selected)} firstReveal={firstReveal} onView={() => router.push(`/strategies/${active.id}` as Route)} />}
         </div>
       )}
     </div>
@@ -227,8 +218,6 @@ export function StrategiesMonitor() {
 }
 
 function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean; onSelect: () => void }) {
-  const router = useRouter();
-  const rebal = s.status === "live" && s.investorCount > 0;
   return (
     <button
       type="button"
@@ -252,7 +241,7 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
         </Pill>
       </div>
       <div className="mt-2.5 grid grid-cols-4 gap-2 text-[10.5px]">
-        <Stat label="AUM" value={s.aum > 0 ? formatZAR(s.aum) : "—"} />
+        <Stat label="Min value" value={s.minValue > 0 ? formatZAR(s.minValue) : "—"} />
         <Stat label="YTD" value={s.ytd != null ? formatPct(s.ytd) : "—"} positive={s.ytd != null ? s.ytd >= 0 : undefined} />
         <Stat label="Day P&L" value={s.dayPnl !== 0 ? formatZAR(s.dayPnl) : "—"} positive={s.dayPnl >= 0} />
         <Stat label="Investors" value={s.investorCount.toString()} />
@@ -265,41 +254,16 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
         >
           {s.status}
         </Pill>
-        {rebal ? (
-          <Button
-            size="sm"
-            variant="default"
-            className="h-6 gap-1 px-2 text-[10px]"
-            onClick={(e) => {
-              e.stopPropagation();
-              router.push(
-                `/oems/rebalance?strategy=${encodeURIComponent(s.id)}&name=${encodeURIComponent(s.name)}`,
-              );
-            }}
-          >
-            <RefreshCw className="h-2.5 w-2.5" /> Rebalance
-          </Button>
-        ) : (
-          <TooltipProvider delayDuration={150}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button type="button" aria-label={`Rebalance locked — ${s.status === "halted" ? "halted" : "no investors"}`} className="cursor-help">
-                  <Pill tone="destructive" size="xs" dot>
-                    REBALANCE LOCKED — {s.status === "halted" ? "halted" : "no investors"}
-                  </Pill>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-[260px]">
-                {s.status === "halted"
-                  ? "Strategy halted by Risk. Re-deploy after compliance sign-off."
-                  : "No underlying investors linked. Rebalance is meaningless without subscribed capital."}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
+        <HoldingLogoStack holdings={s.holdingsPreview ?? []} />
       </div>
     </button>
   );
+}
+
+function HoldingLogoStack({ holdings }: { holdings: Array<{ symbol: string; logoUrl: string | null }> }) {
+  const visible = holdings.slice(0, 3);
+  const remainder = Math.max(0, holdings.length - visible.length);
+  return <div className="flex items-center -space-x-1.5" aria-label={`${holdings.length} strategy holdings`}>{visible.map((holding) => <div key={holding.symbol} title={holding.symbol} className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full border-2 border-card bg-primary/10 text-[7px] font-bold text-primary">{holding.logoUrl ? <img src={holding.logoUrl} alt={holding.symbol} className="h-full w-full object-cover" /> : holding.symbol.slice(0, 2)}</div>)}{remainder > 0 && <div className="flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-card bg-muted px-1 text-[8px] font-bold text-muted-foreground">+{remainder}</div>}</div>;
 }
 
 function Stat({ label, value, positive }: { label: string; value: string; positive?: boolean }) {
@@ -319,81 +283,61 @@ function Stat({ label, value, positive }: { label: string; value: string; positi
   );
 }
 
-function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
+function StrategyDetail({ strategy, showSummary, firstReveal, onView }: { strategy: StrategyRow; showSummary: boolean; firstReveal: boolean; onView: () => void }) {
   const rebal = strategy.status === "live" && strategy.investorCount > 0;
   return (
     /* Sticky on lg+ so the detail panel stays in view while the strategy list
        column scrolls (Lonwabo). top-4 clears the page padding; on mobile the
        columns stack so sticky is disabled to avoid an awkward pin. */
     <div className="col-span-12 space-y-3 self-start lg:sticky lg:top-4 lg:col-span-7">
-      <GlassSection
-        title={`${strategy.name} · detail`}
-        db="retail"
-        endpoint="GET /api/strategies"
-        dataSource="supabase"
-        right={
-          <Pill tone={kindTone(strategy.kind)} size="xs">
-            {kindLabel(strategy.kind)}
-          </Pill>
-        }
-      >
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <GlassKpi label="AUM" value={strategy.aum > 0 ? formatZAR(strategy.aum) : "—"} accent="primary" />
-          <GlassKpi
-            label="YTD"
-            value={strategy.ytd != null ? formatPct(strategy.ytd) : "—"}
-            accent={strategy.ytd != null ? (strategy.ytd >= 0 ? "positive" : "negative") : "default"}
-          />
-          <GlassKpi
-            label="MTD P&L"
-            value={strategy.pnlMtd != null ? formatZAR(strategy.pnlMtd) : "—"}
-            accent={strategy.pnlMtd != null ? (strategy.pnlMtd >= 0 ? "positive" : "negative") : "default"}
-          />
-          <GlassKpi label="NAV" value={strategy.nav > 0 ? formatZAR(strategy.nav) : "—"} />
-          <GlassKpi label="Cash" value={strategy.cashWeight != null ? `${strategy.cashWeight.toFixed(1)}%` : "—"} />
-          <GlassKpi label="Holdings" value={strategy.holdingsCount.toString()} />
-          <GlassKpi label="Investors" value={strategy.investorCount.toString()} />
-          <GlassKpi label="Last rebal" value={strategy.lastRebalanced || "—"} />
+      {showSummary && <section className={cn("glass-panel p-3", firstReveal && "strategy-detail-first-reveal")}>
+        <div className="mb-2.5 flex items-center gap-2">
+          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{strategy.name} · detail</h2>
+          <TooltipProvider delayDuration={120}><Tooltip><TooltipTrigger asChild><span className={cn("inline-flex cursor-help items-center gap-1 rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-wide", rebal ? "bg-success/15 text-success" : "bg-warning/15 text-warning")}>{rebal ? <ShieldCheck className="h-3 w-3"/> : <Lock className="h-3 w-3"/>}{rebal ? "Eligible" : "Locked"}</span></TooltipTrigger><TooltipContent side="bottom" className="max-w-80 rounded-xl p-3 text-xs leading-relaxed shadow-xl">{rebal ? <><p className="font-bold text-success">Strategy is eligible for rebalance</p><p className="mt-1">{strategy.holdingsCount} securities · {strategy.investorCount} linked investors. Investor mandates and live market halt/suspension checks run before execution.</p></> : strategy.status === "halted" ? "Rebalance is locked because Risk halted this strategy." : strategy.investorCount === 0 ? "Rebalance is locked because no investors are linked." : "Rebalance is locked until the strategy is live."}</TooltipContent></Tooltip></TooltipProvider>
+          <Pill tone={kindTone(strategy.kind)} size="xs">{kindLabel(strategy.kind)}</Pill>
+          <button type="button" onClick={onView} className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-[9px] font-bold text-primary-foreground shadow-sm shadow-primary/20 transition hover:-translate-y-px hover:bg-primary/90"><Eye className="h-3 w-3"/>View strategy</button>
         </div>
-        {!rebal && (
-          <div className="glass-inset mt-4 flex items-center gap-2 p-2.5 text-[11.5px] text-warning">
-            <Lock className="h-3.5 w-3.5 shrink-0" />
-            <span>
-              Rebalance disabled —{" "}
-              {strategy.status === "halted"
-                ? "strategy halted by Risk"
-                : strategy.investorCount === 0
-                  ? "no underlying investors linked"
-                  : "strategy not yet deployed"}
-              .
-            </span>
-          </div>
-        )}
-        {rebal && (
-          <div className="glass-inset mt-4 flex items-center gap-2 p-2.5 text-[11.5px] text-success">
-            <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-            <span>
-              Rebalance-eligible — live with {strategy.investorCount} investors · {strategy.holdingsCount} holdings.
-              Pre-trade mandate &amp; {strategy.kind === "money_market" ? "issuer-concentration" : "halt/suspension"} checks
-              run against IRESS at rebalance time.
-            </span>
-          </div>
-        )}
-      </GlassSection>
+        <div className="grid grid-cols-4 divide-x divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-background/25 xl:grid-cols-8 xl:divide-y-0">
+          <DetailStat label="Min value" value={strategy.minValue > 0 ? formatZAR(strategy.minValue) : "—"} tone="primary" />
+          <DetailStat label="YTD" value={strategy.ytd != null ? formatPct(strategy.ytd) : "—"} tone={strategy.ytd == null ? "default" : strategy.ytd >= 0 ? "positive" : "negative"} />
+          <DetailStat label="MTD P&L" value={strategy.pnlMtd != null ? formatZAR(strategy.pnlMtd) : "—"} tone={strategy.pnlMtd == null ? "default" : strategy.pnlMtd >= 0 ? "positive" : "negative"} />
+          <DetailStat label="NAV" value={strategy.nav > 0 ? formatZAR(strategy.nav) : "—"} />
+          <DetailStat label="Cash" value={strategy.cashWeight != null ? `${strategy.cashWeight.toFixed(1)}%` : "—"} />
+          <DetailStat label="Holdings" value={strategy.holdingsCount.toString()} />
+          <DetailStat label="Investors" value={strategy.investorCount.toString()} />
+          <DetailStat label="Last rebal" value={strategy.lastRebalanced || "—"} />
+        </div>
+      </section>}
 
-      <GlassSection
-        title="Holdings · target vs actual"
-        db="retail"
-        endpoint="GET /api/strategies"
-        dataSource="supabase"
-        className="h-[420px]"
-        right={<span className="font-mono text-[10px]">{strategy.holdingsCount} positions</span>}
-      >
-        <EmptyDataState
-          message="Per-investor holdings not yet published for this strategy."
-          hint="This data will be available after the data sync service processes position and transaction records."
-        />
-      </GlassSection>
+      <details className="group glass-panel overflow-hidden">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-3"><span className="text-xs font-bold text-foreground">Holdings · target vs actual</span><span className="ml-auto font-mono text-[10px] text-muted-foreground">{strategy.holdingsCount} positions</span><ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition group-open:rotate-180"/></summary>
+        <div className="border-t border-border p-3"><EmptyDataState message="Per-investor holdings not yet published for this strategy." hint="This data will be available after the data sync service processes position and transaction records." /></div>
+      </details>
+      <ReturnInsightsCard strategy={strategy}/>
+      <NewsInsightsCard strategy={strategy}/>
     </div>
   );
+}
+
+const RETURN_PERIODS = [["1D", "1d_pct"], ["5D", "5d_pct"], ["MTD", "1m_pct"], ["6M", "6m_pct"], ["YTD", "ytd_pct"], ["1Y", "1y_pct"]] as const;
+function ReturnInsightsCard({ strategy }: { strategy: StrategyRow }) {
+  const [period, setPeriod] = useState<(typeof RETURN_PERIODS)[number][1]>("1d_pct");
+  const query = useQuery<{ assetReturns?: Array<Record<string, unknown>> }>({ queryKey: ["strategy-return-insights"], queryFn: () => fetch("/api/admin/dashboard", { cache: "no-store" }).then((response) => response.json()), ...queryOpts("reference") });
+  const symbols = new Set(strategy.holdingsPreview.map((holding) => holding.symbol.replace(/\.JO$/i, "").toUpperCase()));
+  const rows = (query.data?.assetReturns ?? []).filter((row) => symbols.has(String(row.symbol ?? "").replace(/\.JO$/i, "").toUpperCase())).map((row) => ({ symbol: String(row.symbol ?? "—").replace(/\.JO$/i, ""), value: Number(row[period]) })).filter((row) => Number.isFinite(row.value)).sort((a, b) => b.value - a.value);
+  const alerts = rows.filter((row) => row.value <= -4);
+  return <section className="glass-panel overflow-hidden"><header className="flex items-center gap-2 border-b border-border px-3 py-2.5"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-success/10 text-success"><TrendingUp className="h-3.5 w-3.5"/></span><h3 className="text-xs font-bold">Return Insights</h3>{alerts.length > 0 && <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[9px] font-bold text-destructive">{alerts.length} alerts</span>}<div className="ml-auto flex rounded-lg bg-muted/50 p-0.5">{RETURN_PERIODS.map(([label, key]) => <button type="button" key={key} onClick={() => setPeriod(key)} className={cn("rounded-md px-1.5 py-1 text-[8px] font-bold", period === key ? "bg-background text-primary shadow-sm" : "text-muted-foreground")}>{label}</button>)}</div></header><div className="p-3">{query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading returns…</p> : rows.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No return data for these strategy securities.</p> : <div className="grid grid-cols-2 gap-2">{rows.map((row) => <div key={row.symbol} className="flex items-center rounded-lg border border-border px-2.5 py-2"><span className="font-mono text-[10px] font-bold">{row.symbol}</span><span className={cn("ml-auto font-mono text-[10px] font-bold", row.value >= 0 ? "text-success" : "text-destructive")}>{row.value >= 0 ? "+" : ""}{row.value.toFixed(2)}%</span></div>)}</div>}</div></section>;
+}
+
+interface NewsCardItem { id: string; source: string; headline: string; body: string | null; url: string | null; publishedAt: string; ticker: string | null; tickers: string[]; }
+function NewsInsightsCard({ strategy }: { strategy: StrategyRow }) {
+  const query = useQuery<{ items?: NewsCardItem[]; sourceLabel?: string }>({ queryKey: ["strategy-news-insights"], queryFn: () => fetch("/api/news?limit=60", { cache: "no-store" }).then((response) => response.json()), ...queryOpts("reference") });
+  const symbols = new Set(strategy.holdingsPreview.map((holding) => holding.symbol.replace(/\.JO$/i, "").toUpperCase()));
+  const relevant = (query.data?.items ?? []).filter((item) => { const tagged = [item.ticker, ...(item.tickers || [])].filter(Boolean).map((value) => String(value).replace(/\.JO$/i, "").toUpperCase()); return tagged.some((symbol) => symbols.has(symbol)) || [...symbols].some((symbol) => item.headline.toUpperCase().includes(symbol)); }).slice(0, 6);
+  const items = relevant.length ? relevant : (query.data?.items ?? []).slice(0, 4);
+  return <section className="glass-panel overflow-hidden"><header className="flex items-center gap-2 border-b border-border px-3 py-2.5"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-primary/10 text-primary"><Newspaper className="h-3.5 w-3.5"/></span><div><h3 className="text-xs font-bold">News & Insights</h3><p className="text-[8px] text-muted-foreground">{relevant.length ? `${strategy.name} securities` : query.data?.sourceLabel || "Mint Platform"}</p></div></header><div className="divide-y divide-border px-3">{query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading news…</p> : items.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No news available.</p> : items.map((item) => <a key={item.id} href={item.url || undefined} target={item.url ? "_blank" : undefined} rel="noreferrer" className={cn("block py-2.5", item.url && "hover:text-primary")}><div className="flex items-center gap-2"><span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[8px] font-bold uppercase text-primary">{item.source}</span><span className="ml-auto text-[8px] text-muted-foreground">{new Date(item.publishedAt).toLocaleDateString("en-ZA")}</span>{item.url && <ExternalLink className="h-2.5 w-2.5 text-muted-foreground"/>}</div><p className="mt-1 text-[10px] font-semibold leading-snug">{item.headline}</p>{item.body && <p className="mt-0.5 line-clamp-2 text-[9px] leading-relaxed text-muted-foreground">{item.body}</p>}</a>)}</div></section>;
+}
+
+function DetailStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "primary" | "positive" | "negative" }) {
+  return <div className="flex min-w-0 flex-col items-center justify-center px-1.5 py-2 text-center"><span className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">{label}</span><span className={cn("mt-0.5 max-w-full truncate font-mono text-[11px] font-bold", tone === "primary" ? "text-primary" : tone === "positive" ? "text-success" : tone === "negative" ? "text-destructive" : "text-foreground")}>{value}</span></div>;
 }
