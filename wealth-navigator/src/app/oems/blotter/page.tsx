@@ -176,7 +176,7 @@ export default function BlotterPage() {
         title={`Orders · ${filtered.length}`}
         db="institutional"
         endpoint="GET /api/orders"
-        dataSource="supabase"
+        dataSource="uat"
         noPadding
         className="flex min-h-0 flex-col h-[calc(100vh-380px)]"
       >
