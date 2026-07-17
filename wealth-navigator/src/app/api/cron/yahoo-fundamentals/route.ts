@@ -141,13 +141,16 @@ export async function GET(req: Request) {
       const ytd = res.defaultKeyStatistics?.ytdReturn?.raw ?? res.defaultKeyStatistics?.["52WeekChange"]?.raw;
       if (ytd != null) update.ytd_performance = ytd * 100;
 
-      // UAT phase (IRESS_PRICE_OVERLAY=0): IRESS quotes are test data, so Yahoo
-      // owns last_price + change_percent too, keeping the live board/ticker
-      // accurate. JSE Yahoo quotes are in ZAc (cents) and securities_c.last_price
-      // is cents, so regularMarketPrice is stored directly. In production the
-      // IRESS worker owns these fields, so we leave them untouched there.
-      // Does Yahoo own this symbol's price this cycle? Yes unless IRESS has been
-      // approved+validated AND its last write is still fresh (not stale).
+      // Money-track price ownership is PER-SYMBOL and independent of the display
+      // overlay. IRESS_PRICE_OVERLAY only controls what the UI *shows*; it must
+      // NOT decide whether Yahoo keeps the money track (securities_c.last_price)
+      // fresh, or client valuations would freeze the moment display goes
+      // IRESS-lead. Yahoo owns a symbol's last_price + change_percent unless IRESS
+      // has been approved+validated for it AND its last write is still fresh
+      // (see yahooOwnsPrice + the stale fallback above). JSE Yahoo quotes are in
+      // ZAc (cents) and securities_c.last_price is cents, so regularMarketPrice
+      // is stored directly. This keeps valuations live on Yahoo while the board
+      // shows IRESS, until each symbol is individually cut over.
       const bareSym = sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
       const iressOwns = approvedIress.has(bareSym);
       const secUpdatedMs = sec.updated_at ? new Date(sec.updated_at as string).getTime() : 0;
@@ -157,7 +160,7 @@ export async function GET(req: Request) {
       let tickRow:
         | { security_id: string; symbol: string; current_price: number; "1d_pct": number | null; "1d_abs": number | null; timestamp: string }
         | null = null;
-      if (process.env.IRESS_PRICE_OVERLAY === "0" && yahooOwnsPrice) {
+      if (yahooOwnsPrice) {
         const px = res.price?.regularMarketPrice?.raw;
         const chg = res.price?.regularMarketChangePercent?.raw;
         if (px != null && px > 0) {
