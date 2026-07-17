@@ -249,7 +249,7 @@ function OrderRow({ order }: { order: Order }) {
       <td className="px-2.5 py-1.5 text-[9.5px] text-muted-foreground">{order.isin}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">{order.qty.toLocaleString()}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">
-        {order.filled.toLocaleString()} <span className="text-muted-foreground/70">({Math.round((order.filled / order.qty) * 100)}%)</span>
+        {order.filled.toLocaleString()} <span className="text-muted-foreground/70">({order.qty > 0 ? Math.round((order.filled / order.qty) * 100) : 0}%)</span>
       </td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">{order.limit?.toFixed(2) ?? "MKT"}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">

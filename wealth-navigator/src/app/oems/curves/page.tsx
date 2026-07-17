@@ -88,6 +88,27 @@ export default function CurvesPage() {
     ...queryOpts("reference"),
   });
 
+  const govi = goviQ.data?.points ?? [];
+  const nss = nssQ.data?.points ?? [];
+  const real = realQ.data?.points ?? [];
+  const be = beQ.data?.points ?? [];
+
+  // Align the four series on the *same* tenor list so the LineChart has a
+  // consistent x-axis. We use the NSS canonical tenors as the spine; series
+  // with shorter tenor lists leave the unmatched indices as `undefined`
+  // (recharts gaps the line). Declared BEFORE the mock-mode early return
+  // below so this hook always runs (Rules of Hooks).
+  const combined = useMemo(() => {
+    if (nss.length === 0) return [];
+    return nss.map((p, i) => ({
+      tenor: p.tenor,
+      govi: govi[i]?.yield,
+      swap: nss[i]?.yield,
+      real: real[i]?.yield,
+      breakeven: be[i]?.yield,
+    }));
+  }, [govi, nss, real, be]);
+
   if (!realDataOnly) {
     return (
       <PageCanvas>
@@ -114,26 +135,6 @@ export default function CurvesPage() {
       </PageCanvas>
     );
   }
-
-  const govi = goviQ.data?.points ?? [];
-  const nss = nssQ.data?.points ?? [];
-  const real = realQ.data?.points ?? [];
-  const be = beQ.data?.points ?? [];
-
-  // Align the four series on the *same* tenor list so the LineChart has
-  // a consistent x-axis. We use the NSS canonical tenors as the spine;
-  // series with shorter tenor lists leave the unmatched indices as
-  // `undefined` (recharts will gap the line).
-  const combined = useMemo(() => {
-    if (nss.length === 0) return [];
-    return nss.map((p, i) => ({
-      tenor: p.tenor,
-      govi: govi[i]?.yield,
-      swap: nss[i]?.yield,
-      real: real[i]?.yield,
-      breakeven: be[i]?.yield,
-    }));
-  }, [govi, nss, real, be]);
 
   const pca = metricsQ.data?.pca;
   const move = pca
