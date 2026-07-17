@@ -3,7 +3,7 @@
 import * as React from "react";
 import type { Route } from "next";
 import { usePathname, useRouter } from "next/navigation";
-import { ArrowUp, ArrowDown, Radio, AlertTriangle, Check, ChevronDown, Search, MoreHorizontal, Pencil, Info, Trash2, Users, Globe2, X } from "lucide-react";
+import { ArrowUp, ArrowDown, Radio, AlertTriangle, Check, ChevronDown, Search, MoreHorizontal, Pencil, Info, Trash2, Users, Globe2, X, FileText, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/cn";
 import { useTick, useLastTickTs, useQuoteFeedKind, type TickFeedKind } from "@/lib/store/tick-stream-provider";
@@ -98,14 +98,19 @@ export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
         </>
       )}
       </div>
-      {pathname === "/strategies" && <StrategyBarSelect />}
+      {pathname.startsWith("/strategies") && <div className="ml-auto flex shrink-0 items-center gap-1.5">{pathname.split("/")[2] && <StrategyWorkspaceActions strategyId={pathname.split("/")[2]!}/>}<StrategyBarSelect detailId={pathname.split("/")[2] || ""} /></div>}
     </div>
   );
 }
 
 interface StrategyOption { id: string; name: string; status: string; investorCount: number; isPublic: boolean; investorEnvironment: "LIVE" | "UAT"; shortName?: string | null; description?: string | null; riskLevel?: string | null; sector?: string | null; baseCurrency?: string | null; isFeatured?: boolean }
 
-function StrategyBarSelect() {
+function StrategyWorkspaceActions({strategyId}:{strategyId:string}) {
+  const router=useRouter();
+  return <><button type="button" onClick={()=>router.push(`/oems/rebalance?strategy=${strategyId}` as Route)} className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-primary/25 bg-primary/10 px-2.5 text-[9px] font-bold text-primary hover:bg-primary/15"><RefreshCw className="h-3 w-3"/>Rebalance</button><button type="button" onClick={()=>router.push(`/admin/factsheets?id=${strategyId}` as Route)} className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-background/70 px-2.5 text-[9px] font-bold text-foreground hover:bg-accent"><FileText className="h-3 w-3"/>Factsheet</button></>;
+}
+
+function StrategyBarSelect({ detailId = "" }: { detailId?: string }) {
   const router = useRouter();
   const root = React.useRef<HTMLDivElement>(null);
   const [open, setOpen] = React.useState(false);
@@ -122,11 +127,11 @@ function StrategyBarSelect() {
 
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    setSelected(params.get("focus") || "");
+    setSelected(detailId || params.get("focus") || "");
     fetch("/api/strategies", { cache: "no-store" }).then((response) => response.json()).then((payload) => {
       setOptions(Array.isArray(payload.strategies) ? payload.strategies.map((strategy: StrategyOption) => strategy) : []);
     }).catch(() => setOptions([]));
-  }, []);
+  }, [detailId]);
 
   React.useEffect(() => {
     const close = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
@@ -138,7 +143,7 @@ function StrategyBarSelect() {
     setSelected(id); setOpen(false); setQuery("");
     const params = new URLSearchParams(window.location.search);
     if (id) params.set("focus", id); else params.delete("focus");
-    const destination = `/strategies${params.size ? `?${params.toString()}` : ""}` as Route;
+    const destination = id && detailId ? `/strategies/${id}` as Route : `/strategies${params.size ? `?${params.toString()}` : ""}` as Route;
     router.push(destination);
   };
   const current = options.find((option) => option.id === selected);
