@@ -389,7 +389,7 @@ describe("OrderDelete cancel → SSE delta + audit.cancelled (Juan + Andre 2026-
     resetIressDouble();
   });
 
-  it("POST /orders/cancel publishes a cancelled delta AND stamps audit.status='cancelled'", async () => {
+  it("POST /orders/cancel publishes a cancel_pending delta AND stamps audit.status='cancel_pending'", async () => {
     resetIressDouble();
     const supa = makeSupabaseStub({ seededRow: null });
     const { published, unsubscribe } = await attachHubRecorder();
@@ -414,23 +414,25 @@ describe("OrderDelete cancel → SSE delta + audit.cancelled (Juan + Andre 2026-
       expect(iressDouble.state.deleteCalls.length).toBe(1);
       expect(iressDouble.state.deleteCalls[0]?.OrderNumber).toBe("1500118");
 
-      // 2. The audit row was stamped with status='cancelled'. The seeded
-      //    audit row here is null (no-op select), so the worker issues
-      //    two updates — both on order_id AND on payload->>iress_order_number.
+      // 2. The audit row was stamped with status='cancel_pending' (NOT terminal
+      //    'cancelled' — the broker hasn't acked, and the order can still fill in
+      //    the race; the poller writes the true terminal state). The seeded row is
+      //    null (no-op select), so the worker issues two updates — on order_id AND
+      //    on payload->>iress_order_number.
       const cancelUpdates = supa.updates.filter(
-        (u) => u.payload && u.payload.status === "cancelled",
+        (u) => u.payload && u.payload.status === "cancel_pending",
       );
       expect(cancelUpdates.length, "expected at least one cancel update").toBeGreaterThan(0);
 
-      // 3. The hub received a cancelled delta.
-      const cancelled = published.find((d) => d.state === "cancelled");
-      expect(cancelled, "expected hub delta with state=cancelled").toBeTruthy();
+      // 3. The hub received a cancel_pending delta (the in-flight instruction).
+      const cancelled = published.find((d) => d.state === "cancel_pending");
+      expect(cancelled, "expected hub delta with state=cancel_pending").toBeTruthy();
       expect(cancelled?.iressOrderNumber).toBe("1500118");
 
-      // 4. Transcript gap #2 (26:21): the cancelled SSE delta MUST carry
-      //    a one-liner `lastAction` so the UI's new Action column updates
+      // 4. Transcript gap #2 (26:21): the cancel SSE delta MUST carry a
+      //    one-liner `lastAction` so the UI's new Action column updates
       //    without a poll cycle.
-      expect(cancelled?.lastAction).toBe("Cancelled by trader (OrderDelete)");
+      expect(cancelled?.lastAction).toBe("Cancel sent — awaiting broker acknowledgement");
       expect(typeof cancelled?.lastActionAt).toBe("string");
 
       // 5. Transcript gap #1 (23:40): the cancel updates carry a
@@ -441,7 +443,7 @@ describe("OrderDelete cancel → SSE delta + audit.cancelled (Juan + Andre 2026-
       expect(stampedUpdates.length, "expected lastAction stamped into payload").toBeGreaterThan(0);
       expect(
         (stampedUpdates[0]?.payload?.payload as Record<string, unknown>).lastAction,
-      ).toBe("Cancelled by trader (OrderDelete)");
+      ).toBe("Cancel sent — awaiting broker acknowledgement");
 
       unsubscribe();
     } finally {

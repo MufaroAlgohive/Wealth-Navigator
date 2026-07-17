@@ -64,6 +64,8 @@ interface ExecutionRow {
   client_account: string;
   broker_account: string | null;
   ts: string;
+  /** Broker-observation time (audit updated_at) for optimistic-override reconciliation. */
+  updated_at?: string;
   strategy: string | null;
   side: string;
   symbol: string;
@@ -216,6 +218,7 @@ function mapRow(r: AuditRow): ExecutionRow {
     client_account: r.client_account,
     broker_account: str(payload.uatAccountCode),
     ts: typeof payload.ts === "string" ? (payload.ts as string) : r.updated_at,
+    updated_at: r.updated_at,
     strategy: typeof payload.strategy === "string" ? (payload.strategy as string) : null,
     side: (r.side ?? "buy").toUpperCase(),
     symbol: r.symbol,

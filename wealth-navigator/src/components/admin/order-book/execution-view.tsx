@@ -39,6 +39,8 @@ export interface ExecutionRow {
   client_account: string;
   broker_account: string | null;
   ts: string;
+  /** Broker-observation time (audit updated_at) for optimistic-override reconciliation. */
+  updated_at?: string;
   strategy: string | null;
   side: string;
   symbol: string;
@@ -216,6 +218,11 @@ function slipColor(slipCents: number | null): string {
   return "text-muted-foreground";
 }
 
+/** Terminal lifecycle states — once the poll observes one, the optimistic override is dropped. */
+const TERMINAL_STATES = new Set(["FILLED", "CANCELLED", "REJECTED", "EXPIRED", "FAILED"]);
+/** Broker-observation time of a row, for reconciling optimistic overrides against the poll. */
+const obsTime = (r: ExecutionRow): number => Date.parse(r.updated_at ?? r.ts) || 0;
+
 /**
  * Translate an incoming lifecycle token (from SSE / audit BFF) to the typed
  * `state` enum. Accepts both the upper-case form ("PARTIAL") and the lower-
@@ -352,6 +359,10 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   // Local override layer so SSE deltas update instantly without waiting for
   // the 30s poll. Keyed by audit row id.
   const [liveOverrides, setLiveOverrides] = React.useState<Record<string, ExecutionRow>>({});
+  // When each optimistic override was applied (client clock). Read by the poll
+  // reconciliation to decide whether a same-fills poll observation is newer than
+  // the override. A ref (not state) so writes don't trigger a re-render.
+  const overrideAppliedAtRef = React.useRef<Record<string, number>>({});
   const [lastEventAt, setLastEventAt] = React.useState<string | null>(null);
   const [uatEnabled, setUatEnabled] = React.useState(false);
 
@@ -381,6 +392,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
     if (d.book_id && d.book_id !== bookId) return;
     setLastEventAt(new Date().toISOString());
     if (!d.order_audit_id) return;
+    overrideAppliedAtRef.current[d.order_audit_id] = Date.now();
     setLiveOverrides((prev) => {
       const existing = prev[d.order_audit_id as string];
       const qty = d.qty > 0 ? d.qty : (existing?.qty ?? 0);
@@ -411,6 +423,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
         client_account: existing?.client_account ?? "",
         broker_account: existing?.broker_account ?? null,
         ts: d.timestamp,
+        updated_at: d.timestamp,
         strategy: existing?.strategy ?? d.book_id ?? null,
         side: (d.side ?? existing?.side ?? "BUY").toUpperCase(),
         symbol: d.symbol || existing?.symbol || "—",
@@ -471,14 +484,81 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   // matching id so the UI reflects SSE updates without waiting for the
   // next poll cycle.
   const polledRows = executions.data?.rows ?? [];
+  // Reconcile optimistic overrides against the poll (SSE-independent, so it works
+  // in production where SSE is off). Drop an override when the matched poll row
+  // (by id OR order_id — the prod poller delete-inserts and churns the audit PK)
+  // is terminal, saw more fills, or is a newer/equal-state observation. Never
+  // regresses fills the override already shows, and never masks a raced-in fill.
+  const survivingOverrides = React.useMemo(() => {
+    const keys = Object.keys(liveOverrides);
+    if (keys.length === 0) return liveOverrides;
+    const byId = new Map<string, ExecutionRow>();
+    const byOrderId = new Map<string, ExecutionRow>();
+    for (const r of polledRows) {
+      byId.set(r.id, r);
+      const k = (r.order_id || "").trim();
+      if (!k) continue;
+      const cur = byOrderId.get(k);
+      if (
+        !cur ||
+        (TERMINAL_STATES.has(r.state) && !TERMINAL_STATES.has(cur.state)) ||
+        (TERMINAL_STATES.has(r.state) === TERMINAL_STATES.has(cur.state) && obsTime(r) >= obsTime(cur))
+      )
+        byOrderId.set(k, r);
+    }
+    const out: Record<string, ExecutionRow> = {};
+    for (const k of keys) {
+      const ov = liveOverrides[k];
+      if (!ov) continue;
+      const p = byId.get(k) ?? byOrderId.get((ov.order_id || "").trim());
+      if (!p) {
+        out[k] = ov;
+        continue;
+      }
+      if (TERMINAL_STATES.has(p.state)) continue;
+      const pF = p.filled ?? 0;
+      const oF = ov.filled ?? 0;
+      if (pF > oF) continue;
+      if (pF === oF) {
+        if (p.state === ov.state) continue;
+        if (obsTime(p) > (overrideAppliedAtRef.current[k] ?? 0)) continue;
+      }
+      out[k] = ov;
+    }
+    return out;
+  }, [liveOverrides, polledRows]);
+
+  // Merge surviving overrides onto polled rows (by id, then order_id), appending
+  // only overrides the poll hasn't surfaced at all.
   const rows = React.useMemo(() => {
-    if (Object.keys(liveOverrides).length === 0) return polledRows;
-    const merged = polledRows.map((r) => liveOverrides[r.id] ?? r);
-    // Add any live-only rows the poll hasn't surfaced yet.
+    const keys = Object.keys(survivingOverrides);
+    if (keys.length === 0) return polledRows;
+    const ovByOrderId = new Map<string, ExecutionRow>();
+    for (const o of Object.values(survivingOverrides)) {
+      const k = (o.order_id || "").trim();
+      if (k && !ovByOrderId.has(k)) ovByOrderId.set(k, o);
+    }
+    const used = new Set<string>();
+    const merged = polledRows.map((r) => {
+      const byId = survivingOverrides[r.id];
+      if (byId) {
+        used.add(r.id);
+        return byId;
+      }
+      const byOrder = ovByOrderId.get((r.order_id || "").trim());
+      if (byOrder && !used.has(byOrder.id)) {
+        used.add(byOrder.id);
+        return byOrder;
+      }
+      return r;
+    });
     const polledIds = new Set(polledRows.map((r) => r.id));
-    const extra = Object.values(liveOverrides).filter((r) => !polledIds.has(r.id));
+    const polledOrderIds = new Set(polledRows.map((r) => (r.order_id || "").trim()));
+    const extra = Object.values(survivingOverrides).filter(
+      (o) => !used.has(o.id) && !polledIds.has(o.id) && !polledOrderIds.has((o.order_id || "").trim()),
+    );
     return [...extra, ...merged];
-  }, [polledRows, liveOverrides]);
+  }, [polledRows, survivingOverrides]);
 
   const symbols = React.useMemo(() => rows.map((r) => r.symbol).filter(Boolean), [rows]);
 
@@ -618,9 +698,10 @@ export function ExecutionView({ bookId }: { bookId: string }) {
       setCancelInFlight((p) => ({ ...p, [auditId]: true }));
       setCancelError((p) => ({ ...p, [auditId]: "" }));
       // Optimistic UI update — flip the local override to CANCEL_PENDING
-      // so the desk sees "cancel sent" before the broker acks. The worker
-      // SSE delta (or next 30s poll) carries the state transition to
-      // CANCELLED once IRESS acknowledges the OrderDelete.
+      // so the desk sees "cancel sent" before the broker acks. The poll (and
+      // the SSE delta when UAT is on) later reconciles this to the true
+      // terminal state (CANCELLED, or FILLED if the order raced a fill).
+      overrideAppliedAtRef.current[auditId] = Date.now();
       setLiveOverrides((p) => ({
         ...p,
         [auditId]: {
@@ -777,8 +858,9 @@ export function ExecutionView({ bookId }: { bookId: string }) {
         return;
       }
       // Optimistic UI — flip the local override to AMEND_PENDING so the
-      // desk sees the instruction before the broker acks. The worker SSE
-      // delta confirms (and carries the new fields on the next push).
+      // desk sees the instruction before the broker acks. The poll (and the
+      // SSE delta when UAT is on) later reconciles this to WORKING/PARTIAL.
+      overrideAppliedAtRef.current[auditId] = Date.now();
       setLiveOverrides((p) => ({
         ...p,
         [auditId]: {
