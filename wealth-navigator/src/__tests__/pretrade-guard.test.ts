@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { availableToSell } from "../../workers/iress-ingest/src/pretrade-guard";
+import { availableToSell, availableToBuy } from "../../workers/iress-ingest/src/pretrade-guard";
 import type { WorkerSupabase } from "../../workers/iress-ingest/src/supabase";
 
 /**
@@ -11,16 +11,29 @@ import type { WorkerSupabase } from "../../workers/iress-ingest/src/supabase";
  */
 
 type PosRow = { quantity: number } | null;
+type AcctRow = { cash_balance: number } | null;
 type AuditRow = {
   id: string;
   side: string;
   quantity: number;
   status: string;
   payload: Record<string, unknown> | null;
+  price_cents?: number | null;
+  result_payload?: Record<string, unknown> | null;
 };
 
-/** Minimal Supabase stub: position query ends in .maybeSingle(), audit query is awaited. */
-function fakeDb(opts: { position?: PosRow; positionError?: string; audit?: AuditRow[]; auditError?: string }): WorkerSupabase {
+/**
+ * Minimal Supabase stub. Single-row reads (oems_position_c, oems_account_c) end
+ * in .maybeSingle(); the oems_order_audit query is awaited.
+ */
+function fakeDb(opts: {
+  position?: PosRow;
+  positionError?: string;
+  account?: AcctRow;
+  accountError?: string;
+  audit?: AuditRow[];
+  auditError?: string;
+}): WorkerSupabase {
   return {
     from(table: string) {
       const builder: Record<string, unknown> = {};
@@ -32,7 +45,9 @@ function fakeDb(opts: { position?: PosRow; positionError?: string; audit?: Audit
         Promise.resolve(
           table === "oems_position_c"
             ? { data: opts.position ?? null, error: opts.positionError ? { message: opts.positionError } : null }
-            : { data: null, error: null },
+            : table === "oems_account_c"
+              ? { data: opts.account ?? null, error: opts.accountError ? { message: opts.accountError } : null }
+              : { data: null, error: null },
         );
       // Awaiting the builder (audit query) resolves the rows.
       builder.then = (resolve: (v: unknown) => unknown) =>
@@ -107,5 +122,63 @@ describe("availableToSell", () => {
   it("fails CLOSED: throws on a data error so the caller blocks the sell", async () => {
     const db = fakeDb({ positionError: "db down" });
     await expect(availableToSell(db, "56378", "CAC")).rejects.toThrow(/oems_position_c/);
+  });
+});
+
+const openBuy = (id: string, quantity: number, priceCents: number | null, status = "working"): AuditRow => ({
+  id,
+  side: "buy",
+  quantity,
+  status,
+  payload: null,
+  price_cents: priceCents,
+  result_payload: null,
+});
+
+describe("availableToBuy", () => {
+  it("uses oems_account_c cash and reserves the value of other open buys", async () => {
+    // Cash R1000; one other open buy of 100 @ R2 (200c) = R200 reserved → R800 left.
+    const db = fakeDb({ account: { cash_balance: 1000 }, audit: [openBuy("b1", 100, 200)] });
+    const r = await availableToBuy(db, "56378", "current-buy");
+    expect(r.source).toBe("ips");
+    expect(r.cash).toBe(1000);
+    expect(r.inflightBuys).toBe(200);
+    expect(r.available).toBe(800);
+  });
+
+  it("excludes the order being sent from the open-buy reservation", async () => {
+    const db = fakeDb({ account: { cash_balance: 1000 }, audit: [openBuy("self", 100, 200)] });
+    const r = await availableToBuy(db, "56378", "self");
+    expect(r.inflightBuys).toBe(0);
+    expect(r.available).toBe(1000);
+  });
+
+  it("is ADVISORY when there is no cash source and no cap (available null)", async () => {
+    const db = fakeDb({ account: null, audit: [] });
+    const r = await availableToBuy(db, "56378");
+    expect(r.source).toBe("none");
+    expect(r.cash).toBeNull();
+    expect(r.available).toBeNull(); // caller allows the buy (advisory), does not block
+  });
+
+  it("falls back to a configured cap when oems_account_c has no row", async () => {
+    const db = fakeDb({ account: null, audit: [] });
+    const r = await availableToBuy(db, "56378", undefined, { fallbackCapRands: 500 });
+    expect(r.source).toBe("cap");
+    expect(r.cash).toBe(500);
+    expect(r.available).toBe(500);
+  });
+
+  it("does not reserve an open buy whose price cannot be resolved", async () => {
+    const db = fakeDb({ account: { cash_balance: 1000 }, audit: [openBuy("b1", 100, null)] });
+    const r = await availableToBuy(db, "56378", "current-buy");
+    expect(r.inflightBuys).toBe(0);
+    expect(r.available).toBe(1000);
+    expect(r.note).toMatch(/unpriced/);
+  });
+
+  it("fails CLOSED on an infrastructure error: throws on an account read error", async () => {
+    const db = fakeDb({ accountError: "db down" });
+    await expect(availableToBuy(db, "56378")).rejects.toThrow(/oems_account_c/);
   });
 });

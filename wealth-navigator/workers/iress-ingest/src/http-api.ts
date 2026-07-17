@@ -48,7 +48,7 @@ import {
   marketDataBaseUrl,
   marketDataProdEnabled,
 } from "./market-data";
-import { availableToSell } from "./pretrade-guard";
+import { availableToSell, availableToBuy } from "./pretrade-guard";
 import { fetchLiveQuote } from "./quotes";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import { type WorkerSupabase, writeHeartbeat } from "./supabase";
@@ -3079,6 +3079,49 @@ async function uatSendToMarket(
     }
     console.info(
       `[iress-ingest/uat] sell guard OK ${symbol} ${qty} <= available ${avail.available} on ${accountCode} (src ${avail.source})`,
+    );
+  }
+
+  // ── PRE-TRADE CASH / BUYING-POWER GUARD (BUY side) ───────────────────────
+  // Mirror of the sell guard for buys. ADVISORY when no cash source exists
+  // (oems_account_c empty in UAT, no cap set) so a cash-feed gap can't brick
+  // legitimate buying; blocks only when cash is KNOWN and insufficient. Set
+  // IRESS_BUY_GUARD_CAP_RANDS to force a hard cap in UAT.
+  if (side === 1) {
+    const capEnv = process.env.IRESS_BUY_GUARD_CAP_RANDS;
+    const capRands = capEnv != null && capEnv !== "" && Number.isFinite(Number(capEnv)) ? Number(capEnv) : null;
+    const buffer = Number(process.env.IRESS_MARKET_BUY_BUFFER ?? "1.02");
+    let cash;
+    try {
+      cash = await availableToBuy(db, accountCode, audit.id, { fallbackCapRands: capRands });
+    } catch (guardErr) {
+      const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
+      console.warn(
+        `[iress-ingest/uat] buy guard could not verify cash for ${symbol} on ${accountCode}: ${m}`,
+      );
+      return {
+        ok: false,
+        status: 422,
+        code: "buy_guard_unavailable",
+        message: `Buy blocked: could not verify cash for account ${accountCode} (${m}). Try again.`,
+      };
+    }
+    // Value the incoming order in RANDS: LMT = qty*price; MKT = qty*last*buffer.
+    const lastRands = Number((audit.result_payload as { arrivalMid?: number } | null)?.arrivalMid) || null;
+    const orderValue = priceRands != null ? priceRands * qty : lastRands != null ? lastRands * qty * buffer : null;
+    if (cash.available != null && orderValue != null && orderValue > cash.available) {
+      console.warn(
+        `[iress-ingest/uat] INSUFFICIENT-CASH BLOCKED ${symbol} buy value ${orderValue.toFixed(2)} > available ${cash.available.toFixed(2)} on ${accountCode} (cash ${cash.cash}, inflight ${cash.inflightBuys.toFixed(2)}, src ${cash.source})`,
+      );
+      return {
+        ok: false,
+        status: 422,
+        code: "insufficient_cash_blocked",
+        message: `Buy blocked: ${symbol} value R${orderValue.toFixed(2)} exceeds available cash R${cash.available.toFixed(2)} on account ${accountCode} — ${cash.note}. We only buy within available cash.`,
+      };
+    }
+    console.info(
+      `[iress-ingest/uat] buy guard ${cash.available == null ? "ADVISORY (no cash source)" : "OK"} ${symbol} value ${orderValue?.toFixed(2) ?? "?"} <= available ${cash.available?.toFixed(2) ?? "∞"} on ${accountCode} (src ${cash.source})`,
     );
   }
 
