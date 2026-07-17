@@ -394,7 +394,7 @@ if (retailIngestEnabled) {
 // reverse-proxies /orders, /orders/stream, and /health from these handlers
 // so Next.js never holds the IRESS license seat.
 if (process.env.WORKER_HTTP_DISABLED !== "1") {
-  startHttpApi({ env, sessions, supabase }, () => lastQuoteSyncAt).catch((err) => {
+  startHttpApi({ env, sessions, supabase, retailSupabase: retailSupabase ?? null }, () => lastQuoteSyncAt).catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[iress-ingest] http api failed to start: ${message}`);
   });
