@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { availableToSell, availableToBuy } from "../../workers/iress-ingest/src/pretrade-guard";
+import {
+  availableToBuy,
+  availableToBuyForClient,
+  availableToSell,
+  availableToSellForClient,
+  resolveHolderKind,
+} from "../../workers/iress-ingest/src/pretrade-guard";
 import type { WorkerSupabase } from "../../workers/iress-ingest/src/supabase";
 
 /**
@@ -180,5 +186,108 @@ describe("availableToBuy", () => {
   it("fails CLOSED on an infrastructure error: throws on an account read error", async () => {
     const db = fakeDb({ accountError: "db down" });
     await expect(availableToBuy(db, "56378")).rejects.toThrow(/oems_account_c/);
+  });
+});
+
+// ── Per-client holder guards (production client orders; retail ledger) ──
+function fakeRetailDb(opts: {
+  security?: { id: string } | null;
+  securityError?: string;
+  holdings?: Array<{ quantity: number; trade_side: string }>;
+  holdingsError?: string;
+  wallet?: { balance: number } | null;
+  walletError?: string;
+}): WorkerSupabase {
+  return {
+    from(table: string) {
+      const builder: Record<string, unknown> = {};
+      const chain = () => builder;
+      builder.select = chain;
+      builder.eq = chain;
+      builder.in = chain;
+      builder.limit = chain;
+      builder.maybeSingle = () =>
+        Promise.resolve(
+          table === "securities_c"
+            ? { data: opts.security ?? null, error: opts.securityError ? { message: opts.securityError } : null }
+            : table === "wallets"
+              ? { data: opts.wallet ?? null, error: opts.walletError ? { message: opts.walletError } : null }
+              : { data: null, error: null },
+        );
+      builder.then = (resolve: (v: unknown) => unknown) =>
+        Promise.resolve({
+          data: table === "stock_holdings_c" ? opts.holdings ?? [] : [],
+          error: opts.holdingsError ? { message: opts.holdingsError } : null,
+        }).then(resolve);
+      return builder;
+    },
+  } as unknown as WorkerSupabase;
+}
+
+describe("availableToSellForClient (retail per-client ledger)", () => {
+  it("nets active BUY minus SELL rows for the client", async () => {
+    const db = fakeRetailDb({
+      security: { id: "sec-1" },
+      holdings: [
+        { quantity: 100, trade_side: "BUY" },
+        { quantity: 50, trade_side: "BUY" },
+        { quantity: 30, trade_side: "SELL" },
+      ],
+    });
+    const r = await availableToSellForClient(db, "user-1", "AGL");
+    expect(r.source).toBe("retail_holdings");
+    expect(r.held).toBe(120);
+    expect(r.available).toBe(120);
+  });
+
+  it("fails closed (available 0) when the security is unknown in the retail universe", async () => {
+    const db = fakeRetailDb({ security: null });
+    const r = await availableToSellForClient(db, "user-1", "ZZZ");
+    expect(r.available).toBe(0);
+    expect(r.source).toBe("none");
+  });
+
+  it("throws on a stock_holdings_c read error (fail-closed)", async () => {
+    const db = fakeRetailDb({ security: { id: "sec-1" }, holdingsError: "db down" });
+    await expect(availableToSellForClient(db, "user-1", "AGL")).rejects.toThrow(/stock_holdings_c/);
+  });
+});
+
+describe("availableToBuyForClient (retail wallet)", () => {
+  it("uses the client's wallet balance (RANDS)", async () => {
+    const db = fakeRetailDb({ wallet: { balance: 5000 } });
+    const r = await availableToBuyForClient(db, "user-1");
+    expect(r.source).toBe("wallet");
+    expect(r.cash).toBe(5000);
+    expect(r.available).toBe(5000);
+  });
+
+  it("is advisory (available null) when the client has no wallet row", async () => {
+    const db = fakeRetailDb({ wallet: null });
+    const r = await availableToBuyForClient(db, "user-1");
+    expect(r.source).toBe("none");
+    expect(r.available).toBeNull();
+  });
+
+  it("throws on a wallets read error (fail-closed on infra failure)", async () => {
+    const db = fakeRetailDb({ walletError: "db down" });
+    await expect(availableToBuyForClient(db, "user-1")).rejects.toThrow(/wallets/);
+  });
+});
+
+describe("resolveHolderKind", () => {
+  it("routes UAT sources to the desk guard", () => {
+    expect(resolveHolderKind({ source: "UAT_ADHOC_ORDER" })).toBe("desk");
+    expect(resolveHolderKind({ source: "OB_SEND_TO_MARKET_UAT" })).toBe("desk");
+  });
+  it("routes uat_test payloads to the desk guard", () => {
+    expect(resolveHolderKind({ source: "OTHER", payload: { uat_test: true } })).toBe("desk");
+  });
+  it("routes a production client order (holding_id / user_id) to the client guard", () => {
+    expect(resolveHolderKind({ source: "OB_SEND_TO_MARKET", payload: { holding_id: "h1" } })).toBe("client");
+    expect(resolveHolderKind({ source: "OB_SEND_TO_MARKET", payload: { user_id: "u1" } })).toBe("client");
+  });
+  it("defaults to desk when there is no clear client linkage", () => {
+    expect(resolveHolderKind({ source: "OB_SEND_TO_MARKET", payload: {} })).toBe("desk");
   });
 });

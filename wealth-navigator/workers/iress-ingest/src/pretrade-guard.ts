@@ -28,7 +28,7 @@ export interface SellAvailability {
   held: number;
   inflightSells: number;
   available: number;
-  source: "ips" | "derived" | "none";
+  source: "ips" | "derived" | "none" | "retail_holdings";
   note: string;
 }
 
@@ -138,7 +138,7 @@ export interface CashAvailability {
   inflightBuys: number;
   /** max(0, cash − inflightBuys); null when cash is unknown → guard is advisory. */
   available: number | null;
-  source: "ips" | "cap" | "none";
+  source: "ips" | "cap" | "none" | "wallet";
   note: string;
 }
 
@@ -235,3 +235,109 @@ export async function availableToBuy(
   if (unpriced > 0) note += `; ${unpriced} open buys unpriced (not reserved)`;
   return { cash, inflightBuys, available, source, note };
 }
+
+// ─── PER-CLIENT HOLDER GUARDS (production client orders) ─────────────────────
+// The desk guards above check the shared desk/omnibus account (56378). For a
+// PRODUCTION client order we must instead check THAT client's own holdings + cash,
+// which live in the RETAIL db: stock_holdings_c (positions) + wallets (cash). This
+// is OUR per-client ledger — Longmark nets everything into ONE omnibus account and
+// exposes no per-client broker position, so our side is the source of truth.
+//
+// DORMANT TODAY: no production client orders flow yet (UAT uses the desk path
+// above, byte-for-byte unchanged). These are wired only behind IRESS_PER_CLIENT_GUARD.
+// Before enabling in production: (a) VALIDATE the retail column names + the
+// trade_side convention against a live client holding; (b) add open-order
+// reservation (a client's own working sells/buys) — these do NOT yet reserve.
+// FAIL-CLOSED on any read error.
+
+/** Client SELL availability from the retail per-client ledger (stock_holdings_c). */
+export async function availableToSellForClient(
+  retail: WorkerSupabase,
+  userId: string,
+  symbol: string,
+): Promise<SellAvailability> {
+  const code = bareCode(symbol);
+  const sec = await retail
+    .from("securities_c")
+    .select("id")
+    .in("symbol", [code, `${code}.JO`, `${code}.JSE`])
+    .limit(1)
+    .maybeSingle();
+  if (sec.error) throw new Error(`securities_c read failed: ${sec.error.message}`);
+  const securityId = sec.data ? (sec.data as { id: string }).id : null;
+  if (!securityId) {
+    return {
+      held: 0,
+      inflightSells: 0,
+      available: 0,
+      source: "none",
+      note: `no securities_c row for ${code} — fail-closed`,
+    };
+  }
+  const rows = await retail
+    .from("stock_holdings_c")
+    .select("quantity, trade_side")
+    .eq("user_id", userId)
+    .eq("security_id", securityId)
+    .eq("is_active", true);
+  if (rows.error) throw new Error(`stock_holdings_c read failed: ${rows.error.message}`);
+  let held = 0;
+  for (const r of (rows.data ?? []) as { quantity: number | null; trade_side: string | null }[]) {
+    const q = Math.abs(Number(r.quantity) || 0);
+    held += String(r.trade_side ?? "").toUpperCase() === "SELL" ? -q : q;
+  }
+  held = Math.max(0, held);
+  return {
+    held,
+    inflightSells: 0,
+    available: held,
+    source: "retail_holdings",
+    note: `retail stock_holdings_c client ${userId.slice(0, 8)} held ${held} (open-order reservation TODO)`,
+  };
+}
+
+/** Client BUY cash availability from the retail wallet (RANDS). */
+export async function availableToBuyForClient(
+  retail: WorkerSupabase,
+  userId: string,
+): Promise<CashAvailability> {
+  const w = await retail
+    .from("wallets")
+    .select("balance")
+    .eq("user_id", userId)
+    .limit(1)
+    .maybeSingle();
+  if (w.error) throw new Error(`wallets read failed: ${w.error.message}`);
+  const cash = w.data != null ? Number((w.data as { balance: number }).balance) || 0 : null;
+  return {
+    cash,
+    inflightBuys: 0,
+    available: cash != null ? Math.max(0, cash) : null,
+    source: cash != null ? "wallet" : "none",
+    note:
+      cash != null
+        ? `retail wallet client ${userId.slice(0, 8)} R${cash} (open-order reservation TODO)`
+        : "no wallet row — advisory",
+  };
+}
+
+/**
+ * Classify an order's holder for guard routing. UAT / desk orders check the
+ * shared desk account (availableToSell / availableToBuy); a PRODUCTION client
+ * order checks that client's retail ledger (availableTo*ForClient). Defaults to
+ * "desk" for anything without a clear client linkage, so the current desk path
+ * is the fallback. The caller only routes to "client" when IRESS_PER_CLIENT_GUARD
+ * is enabled, so today everything runs the desk path.
+ */
+export function resolveHolderKind(order: {
+  source?: string | null;
+  payload?: Record<string, unknown> | null;
+}): "desk" | "client" {
+  const source = String(order.source ?? "").toUpperCase();
+  if (UAT_SOURCES.some((s) => s.toUpperCase() === source)) return "desk";
+  const p = order.payload ?? {};
+  if (p.uat_test === true) return "desk";
+  if (typeof p.holding_id === "string" || typeof p.user_id === "string") return "client";
+  return "desk";
+}
+

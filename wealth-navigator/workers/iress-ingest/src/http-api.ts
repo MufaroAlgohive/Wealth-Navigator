@@ -70,6 +70,13 @@ export interface HttpApiDeps {
   env: WorkerEnv;
   sessions: WorkerSessionManager;
   supabase: WorkerSupabase | null;
+  /**
+   * RETAIL (mfxng) client — the per-client ledger (stock_holdings_c / wallets)
+   * the per-client pre-trade guard checks for PRODUCTION client orders. Optional
+   * + dormant: the desk/UAT path never uses it (see resolveHolderKind +
+   * IRESS_PER_CLIENT_GUARD).
+   */
+  retailSupabase?: WorkerSupabase | null;
   /** Override the auth token check (mainly for tests). */
   authToken?: string;
 }
