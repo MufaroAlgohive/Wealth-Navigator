@@ -66,6 +66,37 @@ function parseRecord(value: unknown): Record<string, unknown> {
   }
 }
 
+async function resolveCertificateUrl(db: ReturnType<typeof createRetailServiceRoleClient>, rawValue: unknown) {
+  const raw = String(rawValue || "").trim();
+  if (!raw) return null;
+  let bucket = "";
+  let path = "";
+  if (raw.startsWith("storage://")) {
+    const pointer = raw.slice("storage://".length);
+    const slash = pointer.indexOf("/");
+    if (slash > 0) { bucket = pointer.slice(0, slash); path = pointer.slice(slash + 1); }
+  } else if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      const marker = "/storage/v1/object/";
+      const index = parsed.pathname.indexOf(marker);
+      if (index >= 0) {
+        const parts = parsed.pathname.slice(index + marker.length).split("/").filter(Boolean);
+        if (parts[0] === "public" && parts.length >= 3) { bucket = parts[1] ?? ""; path = parts.slice(2).join("/"); }
+        else if (parts[0] === "sign" && parts.length >= 4) { bucket = parts[2] ?? ""; path = parts.slice(3).join("/"); }
+      }
+    } catch { /* retain the original URL below */ }
+  } else {
+    const slash = raw.indexOf("/");
+    if (slash > 0) { bucket = raw.slice(0, slash); path = raw.slice(slash + 1); }
+  }
+  if (bucket && path) {
+    const { data } = await db.storage.from(bucket).createSignedUrl(decodeURIComponent(path), 60 * 60);
+    if (data?.signedUrl) return data.signedUrl;
+  }
+  return /^https?:\/\//i.test(raw) ? raw : null;
+}
+
 function costCentsPerShare(h: { avg_fill?: number | null; Expected_fill?: number | null }): number {
   const avgCents = Number(h.avg_fill) || 0;
   const expectedRaw = Number(h.Expected_fill) || 0;
@@ -182,15 +213,23 @@ export async function GET(req: Request) {
       if (!member) return NextResponse.json({ ok: false, error: "Family member not found" }, { status: 404 });
       const secIds = [...new Set((holds ?? []).map((holding) => holding.security_id).filter(Boolean))];
       const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
+      const intradayMap = new Map<string, number>();
       if (secIds.length) {
-        const { data: securities } = await db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds);
+        const [{ data: securities }, { data: intraday }] = await Promise.all([
+          db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds),
+          db.from("stock_intraday_c").select("security_id,current_price,timestamp").in("security_id", secIds).order("timestamp", { ascending: false }).limit(5000),
+        ]);
         for (const security of securities ?? []) secMap[security.id as string] = security as never;
+        for (const quote of intraday ?? []) {
+          const securityId = String(quote.security_id);
+          if (!intradayMap.has(securityId) && Number(quote.current_price) > 0) intradayMap.set(securityId, Number(quote.current_price));
+        }
       }
       const holdings = (holds ?? []).map((holding) => {
         const security = secMap[holding.security_id as string];
         const qty = Number(holding.quantity) || 0;
         const costCents = costCentsPerShare(holding);
-        const priceCents = Number(security?.last_price) > 0 ? Number(security?.last_price) : costCents;
+        const priceCents = intradayMap.get(String(holding.security_id)) ?? (Number(security?.last_price) > 0 ? Number(security?.last_price) : costCents);
         const valueCents = qty * priceCents;
         const purchaseValueCents = qty * costCents;
         return { symbol: security?.symbol ?? "—", name: security?.name ?? "—", qty, valueCents, purchaseValueCents, pnlCents: valueCents - purchaseValueCents, strategy: holding.strategy_name_snapshot ?? null };
@@ -199,6 +238,7 @@ export async function GET(req: Request) {
       const { data: parent } = parentId
         ? await db.from("profiles").select("first_name,last_name,email").eq("id", parentId).maybeSingle()
         : { data: null };
+      const certificateUrl = await resolveCertificateUrl(db, member.certificate_url);
       return NextResponse.json({
         ok: true,
         profile: {
@@ -216,7 +256,7 @@ export async function GET(req: Request) {
         })),
         is_unlinked_child: true,
         child_certificate: {
-          url: member.certificate_url ?? null,
+          url: certificateUrl,
           status: member.certificate_verification_status ?? member.kyc_status ?? null,
           reviewed_at: member.kyc_reviewed_at ?? null,
         },
@@ -232,19 +272,30 @@ export async function GET(req: Request) {
       db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
       db.from("transactions").select("id, name, description, amount, direction, status, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(25),
     ]);
+    const { data: linkedChild } = await db.from("family_members").select("id,certificate_url,certificate_verification_status,kyc_status,kyc_reviewed_at").eq("linked_user_id", userId).eq("relationship", "child").maybeSingle();
+    const linkedCertificateUrl = linkedChild ? await resolveCertificateUrl(db, linkedChild.certificate_url) : null;
 
     const secIds = [...new Set((holds ?? []).map((h) => h.security_id).filter(Boolean))];
     const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
+    const intradayMap = new Map<string, number>();
     if (secIds.length) {
-      const { data: secs } = await db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds);
+      const [{ data: secs }, { data: intraday }] = await Promise.all([
+        db.from("securities_c").select("id, symbol, name, last_price").in("id", secIds),
+        db.from("stock_intraday_c").select("security_id,current_price,timestamp").in("security_id", secIds).order("timestamp", { ascending: false }).limit(5000),
+      ]);
       for (const s of secs ?? []) secMap[s.id as string] = s as never;
+      for (const quote of intraday ?? []) {
+        const securityId = String(quote.security_id);
+        if (!intradayMap.has(securityId) && Number(quote.current_price) > 0) intradayMap.set(securityId, Number(quote.current_price));
+      }
     }
     const holdings = (holds ?? []).map((h) => {
       const sec = secMap[h.security_id as string];
       const qty = Number(h.quantity) || 0;
       const costCents = costCentsPerShare(h);
       // securities_c.last_price is INTEGER CENTS (ZAc) -> divide by 100 for Rands.
-      const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) / 100 : costCents / 100;
+      const priceCents = intradayMap.get(String(h.security_id)) ?? (sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) : costCents);
+      const liveRands = priceCents / 100;
       const valueCents = qty * Math.round(liveRands * 100);
       const investedCents = qty * costCents;
       return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };
@@ -266,6 +317,12 @@ export async function GET(req: Request) {
       kyc: deriveKyc(onboarding ?? undefined, required ?? undefined, pack?.pack_details),
       holdings,
       transactions: txns ?? [],
+      child_family_member_id: linkedChild?.id ?? null,
+      child_certificate: linkedChild ? {
+        url: linkedCertificateUrl,
+        status: linkedChild.certificate_verification_status ?? linkedChild.kyc_status ?? null,
+        reviewed_at: linkedChild.kyc_reviewed_at ?? null,
+      } : null,
     });
   }
 
