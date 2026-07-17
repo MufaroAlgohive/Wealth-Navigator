@@ -8,7 +8,8 @@ import { ArrowDownRight, ArrowUpRight, Lock, Minus, ShieldCheck } from "lucide-r
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
-import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
+import { GlassSection } from "@/components/oems/primitives/glass";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatPct, formatZAR } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -276,60 +277,23 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
        column scrolls (Lonwabo). top-4 clears the page padding; on mobile the
        columns stack so sticky is disabled to avoid an awkward pin. */
     <div className="col-span-12 space-y-3 self-start lg:sticky lg:top-4 lg:col-span-7">
-      <GlassSection
-        title={`${strategy.name} · detail`}
-        db="retail"
-        endpoint="GET /api/strategies"
-        dataSource="supabase"
-        right={
-          <Pill tone={kindTone(strategy.kind)} size="xs">
-            {kindLabel(strategy.kind)}
-          </Pill>
-        }
-      >
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <GlassKpi label="AUM" value={strategy.aum > 0 ? formatZAR(strategy.aum) : "—"} accent="primary" />
-          <GlassKpi
-            label="YTD"
-            value={strategy.ytd != null ? formatPct(strategy.ytd) : "—"}
-            accent={strategy.ytd != null ? (strategy.ytd >= 0 ? "positive" : "negative") : "default"}
-          />
-          <GlassKpi
-            label="MTD P&L"
-            value={strategy.pnlMtd != null ? formatZAR(strategy.pnlMtd) : "—"}
-            accent={strategy.pnlMtd != null ? (strategy.pnlMtd >= 0 ? "positive" : "negative") : "default"}
-          />
-          <GlassKpi label="NAV" value={strategy.nav > 0 ? formatZAR(strategy.nav) : "—"} />
-          <GlassKpi label="Cash" value={strategy.cashWeight != null ? `${strategy.cashWeight.toFixed(1)}%` : "—"} />
-          <GlassKpi label="Holdings" value={strategy.holdingsCount.toString()} />
-          <GlassKpi label="Investors" value={strategy.investorCount.toString()} />
-          <GlassKpi label="Last rebal" value={strategy.lastRebalanced || "—"} />
+      <section className="glass-panel p-3">
+        <div className="mb-2.5 flex items-center gap-2">
+          <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{strategy.name} · detail</h2>
+          <TooltipProvider delayDuration={120}><Tooltip><TooltipTrigger asChild><span className={cn("inline-flex cursor-help items-center gap-1 rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-wide", rebal ? "bg-success/15 text-success" : "bg-warning/15 text-warning")}>{rebal ? <ShieldCheck className="h-3 w-3"/> : <Lock className="h-3 w-3"/>}{rebal ? "Eligible" : "Locked"}</span></TooltipTrigger><TooltipContent className="max-w-64 text-xs">{rebal ? `Eligible for rebalance: ${strategy.investorCount} investors and ${strategy.holdingsCount} holdings. Mandate and market-status checks run at execution.` : strategy.status === "halted" ? "Rebalance locked because Risk halted this strategy." : strategy.investorCount === 0 ? "Rebalance locked because no investors are linked." : "Rebalance locked until the strategy is live."}</TooltipContent></Tooltip></TooltipProvider>
+          <Pill tone={kindTone(strategy.kind)} size="xs">{kindLabel(strategy.kind)}</Pill>
         </div>
-        {!rebal && (
-          <div className="glass-inset mt-4 flex items-center gap-2 p-2.5 text-[11.5px] text-warning">
-            <Lock className="h-3.5 w-3.5 shrink-0" />
-            <span>
-              Rebalance disabled —{" "}
-              {strategy.status === "halted"
-                ? "strategy halted by Risk"
-                : strategy.investorCount === 0
-                  ? "no underlying investors linked"
-                  : "strategy not yet deployed"}
-              .
-            </span>
-          </div>
-        )}
-        {rebal && (
-          <div className="glass-inset mt-4 flex items-center gap-2 p-2.5 text-[11.5px] text-success">
-            <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-            <span>
-              Rebalance-eligible — live with {strategy.investorCount} investors · {strategy.holdingsCount} holdings.
-              Pre-trade mandate &amp; {strategy.kind === "money_market" ? "issuer-concentration" : "halt/suspension"} checks
-              run against IRESS at rebalance time.
-            </span>
-          </div>
-        )}
-      </GlassSection>
+        <div className="grid grid-cols-4 divide-x divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-background/25 xl:grid-cols-8 xl:divide-y-0">
+          <DetailStat label="AUM" value={strategy.aum > 0 ? formatZAR(strategy.aum) : "—"} tone="primary" />
+          <DetailStat label="YTD" value={strategy.ytd != null ? formatPct(strategy.ytd) : "—"} tone={strategy.ytd == null ? "default" : strategy.ytd >= 0 ? "positive" : "negative"} />
+          <DetailStat label="MTD P&L" value={strategy.pnlMtd != null ? formatZAR(strategy.pnlMtd) : "—"} tone={strategy.pnlMtd == null ? "default" : strategy.pnlMtd >= 0 ? "positive" : "negative"} />
+          <DetailStat label="NAV" value={strategy.nav > 0 ? formatZAR(strategy.nav) : "—"} />
+          <DetailStat label="Cash" value={strategy.cashWeight != null ? `${strategy.cashWeight.toFixed(1)}%` : "—"} />
+          <DetailStat label="Holdings" value={strategy.holdingsCount.toString()} />
+          <DetailStat label="Investors" value={strategy.investorCount.toString()} />
+          <DetailStat label="Last rebal" value={strategy.lastRebalanced || "—"} />
+        </div>
+      </section>
 
       <GlassSection
         title="Holdings · target vs actual"
@@ -346,4 +310,8 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
       </GlassSection>
     </div>
   );
+}
+
+function DetailStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "primary" | "positive" | "negative" }) {
+  return <div className="flex min-w-0 flex-col items-center justify-center px-1.5 py-2 text-center"><span className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">{label}</span><span className={cn("mt-0.5 max-w-full truncate font-mono text-[11px] font-bold", tone === "primary" ? "text-primary" : tone === "positive" ? "text-success" : tone === "negative" ? "text-destructive" : "text-foreground")}>{value}</span></div>;
 }
