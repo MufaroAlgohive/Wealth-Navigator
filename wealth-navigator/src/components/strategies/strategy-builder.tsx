@@ -3,6 +3,7 @@
 import * as React from "react";
 import { toast } from "sonner";
 import { X } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,7 +21,7 @@ interface Holding { symbol?: string; ticker?: string; shares?: number; quantity?
 interface Strategy {
   id: string; name: string | null; short_name: string | null; description: string | null; objective: string | null;
   sector: string | null; risk_level: string | null; base_currency: string | null; status: string | null;
-  is_public: boolean | null; is_featured: boolean | null; holdings: Holding[] | null;
+  is_public: boolean | null; is_featured: boolean | null; holdings: Holding[] | null; investor_environment?: "LIVE" | "UAT" | null;
 }
 interface FormHolding { symbol: string; name: string; last_price: number; logo_url: string | null; shares: number; weight: number; market_value: number; }
 
@@ -52,6 +53,7 @@ function calcMin(holdings: Holding[], secMap: Map<string, Sec>): number | null {
 const inputCls = "w-full rounded-xl border border-input bg-background px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20";
 
 export function StrategyBuilder() {
+  const searchParams = useSearchParams();
   const [strategies, setStrategies] = React.useState<Strategy[] | null>(null);
   const [securities, setSecurities] = React.useState<Record<string, Sec>>({});
   const secMap = React.useMemo(() => {
@@ -77,8 +79,12 @@ export function StrategyBuilder() {
   const [currency, setCurrency] = React.useState("ZAR");
   const [isPublic, setIsPublic] = React.useState(false);
   const [isFeatured, setIsFeatured] = React.useState(false);
+  const [investorEnvironment, setInvestorEnvironment] = React.useState<"LIVE" | "UAT">("LIVE");
   const [holdings, setHoldings] = React.useState<FormHolding[]>([]);
   const [busy, setBusy] = React.useState(false);
+  const [editingId, setEditingId] = React.useState("");
+  const [passwordOpen, setPasswordOpen] = React.useState(false);
+  const [savePassword, setSavePassword] = React.useState("");
 
   // security search
   const [secQuery, setSecQuery] = React.useState("");
@@ -97,6 +103,23 @@ export function StrategyBuilder() {
     const total = hs.reduce((sum, h) => sum + h.shares * (h.last_price || 0), 0);
     return hs.map((h) => { const mv = h.shares * (h.last_price || 0); return { ...h, market_value: mv, weight: total > 0 ? (mv / total) * 100 : 0 }; });
   };
+  React.useEffect(() => {
+    const id = searchParams.get("edit") || "";
+    if (!id || !strategies || editingId === id) return;
+    const strategy = strategies.find((row) => row.id === id);
+    if (!strategy) return;
+    setEditingId(id); setName(strategy.name || ""); setShortName(strategy.short_name || "");
+    setDescription(strategy.description || strategy.objective || ""); setRisk(strategy.risk_level || "");
+    setSector(strategy.sector || ""); setCurrency(strategy.base_currency || "ZAR");
+    setIsPublic(Boolean(strategy.is_public)); setIsFeatured(Boolean(strategy.is_featured));
+    setInvestorEnvironment(strategy.investor_environment === "UAT" ? "UAT" : "LIVE");
+    setHoldings(withWeights((strategy.holdings || []).map((holding) => {
+      const symbol = String(holding.ticker || holding.symbol || "");
+      const security = secMap.get(symbol) || secMap.get(normalize(symbol));
+      const shares = Number(holding.shares || holding.quantity || 1); const price = Number(security?.last_price || 0);
+      return { symbol, name: security?.name || symbol, last_price: price, logo_url: security?.logo_url || null, shares, weight: Number(holding.weight || 0), market_value: shares * price };
+    })));
+  }, [editingId, searchParams, secMap, strategies]);
   const addHolding = (s: Sec) => {
     setHoldings((hs) => withWeights([...hs, { symbol: s.symbol, name: s.name || s.symbol, last_price: Number(s.last_price) || 0, logo_url: s.logo_url, shares: 1, weight: 0, market_value: 0 }]));
     setSecQuery(""); setSecResults([]);
@@ -109,17 +132,22 @@ export function StrategyBuilder() {
 
   const submit = async () => {
     if (!name.trim()) return toast.error("Strategy name is required");
+    setSavePassword(""); setPasswordOpen(true);
+  };
+  const performSave = async () => {
+    if (!savePassword) return;
     setBusy(true);
     try {
       const payload = {
         name: name.trim(), short_name: shortName.trim() || null, description: description.trim() || null,
         risk_level: risk || null, sector: sector.trim() || null, base_currency: currency.trim() || "ZAR",
-        is_public: isPublic, is_featured: isFeatured, status: "active",
+        is_public: isPublic, is_featured: isFeatured, investor_environment: investorEnvironment, status: "active",
         holdings: holdings.map((h) => ({ symbol: h.symbol, shares: h.shares, weight: h.weight })),
         min_investment: minInvest,
       };
-      const d = await fetch("/api/admin/strategies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }).then((r) => r.json());
-      toast.message(d.error || (d.ok ? "Saved" : "Deferred"));
+      const d = await fetch("/api/admin/strategies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: editingId ? "update" : "create", id: editingId || undefined, password: savePassword, patch: payload }) }).then((r) => r.json());
+      if (!d.ok) return toast.error(d.error || "Strategy save failed");
+      toast.success(editingId ? "Strategy updated" : "Strategy created"); setPasswordOpen(false); await load();
     } finally { setBusy(false); }
   };
 
@@ -149,8 +177,8 @@ export function StrategyBuilder() {
         {/* Create */}
         <section className="xl:col-span-5">
           <div className="rounded-2xl border border-border bg-card p-5">
-            <h2 className="text-base font-bold text-foreground">Create strategy</h2>
-            <p className="mt-1 text-xs text-muted-foreground">Add holdings to auto-calculate weights and minimum investment. (Save is deferred to the data phase.)</p>
+            <div className="flex items-center justify-between"><h2 className="text-base font-bold text-foreground">{editingId ? "Edit strategy" : "Create strategy"}</h2>{editingId && <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-bold text-primary">Editing live record</span>}</div>
+            <p className="mt-1 text-xs text-muted-foreground">Add holdings to calculate weights and minimum investment. Changes require your admin password.</p>
             <div className="mt-4 space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Strategy name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} placeholder="Global Growth Fund" /></Field>
@@ -170,6 +198,7 @@ export function StrategyBuilder() {
               <div className="flex gap-4">
                 <label className="flex items-center gap-2 text-xs text-foreground"><input type="checkbox" className="accent-primary" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} />Public</label>
                 <label className="flex items-center gap-2 text-xs text-foreground"><input type="checkbox" className="accent-primary" checked={isFeatured} onChange={(e) => setIsFeatured(e.target.checked)} />Featured</label>
+                <label className="ml-auto flex items-center gap-2 text-xs text-foreground">Environment<select className="rounded-lg border border-input bg-background px-2 py-1" value={investorEnvironment} onChange={(e) => setInvestorEnvironment(e.target.value as "LIVE" | "UAT")}><option value="LIVE">LIVE</option><option value="UAT">UAT</option></select></label>
               </div>
 
               <div className="border-t border-border pt-3">
@@ -214,7 +243,7 @@ export function StrategyBuilder() {
                 <div className="rounded-xl bg-primary/10 p-3 text-center"><p className="text-[11px] text-primary">Min. Investment</p><p className="mt-1 text-lg font-semibold text-primary">{minInvest > 0 ? fmtR(minInvest, currency) : "R 0"}</p></div>
               </div>
 
-              <div className="flex justify-end pt-1"><Button onClick={submit} disabled={busy}>{busy ? "Saving…" : "Save strategy"}</Button></div>
+              <div className="flex justify-end pt-1"><Button onClick={submit} disabled={busy}>{busy ? "Saving…" : editingId ? "Save changes" : "Create strategy"}</Button></div>
             </div>
           </div>
         </section>
@@ -274,6 +303,14 @@ export function StrategyBuilder() {
       <Dialog open={!!modal} onOpenChange={(o) => !o && setModal(null)}>
         <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
           {modal && <StrategyDetail strategy={modal} secMap={secMap} />}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={passwordOpen} onOpenChange={setPasswordOpen}>
+        <DialogContent className="max-w-sm">
+          <h2 className="text-base font-bold">Confirm strategy changes</h2>
+          <p className="mt-1 text-xs text-muted-foreground">Enter your admin password to {editingId ? "update" : "create"} this strategy.</p>
+          <input autoFocus type="password" value={savePassword} onChange={(event) => setSavePassword(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void performSave(); }} className={cn(inputCls, "mt-4")} placeholder="Admin password" />
+          <div className="mt-4 flex justify-end gap-2"><Button variant="outline" onClick={() => setPasswordOpen(false)}>Cancel</Button><Button disabled={busy || !savePassword} onClick={performSave}>{busy ? "Saving…" : "Confirm & save"}</Button></div>
         </DialogContent>
       </Dialog>
     </div>

@@ -47,6 +47,14 @@ interface RetailStrategyRow {
   benchmark_name: string | null;
   benchmark_symbol: string | null;
   status: string | null;
+  short_name: string | null;
+  description: string | null;
+  objective: string | null;
+  risk_level: string | null;
+  base_currency: string | null;
+  is_public: boolean | null;
+  is_featured: boolean | null;
+  investor_environment: string | null;
   holdings: unknown;
   updated_at: string | null;
 }
@@ -57,7 +65,7 @@ async function loadRetailStrategies(
   const { data: stratData, error: stratErr } = await retail
     .from("strategies_c")
     .select(
-      "id,name,slug,sector,provider_name,benchmark_name,benchmark_symbol,status,holdings,updated_at",
+      "id,name,slug,short_name,description,objective,risk_level,sector,base_currency,provider_name,benchmark_name,benchmark_symbol,status,is_public,is_featured,investor_environment,holdings,updated_at",
     );
   if (stratErr) throw stratErr;
   const strategies = (stratData ?? []) as RetailStrategyRow[];
@@ -155,6 +163,14 @@ async function loadRetailStrategies(
     return {
       id: s.id,
       name: s.name ?? s.slug ?? "Strategy",
+      shortName: s.short_name,
+      description: s.description ?? s.objective,
+      riskLevel: s.risk_level,
+      sector: s.sector,
+      baseCurrency: s.base_currency ?? "ZAR",
+      isPublic: Boolean(s.is_public),
+      isFeatured: Boolean(s.is_featured),
+      investorEnvironment: String(s.investor_environment || "LIVE").toUpperCase() === "UAT" ? "UAT" : "LIVE",
       status: (st === "active" || st === "live" ? "live" : "paper") as "live" | "paper" | "halted",
       kind: kind as "equity" | "money_market" | "balanced" | "fixed_income",
       manager: s.provider_name ?? "—",
