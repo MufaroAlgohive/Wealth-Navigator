@@ -91,7 +91,9 @@ export function usePortfolioRefetch() {
       return (await res.json()) as PortfolioSummary;
     },
     enabled: realDataOnly,
-    refetchInterval: 30_000,
+    // Spread queryOpts("live") FIRST so the intended 30s cadence wins — the
+    // "live" preset's refetchInterval: 5_000 would otherwise clobber it.
     ...queryOpts("live"),
+    refetchInterval: 30_000,
   });
 }
