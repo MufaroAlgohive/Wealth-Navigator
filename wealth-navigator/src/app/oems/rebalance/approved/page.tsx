@@ -46,7 +46,11 @@ function ApprovedRebalanceView() {
   const q = useQuery<RequestResponse>({
     queryKey: ["bff-rebalance-request-detail", requestId],
     queryFn: async () => {
-      const url = requestId ? "/api/rebalance/requests?status=ic_approved" : "/api/rebalance/requests";
+      // A deep-linked request_id must resolve REGARDLESS of status (once a
+      // request is executed it's no longer ic_approved). The bare queue view
+      // shows the approved backlog. (Was inverted: it filtered the deep-link to
+      // ic_approved, so an executed request silently fell back to all[0].)
+      const url = requestId ? "/api/rebalance/requests" : "/api/rebalance/requests?status=ic_approved";
       const r = await fetch(url, { cache: "no-store" });
       return r.json();
     },
@@ -55,7 +59,10 @@ function ApprovedRebalanceView() {
   });
 
   const all = q.data?.requests ?? [];
-  const req = requestId ? (all.find((r) => r.id === requestId) ?? all[0]) : all[0];
+  // When a request_id is deep-linked but not found, show the not-found state
+  // (below) rather than silently rendering a DIFFERENT request as if it were
+  // the one asked for.
+  const req = requestId ? (all.find((r) => r.id === requestId) ?? null) : all[0];
 
   return (
     <ResearchLabCanvas>
