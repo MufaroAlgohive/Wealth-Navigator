@@ -19,11 +19,30 @@
  */
 import { callWorker } from "@/lib/iress/worker-api";
 import { isIressWorkerConfigured, isWorkerLiveMode } from "@/lib/data-policy";
+import { can, getAdminContext } from "@/lib/admin/rbac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request) {
+  // Auth: OrderDelete cancels a real broker order, so require the same admin
+  // RBAC as /api/admin/orderbook/cancel. Sessions are issued by the retail
+  // project, so the shared middleware (any logged-in user) is NOT sufficient
+  // to gate a broker mutation.
+  const auth = await getAdminContext();
+  if (auth.status === "no-session") {
+    return Response.json(
+      { ok: false, status: 401, code: "no_session", error: "no-session" },
+      { status: 401 },
+    );
+  }
+  if (auth.status !== "ok" || !can(auth.ctx, "orderbook", "send_to_market")) {
+    return Response.json(
+      { ok: false, status: 403, code: "forbidden", error: "forbidden" },
+      { status: 403 },
+    );
+  }
+
   if (!isIressWorkerConfigured()) {
     return Response.json(
       {
