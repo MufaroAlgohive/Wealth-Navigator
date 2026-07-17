@@ -325,19 +325,23 @@ export async function GET(req: Request) {
     });
   }
 
-  // Audit doesn't have a dedicated book_id column; we filter by either
+  // Audit has no dedicated book_id column; a row belongs to a book by
   // payload.book_id OR payload.strategy (the grouping key from send-to-market).
-  // PostgREST can't `.or()` inside jsonb with equality, so we pull a wider
-  // recent set and filter in JS — bounded by limit + order.
-  const q = db
+  // Scope to the book AT THE DB LEVEL so the 500-row window covers THIS book's
+  // rows, not the newest 500 across ALL books — on a busy shared audit table the
+  // book's rows fell out of that window and orders "vanished" from the view.
+  // PostgREST CAN filter jsonb via the `->>` text accessor (an earlier note here
+  // claimed otherwise); the JS filter below stays as defense-in-depth.
+  let sel = db
     .from("oems_order_audit")
     .select(
       "id, order_id, client_account, symbol, side, quantity, price_cents, status, source, payload, result_payload, created_at, updated_at",
-    )
-    .order("updated_at", { ascending: false })
-    .limit(500);
-
-  const { data, error } = await q;
+    );
+  if (bookId) {
+    const v = bookId.replace(/[\\"]/g, ""); // neutralise PostgREST filter metachars
+    sel = sel.or(`payload->>book_id.eq."${v}",payload->>strategy.eq."${v}"`);
+  }
+  const { data, error } = await sel.order("updated_at", { ascending: false }).limit(500);
   if (error) {
     if (isSupabaseSchemaMissing(error)) {
       return NextResponse.json({
