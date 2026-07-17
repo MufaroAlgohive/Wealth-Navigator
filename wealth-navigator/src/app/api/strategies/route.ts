@@ -53,7 +53,7 @@ interface RetailStrategyRow {
 
 async function loadRetailStrategies(
   retail: ReturnType<typeof createRetailServiceRoleClient>,
-): Promise<{ strategies: ReturnType<typeof mapRow>[]; source: string; count: number; lastUpdatedAt: string | null }> {
+): Promise<{ strategies: ReturnType<typeof mapRow>[]; market: Array<{ symbol: string; price: number | null; changePct: number | null }>; source: string; count: number; lastUpdatedAt: string | null }> {
   const { data: stratData, error: stratErr } = await retail
     .from("strategies_c")
     .select(
@@ -61,6 +61,47 @@ async function loadRetailStrategies(
     );
   if (stratErr) throw stratErr;
   const strategies = (stratData ?? []) as RetailStrategyRow[];
+  const holdingSymbols = Array.from(new Set(strategies.flatMap((strategy) => {
+    if (!Array.isArray(strategy.holdings)) return [];
+    return strategy.holdings.map((holding) => {
+      if (typeof holding === "string") return holding;
+      if (!holding || typeof holding !== "object") return "";
+      const row = holding as Record<string, unknown>;
+      return String(row.ticker ?? row.symbol ?? "");
+    });
+  }).map((symbol) => symbol.trim()).filter(Boolean)));
+  const market: Array<{ symbol: string; price: number | null; changePct: number | null }> = [];
+  if (holdingSymbols.length) {
+    const { data: securities } = await retail
+      .from("securities_c")
+      .select("id,symbol,last_price,change_percent")
+      .in("symbol", holdingSymbols);
+    const securityIds = (securities ?? []).map((security) => security.id).filter(Boolean);
+    const { data: intraday } = securityIds.length
+      ? await retail
+          .from("stock_intraday_c")
+          .select('security_id,current_price,"1d_pct",timestamp')
+          .in("security_id", securityIds)
+          .order("timestamp", { ascending: false })
+          .limit(5000)
+      : { data: [] };
+    const latest = new Map<string, Record<string, unknown>>();
+    for (const quote of (intraday ?? []) as Array<Record<string, unknown>>) {
+      const id = String(quote.security_id ?? "");
+      if (id && !latest.has(id)) latest.set(id, quote);
+    }
+    for (const security of (securities ?? []) as Array<Record<string, unknown>>) {
+      const quote = latest.get(String(security.id));
+      const rawPrice = Number(quote?.current_price ?? security.last_price);
+      const rawChange = Number(quote?.["1d_pct"] ?? security.change_percent);
+      market.push({
+        symbol: String(security.symbol ?? "").replace(/\.JO$/i, ""),
+        price: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null,
+        changePct: Number.isFinite(rawChange) ? rawChange : null,
+      });
+    }
+    market.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }
 
   // Aggregate AUM / day-PnL / YTD-PnL / investors per strategy at the latest date.
   const agg = new Map<string, { aum: number; day: number; ytd: number; users: Set<string> }>();
@@ -133,6 +174,7 @@ async function loadRetailStrategies(
   view.sort((x, y) => y.aum - x.aum);
   return {
     strategies: view,
+    market,
     source: "supabase",
     count: view.length,
     lastUpdatedAt: asOf ? new Date(asOf).toISOString() : null,

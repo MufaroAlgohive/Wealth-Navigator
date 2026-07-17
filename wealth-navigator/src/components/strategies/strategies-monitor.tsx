@@ -3,12 +3,12 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Layers, Lock, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, Lock, Minus, RefreshCw, ShieldCheck } from "lucide-react";
 
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
-import { GlassBadge, GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
+import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
@@ -48,6 +48,7 @@ interface StrategyRow {
 
 interface StrategiesResponse {
   strategies: StrategyRow[];
+  market?: Array<{ symbol: string; price: number | null; changePct: number | null }>;
   source: string;
   message?: string;
   // Audit #12 — the BFF returns the typed reason + migration hint
@@ -68,10 +69,10 @@ function kindTone(kind: string | null | undefined): "primary" | "warning" | "neu
 
 function StrategiesHero({
   strategies,
-  source,
+  market,
 }: {
   strategies: StrategyRow[];
-  source?: string;
+  market?: Array<{ symbol: string; price: number | null; changePct: number | null }>;
 }) {
   const stats = useMemo(() => {
     const live = strategies.filter((s) => s.status === "live").length;
@@ -82,49 +83,29 @@ function StrategiesHero({
   }, [strategies]);
 
   return (
-    <header className="glass-panel relative overflow-hidden p-6 md:p-8">
-      <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
-      <div className="relative flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1 space-y-4">
-          <GlassBadge tone="primary">
-            <Layers className="h-3.5 w-3.5" />
-            Strategy mandates
-          </GlassBadge>
-          <div>
-            <h1 className="text-display">Mandates</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-              Live book · rebalance gated on linked investors · pre-trade mandate &amp; halt checks via IRESS
-            </p>
-          </div>
-        </div>
-        <GlassBadge tone={strategies.length > 0 ? "success" : "neutral"}>
-          <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />
-          {source === "supabase" ? "Supabase" : strategies.length > 0 ? "Loaded" : "Awaiting data"}
-        </GlassBadge>
-      </div>
-
+    <header className="glass-panel relative overflow-hidden px-3 py-3 sm:px-4">
       {strategies.length > 0 && (
-        <div className="relative mt-6 grid grid-cols-2 gap-3 border-t border-[hsl(var(--glass-border))] pt-5 sm:grid-cols-4">
-          <GlassKpi label="Mandates" value={String(strategies.length)} accent="primary" />
-          <GlassKpi
-            label="Live"
-            value={String(stats.live)}
-            accent={stats.live > 0 ? "positive" : "default"}
-          />
-          <GlassKpi
-            label="Total AUM"
-            value={stats.totalAum > 0 ? formatZAR(stats.totalAum) : "—"}
-          />
-          <GlassKpi label="Investors" value={String(stats.totalInvestors)} />
-          <GlassKpi
-            label="Day P&L"
-            value={stats.dayPnl !== 0 ? formatZAR(stats.dayPnl) : "—"}
-            accent={stats.dayPnl > 0 ? "positive" : stats.dayPnl < 0 ? "negative" : "default"}
-          />
+        <div className="grid grid-cols-5 divide-x divide-border/60 rounded-xl border border-border/70 bg-background/35">
+          <SlimStat label="Mandates" value={String(strategies.length)} tone="primary" />
+          <SlimStat label="Live" value={String(stats.live)} tone={stats.live > 0 ? "positive" : "default"} />
+          <SlimStat label="Total AUM" value={stats.totalAum > 0 ? formatZAR(stats.totalAum) : "—"} />
+          <SlimStat label="Investors" value={String(stats.totalInvestors)} />
+          <SlimStat label="Day P&L" value={stats.dayPnl !== 0 ? formatZAR(stats.dayPnl) : "—"} tone={stats.dayPnl > 0 ? "positive" : stats.dayPnl < 0 ? "negative" : "default"} />
         </div>
       )}
+      <MarketTicker items={market ?? []} />
     </header>
   );
+}
+
+function SlimStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "primary" | "positive" | "negative" }) {
+  return <div className="flex min-w-0 flex-col items-center justify-center px-1 py-2 text-center sm:px-3"><span className="text-[8px] font-bold uppercase tracking-[.12em] text-muted-foreground sm:text-[9px]">{label}</span><span className={cn("mt-0.5 truncate font-mono text-xs font-bold sm:text-sm", tone === "positive" ? "text-success" : tone === "negative" ? "text-destructive" : tone === "primary" ? "text-primary" : "text-foreground")}>{value}</span></div>;
+}
+
+function MarketTicker({ items }: { items: Array<{ symbol: string; price: number | null; changePct: number | null }> }) {
+  if (!items.length) return <div className="mt-2 border-t border-border/60 pt-2 text-center text-[10px] text-muted-foreground">Live market prices unavailable</div>;
+  const display = [...items, ...items];
+  return <div className="mt-2 overflow-hidden rounded-lg border border-border/60 bg-background/25"><div className="strategy-market-ticker flex w-max items-center whitespace-nowrap">{display.map((item, index) => { const up=(item.changePct??0)>0, down=(item.changePct??0)<0; const Icon=up?ArrowUpRight:down?ArrowDownRight:Minus; return <div key={`${item.symbol}-${index}`} className="flex h-9 items-center gap-2 border-r border-border/60 px-4"><span className="font-mono text-[10px] font-bold tracking-wide text-foreground">{item.symbol}</span><span className="font-mono text-[10px] text-muted-foreground">{item.price == null ? "—" : formatZAR(item.price)}</span><span className={cn("inline-flex items-center gap-0.5 font-mono text-[10px] font-semibold",up?"text-success":down?"text-destructive":"text-muted-foreground")}><Icon className="h-3 w-3"/>{item.changePct == null ? "—" : `${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}%`}</span></div>})}</div><style jsx>{`@keyframes strategyTicker{from{transform:translateX(0)}to{transform:translateX(-50%)}}.strategy-market-ticker{animation:strategyTicker ${Math.max(24,items.length*3)}s linear infinite}.strategy-market-ticker:hover{animation-play-state:paused}@media(prefers-reduced-motion:reduce){.strategy-market-ticker{animation:none}}`}</style></div>;
 }
 
 /** The "Mandates" tab body — was `/oems/strategies`. Must render inside a Suspense boundary (uses `useSearchParams`). */
@@ -165,7 +146,7 @@ export function StrategiesMonitor() {
 
   return (
     <div className="space-y-5 pb-8">
-      <StrategiesHero strategies={strategies} source={strategiesQ.data?.source} />
+      <StrategiesHero strategies={strategies} market={strategiesQ.data?.market} />
 
       {strategiesQ.isLoading ? (
         <div className="grid grid-cols-12 gap-3">
