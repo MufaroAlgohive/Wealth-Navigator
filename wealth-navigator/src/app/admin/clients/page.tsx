@@ -64,6 +64,7 @@ export default function ClientsPage() {
   const [computershareNumber, setComputershareNumber] = React.useState("");
   const [computersharePassword, setComputersharePassword] = React.useState("");
   const [computershareSaving, setComputershareSaving] = React.useState(false);
+  const [sumsubBatchBusy, setSumsubBatchBusy] = React.useState(false);
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => {
@@ -105,6 +106,16 @@ export default function ClientsPage() {
     toast.success("Computershare number saved");
     setComputershareEditorOpen(false); setComputersharePassword("");
     await openClient(sel.id);
+  };
+
+  const refreshEligibleSumsub = async () => {
+    setSumsubBatchBusy(true);
+    const result = await fetch("/api/admin/clients?action=sumsub-refresh-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then((response) => response.json()).catch(() => ({ ok: false, error: "Request failed" }));
+    setSumsubBatchBusy(false);
+    if (!result.ok) return toast.error(result.error || "SumSub refresh failed");
+    toast.success(`SumSub refresh: ${result.refreshed}/${result.eligible} updated${result.not_found ? `, ${result.not_found} not found` : ""}${result.failed ? `, ${result.failed} failed` : ""}`);
+    if (selId) await openClient(selId);
   };
 
   const childCertificateAction = async (decision: "approve" | "reject" | "reevaluate") => {
@@ -264,6 +275,7 @@ export default function ClientsPage() {
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search clients…" className="h-8 pl-8" />
           </div>
+          <Button size="sm" variant="secondary" className="mb-3 w-full" disabled={sumsubBatchBusy} onClick={refreshEligibleSumsub}>{sumsubBatchBusy ? "Refreshing existing SumSub applicants…" : "Refresh eligible SumSub details"}</Button>
           <div className="max-h-[70vh] space-y-1 overflow-y-auto">
             {clients === null ? <p className="py-6 text-center text-xs text-muted-foreground">Loading…</p>
               : filtered.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">No clients.</p>

@@ -437,6 +437,42 @@ export async function POST(req: Request) {
   const action = new URL(req.url).searchParams.get("action") || "";
   const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; family_member_id?: string; decision?: string; computershare_number?: string; password?: string };
 
+  if (action === "sumsub-refresh-batch") {
+    if (!sumsubConfigured()) return NextResponse.json({ ok: false, error: "SumSub credentials are not configured" }, { status: 503 });
+    const db = createRetailServiceRoleClient();
+    const { data: onboardingRows, error: onboardingError } = await db.from("user_onboarding").select("user_id,sumsub_applicant_id");
+    if (onboardingError) return NextResponse.json({ ok: false, error: onboardingError.message }, { status: 500 });
+    const eligible = (onboardingRows ?? []).filter((row) => /^[a-f0-9]{24}$/i.test(String(row.sumsub_applicant_id || "")));
+    const userIds = eligible.map((row) => String(row.user_id));
+    const { data: packRows } = userIds.length
+      ? await db.from("user_onboarding_pack_details").select("user_id,pack_details").in("user_id", userIds)
+      : { data: [] as Array<{ user_id: string; pack_details: unknown }> };
+    const packMap = new Map((packRows ?? []).map((row) => [String(row.user_id), row.pack_details]));
+    const results: Array<{ user_id: string; status: "refreshed" | "not_found" | "failed"; error?: string }> = [];
+    for (const row of eligible) {
+      const userId = String(row.user_id);
+      const result = await getApplicantById(String(row.sumsub_applicant_id));
+      if (!result.ok) {
+        results.push({ user_id: userId, status: result.status === 404 ? "not_found" : "failed", error: result.error || `SumSub returned ${result.status}` });
+        continue;
+      }
+      const fetched = parseRecord(result.data);
+      const existing = parseRecord(packMap.get(userId));
+      const fetchedInfo = { ...parseRecord(fetched.fixedInfo), ...parseRecord(fetched.info) };
+      const existingInfo = parseRecord(existing.info);
+      const refreshedAt = new Date().toISOString();
+      const mergedPack = { ...fetched, ...existing,
+        fixedInfo: Object.keys(parseRecord(fetched.fixedInfo)).length ? parseRecord(fetched.fixedInfo) : existing.fixedInfo,
+        info: { ...fetchedInfo, ...existingInfo }, review: fetched.review ?? existing.review, sumsub_refreshed_at: refreshedAt };
+      const { error } = await db.from("user_onboarding_pack_details").upsert({ user_id: userId, pack_details: mergedPack, updated_at: refreshedAt }, { onConflict: "user_id" });
+      results.push(error ? { user_id: userId, status: "failed", error: error.message } : { user_id: userId, status: "refreshed" });
+    }
+    return NextResponse.json({ ok: true, eligible: eligible.length,
+      refreshed: results.filter((result) => result.status === "refreshed").length,
+      not_found: results.filter((result) => result.status === "not_found").length,
+      failed: results.filter((result) => result.status === "failed").length, results });
+  }
+
   if (action === "sumsub-refresh") {
     const userId = String(body.user_id || "").trim();
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
