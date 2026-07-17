@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext, isAdminRole, can } from "@/lib/admin/rbac";
 import { createAnonServerClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
-import { getApplicantByExternalId, sumsubConfigured } from "@/lib/admin/sumsub";
+import { getApplicantByExternalId, getApplicantById, sumsubConfigured } from "@/lib/admin/sumsub";
 
 /**
  * Clients (CRM). Roster + client detail (profile, KYC status, holdings,
@@ -443,12 +443,16 @@ export async function POST(req: Request) {
     if (!sumsubConfigured()) return NextResponse.json({ ok: false, error: "SumSub credentials are not configured" }, { status: 503 });
     const db = createRetailServiceRoleClient();
     const [{ data: onboarding }, { data: existingPack }] = await Promise.all([
-      db.from("user_onboarding").select("sumsub_external_user_id").eq("user_id", userId).maybeSingle(),
+      db.from("user_onboarding").select("sumsub_external_user_id,sumsub_applicant_id").eq("user_id", userId).maybeSingle(),
       db.from("user_onboarding_pack_details").select("pack_details").eq("user_id", userId).maybeSingle(),
     ]);
     if (!onboarding) return NextResponse.json({ ok: false, error: "Client has no onboarding record" }, { status: 409 });
     const externalUserId = String(onboarding.sumsub_external_user_id || userId);
-    const result = await getApplicantByExternalId(externalUserId);
+    const applicantId = String(onboarding.sumsub_applicant_id || "").trim();
+    if (applicantId && !/^[a-f0-9]{24}$/i.test(applicantId)) {
+      return NextResponse.json({ ok: false, error: "This record was verified by Experian, mock, or administrative flow—not SumSub" }, { status: 409 });
+    }
+    const result = applicantId ? await getApplicantById(applicantId) : await getApplicantByExternalId(externalUserId);
     if (!result.ok) return NextResponse.json({ ok: false, error: result.status === 404 ? "No existing SumSub applicant found" : result.error || `SumSub returned ${result.status}` }, { status: result.status === 404 ? 404 : 502 });
     const fetched = parseRecord(result.data);
     const existing = parseRecord(existingPack?.pack_details);
