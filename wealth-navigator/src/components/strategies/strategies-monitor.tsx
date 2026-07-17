@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
-import { ArrowDownRight, ArrowUpRight, ChevronDown, ExternalLink, Lock, Minus, Newspaper, ShieldCheck, TrendingUp } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, ChevronDown, ExternalLink, Eye, Lock, Minus, Newspaper, ShieldCheck, TrendingUp } from "lucide-react";
 
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
@@ -118,13 +118,23 @@ export function StrategiesMonitor() {
   });
   const strategies = strategiesQ.data?.strategies ?? [];
   const focusId = useSearchParams().get("focus");
-  const [selected, setSelected] = useState<string>(
-    (focusId && strategies.find((s) => s.id === focusId)?.id) || strategies[0]?.id || "",
-  );
+  const [selected, setSelected] = useState("");
+  const [firstReveal, setFirstReveal] = useState(false);
+  const hasRevealed = useRef(false);
+  const reveal = (id: string) => {
+    setSelected(id);
+    if (!hasRevealed.current) {
+      hasRevealed.current = true;
+      setFirstReveal(true);
+      window.setTimeout(() => setFirstReveal(false), 650);
+    }
+  };
   useEffect(() => {
-    if (focusId && strategies.some((strategy) => strategy.id === focusId)) setSelected(focusId);
+    if (focusId && strategies.some((strategy) => strategy.id === focusId)) reveal(focusId);
+    // A focus query represents an explicit choice from the global strategy selector.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId, strategies]);
-  const active = strategies.find((s) => s.id === selected) ?? strategies[0];
+  const active = strategies.find((s) => s.id === selected);
 
   if (!realDataOnly) {
     return (
@@ -194,11 +204,11 @@ export function StrategiesMonitor() {
         <div className="grid grid-cols-12 items-start gap-3">
           <div className="col-span-12 space-y-2 lg:col-span-5">
             {strategies.map((s) => (
-              <StrategyCard key={s.id} s={s} active={selected === s.id} onSelect={() => setSelected(s.id)} />
+              <StrategyCard key={s.id} s={s} active={selected === s.id} onSelect={() => reveal(s.id)} />
             ))}
           </div>
 
-          {active && <StrategyDetail strategy={active} />}
+          {active && <StrategyDetail strategy={active} firstReveal={firstReveal} />}
         </div>
       )}
     </div>
@@ -271,18 +281,19 @@ function Stat({ label, value, positive }: { label: string; value: string; positi
   );
 }
 
-function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
+function StrategyDetail({ strategy, firstReveal }: { strategy: StrategyRow; firstReveal: boolean }) {
   const rebal = strategy.status === "live" && strategy.investorCount > 0;
   return (
     /* Sticky on lg+ so the detail panel stays in view while the strategy list
        column scrolls (Lonwabo). top-4 clears the page padding; on mobile the
        columns stack so sticky is disabled to avoid an awkward pin. */
-    <div className="col-span-12 space-y-3 self-start lg:sticky lg:top-4 lg:col-span-7">
+    <div className={cn("col-span-12 space-y-3 self-start lg:sticky lg:top-4 lg:col-span-7", firstReveal && "strategy-detail-first-reveal")}>
       <section className="glass-panel p-3">
         <div className="mb-2.5 flex items-center gap-2">
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{strategy.name} · detail</h2>
           <TooltipProvider delayDuration={120}><Tooltip><TooltipTrigger asChild><span className={cn("inline-flex cursor-help items-center gap-1 rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-wide", rebal ? "bg-success/15 text-success" : "bg-warning/15 text-warning")}>{rebal ? <ShieldCheck className="h-3 w-3"/> : <Lock className="h-3 w-3"/>}{rebal ? "Eligible" : "Locked"}</span></TooltipTrigger><TooltipContent side="bottom" className="max-w-80 rounded-xl p-3 text-xs leading-relaxed shadow-xl">{rebal ? <><p className="font-bold text-success">Strategy is eligible for rebalance</p><p className="mt-1">{strategy.holdingsCount} securities · {strategy.investorCount} linked investors. Investor mandates and live market halt/suspension checks run before execution.</p></> : strategy.status === "halted" ? "Rebalance is locked because Risk halted this strategy." : strategy.investorCount === 0 ? "Rebalance is locked because no investors are linked." : "Rebalance is locked until the strategy is live."}</TooltipContent></Tooltip></TooltipProvider>
           <Pill tone={kindTone(strategy.kind)} size="xs">{kindLabel(strategy.kind)}</Pill>
+          <button type="button" className="inline-flex h-7 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-[9px] font-bold text-primary-foreground shadow-sm shadow-primary/20 transition hover:-translate-y-px hover:bg-primary/90"><Eye className="h-3 w-3"/>View strategy</button>
         </div>
         <div className="grid grid-cols-4 divide-x divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-background/25 xl:grid-cols-8 xl:divide-y-0">
           <DetailStat label="Min value" value={strategy.minValue > 0 ? formatZAR(strategy.minValue) : "—"} tone="primary" />
