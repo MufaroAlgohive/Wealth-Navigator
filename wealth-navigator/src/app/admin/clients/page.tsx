@@ -287,11 +287,11 @@ export default function ClientsPage() {
                   <TabsContent value="profile">
                     {detail.rich_details && <RichClientDetails details={detail.rich_details} />}
                     <dl className="mt-4 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
-                      <Row label="Email" value={str(p.email)} /><Row label="Phone" value={str(p.phone_number)} />
-                      <Row label="Date of birth" value={str(p.date_of_birth)} /><Row label="Gender" value={str(p.gender)} />
-                      <Row label="ID number" value={str(p.id_number)} /><Row label="Currency" value={str(p.preferred_currency)} />
+                      <Row label="Email" value={str(p.email ?? detail.rich_details?.fields.email?.value)} /><Row label="Phone" value={str(p.phone_number ?? detail.rich_details?.fields.phone?.value)} />
+                      <Row label="Date of birth" value={str(p.date_of_birth ?? detail.rich_details?.fields.date_of_birth?.value)} /><Row label="Gender" value={str(p.gender ?? detail.rich_details?.fields.gender?.value)} />
+                      <Row label="ID number" value={str(p.id_number ?? detail.rich_details?.fields.id_number?.value)} /><Row label="Currency" value={str(p.preferred_currency ?? "ZAR")} />
                       <Row label="MINT number" value={str(p.mint_number)} /><Row label="Computershare" value={str(p.computershare_number)} />
-                      <Row label="Address" value={str(p.address)} /><Row label="Joined" value={p.created_at ? new Date(String(p.created_at)).toLocaleDateString("en-ZA") : "—"} />
+                      <Row label="Address" value={str(p.address ?? detail.rich_details?.fields.address?.value)} /><Row label="Joined" value={p.created_at ? new Date(String(p.created_at)).toLocaleDateString("en-ZA") : "—"} />
                       <Row label="Managing parent" value={str(p.managing_parent ?? p.guardian_name ?? p.parent_name)} /><Row label="Relationship" value={str(p.parent_relationship ?? p.relationship)} />
                     </dl>
                   </TabsContent>

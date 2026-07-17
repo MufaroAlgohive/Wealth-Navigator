@@ -95,14 +95,22 @@ export function inferGenderFromSouthAfricanId(value: unknown): "Female" | "Male"
   return Number(digits.slice(6, 10)) >= 5000 ? "Male" : "Female";
 }
 
-function buildRichDetails(profileValue: unknown, onboardingValue: unknown, packValue: unknown) {
+function buildRichDetails(profileValue: unknown, onboardingValue: unknown, packValue: unknown, archiveValue: unknown = []) {
   const profile = parseRecord(profileValue);
   const onboarding = parseRecord(onboardingValue);
   const pack = parseRecord(packValue);
   const raw = parseRecord(onboarding.sumsub_raw);
   const info = { ...parseRecord(pack.fixedInfo), ...parseRecord(pack.info) };
   const provenance = parseRecord(pack.data_provenance);
-  const experianKyc = raw.experian_kyc_result ?? parseRecord(pack.experian).kyc ?? null;
+  const archiveRows = Array.isArray(archiveValue) ? archiveValue.map(parseRecord) : [];
+  const experianArchive = archiveRows.map((row) => parseRecord(row.resource_metadata)).filter((metadata) => {
+    const marker = `${String(metadata.provider || "")} ${String(metadata.source || "")}`.toLowerCase();
+    return marker.includes("experian");
+  });
+  const retainedKyc = raw.experian_kyc_addresses || raw.experian_kyc_contact || experianArchive.length
+    ? { addresses: raw.experian_kyc_addresses, contact: raw.experian_kyc_contact, stats: raw.experian_kyc_stats, archive: experianArchive }
+    : null;
+  const experianKyc = raw.experian_kyc_result ?? parseRecord(pack.experian).kyc ?? retainedKyc;
   const experianIdmn = raw.experian_idmn_result ?? parseRecord(pack.experian).idmn ?? pack.experian_idmn ?? null;
   const experian = experianIdmn ?? experianKyc;
   const choose = (...candidates: Array<[unknown, string]>): { value: unknown; source: string } => {
@@ -118,14 +126,14 @@ function buildRichDetails(profileValue: unknown, onboardingValue: unknown, packV
     : { value: inferredGender, source: inferredGender ? "Derived from SA ID" : "Not available" };
   return {
     fields: {
-      first_name: choose([profile.first_name,"Profile"],[info.firstName ?? info.firstNameEn,"SumSub"],[findProviderValue(experian,["firstName","forename","givenName"]),"Experian"]),
-      last_name: choose([profile.last_name,"Profile"],[info.lastName ?? info.lastNameEn,"SumSub"],[findProviderValue(experian,["lastName","surname","familyName"]),"Experian"]),
+      first_name: choose([profile.first_name,"Profile"],[info.firstName ?? info.firstNameEn,"SumSub"],[findProviderValue(experian,["firstName","first_name","forename","givenName"]),"Experian"]),
+      last_name: choose([profile.last_name,"Profile"],[info.lastName ?? info.lastNameEn,"SumSub"],[findProviderValue(experian,["lastName","last_name","surname","familyName"]),"Experian"]),
       email: choose([profile.email,"Profile"],[info.email,"SumSub"],[findProviderValue(experian,["email","emailAddress"]),"Experian"]),
-      phone: choose([profile.phone_number,"Profile"],[info.phone ?? pack.phone,"SumSub"],[findProviderValue(experian,["phoneNumber","mobileNumber","cellphone"]),"Experian"]),
+      phone: choose([profile.phone_number,"Profile"],[info.phone ?? pack.phone,"SumSub"],[findProviderValue(experian,["phoneNumber","mobileNumber","cellphone","cell"]),"Experian"]),
       date_of_birth: choose([profile.date_of_birth,"Profile"],[info.dob ?? info.dateOfBirth,"SumSub"],[findProviderValue(experian,["dateOfBirth","birthDate","dob"]),"Experian"]),
       gender,
       id_number: idNumber,
-      address: choose([profile.address,"Profile"],[findProviderValue(info,["formattedAddress","residentialAddress","streetAddress"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["formattedAddress","residentialAddress","streetAddress","address"]),"Experian"]),
+      address: choose([profile.address,"Profile"],[findProviderValue(info,["formattedAddress","residentialAddress","streetAddress"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["formattedAddress","formatted","residentialAddress","streetAddress","address"]),"Experian"]),
       employer: choose([onboarding.employer_name,"Onboarding"],[findProviderValue(info,["employerName","employer"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["employerName","employer"]),"Experian"]),
       employment_status: choose([onboarding.employment_status,"Onboarding"],[findProviderValue(info,["employmentStatus","occupation"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["employmentStatus","occupation"]),"Experian"]),
     },
@@ -331,16 +339,21 @@ export async function GET(req: Request) {
     }
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
 
-    const [{ data: profile }, { data: onboarding }, { data: required }, { data: pack }, { data: holds }, { data: txns }] = await Promise.all([
+    const [{ data: profile }, { data: onboarding }, { data: required }, { data: pack }, { data: experianArchive }, { data: holds }, { data: txns }] = await Promise.all([
       db.from("profiles").select("*").eq("id", userId).maybeSingle(),
       db.from("user_onboarding").select("*").eq("user_id", userId).maybeSingle(),
       db.from("required_actions").select("*").eq("user_id", userId).maybeSingle(),
       db.from("user_onboarding_pack_details").select("pack_details").eq("user_id", userId).maybeSingle(),
+      db.from("sumsub_document_archive").select("resource_metadata,archived_at,file_name").eq("profile_id", userId),
       db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
       db.from("transactions").select("id, name, description, amount, direction, status, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(25),
     ]);
-    const { data: linkedChild } = await db.from("family_members").select("id,certificate_url,certificate_verification_status,kyc_status,kyc_reviewed_at").eq("linked_user_id", userId).eq("relationship", "child").maybeSingle();
+    const { data: linkedChild } = await db.from("family_members").select("id,primary_user_id,parent_id,relationship,certificate_url,certificate_verification_status,kyc_status,kyc_reviewed_at").eq("linked_user_id", userId).eq("relationship", "child").maybeSingle();
     const linkedCertificateUrl = linkedChild ? await resolveCertificateUrl(db, linkedChild.certificate_url) : null;
+    const linkedParentId = String(linkedChild?.primary_user_id || linkedChild?.parent_id || "");
+    const { data: linkedParent } = linkedParentId
+      ? await db.from("profiles").select("first_name,last_name,email").eq("id", linkedParentId).maybeSingle()
+      : { data: null };
 
     const secIds = [...new Set((holds ?? []).map((h) => h.security_id).filter(Boolean))];
     const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
@@ -372,7 +385,12 @@ export async function GET(req: Request) {
     const mandateData = parseRecord(sumsubRaw.mandate_data);
     return NextResponse.json({
       ok: true,
-      profile: profile ?? null,
+      profile: profile ? {
+        ...profile,
+        managing_parent: linkedParent ? `${linkedParent.first_name || ""} ${linkedParent.last_name || ""}`.trim() : null,
+        guardian_email: linkedParent?.email ?? null,
+        relationship: linkedChild?.relationship ?? profile.relationship ?? null,
+      } : null,
       onboarding: onboarding ?? null,
       required: required ?? null,
       onboarding_pack: pack?.pack_details ?? null,
@@ -381,7 +399,7 @@ export async function GET(req: Request) {
         data: mandateData,
         signed_agreement_url: onboarding?.signed_agreement_url ?? null,
       },
-      rich_details: buildRichDetails(profile, onboarding, pack?.pack_details),
+      rich_details: buildRichDetails(profile, onboarding, pack?.pack_details, experianArchive),
       kyc: deriveKyc(onboarding ?? undefined, required ?? undefined, pack?.pack_details),
       holdings,
       transactions: txns ?? [],
