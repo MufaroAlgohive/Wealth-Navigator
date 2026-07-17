@@ -68,24 +68,28 @@ describe("isIressWorkerConfigured / getIressWorkerUrl", () => {
 });
 
 describe("isWorkerLiveMode vs isProductionRealDataMode", () => {
-  it("isWorkerLiveMode is false when USE_SUPABASE_QUOTES is unset", async () => {
+  it("isWorkerLiveMode is false when USE_SUPABASE_QUOTES is unset; the client defaults to real-data-only", async () => {
     clearEnv();
     const { isWorkerLiveMode, isProductionRealDataMode } = await import(
       "@/lib/data-policy"
     );
+    // Server worker-live mode is opt-in (USE_SUPABASE_QUOTES) → off when unset.
     expect(isWorkerLiveMode()).toBe(false);
-    expect(isProductionRealDataMode()).toBe(false);
+    // The client real-data gate defaults ON when NEXT_PUBLIC_USE_SUPABASE_QUOTES
+    // is unset — mock/seed must be an explicit opt-in (=0 or ?mock=1) so a
+    // default/unset config never renders seed data as if it were real.
+    expect(isProductionRealDataMode()).toBe(true);
   });
 
-  it("isWorkerLiveMode flips to true when USE_SUPABASE_QUOTES=1 (server-side check)", async () => {
+  it("the server and client flags are independent (server live, client mock opt-out)", async () => {
     clearEnv();
+    // Server live-mode ON, client real-data explicitly OFF (mock opt-in).
     process.env.USE_SUPABASE_QUOTES = "1";
+    process.env.NEXT_PUBLIC_USE_SUPABASE_QUOTES = "0";
     const { isWorkerLiveMode, isProductionRealDataMode } = await import(
       "@/lib/data-policy"
     );
     expect(isWorkerLiveMode()).toBe(true);
-    // Client mirror (NEXT_PUBLIC_USE_SUPABASE_QUOTES) is separate — when only
-    // the server flag is set, the client mirror stays false.
     expect(isProductionRealDataMode()).toBe(false);
   });
 

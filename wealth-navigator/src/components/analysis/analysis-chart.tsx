@@ -184,7 +184,10 @@ export function AnalysisChart({
       // Tokens are "H S% L%" — wrap in hsl() with optional alpha via hsl(... / a).
       return alpha === 1 ? `hsl(${v})` : `hsl(${v} / ${alpha})`;
     };
-    const isUp = points[points.length - 1]?.v ?? 0 >= (points[0]?.v ?? 0);
+    // Parenthesize the ?? operands: `>=` binds tighter than `??`, so the old
+    // form `last ?? (0 >= first)` made isUp truthy whenever a last point
+    // existed → line always drawn in the bull color.
+    const isUp = (points[points.length - 1]?.v ?? 0) >= (points[0]?.v ?? 0);
     const bull = read("--up");
     const bear = read("--down");
     const fg = read("--foreground");

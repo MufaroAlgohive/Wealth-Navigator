@@ -338,8 +338,10 @@ function SecurityStatsGrid({ sym }: { sym: string }) {
       if (!r.ok) throw new Error(`quote-snapshot ${r.status}`);
       return r.json();
     },
-    refetchInterval: 15_000,
+    // queryOpts("live") FIRST so the intended 15s cadence wins (the "live"
+    // preset's refetchInterval: 5_000 would otherwise clobber it).
     ...queryOpts("live"),
+    refetchInterval: 15_000,
   });
   const eqQ = useQuery<{ securities: EquityFundamentals[] }>({
     queryKey: ["equities-universe"],
@@ -445,8 +447,10 @@ function SecurityChart({ sym, realDataOnly, range = "1D" }: { sym: string; realD
       return r.json();
     },
     enabled: realDataOnly && isIntraday,
-    refetchInterval: 15_000,
+    // queryOpts("live") FIRST so the intended 15s cadence wins (the "live"
+    // preset's refetchInterval: 5_000 would otherwise clobber it).
     ...queryOpts("live"),
+    refetchInterval: 15_000,
   });
   const historyQ = useQuery<{ points: Array<{ t: number; v: number }>; source: string }>({
     queryKey: ["bff-history", sym, range],

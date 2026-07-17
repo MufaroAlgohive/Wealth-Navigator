@@ -13,6 +13,7 @@ import { EntitlementRequired } from "@/components/oems/primitives/entitlement-re
 import { Input } from "@/components/ui/input";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { cn } from "@/lib/cn";
+import { mapSource } from "@/lib/data-source";
 import { queryOpts } from "@/lib/store/query-provider";
 
 interface BondRow {
@@ -143,7 +144,7 @@ export default function FixedIncomePage() {
             title="Bond screener"
             endpoint="GET /api/bonds"
             db="institutional"
-            dataSource="iress"
+            dataSource={mapSource(bondsQ.data?.source)}
             className="col-span-12 flex h-[420px] flex-col lg:col-span-7"
             noPadding
             right={
@@ -223,7 +224,7 @@ export default function FixedIncomePage() {
                 title={`${bond.name} · ${bond.isin}`}
                 endpoint="GET /api/bonds"
                 db="institutional"
-                dataSource="iress"
+                dataSource={mapSource(bondsQ.data?.source)}
               >
                 <div className="grid grid-cols-3 gap-2">
                   {[
@@ -272,7 +273,7 @@ export default function FixedIncomePage() {
             title="P&L sensitivity · ±100bp"
             endpoint="GET /api/bonds"
             db="institutional"
-            dataSource="iress"
+            dataSource={mapSource(bondsQ.data?.source)}
             className="col-span-12 flex h-[300px] flex-col lg:col-span-5"
             noPadding
           >

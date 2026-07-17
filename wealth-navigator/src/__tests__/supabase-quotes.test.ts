@@ -54,8 +54,13 @@ function makeMockSupabaseClient(payload: MockPayload, calls?: QueryCall[]) {
 
 const SEC_1 = { id: "uuid-1", symbol: "NPN", last_price: 418055, prev_close: 415830, currency: "ZAR" };
 const SEC_2 = { id: "uuid-2", symbol: "PRX", last_price: 90500, prev_close: 90000, currency: "ZAR" };
-const TICK_1 = { security_id: "uuid-1", current_price: 420000, timestamp: "2026-06-12T08:30:00Z" };
-const TICK_2 = { security_id: "uuid-2", current_price: 91000, timestamp: "2026-06-12T08:30:00Z" };
+// The tick timestamp must be inside the freshness window (iressQuoteMaxAgeMs);
+// buildQuote's anti-staleness gate correctly rejects an old tick and falls back
+// to securities_c.last_price, so a hardcoded past date would defeat the "tick
+// wins" assertions below. Stamp it a minute ago, relative to the test run.
+const FRESH_TICK_TS = new Date(Date.now() - 60_000).toISOString();
+const TICK_1 = { security_id: "uuid-1", current_price: 420000, timestamp: FRESH_TICK_TS };
+const TICK_2 = { security_id: "uuid-2", current_price: 91000, timestamp: FRESH_TICK_TS };
 
 describe("USE_SUPABASE_QUOTES flag", () => {
   afterEach(() => {

@@ -8,7 +8,7 @@
 import { syncBondUniverse } from "./bonds";
 import { loadWorkerEnv } from "./env";
 import { gracefulStop, runHealthLoop } from "./health";
-import { startHttpApi } from "./http-api";
+import { startHttpApi, type HttpApiHandle } from "./http-api";
 import { loadIpsConfig, syncIps } from "./ips";
 import { pollUatForFills, stampLastUatPollAt } from "./order-poller";
 import { pollAccountsForOrders } from "./orders";
@@ -16,6 +16,7 @@ import { syncWatchlistQuotes } from "./quotes";
 import { syncRetailPrices } from "./retail-ingest";
 import { evaluateTriggers } from "./alerts";
 import { LICENSE_RELEASE_DELAY_MS, WorkerSessionManager } from "./session";
+import { tearDownMarketDataSession } from "./market-data";
 import { createInstitutionalSupabase, createRetailSupabase, writeHeartbeat } from "./supabase";
 import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
 
@@ -31,6 +32,23 @@ if (env.iressMode === "live") {
     console.error(`[iress-ingest] refusing to start: IRESS_MODE=live but missing ${missing.join(", ")}`);
     process.exit(1);
   }
+}
+
+// SECURITY (opt-in enforcement): the worker HTTP surface fails OPEN when
+// WORKER_HTTP_TOKEN is unset (see http-api.ts checkAuth) so an auto-deploy that
+// forgets the token never takes the order seat down. To CLOSE that hole
+// deliberately, set WORKER_HTTP_TOKEN *and* WORKER_REQUIRE_HTTP_TOKEN=1. If
+// enforcement is required but the token is missing, refuse to start — loud and
+// recoverable, mirroring the IRESS-cred fail-fast above.
+if (
+  process.env.WORKER_REQUIRE_HTTP_TOKEN === "1" &&
+  !process.env.WORKER_HTTP_TOKEN &&
+  process.env.WORKER_HTTP_DISABLED !== "1"
+) {
+  console.error(
+    "[iress-ingest] refusing to start: WORKER_REQUIRE_HTTP_TOKEN=1 but WORKER_HTTP_TOKEN is unset (set the token, or clear the require flag)",
+  );
+  process.exit(1);
 }
 
 const sessions = new WorkerSessionManager({
@@ -59,6 +77,9 @@ const retailIngestIntervalSec = Math.max(60, Number(process.env.IRESS_RETAIL_ING
 
 let shuttingDown = false;
 let lastQuoteSyncAt: string | undefined;
+let lastQuoteSynced = 0;
+let lastQuoteRequested = 0;
+let httpApiHandle: HttpApiHandle | null = null;
 const lastAccountCode = env.iressAccountCode;
 const timeSeriesConfig = loadTimeSeriesConfig(env);
 const ipsConfig = loadIpsConfig(env);
@@ -103,6 +124,8 @@ async function quoteLoop(): Promise<void> {
       // that the loop ran end-to-end. The detail line is emitted from
       // `syncWatchlistQuotes` as a structured `quote_sync_complete` event.
       lastQuoteSyncAt = new Date().toISOString();
+      lastQuoteSynced = result.synced;
+      lastQuoteRequested = result.requested;
       if (result.synced > 0) {
         console.info(
           `[iress-ingest] quote sync complete (${result.synced} symbols, ${result.missingInstruments.length} missing)`,
@@ -355,8 +378,32 @@ async function shutdown(signal: string): Promise<void> {
   // the BFF filter (see `src/app/api/worker-health/route.ts`) is
   // the safety net for that case. We do both — mark ourselves
   // `stopped` here AND rely on the BFF filter for true ghosts.
-  await gracefulStop({ supabase, env, lastQuoteSyncAt, signal });
-  await sessions.tearDown(LICENSE_RELEASE_DELAY_MS);
+  const cleanup = (async () => {
+    await gracefulStop({ supabase, env, lastQuoteSyncAt, signal });
+    // Stop accepting new HTTP work and give in-flight one-shot order requests
+    // (cancel / amend / send-to-market, proxied by the Vercel BFF) a brief
+    // window to drain before we drop the IRESS sessions they need. Bounded so
+    // long-lived SSE streams (/orders/stream, /uat/execution-stream) cannot
+    // wedge shutdown — clients reconnect to the new replica. Previously the
+    // startHttpApi handle was discarded, killing these mid-flight on redeploy.
+    if (httpApiHandle) {
+      await Promise.race([
+        httpApiHandle.close().catch((err) => {
+          console.warn(`[iress-ingest] http api close failed: ${String(err)}`);
+        }),
+        sleep(3_000),
+      ]);
+    }
+    // Release BOTH license seats gracefully: the UAT/orders session AND the
+    // module-level PROD market-data session (previously leaked on redeploy —
+    // getMarketDataSession() caches a wire session and nothing tore it down).
+    await tearDownMarketDataSession();
+    await sessions.tearDown(LICENSE_RELEASE_DELAY_MS);
+  })();
+  // Watchdog: never let a hung IRESS logout / socket keep the replica alive.
+  // Railway force-kills after its grace window regardless; exiting cleanly at
+  // ~8s beats being SIGKILLed mid-teardown.
+  await Promise.race([cleanup, sleep(8_000)]);
   process.exit(0);
 }
 
@@ -372,6 +419,7 @@ void runHealthLoop({
   supabase,
   env,
   getLastQuoteSyncAt: () => lastQuoteSyncAt,
+  getLastQuoteStats: () => ({ synced: lastQuoteSynced, requested: lastQuoteRequested }),
   isStopping: () => shuttingDown,
 });
 void quoteLoop();
@@ -394,10 +442,24 @@ if (retailIngestEnabled) {
 // reverse-proxies /orders, /orders/stream, and /health from these handlers
 // so Next.js never holds the IRESS license seat.
 if (process.env.WORKER_HTTP_DISABLED !== "1") {
-  startHttpApi({ env, sessions, supabase, retailSupabase: retailSupabase ?? null }, () => lastQuoteSyncAt).catch((err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[iress-ingest] http api failed to start: ${message}`);
-  });
+  if (!process.env.WORKER_HTTP_TOKEN) {
+    console.error(
+      "[iress-ingest] CRITICAL: worker HTTP API is UNAUTHENTICATED (WORKER_HTTP_TOKEN unset). " +
+        "Anyone who can reach this port can cancel/amend/send orders and run /debug/soap-raw. " +
+        "Set WORKER_HTTP_TOKEN on the worker + BFF, then WORKER_REQUIRE_HTTP_TOKEN=1 to enforce.",
+    );
+  }
+  startHttpApi({ env, sessions, supabase, retailSupabase: retailSupabase ?? null }, () => lastQuoteSyncAt)
+    .then((handle) => {
+      httpApiHandle = handle;
+      // If a signal landed during bind, shutdown() ran before the handle
+      // existed and couldn't close this server — close it now.
+      if (shuttingDown) void handle.close().catch(() => {});
+    })
+    .catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[iress-ingest] http api failed to start: ${message}`);
+    });
 }
 
 // Allow env override at runtime (e.g. test scripts swap IRESS_ACCOUNT_CODE).

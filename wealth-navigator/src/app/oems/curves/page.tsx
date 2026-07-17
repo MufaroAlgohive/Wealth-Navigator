@@ -15,6 +15,7 @@ import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/pan
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
+import { mapSource } from "@/lib/data-source";
 import { queryOpts } from "@/lib/store/query-provider";
 
 interface CurveResponse {
@@ -88,6 +89,27 @@ export default function CurvesPage() {
     ...queryOpts("reference"),
   });
 
+  const govi = goviQ.data?.points ?? [];
+  const nss = nssQ.data?.points ?? [];
+  const real = realQ.data?.points ?? [];
+  const be = beQ.data?.points ?? [];
+
+  // Align the four series on the *same* tenor list so the LineChart has a
+  // consistent x-axis. We use the NSS canonical tenors as the spine; series
+  // with shorter tenor lists leave the unmatched indices as `undefined`
+  // (recharts gaps the line). Declared BEFORE the mock-mode early return
+  // below so this hook always runs (Rules of Hooks).
+  const combined = useMemo(() => {
+    if (nss.length === 0) return [];
+    return nss.map((p, i) => ({
+      tenor: p.tenor,
+      govi: govi[i]?.yield,
+      swap: nss[i]?.yield,
+      real: real[i]?.yield,
+      breakeven: be[i]?.yield,
+    }));
+  }, [govi, nss, real, be]);
+
   if (!realDataOnly) {
     return (
       <PageCanvas>
@@ -114,26 +136,6 @@ export default function CurvesPage() {
       </PageCanvas>
     );
   }
-
-  const govi = goviQ.data?.points ?? [];
-  const nss = nssQ.data?.points ?? [];
-  const real = realQ.data?.points ?? [];
-  const be = beQ.data?.points ?? [];
-
-  // Align the four series on the *same* tenor list so the LineChart has
-  // a consistent x-axis. We use the NSS canonical tenors as the spine;
-  // series with shorter tenor lists leave the unmatched indices as
-  // `undefined` (recharts will gap the line).
-  const combined = useMemo(() => {
-    if (nss.length === 0) return [];
-    return nss.map((p, i) => ({
-      tenor: p.tenor,
-      govi: govi[i]?.yield,
-      swap: nss[i]?.yield,
-      real: real[i]?.yield,
-      breakeven: be[i]?.yield,
-    }));
-  }, [govi, nss, real, be]);
 
   const pca = metricsQ.data?.pca;
   const move = pca
@@ -229,7 +231,7 @@ export default function CurvesPage() {
             title="Combined · govi · NSS · real · breakeven"
             endpoint="GET /api/curves/{code}"
             db="institutional"
-            dataSource="iress"
+            dataSource={mapSource(goviQ.data?.source)}
             className="col-span-12 flex h-[380px] flex-col lg:col-span-8"
             noPadding
           >
@@ -265,7 +267,7 @@ export default function CurvesPage() {
           title="PCA · today's curve move"
           endpoint="GET /api/curves/ZAR_NSS/metrics"
           db="institutional"
-          dataSource="iress"
+          dataSource={mapSource(metricsQ.data?.source)}
           className="col-span-12 flex h-[380px] flex-col lg:col-span-4"
           right={<span className="font-mono text-[10px] text-muted-foreground">3-factors + residual</span>}
         >
@@ -310,7 +312,7 @@ export default function CurvesPage() {
           title="ZAR-OIS spread · 3M · 12M"
           endpoint="GET /api/curves/ZAR_NSS/metrics?metric=ois_spread_*"
           db="institutional"
-          dataSource="iress"
+          dataSource={mapSource(metricsQ.data?.source)}
           className="col-span-12 h-[300px] lg:col-span-6"
         >
           {ois3m !== undefined || ois12m !== undefined ? (
@@ -341,7 +343,7 @@ export default function CurvesPage() {
           title="Carry & rolldown · key 5Y vertex"
           endpoint="GET /api/curves/ZAR_NSS/metrics?metric=carry_*"
           db="institutional"
-          dataSource="iress"
+          dataSource={mapSource(metricsQ.data?.source)}
           className="col-span-12 h-[300px] lg:col-span-6"
           right={
             carry3m !== undefined && rolldown3m !== undefined ? (

@@ -21,10 +21,19 @@ import { cn } from "@/lib/cn";
 import type { ProposedHolding, RebalanceRequest, ResearchNote, ResearchPerms } from "./types";
 import { ActionBadge, RatingBadge, moneyR, rebalanceCodeMap, signedPct, useQuotes, weightPct } from "./ui";
 
-const MEMBERS = [
-  { initials: "YO", name: "You", title: "Fund Manager / CIO", role: "CHAIR" },
-  { initials: "TM", name: "T. Molefe", title: "Chief Operating Officer", role: "VOTING" },
-  { initials: "LN", name: "L. Ndlovu", title: "Junior Analyst", role: "OBSERVER" },
+const MEMBERS: Array<{
+  initials: string;
+  name: string;
+  title: string;
+  role: string;
+  /** The "You" slot — always the signed-in viewer, matched by their session email. */
+  self: boolean;
+  /** Standing member's email for exact vote attribution (null placeholder never matches). */
+  email: string | null;
+}> = [
+  { initials: "YO", name: "You", title: "Fund Manager / CIO", role: "CHAIR", self: true, email: null },
+  { initials: "TM", name: "T. Molefe", title: "Chief Operating Officer", role: "VOTING", self: false, email: null },
+  { initials: "LN", name: "L. Ndlovu", title: "Junior Analyst", role: "OBSERVER", self: false, email: null },
 ];
 const CHARTER = [
   ["Quorum", "2 of 3 members. Chair has casting vote on tie."],
@@ -384,26 +393,27 @@ function RebalanceAgendaItem({
   // Per-member vote state for the committee-member pills (matches the Lovable
   // spec's "YO TM LN" row under the Vote: heading). The viewer's own pill is
   // clickable to cast a vote; the rest are read-only indicators.
-  function pillFor(initials: string) {
-    const v = votes.find(
-      (vt) => vt.voter_email.toLowerCase().startsWith(initials.toLowerCase() + "@") ||
-        vt.voter_email.toLowerCase().includes(initials.toLowerCase()),
-    );
-    const isMe = viewerEmail
-      ? viewerEmail.toLowerCase().startsWith(initials.toLowerCase() + "@") ||
-        viewerEmail.toLowerCase().includes(initials.toLowerCase())
-      : false;
+  function pillFor(member: (typeof MEMBERS)[number]) {
+    // Identity is a full, case-insensitive email comparison — never a substring
+    // or initials. The "You" slot resolves to the signed-in viewer's session
+    // email; every other pill matches its own standing-member email (a null
+    // placeholder simply never matches a real vote).
+    const memberEmail = member.self ? viewerEmail : member.email;
+    const isMe = member.self && viewerEmail != null;
+    const v = memberEmail
+      ? votes.find((vt) => vt.voter_email.toLowerCase() === memberEmail.toLowerCase())
+      : undefined;
     let tone = "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.04)] text-muted-foreground";
-    let label = initials;
+    let label = member.initials;
     if (v?.vote === "yes") {
       tone = "border-[hsl(var(--up)/0.45)] bg-[hsl(var(--up)/0.18)] text-up";
-      label = `${initials} ✓`;
+      label = `${member.initials} ✓`;
     } else if (v?.vote === "no") {
       tone = "border-[hsl(var(--down)/0.45)] bg-[hsl(var(--down)/0.18)] text-down";
-      label = `${initials} ✗`;
+      label = `${member.initials} ✗`;
     } else if (v?.vote === "abstain") {
       tone = "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.1)] text-muted-foreground";
-      label = `${initials} —`;
+      label = `${member.initials} —`;
     }
     const baseCls = cn(
       "inline-flex h-7 w-9 items-center justify-center rounded-full border text-[10px] font-semibold",
@@ -463,9 +473,11 @@ function RebalanceAgendaItem({
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Vote:
         </span>
-        <div className="flex items-center gap-1.5">{pillFor("YO")}</div>
-        <div className="flex items-center gap-1.5">{pillFor("TM")}</div>
-        <div className="flex items-center gap-1.5">{pillFor("LN")}</div>
+        {MEMBERS.map((m) => (
+          <div key={m.initials} className="flex items-center gap-1.5">
+            {pillFor(m)}
+          </div>
+        ))}
         <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
           {Math.round(tally.ratio * 100)}% for ·{" "}
           {tally.passed ? (

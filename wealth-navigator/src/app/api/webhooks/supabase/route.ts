@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import { NextResponse } from "next/server";
 
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
@@ -14,11 +16,37 @@ export const dynamic = "force-dynamic";
 
 interface Trigger { name: string; email_type: string; user_id_field: string | null; condition_field: string | null; condition_value: string | null; }
 
+/** Constant-time compare; returns false on length mismatch instead of throwing. */
+function timingSafeStrEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ab, bb);
+}
+
 export async function POST(req: Request) {
   const secret = process.env.SUPABASE_WEBHOOK_SECRET;
   if (secret) {
-    const incoming = req.headers.get("x-webhook-secret") || req.headers.get("authorization")?.replace("Bearer ", "");
-    if (incoming !== secret) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const incoming =
+      req.headers.get("x-webhook-secret") ||
+      req.headers.get("authorization")?.replace("Bearer ", "") ||
+      "";
+    if (!timingSafeStrEqual(incoming, secret)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+  } else {
+    // The secret is unset. This endpoint sends transactional CUSTOMER emails
+    // (welcome / wallet-funded / trade-confirmation), so a hard fail-closed on
+    // an unset secret would silently halt those emails — we default to serving
+    // (unchanged) but log LOUDLY, and honour an explicit opt-in to enforce.
+    // To CLOSE the hole: set SUPABASE_WEBHOOK_SECRET (matched in the Supabase
+    // dashboard webhook config) and SUPABASE_WEBHOOK_REQUIRE=1.
+    if (process.env.SUPABASE_WEBHOOK_REQUIRE === "1") {
+      return NextResponse.json({ error: "webhook secret not configured" }, { status: 503 });
+    }
+    console.error(
+      "[webhooks/supabase] CRITICAL: SUPABASE_WEBHOOK_SECRET is unset — this endpoint is UNAUTHENTICATED and anyone who can reach it can drive customer emails. Set SUPABASE_WEBHOOK_SECRET (+ SUPABASE_WEBHOOK_REQUIRE=1 to enforce).",
+    );
   }
 
   const payload = (await req.json().catch(() => null)) as { type?: string; table?: string; record?: Record<string, unknown>; old_record?: Record<string, unknown> } | null;

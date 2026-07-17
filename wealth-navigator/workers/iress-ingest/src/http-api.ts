@@ -98,6 +98,29 @@ function checkAuth(req: IncomingMessage, expected: string | undefined): boolean 
   return false;
 }
 
+/**
+ * Mutating HTTP routes — order cancel/amend, UAT send-to-market, the raw SOAP
+ * prober, the heartbeat writer, and the prod market-data seat release. Used only
+ * to decide whether to log a CRITICAL "served without auth" line when
+ * WORKER_HTTP_TOKEN is unset (fail-open). Read/probe routes stay quiet.
+ */
+function isMutatingRequest(method: string | undefined, path: string): boolean {
+  const m = (method ?? "GET").toUpperCase();
+  if (
+    m === "POST" &&
+    (path === "/orders/cancel" ||
+      path === "/orders/amend" ||
+      path === "/uat/send-to-market" ||
+      path === "/debug/soap-raw" ||
+      path === "/heartbeat/refresh")
+  ) {
+    return true;
+  }
+  // /debug/release-md-seat mutates the prod market-data session regardless of verb.
+  if (path === "/debug/release-md-seat") return true;
+  return false;
+}
+
 function send(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
   const json = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(status, {
@@ -885,6 +908,7 @@ async function cancelLiveOrder(
     let cancelledAvgFillCents: number | null = null;
     let cancelledSymbol: string | null = null;
     let cancelledQty: number | null = null;
+    let cancelledPayload: Record<string, unknown> = {};
     if (deps.supabase) {
       try {
         // Read the existing audit row(s) so the SSE delta carries the
@@ -905,6 +929,7 @@ async function cancelLiveOrder(
             quantity: number | null;
           };
           cancelledAuditId = ex.id;
+          cancelledPayload = (ex.payload ?? {}) as Record<string, unknown>;
           cancelledSymbol = ex.symbol ?? null;
           cancelledQty = typeof ex.quantity === "number" ? ex.quantity : null;
           const p = ex.payload ?? {};
@@ -918,21 +943,32 @@ async function cancelLiveOrder(
           // cancel so the UI's new Action column updates without
           // needing a poll cycle.
           .update({
-            status: "cancelled",
+            // cancel_pending, NOT cancelled: OrderDelete is sent but the broker
+            // has not acked — the order can still FILL in the race, so the poller
+            // writes the true terminal state (cancelled OR filled). MERGE the
+            // payload: a bare {lastAction} REPLACED the jsonb column, wiping
+            // book_id/strategy/iress_order_number and dropping the row out of the
+            // book-scoped execution poll — the actual cause of the stuck
+            // CANCEL_PENDING. updated_at lets the UI reconcile its optimistic override.
+            status: "cancel_pending",
             payload: {
-              lastAction: "Cancelled by trader (OrderDelete)",
+              ...cancelledPayload,
+              lastAction: "Cancel sent — awaiting broker acknowledgement",
               lastActionAt: cancelledAt,
             },
+            updated_at: cancelledAt,
           })
           .eq("order_id", orderId);
         await deps.supabase
           .from("oems_order_audit")
           .update({
-            status: "cancelled",
+            status: "cancel_pending",
             payload: {
-              lastAction: "Cancelled by trader (OrderDelete)",
+              ...cancelledPayload,
+              lastAction: "Cancel sent — awaiting broker acknowledgement",
               lastActionAt: cancelledAt,
             },
+            updated_at: cancelledAt,
           })
           .eq("payload->>iress_order_number", orderId);
       } catch {
@@ -1145,6 +1181,7 @@ async function amendLiveOrder(
     let amendedQty: number | null = null;
     let amendedFilled: number | null = null;
     let amendedAvgFillCents: number | null = null;
+    let amendedPayload: Record<string, unknown> = {};
     if (deps.supabase) {
       try {
         const { data: existing } = await deps.supabase
@@ -1160,6 +1197,7 @@ async function amendLiveOrder(
             quantity: number | null;
           };
           amendedAuditId = ex.id;
+          amendedPayload = (ex.payload ?? {}) as Record<string, unknown>;
           amendedSymbol = ex.symbol ?? null;
           amendedQty = typeof ex.quantity === "number" ? ex.quantity : null;
           const p = ex.payload ?? {};
@@ -1183,7 +1221,11 @@ async function amendLiveOrder(
             // WORKING/PARTIAL row which flips the UI back, preserving
             // any partial fills already on the book.
             status: "amend_pending",
+            // MERGE payload (keep book_id/strategy/iress_order_number/fills so the
+            // row stays in the book-scoped poll and the UI can reconcile); bump
+            // updated_at. A bare payload here had the same clobber bug as cancel.
             payload: {
+              ...amendedPayload,
               lastAction: `Amend sent (${amendSummary}) — awaiting broker acknowledgement`,
               lastActionAt: amendedAt,
               amend_pending: {
@@ -1194,6 +1236,7 @@ async function amendLiveOrder(
                 sent_at: amendedAt,
               },
             },
+            updated_at: amendedAt,
           })
           .eq("order_id", orderId);
         await deps.supabase
@@ -1201,6 +1244,7 @@ async function amendLiveOrder(
           .update({
             status: "amend_pending",
             payload: {
+              ...amendedPayload,
               lastAction: `Amend sent (${amendSummary}) — awaiting broker acknowledgement`,
               lastActionAt: amendedAt,
               amend_pending: {
@@ -1211,6 +1255,7 @@ async function amendLiveOrder(
                 sent_at: amendedAt,
               },
             },
+            updated_at: amendedAt,
           })
           .eq("payload->>iress_order_number", orderId);
       } catch {
@@ -1371,6 +1416,24 @@ export async function handleRequest(
   }
   const url = new URL(req.url ?? "/", "http://worker");
   const path = url.pathname;
+
+  // SECURITY: checkAuth fails OPEN when WORKER_HTTP_TOKEN is unset (so an
+  // auto-deploy that forgets the token never takes the order seat down). Emit a
+  // loud CRITICAL line on every mutating request served without auth so the
+  // exposure is visible and the operator is nudged to set the token and flip
+  // WORKER_REQUIRE_HTTP_TOKEN=1. Reads stay quiet to avoid log spam.
+  if (!authToken && isMutatingRequest(req.method, path)) {
+    console.error(
+      JSON.stringify({
+        level: "critical",
+        event: "worker_http_unauthenticated_mutation",
+        method: req.method ?? "GET",
+        path,
+        message:
+          "Mutating worker HTTP request served WITHOUT auth (WORKER_HTTP_TOKEN unset). Set WORKER_HTTP_TOKEN on the worker + BFF, then WORKER_REQUIRE_HTTP_TOKEN=1 to enforce.",
+      }),
+    );
+  }
 
   if (req.method === "GET" && path === "/health") {
     const snapshot = buildHealthSnapshot(deps, deps.sessions.peekSession(), getLastQuoteSyncAt());

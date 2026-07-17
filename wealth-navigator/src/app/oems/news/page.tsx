@@ -81,6 +81,22 @@ export default function NewsPage() {
     ...queryOpts("reference"),
   });
 
+  // Hooks must run unconditionally (Rules of Hooks): declare them BEFORE the
+  // mock-mode early return below, so the hook count doesn't change when
+  // realDataOnly flips (e.g. ?mock=1), which would trip a hydration mismatch.
+  const [tab, setTab] = useState<"all" | "sens" | "wire">("all");
+  const [q, setQ] = useState("");
+  // Alliance wire items have no external URL (licensed full-text); clicking
+  // them expands the body in-app. RSS items link out instead.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
   if (!realDataOnly) {
     return (
       <PageCanvas>
@@ -98,19 +114,6 @@ export default function NewsPage() {
       </PageCanvas>
     );
   }
-
-  const [tab, setTab] = useState<"all" | "sens" | "wire">("all");
-  const [q, setQ] = useState("");
-  // Alliance wire items have no external URL (licensed full-text); clicking
-  // them expands the body in-app. RSS items link out instead.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const toggleExpanded = (id: string) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
 
   // /api/news returns the Alliance News wire from the retail News_articles feed,
   // tagged category "WIRE". SENS (category "SENS") needs a separate JSE SENS
