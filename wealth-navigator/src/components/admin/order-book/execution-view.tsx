@@ -375,6 +375,10 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   }, []);
 
   const applyDelta = React.useCallback((d: UatDelta) => {
+    // Scope to THIS book: the SSE stream is global (carries deltas for every
+    // book), so ignore deltas for other books — otherwise they leak into this
+    // view as phantom rows. Deltas with no book_id (older payloads) still apply.
+    if (d.book_id && d.book_id !== bookId) return;
     setLastEventAt(new Date().toISOString());
     if (!d.order_audit_id) return;
     setLiveOverrides((prev) => {
@@ -459,7 +463,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
       };
       return { ...prev, [d.order_audit_id as string]: newRow };
     });
-  }, []);
+  }, [bookId]);
 
   const stream = useUatStream(uatEnabled, applyDelta);
 

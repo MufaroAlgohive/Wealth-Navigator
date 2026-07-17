@@ -77,11 +77,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
   }
 
-  // Find every audit row that belongs to this book_id/strategy. We pull a
-  // bounded recent window so the IN can hit the index.
+  // Scope to this order/book AT THE DB LEVEL so the 500-row window covers the
+  // relevant rows, not the newest 500 across ALL books (which dropped rows on a
+  // busy shared audit table — same class as the execution-route vanish fix). The
+  // JS filter downstream stays as defense-in-depth. PostgREST filters jsonb via
+  // the ->> text accessor.
+  const oid = orderId.replace(/[\\"]/g, "");
   const bookLookup = await db
     .from("oems_order_audit")
     .select("id, order_id, symbol, quantity, status, payload, result_payload")
+    .or(`order_id.eq."${oid}",payload->>book_id.eq."${oid}",payload->>strategy.eq."${oid}"`)
     .order("updated_at", { ascending: false })
     .limit(500);
 
