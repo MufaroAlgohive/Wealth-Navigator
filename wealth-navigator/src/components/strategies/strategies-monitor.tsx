@@ -67,13 +67,7 @@ function kindTone(kind: string | null | undefined): "primary" | "warning" | "neu
   return kind === "equity" ? "primary" : kind === "money_market" ? "warning" : "neutral";
 }
 
-function StrategiesHero({
-  strategies,
-  market,
-}: {
-  strategies: StrategyRow[];
-  market?: Array<{ symbol: string; price: number | null; changePct: number | null }>;
-}) {
+function StrategiesHero({ strategies }: { strategies: StrategyRow[] }) {
   const stats = useMemo(() => {
     const live = strategies.filter((s) => s.status === "live").length;
     const totalAum = strategies.reduce((sum, s) => sum + s.aum, 0);
@@ -93,7 +87,6 @@ function StrategiesHero({
           <SlimStat label="Day P&L" value={stats.dayPnl !== 0 ? formatZAR(stats.dayPnl) : "—"} tone={stats.dayPnl > 0 ? "positive" : stats.dayPnl < 0 ? "negative" : "default"} />
         </div>
       )}
-      <MarketTicker items={market ?? []} />
     </header>
   );
 }
@@ -103,9 +96,9 @@ function SlimStat({ label, value, tone = "default" }: { label: string; value: st
 }
 
 function MarketTicker({ items }: { items: Array<{ symbol: string; price: number | null; changePct: number | null }> }) {
-  if (!items.length) return <div className="mt-2 border-t border-border/60 pt-2 text-center text-[10px] text-muted-foreground">Live market prices unavailable</div>;
+  if (!items.length) return <div className="flex h-10 items-center justify-center border-y border-border/60 bg-background/35 text-[10px] text-muted-foreground">Live market prices unavailable</div>;
   const display = [...items, ...items];
-  return <div className="mt-2 overflow-hidden rounded-lg border border-border/60 bg-background/25"><div className="strategy-market-ticker flex w-max items-center whitespace-nowrap">{display.map((item, index) => { const up=(item.changePct??0)>0, down=(item.changePct??0)<0; const Icon=up?ArrowUpRight:down?ArrowDownRight:Minus; return <div key={`${item.symbol}-${index}`} className="flex h-9 items-center gap-2 border-r border-border/60 px-4"><span className="font-mono text-[10px] font-bold tracking-wide text-foreground">{item.symbol}</span><span className="font-mono text-[10px] text-muted-foreground">{item.price == null ? "—" : formatZAR(item.price)}</span><span className={cn("inline-flex items-center gap-0.5 font-mono text-[10px] font-semibold",up?"text-success":down?"text-destructive":"text-muted-foreground")}><Icon className="h-3 w-3"/>{item.changePct == null ? "—" : `${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}%`}</span></div>})}</div><style jsx>{`@keyframes strategyTicker{from{transform:translateX(0)}to{transform:translateX(-50%)}}.strategy-market-ticker{animation:strategyTicker ${Math.max(24,items.length*3)}s linear infinite}.strategy-market-ticker:hover{animation-play-state:paused}@media(prefers-reduced-motion:reduce){.strategy-market-ticker{animation:none}}`}</style></div>;
+  return <div className="overflow-hidden border-y border-border/60 bg-background/35"><div className="strategy-market-ticker flex w-max items-center whitespace-nowrap">{display.map((item, index) => { const up=(item.changePct??0)>0, down=(item.changePct??0)<0; const Icon=up?ArrowUpRight:down?ArrowDownRight:Minus; return <div key={`${item.symbol}-${index}`} className="flex h-10 items-center gap-2 border-r border-border/60 px-5"><span className="font-mono text-[10px] font-bold tracking-wide text-foreground">{item.symbol}</span><span className="font-mono text-[10px] text-muted-foreground">{item.price == null ? "—" : formatZAR(item.price)}</span><span className={cn("inline-flex items-center gap-0.5 font-mono text-[10px] font-semibold",up?"text-success":down?"text-destructive":"text-muted-foreground")}><Icon className="h-3 w-3"/>{item.changePct == null ? "—" : `${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}%`}</span></div>})}</div><style jsx>{`@keyframes strategyTicker{from{transform:translateX(0)}to{transform:translateX(-50%)}}.strategy-market-ticker{animation:strategyTicker ${Math.max(24,items.length*3)}s linear infinite;will-change:transform}.strategy-market-ticker:hover{animation-play-state:paused}@media(prefers-reduced-motion:reduce){.strategy-market-ticker{animation:none}}`}</style></div>;
 }
 
 /** The "Mandates" tab body — was `/oems/strategies`. Must render inside a Suspense boundary (uses `useSearchParams`). */
@@ -146,7 +139,8 @@ export function StrategiesMonitor() {
 
   return (
     <div className="space-y-5 pb-8">
-      <StrategiesHero strategies={strategies} market={strategiesQ.data?.market} />
+      <div className="-mx-4 -mt-4 sm:-mx-6 sm:-mt-6"><MarketTicker items={strategiesQ.data?.market ?? []} /></div>
+      <StrategiesHero strategies={strategies} />
 
       {strategiesQ.isLoading ? (
         <div className="grid grid-cols-12 gap-3">
