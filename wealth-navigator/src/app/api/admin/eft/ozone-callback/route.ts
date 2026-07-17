@@ -51,7 +51,6 @@ function openRetail(): SupabaseClient | null {
 }
 
 function verifySignature(rawBody: string, header: string | null, secret: string): boolean {
-  if (!secret) return true; // Mock mode: never block the simulated webhook
   if (!header) return false;
   const expected = signOzoneCallback(rawBody, secret);
   // Constant-time comparison to avoid timing-side-channel signature leaks.
@@ -63,15 +62,37 @@ function verifySignature(rawBody: string, header: string | null, secret: string)
   }
 }
 
+/**
+ * Whether the callback MUST be signed. Live provider or a production build
+ * always requires the HMAC secret (fail-closed). Only dev + mock keep the
+ * unsigned escape hatch so the simulated webhook can exercise the flow.
+ */
+function signatureRequired(): boolean {
+  return (
+    (process.env.OZONE_MODE ?? "mock").toLowerCase().trim() === "live" ||
+    process.env.NODE_ENV === "production"
+  );
+}
+
 export async function POST(req: Request) {
   const rawBody = await req.text();
   const sig = req.headers.get("x-ozone-signature");
   const secret = process.env.OZONE_WEBHOOK_SECRET ?? "";
-  if (!verifySignature(rawBody, sig, secret)) {
+  if (!secret) {
+    // Fail closed in live/prod: an unset secret is a misconfiguration. Reject
+    // loudly (recoverable: set OZONE_WEBHOOK_SECRET). Dev + mock keep the
+    // unsigned escape hatch so offline simulation still works.
+    if (signatureRequired()) {
+      return NextResponse.json(
+        { ok: false, error: "webhook secret not configured (set OZONE_WEBHOOK_SECRET)" },
+        { status: 503 },
+      );
+    }
+  } else if (!verifySignature(rawBody, sig, secret)) {
     return NextResponse.json(
       {
         ok: false,
-        error: "invalid signature (set OZONE_WEBHOOK_SECRET matches the X-Ozone-Signature header)",
+        error: "invalid signature (X-Ozone-Signature must be the HMAC of the body with OZONE_WEBHOOK_SECRET)",
       },
       { status: 401 },
     );

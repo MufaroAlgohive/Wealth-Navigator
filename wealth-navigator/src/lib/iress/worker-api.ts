@@ -183,6 +183,14 @@ export async function callWorker<T = unknown>(
       headers: {
         Accept: "application/json",
         ...(opts.body !== undefined ? { "Content-Type": "application/json" } : {}),
+        // Forward the worker HTTP token when configured so the worker's checkAuth
+        // accepts BFF-proxied order calls once WORKER_HTTP_TOKEN is set on BOTH
+        // sides. Unset token = no header = worker fail-open (today's behavior);
+        // this must be wired BEFORE the token is set on the worker, else every
+        // BFF->worker order call would 401.
+        ...(process.env.WORKER_HTTP_TOKEN
+          ? { Authorization: `Bearer ${process.env.WORKER_HTTP_TOKEN}` }
+          : {}),
         ...(opts.headers ?? {}),
       },
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
