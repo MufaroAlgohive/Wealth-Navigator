@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import type { Route } from "next";
 import { usePathname, useRouter } from "next/navigation";
 import { ArrowUp, ArrowDown, Radio, AlertTriangle, Check, ChevronDown, Search } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -127,7 +128,8 @@ function StrategyBarSelect() {
     setSelected(id); setOpen(false); setQuery("");
     const params = new URLSearchParams(window.location.search);
     if (id) params.set("focus", id); else params.delete("focus");
-    router.push(`/strategies${params.size ? `?${params.toString()}` : ""}`);
+    const destination = `/strategies${params.size ? `?${params.toString()}` : ""}` as Route;
+    router.push(destination);
   };
   const current = options.find((option) => option.id === selected);
   const filtered = options.filter((option) => option.name.toLowerCase().includes(query.trim().toLowerCase()));
