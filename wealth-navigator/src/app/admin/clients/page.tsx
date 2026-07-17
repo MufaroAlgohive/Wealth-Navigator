@@ -19,6 +19,8 @@ interface Txn { id: string; name: string | null; description: string | null; amo
 interface ClientDocument { id: string; name: string; fileType: string; addedDate: string | null; url: string; source: "experian" | "sumsub" | "signed"; }
 interface DocumentGroups { experian: ClientDocument[]; sumsub: ClientDocument[]; signed: ClientDocument[]; }
 interface ClientStats { total: number; completed: number; pending: number; rejected: number; }
+interface RichField { value: unknown; source: string; }
+interface RichDetails { fields: Record<string, RichField>; providers: { profile: boolean; sumsub: boolean; experian: boolean }; }
 interface Detail {
   profile: Record<string, unknown> | null;
   onboarding: Record<string, unknown> | null;
@@ -30,6 +32,7 @@ interface Detail {
   onboarding_pack?: Record<string, unknown> | null;
   mandate?: { available: boolean; data: Record<string, unknown>; signed_agreement_url?: string | null };
   child_certificate?: { url?: string | null; status?: string | null; reviewed_at?: string | null };
+  rich_details?: RichDetails | null;
 }
 
 const R = (cents: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(cents / 100);
@@ -282,7 +285,8 @@ export default function ClientsPage() {
                   <TabsList><TabsTrigger value="profile">Profile</TabsTrigger><TabsTrigger value="kyc">KYC</TabsTrigger>{!detail.is_unlinked_child && <TabsTrigger value="mandate">Mandate</TabsTrigger>}<TabsTrigger value="holdings">Holdings</TabsTrigger><TabsTrigger value="activity">Activity</TabsTrigger></TabsList>
 
                   <TabsContent value="profile">
-                    <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
+                    {detail.rich_details && <RichClientDetails details={detail.rich_details} />}
+                    <dl className="mt-4 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
                       <Row label="Email" value={str(p.email)} /><Row label="Phone" value={str(p.phone_number)} />
                       <Row label="Date of birth" value={str(p.date_of_birth)} /><Row label="Gender" value={str(p.gender)} />
                       <Row label="ID number" value={str(p.id_number)} /><Row label="Currency" value={str(p.preferred_currency)} />
@@ -383,6 +387,17 @@ export default function ClientsPage() {
     </div>
   );
 }
+
+function RichClientDetails({ details }: { details: RichDetails }) {
+  const labels: Record<string,string>={first_name:"First name",last_name:"Last name",email:"Email",phone:"Phone",date_of_birth:"Date of birth",gender:"Gender",id_number:"ID number",address:"Residential address",employer:"Employer",employment_status:"Employment status"};
+  const populated=Object.entries(details.fields).filter(([,field])=>field.value!=null&&field.value!=="");
+  return <section className="space-y-3 rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 via-transparent to-transparent p-3">
+    <div className="flex flex-wrap items-center gap-2"><div className="mr-auto"><p className="text-xs font-bold uppercase tracking-wider text-foreground">Rich client record</p><p className="text-[10px] text-muted-foreground">Best available confirmed value with source provenance</p></div>{details.providers.profile&&<ProviderBadge source="Profile"/>}{details.providers.sumsub&&<ProviderBadge source="SumSub"/>}{details.providers.experian&&<ProviderBadge source="Experian"/>}</div>
+    <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">{populated.map(([key,field])=><div key={key} className="rounded-lg border border-border bg-card px-3 py-2"><dt className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">{labels[key]||key.replaceAll("_"," ")}</dt><dd className="mt-0.5 break-words text-[13px] font-medium text-foreground">{formatDetailValue(field.value)}</dd><ProviderBadge source={field.source}/></div>)}</dl>
+  </section>;
+}
+
+function ProviderBadge({source}:{source:string}){return <span className={cn("mt-1 inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide",source==="Experian"?"bg-success/15 text-success":source==="SumSub"?"bg-primary/15 text-primary":source==="Onboarding"?"bg-warning/15 text-warning":"bg-muted text-muted-foreground")}>{source}</span>}
 
 function Row({ label, value }: { label: string; value: string }) {
   return <div className="flex items-center justify-between gap-3 bg-card px-3 py-2.5"><dt className="text-[11px] text-muted-foreground">{label}</dt><dd className="truncate text-[13px] font-medium text-foreground">{value}</dd></div>;

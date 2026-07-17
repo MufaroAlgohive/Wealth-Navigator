@@ -66,6 +66,49 @@ function parseRecord(value: unknown): Record<string, unknown> {
   }
 }
 
+function findProviderValue(source: unknown, aliases: string[], depth = 0): unknown {
+  if (!source || typeof source !== "object" || depth > 8) return null;
+  const wanted = new Set(aliases.map((alias) => alias.replace(/[^a-z0-9]/gi, "").toLowerCase()));
+  for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
+    if (wanted.has(key.replace(/[^a-z0-9]/gi, "").toLowerCase()) && value != null && value !== "" && typeof value !== "object") return value;
+  }
+  for (const value of Object.values(source as Record<string, unknown>)) {
+    const found = findProviderValue(value, aliases, depth + 1);
+    if (found != null && found !== "") return found;
+  }
+  return null;
+}
+
+function buildRichDetails(profileValue: unknown, onboardingValue: unknown, packValue: unknown) {
+  const profile = parseRecord(profileValue);
+  const onboarding = parseRecord(onboardingValue);
+  const pack = parseRecord(packValue);
+  const raw = parseRecord(onboarding.sumsub_raw);
+  const info = { ...parseRecord(pack.fixedInfo), ...parseRecord(pack.info) };
+  const experianKyc = raw.experian_kyc_result ?? parseRecord(pack.experian).kyc ?? null;
+  const experianIdmn = raw.experian_idmn_result ?? parseRecord(pack.experian).idmn ?? pack.experian_idmn ?? null;
+  const experian = experianIdmn ?? experianKyc;
+  const choose = (...candidates: Array<[unknown, string]>): { value: unknown; source: string } => {
+    const match = candidates.find(([value]) => value != null && value !== "");
+    return { value: match?.[0] ?? null, source: match?.[1] ?? "Not available" };
+  };
+  return {
+    fields: {
+      first_name: choose([profile.first_name,"Profile"],[info.firstName ?? info.firstNameEn,"SumSub"],[findProviderValue(experian,["firstName","forename","givenName"]),"Experian"]),
+      last_name: choose([profile.last_name,"Profile"],[info.lastName ?? info.lastNameEn,"SumSub"],[findProviderValue(experian,["lastName","surname","familyName"]),"Experian"]),
+      email: choose([profile.email,"Profile"],[info.email,"SumSub"],[findProviderValue(experian,["email","emailAddress"]),"Experian"]),
+      phone: choose([profile.phone_number,"Profile"],[info.phone ?? pack.phone,"SumSub"],[findProviderValue(experian,["phoneNumber","mobileNumber","cellphone"]),"Experian"]),
+      date_of_birth: choose([profile.date_of_birth,"Profile"],[info.dob ?? info.dateOfBirth,"SumSub"],[findProviderValue(experian,["dateOfBirth","birthDate","dob"]),"Experian"]),
+      gender: choose([profile.gender,"Profile"],[info.gender,"SumSub"],[findProviderValue(experian,["gender","sex"]),"Experian"]),
+      id_number: choose([profile.id_number,"Profile"],[info.idNumber ?? findProviderValue(info,["idNumber","documentNumber"]),"SumSub"],[findProviderValue(experian,["identityNumber","idNumber","documentNumber"]),"Experian"]),
+      address: choose([profile.address,"Profile"],[findProviderValue(info,["formattedAddress","residentialAddress","streetAddress"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["formattedAddress","residentialAddress","streetAddress","address"]),"Experian"]),
+      employer: choose([onboarding.employer_name,"Onboarding"],[findProviderValue(info,["employerName","employer"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["employerName","employer"]),"Experian"]),
+      employment_status: choose([onboarding.employment_status,"Onboarding"],[findProviderValue(info,["employmentStatus","occupation"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["employmentStatus","occupation"]),"Experian"]),
+    },
+    providers: { profile: Object.keys(profile).length>0, sumsub: Boolean(pack.info||pack.fixedInfo), experian: Boolean(experianKyc||experianIdmn) },
+  };
+}
+
 async function resolveCertificateUrl(db: ReturnType<typeof createRetailServiceRoleClient>, rawValue: unknown) {
   const raw = String(rawValue || "").trim();
   if (!raw) return null;
@@ -314,6 +357,7 @@ export async function GET(req: Request) {
         data: mandateData,
         signed_agreement_url: onboarding?.signed_agreement_url ?? null,
       },
+      rich_details: buildRichDetails(profile, onboarding, pack?.pack_details),
       kyc: deriveKyc(onboarding ?? undefined, required ?? undefined, pack?.pack_details),
       holdings,
       transactions: txns ?? [],
