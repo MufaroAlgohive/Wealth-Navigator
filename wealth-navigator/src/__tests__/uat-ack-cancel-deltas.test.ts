@@ -114,15 +114,22 @@ function makeSupabaseStub(opts: { seededRow: Record<string, unknown> | null } = 
   const client = {
     from: (_table: string) => ({
       select: () => {
+        const listResult = Promise.resolve({
+          data: seededRow ? [seededRow] : [],
+          error: null,
+        });
         const selBuilder = {
           eq: () => selBuilder,
           or: () => selBuilder,
+          order: () => selBuilder,
+          // `.in(...)` terminates the chain for the pre-trade guards
+          // (availableToBuy reads oems_order_audit via `.select(...).in("source", …)`).
+          // Resolve to the seeded row list so the guard runs instead of throwing;
+          // with no oems_account_c cash row the buy guard is advisory (order proceeds),
+          // matching production's fail-safe-but-not-block behavior for unknown cash.
+          in: () => listResult,
           maybeSingle: async (): Promise<SelectRowResult> => ({ data: seededRow, error: null }),
-          limit: () =>
-            Promise.resolve({
-              data: seededRow ? [seededRow] : [],
-              error: null,
-            }),
+          limit: () => listResult,
         };
         return selBuilder;
       },
