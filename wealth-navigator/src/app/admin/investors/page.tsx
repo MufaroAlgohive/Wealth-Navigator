@@ -14,12 +14,13 @@ interface Holding { user_id: string; family_member_id: string | null; security_i
 interface ClosedHolding { user_id: string; family_member_id?: string | null; strategy_id?: string | null; quantity: number; avg_fill: number | null; avg_exit: number | null; }
 interface NavRow { user_id: string; strategy_id?: string | null; as_of_date: string; basket_value: number | null; ytd_pct: number | null; inception_pct: number | null; inception_pnl: number | null; }
 interface Profile { id: string; first_name: string | null; last_name: string | null; email: string | null; mint_number: string | null; computershare_number: string | null; }
+interface FamilyMember { id: string; first_name: string | null; last_name: string | null; computershare_number: string | null; }
 interface SecMeta { id: string; symbol: string; name: string | null; sector: string | null; logo_url: string | null; }
 interface SecLive { security_id: string; current_price: number | null; }
 interface Txn { id: string; user_id: string; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_consumed_cents: number | null; }
 interface Residual { user_id: string; family_member_id?: string | null; strategy_id?: string | null; balance_cents: number | null; }
 interface Strategy { id: string; name: string; short_name: string | null; }
-interface Payload { holdings: Holding[]; strategies: Strategy[]; profiles: Profile[]; secMeta: SecMeta[]; secLive: SecLive[]; txns: Txn[]; residuals: Residual[]; closedHoldings: ClosedHolding[]; stratHist: NavRow[]; }
+interface Payload { holdings: Holding[]; strategies: Strategy[]; profiles: Profile[]; familyMembers: FamilyMember[]; secMeta: SecMeta[]; secLive: SecLive[]; txns: Txn[]; residuals: Residual[]; closedHoldings: ClosedHolding[]; stratHist: NavRow[]; }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const PIE = ["#7c5cff", "#22c55e", "#f59e0b", "#38bdf8", "#ec4899", "#ef4444", "#a3a3a3", "#14b8a6", "#eab308", "#8b5cf6"];
@@ -41,7 +42,7 @@ function costCentsPerShare(h: Holding): number {
 
 interface HoldingView { securityId: string; symbol: string; name: string; sector: string; qty: number; priceCents: number; costCents: number; valueCents: number; investedCents: number; pnlCents: number; }
 interface Investor {
-  key: string; userId: string; familyMemberId: string | null; strategyId: string | null; strategy: string | null; name: string; email: string; mintNumber: string | null; computershare: string | null;
+  key: string; userId: string; familyMemberId: string | null; strategyId: string | null; strategy: string | null; name: string; parentName: string | null; email: string; mintNumber: string | null; computershare: string | null;
   investedCents: number; currentCents: number; residualCents: number; realizedCents: number; valueCents: number; pnlCents: number; retPct: number;
   ytdPct: number | null; inceptionPct: number | null;
   nav: { date: string; v: number }[]; holdings: HoldingView[]; txns: Txn[];
@@ -95,7 +96,7 @@ export default function InvestorsPage() {
   const [bookType, setBookType] = React.useState<"strategies" | "single">("strategies");
 
   React.useEffect(() => {
-    fetch("/api/admin/investors/data").then((r) => r.json()).then((d) => setData(d.ok ? d : { holdings: [], strategies: [], profiles: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] })).catch(() => setData({ holdings: [], strategies: [], profiles: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] } as Payload));
+    fetch("/api/admin/investors/data").then((r) => r.json()).then((d) => setData(d.ok ? d : { holdings: [], strategies: [], profiles: [], familyMembers: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] })).catch(() => setData({ holdings: [], strategies: [], profiles: [], familyMembers: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] } as Payload));
   }, []);
 
   const investors = React.useMemo<Investor[]>(() => {
@@ -103,6 +104,7 @@ export default function InvestorsPage() {
     const secMetaById = new Map(data.secMeta.map((s) => [s.id, s]));
     const liveById = new Map(data.secLive.map((s) => [s.security_id, Number(s.current_price) || 0]));
     const profById = new Map(data.profiles.map((p) => [p.id, p]));
+    const familyById = new Map((data.familyMembers || []).map((member) => [member.id, member]));
     const strategyById = new Map((data.strategies || []).map((s) => [s.id, s]));
     const scope = (user: string, family?: string | null, strategy?: string | null) => `${user}:${family || ""}:${strategy || ""}`;
     const residualByUser: Record<string, number> = {};
@@ -140,9 +142,12 @@ export default function InvestorsPage() {
       const nav = (navByUser[navKey] || []).filter((r) => r.basket_value != null).map((r) => ({ date: r.as_of_date, v: Number(r.basket_value) }));
       const latestNav = (navByUser[navKey] || [])[(navByUser[navKey] || []).length - 1];
       const prof = profById.get(userId);
+      const familyMember = familyMemberId ? familyById.get(familyMemberId) : null;
+      const parentName = familyMember && prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0,8) : null;
+      const displayName = familyMember ? `${familyMember.first_name || ""} ${familyMember.last_name || ""}`.trim() || `Child ${familyMemberId?.slice(0,8)}` : prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0,8) : userId.slice(0,8);
       out.push({
-        key,userId,familyMemberId,strategyId,strategy:strategyId?(strategyById.get(strategyId)?.short_name||strategyById.get(strategyId)?.name||"Strategy"):null, name: prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0, 8) : userId.slice(0, 8),
-        email: prof?.email || "", mintNumber: prof?.mint_number || null, computershare: prof?.computershare_number || null,
+        key,userId,familyMemberId,strategyId,strategy:strategyId?(strategyById.get(strategyId)?.short_name||strategyById.get(strategyId)?.name||"Strategy"):null, name:displayName,parentName,
+        email: prof?.email || "", mintNumber: prof?.mint_number || null, computershare: familyMember?.computershare_number || prof?.computershare_number || null,
         investedCents, currentCents, residualCents, realizedCents, valueCents, pnlCents,
         retPct: investedCents > 0 ? (pnlCents / investedCents) * 100 : 0,
         ytdPct: latestNav?.ytd_pct ?? null, inceptionPct: latestNav?.inception_pct ?? null,
@@ -161,7 +166,7 @@ export default function InvestorsPage() {
     return { aum, invested, pnl, avgRet, best: sorted[0] || null, worst: sorted[sorted.length - 1] || null };
   }, [investors]);
 
-  const filtered = investors.filter((i) => (bookType === "strategies" ? !!i.strategyId : !i.strategyId) && (!search.trim() || `${i.name} ${i.email} ${i.strategy || ""}`.toLowerCase().includes(search.toLowerCase())));
+  const filtered = investors.filter((i) => (bookType === "strategies" ? !!i.strategyId : !i.strategyId) && (!search.trim() || `${i.name} ${i.parentName || ""} ${i.email} ${i.strategy || ""}`.toLowerCase().includes(search.toLowerCase())));
   const sel = investors.find((i) => i.key === selId) || null;
 
   return (
@@ -189,7 +194,7 @@ export default function InvestorsPage() {
               : filtered.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">No investors.</p>
               : filtered.map((i) => (
                 <button key={i.key} onClick={() => setSelId(i.key)} className={cn("flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left", selId === i.key ? "bg-primary/10" : "hover:bg-accent/50")}>
-                  <div className="min-w-0"><div className="truncate text-sm font-medium text-foreground">{i.name}</div><div className="truncate text-[10px] text-muted-foreground">{i.strategy || "Single securities"}</div><div className="text-[11px] text-muted-foreground">{R(i.valueCents)}</div></div>
+                  <div className="min-w-0"><div className="truncate text-sm font-medium text-foreground">{i.name}</div>{i.parentName&&<div className="truncate text-[9px] text-muted-foreground">Managed by {i.parentName}</div>}<div className="truncate text-[10px] text-muted-foreground">{i.strategy || "Single securities"}</div><div className="text-[11px] text-muted-foreground">{R(i.valueCents)}</div></div>
                   <span className={cn("text-xs font-semibold", pctCls(i.retPct))}>{pctStr(i.retPct)}</span>
                 </button>
               ))}
@@ -225,6 +230,7 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
       <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl bg-gradient-to-br from-primary/15 to-transparent p-4">
         <div>
           <div className="text-lg font-bold text-foreground">{inv.name}</div>
+          {inv.parentName&&<div className="text-[10px] text-muted-foreground">Managed by {inv.parentName}</div>}
           <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-primary">{inv.strategy || "Single securities"}</div>
           <div className="text-xs text-muted-foreground">{inv.email}{inv.mintNumber ? ` · ${inv.mintNumber}` : ""}</div>
         </div>
