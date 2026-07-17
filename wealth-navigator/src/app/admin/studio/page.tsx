@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 
-interface Client { id: string; name: string; email: string | null; strategy: string | null; }
-interface PortfolioHolding { id: string; symbol: string; name: string; logo_url: string | null; quantity: number; cost: number; live: number; marketValue: number; pnl: number; strategy: string | null; }
-interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; transaction_date: string | null; }
-interface Portfolio { holdings: PortfolioHolding[]; transactions: Txn[]; totalValue: number; totalPnl: number; pnlPct: number; strategyCount: number; }
+interface Client { id: string; name: string; email: string | null; strategy: string | null; isTest?: boolean; }
+interface PortfolioHolding { id: string; symbol: string; name: string; logo_url: string | null; quantity: number; cost: number; live: number; marketValue: number; pnl: number; pnlPct:number; pending:boolean; strategyId:string|null; strategy: string | null; }
+interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status?:string|null; transaction_date: string | null; created_at?:string|null; }
+interface StrategyPreview {id:string;name:string;value:number;holdings:number}
+interface Portfolio { holdings: PortfolioHolding[]; transactions: Txn[]; totalValue: number; totalPnl: number; pnlPct: number; strategyCount: number; strategies:StrategyPreview[];units?:{money:string;sourcePrices:string}; }
 
 const ZAR = (n: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 }).format(Number(n || 0));
 const pnlCls = (n: number) => (n >= 0 ? "text-success" : "text-destructive");
@@ -26,9 +27,10 @@ export default function StudioPage() {
   const [selected, setSelected] = React.useState<Client | null>(null);
   const [portfolio, setPortfolio] = React.useState<Portfolio | null>(null);
   const [launching, setLaunching] = React.useState(false);
+  const [portfolioError,setPortfolioError]=React.useState<string|null>(null);
 
   React.useEffect(() => {
-    fetch("/api/admin/studio?action=config").then((r) => r.json()).then((d) => d.ok && setConfig({ dev: d.dev, live: d.live })).catch(() => {});
+    fetch("/api/admin/studio?action=config").then((r) => r.json()).then((d) => {if(d.ok){const next={dev:d.dev||"",live:d.live||""};setConfig(next);if(!next.dev&&next.live)setEnv("live");}}).catch(() => {});
   }, []);
 
   React.useEffect(() => {
@@ -39,20 +41,23 @@ export default function StudioPage() {
   const openClient = async (c: Client) => {
     setSelected(c);
     setPortfolio(null);
+    setPortfolioError(null);
     const d = await fetch(`/api/admin/studio?action=portfolio&user_id=${c.id}`).then((r) => r.json()).catch(() => ({ ok: false }));
-    if (d.ok) setPortfolio(d);
+    if (d.ok) setPortfolio(d);else setPortfolioError(d.error||"Portfolio preview unavailable");
   };
 
   const launch = async () => {
     if (!selected) return;
     setLaunching(true);
+    const preview=window.open("about:blank","_blank");
+    if(preview){preview.document.title="Preparing client view";preview.document.body.innerHTML='<div style="font-family:system-ui;padding:32px;color:#6d28d9">Preparing secure client sign-in…</div>';}
     try {
       const d = await fetch("/api/admin/studio?action=impersonate", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: selected.id, target: env }),
       }).then((r) => r.json());
-      if (d.ok && d.actionLink) window.open(d.actionLink, "_blank");
-      else toast.message(d.error || "Deferred");
-    } finally { setLaunching(false); }
+      if (d.ok && d.actionLink){if(preview)preview.location.href=d.actionLink;else window.open(d.actionLink,"_blank","noopener,noreferrer");}
+      else {preview?.close();toast.error(d.error || "Could not open client view");}
+    } catch(error){preview?.close();toast.error(error instanceof Error?error.message:"Could not open client view");} finally { setLaunching(false); }
   };
 
   const filtered = (clients ?? []).filter((c) => !search.trim() || `${c.name} ${c.email} ${c.strategy}`.toLowerCase().includes(search.toLowerCase()));
@@ -95,7 +100,7 @@ export default function StudioPage() {
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-bold text-primary-foreground">{initials(c.name)}</div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-foreground">{c.name}</div>
-                  <div className="truncate text-[11px] text-muted-foreground">{c.strategy || c.email}</div>
+                  <div className="truncate text-[11px] text-muted-foreground">{c.strategy || c.email}{c.isTest?" · UAT":""}</div>
                 </div>
               </button>
             ))}
@@ -106,19 +111,21 @@ export default function StudioPage() {
         <div className="rounded-2xl border border-border bg-card p-5">
           {!selected ? (
             <div className="flex h-full min-h-[300px] items-center justify-center text-sm text-muted-foreground">Select a client to preview their portfolio.</div>
+          ) : portfolioError ? (
+            <div className="flex min-h-[300px] flex-col items-center justify-center gap-3"><p className="text-sm text-destructive">{portfolioError}</p><Button size="sm" variant="secondary" onClick={()=>openClient(selected)}>Retry</Button></div>
           ) : portfolio === null ? (
             <p className="py-16 text-center text-sm text-muted-foreground">Loading portfolio…</p>
           ) : (
             <div className="space-y-5">
               {/* Header */}
-              <div className="flex items-center justify-between gap-3 rounded-xl bg-gradient-to-br from-primary/15 to-transparent p-4">
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-primary/15 bg-gradient-to-br from-primary/20 via-primary/5 to-transparent p-4">
                 <div>
                   <div className="text-lg font-bold text-foreground">{selected.name}</div>
                   <div className="text-xs text-muted-foreground">{selected.email}</div>
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-bold text-foreground">{ZAR(portfolio.totalValue)}</div>
-                  <div className="text-[11px] text-muted-foreground">Portfolio value</div>
+                  <div className="text-[11px] text-muted-foreground">Live positions · ZAR</div>
                 </div>
               </div>
 
@@ -129,9 +136,14 @@ export default function StudioPage() {
                 <Metric label="Strategies" value={String(portfolio.strategyCount)} />
               </div>
 
+              <div>
+                <div className="mb-2 flex items-center justify-between"><h3 className="text-sm font-bold text-foreground">Strategy preview</h3><span className="text-[9px] uppercase tracking-wider text-muted-foreground">{portfolio.units?.sourcePrices||"Intraday-first pricing"}</span></div>
+                {portfolio.strategies.length===0?<p className="text-xs text-muted-foreground">Direct securities only.</p>:<div className="grid gap-2 sm:grid-cols-2">{portfolio.strategies.map(strategy=><div key={strategy.id} className="rounded-xl border border-border bg-muted/20 p-3"><div className="flex items-center justify-between gap-2"><p className="truncate text-xs font-semibold text-foreground">{strategy.name}</p><p className="font-mono text-xs font-semibold text-primary">{ZAR(strategy.value)}</p></div><p className="mt-1 text-[10px] text-muted-foreground">{strategy.holdings} holding{strategy.holdings===1?"":"s"}</p></div>)}</div>}
+              </div>
+
               {/* Launch */}
               <div className="flex items-center justify-between rounded-xl border border-border p-4">
-                <div className="text-sm text-muted-foreground">Open the {env.toUpperCase()} app as this client.</div>
+                <div><div className="text-sm text-foreground">Secure client preview</div><div className="text-[10px] text-muted-foreground">Generate a one-time {env.toUpperCase()} sign-in link. No password is exposed.</div></div>
                 <Button onClick={launch} disabled={launching || !envUrl}><ExternalLink className="h-3.5 w-3.5" /> Open as {selected.name.split(" ")[0]}</Button>
               </div>
 
@@ -142,8 +154,8 @@ export default function StudioPage() {
                   <div className="divide-y divide-border">
                     {portfolio.holdings.slice(0, 8).map((h) => (
                       <div key={h.id} className="flex items-center gap-3 py-2">
-                        <div className="min-w-0 flex-1"><p className="text-sm font-semibold text-foreground">{h.symbol}</p><p className="truncate text-[11px] text-muted-foreground">{h.name}</p></div>
-                        <div className="text-right"><p className="text-xs font-medium text-foreground">{ZAR(h.marketValue)}</p><p className={cn("text-[11px]", pnlCls(h.pnl))}>{h.pnl >= 0 ? "+" : ""}{ZAR(h.pnl)}</p></div>
+                        <div className="min-w-0 flex-1"><p className="text-sm font-semibold text-foreground">{h.symbol}{h.pending?<span className="ml-1.5 rounded bg-warning/15 px-1.5 py-0.5 text-[8px] text-warning">PENDING</span>:null}</p><p className="truncate text-[11px] text-muted-foreground">{h.name} · {h.quantity} × {ZAR(h.live)}</p></div>
+                        <div className="text-right"><p className="text-xs font-medium text-foreground">{ZAR(h.marketValue)}</p><p className={cn("text-[11px]", pnlCls(h.pnl))}>{h.pnl >= 0 ? "+" : ""}{ZAR(h.pnl)} · {h.pnlPct.toFixed(2)}%</p></div>
                       </div>
                     ))}
                   </div>
