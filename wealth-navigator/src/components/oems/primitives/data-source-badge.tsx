@@ -8,9 +8,10 @@ import { cn } from "@/lib/cn";
  * the upstream feed explicitly (so the dashboard shows whether a number is
  * IRESS-sourced, a Yahoo fallback, or an external API like SARB/ECB/RSS).
  * STREAM marks a Path B SSE/passthrough feed, WORKER a heartbeat-style read
- * straight from the Railway `iress-ingest` worker, BLOCKED-EXTERNAL /
- * BLOCKED-VENDOR mark entitlements/vendor contracts that need to flip on, and
- * CODE-GAP marks a panel that needs implementation work.
+ * straight from the Railway `iress-ingest` worker, UAT the IRESS UAT test
+ * order rail (orders / blotter / cash — a sandbox seat, NOT production),
+ * BLOCKED-EXTERNAL / BLOCKED-VENDOR mark entitlements/vendor contracts that
+ * need to flip on, and CODE-GAP marks a panel that needs implementation work.
  */
 export type DataSourceKind =
   | "live"
@@ -23,6 +24,7 @@ export type DataSourceKind =
   | "supabase"
   | "stream"
   | "worker"
+  | "uat"
   | "unconfigured"
   | "unavailable"
   | "blocked-external"
@@ -40,6 +42,7 @@ const STYLES: Record<DataSourceKind, string> = {
   supabase: "border-info/40 bg-info/10 text-info",
   stream: "border-primary/40 bg-primary/10 text-primary",
   worker: "border-primary/40 bg-primary/10 text-primary",
+  uat: "border-violet-400/40 bg-violet-400/10 text-violet-300",
   unconfigured: "border-border bg-muted/30 text-muted-foreground",
   unavailable: "border-destructive/40 bg-destructive/10 text-destructive",
   "blocked-external": "border-warning/40 bg-warning/10 text-warning",
@@ -58,6 +61,7 @@ const LABELS: Record<DataSourceKind, string> = {
   supabase: "SUPABASE",
   stream: "STREAM",
   worker: "WORKER",
+  uat: "UAT",
   unconfigured: "UNCONFIGURED",
   unavailable: "UNAVAILABLE",
   "blocked-external": "BLOCKED-EXTERNAL",

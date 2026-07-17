@@ -115,6 +115,8 @@ export function IressMigrationClient() {
       <GlassSection
         title="Per-symbol accuracy"
         subtitle={`Auto-validates after a ${minStreak}-sample in-tolerance streak · approve to cut over`}
+        db="institutional"
+        dataSource="hybrid"
         right={
           <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
             <ShieldCheck className="h-3.5 w-3.5" /> write-gated backend-side

@@ -28,6 +28,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/cn";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
 import { ExecutionView } from "./execution-view";
 import { UatBanner } from "./uat-banner";
@@ -121,9 +122,12 @@ export function OrderBookPage() {
 
       <Card className="border-border/60">
         <CardHeader className="pb-2">
-          <CardTitle className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Send to Market
-          </CardTitle>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="text-[12px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Send to Market
+            </CardTitle>
+            <DataSourceBadge source="uat" db="institutional" />
+          </div>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">

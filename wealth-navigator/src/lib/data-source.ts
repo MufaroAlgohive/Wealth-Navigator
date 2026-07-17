@@ -18,6 +18,7 @@ export type { DataSourceKind, DbName };
  *  - supabase / retail-supabase / wire / db → "supabase"
  *  - rss / sarb / frankfurter / ecb / external → "external"
  *  - seed / *-seed                → "seed"
+ *  - uat / *-uat                  → "uat"
  *  - mock                         → "mock"
  *  - unavailable / unconfigured   → as-is
  *  - any exact DataSourceKind     → passed through
@@ -33,11 +34,12 @@ export function mapSource(
   // Exact kind passthrough (covers live, hybrid, worker, stream, blocked-*, code-gap, etc.).
   const exact: DataSourceKind[] = [
     "live", "iress", "yahoo", "external", "mock", "seed", "hybrid", "supabase",
-    "stream", "worker", "unconfigured", "unavailable", "blocked-external",
+    "stream", "worker", "uat", "unconfigured", "unavailable", "blocked-external",
     "blocked-vendor", "code-gap",
   ];
   if ((exact as string[]).includes(s)) return s as DataSourceKind;
 
+  if (s.includes("uat")) return "uat";
   if (s.includes("iress")) return "iress";
   if (s.includes("yahoo")) return "yahoo";
   if (s === "sarb" || s === "frankfurter" || s === "ecb" || s.startsWith("rss") || s === "external")
