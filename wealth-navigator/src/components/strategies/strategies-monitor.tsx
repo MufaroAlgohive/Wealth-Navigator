@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
-import { ArrowDownRight, ArrowUpRight, Lock, Minus, ShieldCheck } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, ChevronDown, ExternalLink, Lock, Minus, Newspaper, ShieldCheck, TrendingUp } from "lucide-react";
 
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
@@ -42,6 +42,7 @@ interface StrategyRow {
   investorCount: number;
   holdingsCount: number;
   holdingsPreview: Array<{ symbol: string; logoUrl: string | null }>;
+  minValue: number;
   lastRebalanced: string; // "YYYY-MM-DD" or "—" (already formatted by the BFF)
   deployedAt: string | null;
 }
@@ -228,7 +229,7 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
         </Pill>
       </div>
       <div className="mt-2.5 grid grid-cols-4 gap-2 text-[10.5px]">
-        <Stat label="AUM" value={s.aum > 0 ? formatZAR(s.aum) : "—"} />
+        <Stat label="Min value" value={s.minValue > 0 ? formatZAR(s.minValue) : "—"} />
         <Stat label="YTD" value={s.ytd != null ? formatPct(s.ytd) : "—"} positive={s.ytd != null ? s.ytd >= 0 : undefined} />
         <Stat label="Day P&L" value={s.dayPnl !== 0 ? formatZAR(s.dayPnl) : "—"} positive={s.dayPnl >= 0} />
         <Stat label="Investors" value={s.investorCount.toString()} />
@@ -280,11 +281,11 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
       <section className="glass-panel p-3">
         <div className="mb-2.5 flex items-center gap-2">
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">{strategy.name} · detail</h2>
-          <TooltipProvider delayDuration={120}><Tooltip><TooltipTrigger asChild><span className={cn("inline-flex cursor-help items-center gap-1 rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-wide", rebal ? "bg-success/15 text-success" : "bg-warning/15 text-warning")}>{rebal ? <ShieldCheck className="h-3 w-3"/> : <Lock className="h-3 w-3"/>}{rebal ? "Eligible" : "Locked"}</span></TooltipTrigger><TooltipContent className="max-w-64 text-xs">{rebal ? `Eligible for rebalance: ${strategy.investorCount} investors and ${strategy.holdingsCount} holdings. Mandate and market-status checks run at execution.` : strategy.status === "halted" ? "Rebalance locked because Risk halted this strategy." : strategy.investorCount === 0 ? "Rebalance locked because no investors are linked." : "Rebalance locked until the strategy is live."}</TooltipContent></Tooltip></TooltipProvider>
+          <TooltipProvider delayDuration={120}><Tooltip><TooltipTrigger asChild><span className={cn("inline-flex cursor-help items-center gap-1 rounded-full px-2 py-1 text-[9px] font-bold uppercase tracking-wide", rebal ? "bg-success/15 text-success" : "bg-warning/15 text-warning")}>{rebal ? <ShieldCheck className="h-3 w-3"/> : <Lock className="h-3 w-3"/>}{rebal ? "Eligible" : "Locked"}</span></TooltipTrigger><TooltipContent side="bottom" className="max-w-80 rounded-xl p-3 text-xs leading-relaxed shadow-xl">{rebal ? <><p className="font-bold text-success">Strategy is eligible for rebalance</p><p className="mt-1">{strategy.holdingsCount} securities · {strategy.investorCount} linked investors. Investor mandates and live market halt/suspension checks run before execution.</p></> : strategy.status === "halted" ? "Rebalance is locked because Risk halted this strategy." : strategy.investorCount === 0 ? "Rebalance is locked because no investors are linked." : "Rebalance is locked until the strategy is live."}</TooltipContent></Tooltip></TooltipProvider>
           <Pill tone={kindTone(strategy.kind)} size="xs">{kindLabel(strategy.kind)}</Pill>
         </div>
         <div className="grid grid-cols-4 divide-x divide-y divide-border/50 overflow-hidden rounded-lg border border-border/60 bg-background/25 xl:grid-cols-8 xl:divide-y-0">
-          <DetailStat label="AUM" value={strategy.aum > 0 ? formatZAR(strategy.aum) : "—"} tone="primary" />
+          <DetailStat label="Min value" value={strategy.minValue > 0 ? formatZAR(strategy.minValue) : "—"} tone="primary" />
           <DetailStat label="YTD" value={strategy.ytd != null ? formatPct(strategy.ytd) : "—"} tone={strategy.ytd == null ? "default" : strategy.ytd >= 0 ? "positive" : "negative"} />
           <DetailStat label="MTD P&L" value={strategy.pnlMtd != null ? formatZAR(strategy.pnlMtd) : "—"} tone={strategy.pnlMtd == null ? "default" : strategy.pnlMtd >= 0 ? "positive" : "negative"} />
           <DetailStat label="NAV" value={strategy.nav > 0 ? formatZAR(strategy.nav) : "—"} />
@@ -295,21 +296,33 @@ function StrategyDetail({ strategy }: { strategy: StrategyRow }) {
         </div>
       </section>
 
-      <GlassSection
-        title="Holdings · target vs actual"
-        db="retail"
-        endpoint="GET /api/strategies"
-        dataSource="supabase"
-        className="h-[420px]"
-        right={<span className="font-mono text-[10px]">{strategy.holdingsCount} positions</span>}
-      >
-        <EmptyDataState
-          message="Per-investor holdings not yet published for this strategy."
-          hint="This data will be available after the data sync service processes position and transaction records."
-        />
-      </GlassSection>
+      <details className="group glass-panel overflow-hidden">
+        <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-3"><span className="text-xs font-bold text-foreground">Holdings · target vs actual</span><span className="ml-auto font-mono text-[10px] text-muted-foreground">{strategy.holdingsCount} positions</span><ChevronDown className="h-3.5 w-3.5 text-muted-foreground transition group-open:rotate-180"/></summary>
+        <div className="border-t border-border p-3"><EmptyDataState message="Per-investor holdings not yet published for this strategy." hint="This data will be available after the data sync service processes position and transaction records." /></div>
+      </details>
+      <ReturnInsightsCard strategy={strategy}/>
+      <NewsInsightsCard strategy={strategy}/>
     </div>
   );
+}
+
+const RETURN_PERIODS = [["1D", "1d_pct"], ["5D", "5d_pct"], ["MTD", "1m_pct"], ["6M", "6m_pct"], ["YTD", "ytd_pct"], ["1Y", "1y_pct"]] as const;
+function ReturnInsightsCard({ strategy }: { strategy: StrategyRow }) {
+  const [period, setPeriod] = useState<(typeof RETURN_PERIODS)[number][1]>("1d_pct");
+  const query = useQuery<{ assetReturns?: Array<Record<string, unknown>> }>({ queryKey: ["strategy-return-insights"], queryFn: () => fetch("/api/admin/dashboard", { cache: "no-store" }).then((response) => response.json()), ...queryOpts("reference") });
+  const symbols = new Set(strategy.holdingsPreview.map((holding) => holding.symbol.replace(/\.JO$/i, "").toUpperCase()));
+  const rows = (query.data?.assetReturns ?? []).filter((row) => symbols.has(String(row.symbol ?? "").replace(/\.JO$/i, "").toUpperCase())).map((row) => ({ symbol: String(row.symbol ?? "—").replace(/\.JO$/i, ""), value: Number(row[period]) })).filter((row) => Number.isFinite(row.value)).sort((a, b) => b.value - a.value);
+  const alerts = rows.filter((row) => row.value <= -4);
+  return <section className="glass-panel overflow-hidden"><header className="flex items-center gap-2 border-b border-border px-3 py-2.5"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-success/10 text-success"><TrendingUp className="h-3.5 w-3.5"/></span><h3 className="text-xs font-bold">Return Insights</h3>{alerts.length > 0 && <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[9px] font-bold text-destructive">{alerts.length} alerts</span>}<div className="ml-auto flex rounded-lg bg-muted/50 p-0.5">{RETURN_PERIODS.map(([label, key]) => <button type="button" key={key} onClick={() => setPeriod(key)} className={cn("rounded-md px-1.5 py-1 text-[8px] font-bold", period === key ? "bg-background text-primary shadow-sm" : "text-muted-foreground")}>{label}</button>)}</div></header><div className="p-3">{query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading returns…</p> : rows.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No return data for these strategy securities.</p> : <div className="grid grid-cols-2 gap-2">{rows.map((row) => <div key={row.symbol} className="flex items-center rounded-lg border border-border px-2.5 py-2"><span className="font-mono text-[10px] font-bold">{row.symbol}</span><span className={cn("ml-auto font-mono text-[10px] font-bold", row.value >= 0 ? "text-success" : "text-destructive")}>{row.value >= 0 ? "+" : ""}{row.value.toFixed(2)}%</span></div>)}</div>}</div></section>;
+}
+
+interface NewsCardItem { id: string; source: string; headline: string; body: string | null; url: string | null; publishedAt: string; ticker: string | null; tickers: string[]; }
+function NewsInsightsCard({ strategy }: { strategy: StrategyRow }) {
+  const query = useQuery<{ items?: NewsCardItem[]; sourceLabel?: string }>({ queryKey: ["strategy-news-insights"], queryFn: () => fetch("/api/news?limit=60", { cache: "no-store" }).then((response) => response.json()), ...queryOpts("reference") });
+  const symbols = new Set(strategy.holdingsPreview.map((holding) => holding.symbol.replace(/\.JO$/i, "").toUpperCase()));
+  const relevant = (query.data?.items ?? []).filter((item) => { const tagged = [item.ticker, ...(item.tickers || [])].filter(Boolean).map((value) => String(value).replace(/\.JO$/i, "").toUpperCase()); return tagged.some((symbol) => symbols.has(symbol)) || [...symbols].some((symbol) => item.headline.toUpperCase().includes(symbol)); }).slice(0, 6);
+  const items = relevant.length ? relevant : (query.data?.items ?? []).slice(0, 4);
+  return <section className="glass-panel overflow-hidden"><header className="flex items-center gap-2 border-b border-border px-3 py-2.5"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-primary/10 text-primary"><Newspaper className="h-3.5 w-3.5"/></span><div><h3 className="text-xs font-bold">News & Insights</h3><p className="text-[8px] text-muted-foreground">{relevant.length ? `${strategy.name} securities` : query.data?.sourceLabel || "Mint Platform"}</p></div></header><div className="divide-y divide-border px-3">{query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading news…</p> : items.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No news available.</p> : items.map((item) => <a key={item.id} href={item.url || undefined} target={item.url ? "_blank" : undefined} rel="noreferrer" className={cn("block py-2.5", item.url && "hover:text-primary")}><div className="flex items-center gap-2"><span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[8px] font-bold uppercase text-primary">{item.source}</span><span className="ml-auto text-[8px] text-muted-foreground">{new Date(item.publishedAt).toLocaleDateString("en-ZA")}</span>{item.url && <ExternalLink className="h-2.5 w-2.5 text-muted-foreground"/>}</div><p className="mt-1 text-[10px] font-semibold leading-snug">{item.headline}</p>{item.body && <p className="mt-0.5 line-clamp-2 text-[9px] leading-relaxed text-muted-foreground">{item.body}</p>}</a>)}</div></section>;
 }
 
 function DetailStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "primary" | "positive" | "negative" }) {

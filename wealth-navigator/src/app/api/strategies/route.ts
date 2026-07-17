@@ -79,7 +79,7 @@ async function loadRetailStrategies(
     });
   }).map((symbol) => symbol.trim()).filter(Boolean)));
   const market: Array<{ symbol: string; price: number | null; changePct: number | null }> = [];
-  const securityBySymbol = new Map<string, { symbol: string; logoUrl: string | null }>();
+  const securityBySymbol = new Map<string, { symbol: string; logoUrl: string | null; priceR: number | null }>();
   if (holdingSymbols.length) {
     const { data: securities } = await retail
       .from("securities_c")
@@ -109,7 +109,7 @@ async function loadRetailStrategies(
         changePct: Number.isFinite(rawChange) ? rawChange : null,
       });
       const normalizedSymbol = String(security.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
-      securityBySymbol.set(normalizedSymbol, { symbol: normalizedSymbol, logoUrl: security.logo_url ? String(security.logo_url) : null });
+      securityBySymbol.set(normalizedSymbol, { symbol: normalizedSymbol, logoUrl: security.logo_url ? String(security.logo_url) : null, priceR: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null });
     }
     market.sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
@@ -160,6 +160,13 @@ async function loadRetailStrategies(
       const row = holding as Record<string, unknown>;
       return String(row.ticker ?? row.symbol ?? "");
     }).map((symbol) => symbol.replace(/\.JO$/i, "").toUpperCase()).filter(Boolean) : [];
+    const minValue = Array.isArray(s.holdings) ? s.holdings.reduce((total, holding) => {
+      const row = typeof holding === "object" && holding ? holding as Record<string, unknown> : {};
+      const symbol = String(typeof holding === "string" ? holding : row.ticker ?? row.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
+      const units = Number(row.shares ?? row.quantity ?? row.units ?? 1);
+      const price = securityBySymbol.get(symbol)?.priceR;
+      return total + (price != null && Number.isFinite(units) ? price * units : 0);
+    }, 0) : 0;
     return {
       id: s.id,
       name: s.name ?? s.slug ?? "Strategy",
@@ -188,6 +195,7 @@ async function loadRetailStrategies(
       investorCount: a.users.size,
       holdingsCount: Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0,
       holdingsPreview: previewSymbols.map((symbol) => securityBySymbol.get(symbol) ?? { symbol, logoUrl: null }),
+      minValue,
       lastRebalanced: s.updated_at ? new Date(s.updated_at).toISOString().slice(0, 10) : "—",
       deployedAt: null as string | null,
       sharpe: 0,
