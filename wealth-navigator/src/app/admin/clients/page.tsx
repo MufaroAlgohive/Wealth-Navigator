@@ -3,7 +3,7 @@
 import * as React from "react";
 import JSZip from "jszip";
 import { toast } from "sonner";
-import { Download, Eye, Package, Search, X } from "lucide-react";
+import { Download, Eye, Package, Pencil, Search, X } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -60,6 +60,10 @@ export default function ClientsPage() {
   const [packBusy, setPackBusy] = React.useState(false);
   const [computershareBusy, setComputershareBusy] = React.useState(false);
   const [mandateBusy, setMandateBusy] = React.useState(false);
+  const [computershareEditorOpen, setComputershareEditorOpen] = React.useState(false);
+  const [computershareNumber, setComputershareNumber] = React.useState("");
+  const [computersharePassword, setComputersharePassword] = React.useState("");
+  const [computershareSaving, setComputershareSaving] = React.useState(false);
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => {
@@ -86,6 +90,20 @@ export default function ClientsPage() {
     if (d.configured === false) { setSumsub(d.notice || "SumSub not configured"); return; }
     const data = d.sumsub?.data as { review?: { reviewResult?: { reviewAnswer?: string } }; reviewStatus?: string } | undefined;
     setSumsub(`SumSub: ${data?.review?.reviewResult?.reviewAnswer || data?.reviewStatus || "unknown"}`);
+  };
+
+  const saveComputershareNumber = async () => {
+    if (!sel) return;
+    setComputershareSaving(true);
+    const response = await fetch("/api/admin/clients?action=computershare-number", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: sel.family_member_id ? undefined : sel.id, family_member_id: sel.family_member_id || undefined, computershare_number: computershareNumber, password: computersharePassword }),
+    }).then((result) => result.json()).catch(() => ({ ok: false, error: "Request failed" }));
+    setComputershareSaving(false);
+    if (!response.ok) return toast.error(response.error || "Could not save Computershare number");
+    toast.success("Computershare number saved");
+    setComputershareEditorOpen(false); setComputersharePassword("");
+    await openClient(sel.id);
   };
 
   const childCertificateAction = async (decision: "approve" | "reject" | "reevaluate") => {
@@ -290,7 +308,8 @@ export default function ClientsPage() {
                       <Row label="Email" value={str(p.email ?? detail.rich_details?.fields.email?.value)} /><Row label="Phone" value={str(p.phone_number ?? detail.rich_details?.fields.phone?.value)} />
                       <Row label="Date of birth" value={str(p.date_of_birth ?? detail.rich_details?.fields.date_of_birth?.value)} /><Row label="Gender" value={str(p.gender ?? detail.rich_details?.fields.gender?.value)} />
                       <Row label="ID number" value={str(p.id_number ?? detail.rich_details?.fields.id_number?.value)} /><Row label="Currency" value={str(p.preferred_currency ?? "ZAR")} />
-                      <Row label="MINT number" value={str(p.mint_number)} /><Row label="Computershare" value={str(p.computershare_number)} />
+                      <Row label="MINT number" value={str(p.mint_number)} />
+                      <div className="flex items-center justify-between gap-3 bg-card px-3 py-2.5"><dt className="text-[11px] text-muted-foreground">Computershare</dt><dd className="flex items-center gap-2 truncate text-[13px] font-medium text-foreground"><span>{str(p.computershare_number)}</span>{!p.computershare_number&&<button type="button" title="Add Computershare number" aria-label="Add Computershare number" onClick={()=>{setComputershareNumber("");setComputersharePassword("");setComputershareEditorOpen(true);}} className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/20"><Pencil className="h-3 w-3" /></button>}</dd></div>
                       <Row label="Address" value={str(p.address ?? detail.rich_details?.fields.address?.value)} /><Row label="Joined" value={p.created_at ? new Date(String(p.created_at)).toLocaleDateString("en-ZA") : "—"} />
                       <Row label="Managing parent" value={str(p.managing_parent ?? p.guardian_name ?? p.parent_name)} /><Row label="Relationship" value={str(p.parent_relationship ?? p.relationship)} />
                     </dl>
@@ -384,6 +403,7 @@ export default function ClientsPage() {
           <div className="flex items-center justify-between border-t border-border px-5 py-3"><small className="text-[11px] text-muted-foreground">Tip: You can preview or download any document directly.</small><Button size="sm" onClick={downloadPack} disabled={packBusy}><Download />{packBusy ? "Preparing…" : "Download pack"}</Button></div>
         </div>
       </div>}
+      {computershareEditorOpen && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Add Computershare number"><div className="w-full max-w-sm space-y-4 rounded-2xl border border-border bg-card p-5 shadow-2xl"><div className="flex items-center justify-between"><div><h2 className="text-sm font-bold text-foreground">Add Computershare number</h2><p className="text-[10px] text-muted-foreground">Admin password confirmation is required.</p></div><Button size="icon-sm" variant="ghost" onClick={()=>setComputershareEditorOpen(false)}><X /></Button></div><label className="block text-[11px] font-semibold text-foreground">Computershare number<Input className="mt-1" value={computershareNumber} onChange={(event)=>setComputershareNumber(event.target.value)} autoComplete="off" /></label><label className="block text-[11px] font-semibold text-foreground">Your admin password<Input className="mt-1" type="password" value={computersharePassword} onChange={(event)=>setComputersharePassword(event.target.value)} autoComplete="current-password" /></label><div className="flex justify-end gap-2"><Button variant="secondary" onClick={()=>setComputershareEditorOpen(false)}>Cancel</Button><Button disabled={computershareSaving||!computershareNumber.trim()||!computersharePassword} onClick={saveComputershareNumber}>{computershareSaving?"Saving…":"Save"}</Button></div></div></div>}
     </div>
   );
 }

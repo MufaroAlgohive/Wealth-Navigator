@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext, isAdminRole, can } from "@/lib/admin/rbac";
-import { createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { createAnonServerClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { getApplicantByExternalId, sumsubConfigured } from "@/lib/admin/sumsub";
 
 /**
@@ -435,7 +435,31 @@ export async function POST(req: Request) {
   }
 
   const action = new URL(req.url).searchParams.get("action") || "";
-  const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; family_member_id?: string; decision?: string };
+  const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; family_member_id?: string; decision?: string; computershare_number?: string; password?: string };
+
+  if (action === "computershare-number") {
+    if (!isAdminRole(auth.ctx)) return NextResponse.json({ ok: false, error: "Admin access required" }, { status: 403 });
+    const userId = String(body.user_id || "").trim();
+    const familyMemberId = String(body.family_member_id || "").trim();
+    const computershareNumber = String(body.computershare_number || "").trim().toUpperCase();
+    const password = String(body.password || "");
+    if ((!userId && !familyMemberId) || !computershareNumber || !password) {
+      return NextResponse.json({ ok: false, error: "Client, Computershare number and password are required" }, { status: 400 });
+    }
+    if (!/^[A-Z0-9][A-Z0-9\-/ ]{2,39}$/.test(computershareNumber)) {
+      return NextResponse.json({ ok: false, error: "Enter a valid Computershare number" }, { status: 400 });
+    }
+    const verifier = createAnonServerClient();
+    const { error: passwordError } = await verifier.auth.signInWithPassword({ email: auth.ctx.email, password });
+    if (passwordError) return NextResponse.json({ ok: false, error: "Incorrect password" }, { status: 403 });
+    const db = createRetailServiceRoleClient();
+    const target = familyMemberId
+      ? db.from("family_members").update({ computershare_number: computershareNumber, updated_at: new Date().toISOString() }).eq("id", familyMemberId)
+      : db.from("profiles").update({ computershare_number: computershareNumber, updated_at: new Date().toISOString() }).eq("id", userId);
+    const { error } = await target;
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, computershare_number: computershareNumber });
+  }
 
   if (action === "child-certificate-review") {
     const familyMemberId = String(body.family_member_id || "");
