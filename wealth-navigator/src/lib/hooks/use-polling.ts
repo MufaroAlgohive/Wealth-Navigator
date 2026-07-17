@@ -79,8 +79,11 @@ export function usePolling<T>(url: string, options: UsePollingOptions<T> = {}): 
       if (!r.ok) throw new Error(`${url} ${r.status}`);
       return (await r.json()) as T;
     },
-    refetchInterval: enabled ? interval : false,
+    // Spread queryOpts("live") FIRST so the caller's `interval` actually wins.
+    // Previously it was spread AFTER, silently clobbering `refetchInterval` with
+    // the 5s "live" default — every caller's documented interval was ignored.
     ...queryOpts("live"),
+    refetchInterval: enabled ? interval : false,
     ...query,
     enabled,
   });

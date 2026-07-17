@@ -342,9 +342,11 @@ function useUatStream(
 
 export function ExecutionView({ bookId }: { bookId: string }) {
   // Pull execution rows. Refresh whenever the book id changes.
+  // Near-real-time execution refresh. SSE deltas drive instant fill updates; this
+  // 2s poll is the authoritative catch-up for new orders + non-fill state changes.
   const executions = usePolling<ExecutionPayload>(
     `/api/admin/orderbook/execution?book_id=${encodeURIComponent(bookId)}`,
-    { interval: 30_000, deps: [bookId] },
+    { interval: 2_000, deps: [bookId] },
   );
 
   // Local override layer so SSE deltas update instantly without waiting for
@@ -482,8 +484,9 @@ export function ExecutionView({ bookId }: { bookId: string }) {
   const quotesUrl = symbols.length
     ? `/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}&exchange=JSE`
     : null;
+  // The "Last" column has no SSE path, so poll it fast for a near-live price.
   const quotes = usePolling<QuotesPayload>(quotesUrl ?? "about:blank", {
-    interval: 30_000,
+    interval: 2_000,
     deps: [symbols.join(",")],
     query: { enabled: symbols.length > 0 },
   });
