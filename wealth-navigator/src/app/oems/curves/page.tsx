@@ -15,6 +15,7 @@ import { PanelSkeleton, KpiTileSkeleton } from "@/components/oems/primitives/pan
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
+import { mapSource } from "@/lib/data-source";
 import { queryOpts } from "@/lib/store/query-provider";
 
 interface CurveResponse {
@@ -230,7 +231,7 @@ export default function CurvesPage() {
             title="Combined · govi · NSS · real · breakeven"
             endpoint="GET /api/curves/{code}"
             db="institutional"
-            dataSource="iress"
+            dataSource={mapSource(goviQ.data?.source)}
             className="col-span-12 flex h-[380px] flex-col lg:col-span-8"
             noPadding
           >
@@ -266,7 +267,7 @@ export default function CurvesPage() {
           title="PCA · today's curve move"
           endpoint="GET /api/curves/ZAR_NSS/metrics"
           db="institutional"
-          dataSource="iress"
+          dataSource={mapSource(metricsQ.data?.source)}
           className="col-span-12 flex h-[380px] flex-col lg:col-span-4"
           right={<span className="font-mono text-[10px] text-muted-foreground">3-factors + residual</span>}
         >
@@ -311,7 +312,7 @@ export default function CurvesPage() {
           title="ZAR-OIS spread · 3M · 12M"
           endpoint="GET /api/curves/ZAR_NSS/metrics?metric=ois_spread_*"
           db="institutional"
-          dataSource="iress"
+          dataSource={mapSource(metricsQ.data?.source)}
           className="col-span-12 h-[300px] lg:col-span-6"
         >
           {ois3m !== undefined || ois12m !== undefined ? (
@@ -342,7 +343,7 @@ export default function CurvesPage() {
           title="Carry & rolldown · key 5Y vertex"
           endpoint="GET /api/curves/ZAR_NSS/metrics?metric=carry_*"
           db="institutional"
-          dataSource="iress"
+          dataSource={mapSource(metricsQ.data?.source)}
           className="col-span-12 h-[300px] lg:col-span-6"
           right={
             carry3m !== undefined && rolldown3m !== undefined ? (
