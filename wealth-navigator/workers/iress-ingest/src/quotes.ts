@@ -613,7 +613,20 @@ export async function syncWatchlistQuotes(
   // migrated) must NOT affect the quote / intraday writes above.
   // UAT (IRESS_PRICE_OVERLAY=0): IRESS L1 is test data; do not persist it to the
   // shared quote_snapshot_c (read-gated today, but a latent leak for any reader).
-  if (supabase && env.allowWrites && !env.dryRun && !env.priceOverlayOff && snapshotRows.length > 0) {
+  // Contamination guard: only persist to the shared quote_snapshot_c when the
+  // price actually came from a PROD source — the market-data split is on
+  // (marketDataProdEnabled) OR the base endpoint is already prod (!isUatEnv()).
+  // Without this, setting IRESS_PRICE_OVERLAY=1 while IRESS_MARKET_DATA_PROD=0
+  // would fall through to the CT/UAT session and write TEST prices into the
+  // institutional display table. (Dormant today: priceOverlayOff is true in UAT.)
+  if (
+    supabase &&
+    env.allowWrites &&
+    !env.dryRun &&
+    !env.priceOverlayOff &&
+    (marketDataProdEnabled() || !isUatEnv()) &&
+    snapshotRows.length > 0
+  ) {
     const { error: snapErr } = await supabase
       .from("quote_snapshot_c")
       .upsert(snapshotRows, { onConflict: "security_code,exchange" });

@@ -1,6 +1,6 @@
 import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
-import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
+import { iressPriceOverlayEnabled, iressQuoteMaxAgeMs } from "@/lib/iress/overlay-policy";
 import { callWorker } from "@/lib/iress/worker-api";
 /**
  * GET /api/analysis/[sym]?range=1Y
@@ -146,6 +146,18 @@ async function loadInstitutionalSnapshot(sym: string): Promise<{
         snapshot: null,
         source: "pending-first-write",
         message: `No IRESS L1 snapshot for ${sym} yet — the worker writes it once the symbol is in the quote watchlist and the table is migrated.`,
+      };
+    }
+    // Freshness gate: drop a snapshot older than the shared max-age window so a
+    // stale/backfilled row never renders as a live price — the Analysis header
+    // then falls back to the Yahoo-fed last_price. Matches /api/equities.
+    const asOf = row.as_of ?? row.updated_at;
+    const asOfMs = asOf ? new Date(asOf).getTime() : Number.NaN;
+    if (!Number.isFinite(asOfMs) || Date.now() - asOfMs > iressQuoteMaxAgeMs()) {
+      return {
+        snapshot: null,
+        source: "stale",
+        message: `IRESS L1 snapshot for ${sym} is older than the freshness window — not shown as live; the Yahoo-fed price is used instead.`,
       };
     }
     return {
