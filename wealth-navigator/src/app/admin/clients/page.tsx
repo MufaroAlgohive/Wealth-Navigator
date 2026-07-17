@@ -3,7 +3,7 @@
 import * as React from "react";
 import JSZip from "jszip";
 import { toast } from "sonner";
-import { Download, Eye, Package, Search, X } from "lucide-react";
+import { Download, Eye, Package, Pencil, Search, X } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -19,6 +19,8 @@ interface Txn { id: string; name: string | null; description: string | null; amo
 interface ClientDocument { id: string; name: string; fileType: string; addedDate: string | null; url: string; source: "experian" | "sumsub" | "signed"; }
 interface DocumentGroups { experian: ClientDocument[]; sumsub: ClientDocument[]; signed: ClientDocument[]; }
 interface ClientStats { total: number; completed: number; pending: number; rejected: number; }
+interface RichField { value: unknown; source: string; }
+interface RichDetails { fields: Record<string, RichField>; providers: { profile: boolean; sumsub: boolean; experian: boolean }; }
 interface Detail {
   profile: Record<string, unknown> | null;
   onboarding: Record<string, unknown> | null;
@@ -30,6 +32,7 @@ interface Detail {
   onboarding_pack?: Record<string, unknown> | null;
   mandate?: { available: boolean; data: Record<string, unknown>; signed_agreement_url?: string | null };
   child_certificate?: { url?: string | null; status?: string | null; reviewed_at?: string | null };
+  rich_details?: RichDetails | null;
 }
 
 const R = (cents: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(cents / 100);
@@ -57,6 +60,10 @@ export default function ClientsPage() {
   const [packBusy, setPackBusy] = React.useState(false);
   const [computershareBusy, setComputershareBusy] = React.useState(false);
   const [mandateBusy, setMandateBusy] = React.useState(false);
+  const [computershareEditorOpen, setComputershareEditorOpen] = React.useState(false);
+  const [computershareNumber, setComputershareNumber] = React.useState("");
+  const [computersharePassword, setComputersharePassword] = React.useState("");
+  const [computershareSaving, setComputershareSaving] = React.useState(false);
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => {
@@ -78,11 +85,26 @@ export default function ClientsPage() {
   const syncSumsub = async () => {
     if (!selId) return;
     setSumsub("Checking…");
-    const d = await fetch(`/api/admin/clients?action=sumsub&user_id=${selId}`).then((r) => r.json()).catch(() => ({ ok: false }));
+    const d = await fetch("/api/admin/clients?action=sumsub-refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: selId }) }).then((r) => r.json()).catch(() => ({ ok: false }));
     if (!d.ok) { setSumsub("SumSub request failed"); return; }
     if (d.configured === false) { setSumsub(d.notice || "SumSub not configured"); return; }
     const data = d.sumsub?.data as { review?: { reviewResult?: { reviewAnswer?: string } }; reviewStatus?: string } | undefined;
-    setSumsub(`SumSub: ${data?.review?.reviewResult?.reviewAnswer || data?.reviewStatus || "unknown"}`);
+    await openClient(selId);
+    setSumsub(`SumSub: ${data?.review?.reviewResult?.reviewAnswer || data?.reviewStatus || "refreshed"}`);
+  };
+
+  const saveComputershareNumber = async () => {
+    if (!sel) return;
+    setComputershareSaving(true);
+    const response = await fetch("/api/admin/clients?action=computershare-number", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: sel.family_member_id ? undefined : sel.id, family_member_id: sel.family_member_id || undefined, computershare_number: computershareNumber, password: computersharePassword }),
+    }).then((result) => result.json()).catch(() => ({ ok: false, error: "Request failed" }));
+    setComputershareSaving(false);
+    if (!response.ok) return toast.error(response.error || "Could not save Computershare number");
+    toast.success("Computershare number saved");
+    setComputershareEditorOpen(false); setComputersharePassword("");
+    await openClient(sel.id);
   };
 
   const childCertificateAction = async (decision: "approve" | "reject" | "reevaluate") => {
@@ -282,12 +304,14 @@ export default function ClientsPage() {
                   <TabsList><TabsTrigger value="profile">Profile</TabsTrigger><TabsTrigger value="kyc">KYC</TabsTrigger>{!detail.is_unlinked_child && <TabsTrigger value="mandate">Mandate</TabsTrigger>}<TabsTrigger value="holdings">Holdings</TabsTrigger><TabsTrigger value="activity">Activity</TabsTrigger></TabsList>
 
                   <TabsContent value="profile">
-                    <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
-                      <Row label="Email" value={str(p.email)} /><Row label="Phone" value={str(p.phone_number)} />
-                      <Row label="Date of birth" value={str(p.date_of_birth)} /><Row label="Gender" value={str(p.gender)} />
-                      <Row label="ID number" value={str(p.id_number)} /><Row label="Currency" value={str(p.preferred_currency)} />
-                      <Row label="MINT number" value={str(p.mint_number)} /><Row label="Computershare" value={str(p.computershare_number)} />
-                      <Row label="Address" value={str(p.address)} /><Row label="Joined" value={p.created_at ? new Date(String(p.created_at)).toLocaleDateString("en-ZA") : "—"} />
+                    {detail.rich_details && <RichClientDetails details={detail.rich_details} />}
+                    <dl className="mt-4 grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
+                      <Row label="Email" value={str(p.email ?? detail.rich_details?.fields.email?.value)} /><Row label="Phone" value={str(p.phone_number ?? detail.rich_details?.fields.phone?.value)} />
+                      <Row label="Date of birth" value={str(p.date_of_birth ?? detail.rich_details?.fields.date_of_birth?.value)} /><Row label="Gender" value={str(p.gender ?? detail.rich_details?.fields.gender?.value)} />
+                      <Row label="ID number" value={str(p.id_number ?? detail.rich_details?.fields.id_number?.value)} /><Row label="Currency" value={str(p.preferred_currency ?? "ZAR")} />
+                      <Row label="MINT number" value={str(p.mint_number)} />
+                      <div className="flex items-center justify-between gap-3 bg-card px-3 py-2.5"><dt className="text-[11px] text-muted-foreground">Computershare</dt><dd className="flex items-center gap-2 truncate text-[13px] font-medium text-foreground"><span>{str(p.computershare_number)}</span>{!p.computershare_number&&<button type="button" title="Add Computershare number" aria-label="Add Computershare number" onClick={()=>{setComputershareNumber("");setComputersharePassword("");setComputershareEditorOpen(true);}} className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/20"><Pencil className="h-3 w-3" /></button>}</dd></div>
+                      <Row label="Address" value={str(p.address ?? detail.rich_details?.fields.address?.value)} /><Row label="Joined" value={p.created_at ? new Date(String(p.created_at)).toLocaleDateString("en-ZA") : "—"} />
                       <Row label="Managing parent" value={str(p.managing_parent ?? p.guardian_name ?? p.parent_name)} /><Row label="Relationship" value={str(p.parent_relationship ?? p.relationship)} />
                     </dl>
                   </TabsContent>
@@ -357,7 +381,7 @@ export default function ClientsPage() {
                         : detail.transactions.map((t) => (
                           <div key={t.id} className="flex items-center justify-between gap-3 py-2.5">
                             <div className="min-w-0"><p className="truncate text-sm text-foreground">{t.name || t.description || "—"}</p><p className="text-[11px] text-muted-foreground">{t.transaction_date ? new Date(t.transaction_date).toLocaleDateString("en-ZA") : ""} · {t.status || ""}</p></div>
-                            <span className={cn("text-sm font-medium", t.direction === "credit" ? "text-success" : "text-foreground")}>{t.direction === "credit" ? "+" : "-"}R {Math.abs(Number(t.amount) || 0).toLocaleString("en-ZA")}</span>
+                            <span className={cn("text-sm font-medium", t.direction === "credit" ? "text-success" : "text-foreground")}>{t.direction === "credit" ? "+" : "-"}{new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 }).format(Math.abs(Number(t.amount) || 0) / 100)}</span>
                           </div>
                         ))}
                     </div>
@@ -380,9 +404,21 @@ export default function ClientsPage() {
           <div className="flex items-center justify-between border-t border-border px-5 py-3"><small className="text-[11px] text-muted-foreground">Tip: You can preview or download any document directly.</small><Button size="sm" onClick={downloadPack} disabled={packBusy}><Download />{packBusy ? "Preparing…" : "Download pack"}</Button></div>
         </div>
       </div>}
+      {computershareEditorOpen && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true" aria-label="Add Computershare number"><div className="w-full max-w-sm space-y-4 rounded-2xl border border-border bg-card p-5 shadow-2xl"><div className="flex items-center justify-between"><div><h2 className="text-sm font-bold text-foreground">Add Computershare number</h2><p className="text-[10px] text-muted-foreground">Admin password confirmation is required.</p></div><Button size="icon-sm" variant="ghost" onClick={()=>setComputershareEditorOpen(false)}><X /></Button></div><label className="block text-[11px] font-semibold text-foreground">Computershare number<Input className="mt-1" value={computershareNumber} onChange={(event)=>setComputershareNumber(event.target.value)} autoComplete="off" /></label><label className="block text-[11px] font-semibold text-foreground">Your admin password<Input className="mt-1" type="password" value={computersharePassword} onChange={(event)=>setComputersharePassword(event.target.value)} autoComplete="current-password" /></label><div className="flex justify-end gap-2"><Button variant="secondary" onClick={()=>setComputershareEditorOpen(false)}>Cancel</Button><Button disabled={computershareSaving||!computershareNumber.trim()||!computersharePassword} onClick={saveComputershareNumber}>{computershareSaving?"Saving…":"Save"}</Button></div></div></div>}
     </div>
   );
 }
+
+function RichClientDetails({ details }: { details: RichDetails }) {
+  const labels: Record<string,string>={first_name:"First name",last_name:"Last name",email:"Email",phone:"Phone",date_of_birth:"Date of birth",gender:"Gender",id_number:"ID number",address:"Residential address",employer:"Employer",employment_status:"Employment status"};
+  const populated=Object.entries(details.fields).filter(([,field])=>field.value!=null&&field.value!=="");
+  return <details className="group rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 via-transparent to-transparent p-3">
+    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2"><div className="mr-auto"><p className="text-xs font-bold uppercase tracking-wider text-foreground">Rich client record</p><p className="text-[10px] text-muted-foreground">Best available confirmed value with source provenance · click to expand</p></div>{details.providers.profile&&<ProviderBadge source="Profile"/>}{details.providers.sumsub&&<ProviderBadge source="SumSub"/>}{details.providers.experian&&<ProviderBadge source="Experian"/>}<span className="text-xs text-muted-foreground transition-transform group-open:rotate-180">⌄</span></summary>
+    <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">{populated.map(([key,field])=><div key={key} className="rounded-lg border border-border bg-card px-3 py-2"><dt className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">{labels[key]||key.replaceAll("_"," ")}</dt><dd className="mt-0.5 break-words text-[13px] font-medium text-foreground">{formatDetailValue(field.value)}</dd><ProviderBadge source={field.source}/></div>)}</dl>
+  </details>;
+}
+
+function ProviderBadge({source}:{source:string}){return <span className={cn("mt-1 inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide",source==="Experian"?"bg-success/15 text-success":source==="SumSub"?"bg-primary/15 text-primary":source==="Onboarding"||source==="Derived from SA ID"?"bg-warning/15 text-warning":"bg-muted text-muted-foreground")}>{source}</span>}
 
 function Row({ label, value }: { label: string; value: string }) {
   return <div className="flex items-center justify-between gap-3 bg-card px-3 py-2.5"><dt className="text-[11px] text-muted-foreground">{label}</dt><dd className="truncate text-[13px] font-medium text-foreground">{value}</dd></div>;

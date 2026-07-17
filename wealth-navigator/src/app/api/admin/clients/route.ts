@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext, isAdminRole, can } from "@/lib/admin/rbac";
-import { createRetailServiceRoleClient } from "@/lib/supabase/server";
-import { getApplicantByExternalId, sumsubConfigured } from "@/lib/admin/sumsub";
+import { createAnonServerClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { getApplicantByExternalId, getApplicantById, sumsubConfigured } from "@/lib/admin/sumsub";
 
 /**
  * Clients (CRM). Roster + client detail (profile, KYC status, holdings,
@@ -64,6 +64,81 @@ function parseRecord(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function findProviderValue(source: unknown, aliases: string[], depth = 0): unknown {
+  if (!source || typeof source !== "object" || depth > 8) return null;
+  const wanted = new Set(aliases.map((alias) => alias.replace(/[^a-z0-9]/gi, "").toLowerCase()));
+  for (const [key, value] of Object.entries(source as Record<string, unknown>)) {
+    if (wanted.has(key.replace(/[^a-z0-9]/gi, "").toLowerCase()) && value != null && value !== "" && typeof value !== "object") return value;
+  }
+  for (const value of Object.values(source as Record<string, unknown>)) {
+    const found = findProviderValue(value, aliases, depth + 1);
+    if (found != null && found !== "") return found;
+  }
+  return null;
+}
+
+export function inferGenderFromSouthAfricanId(value: unknown): "Female" | "Male" | null {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (!/^\d{13}$/.test(digits)) return null;
+  const month = Number(digits.slice(2, 4));
+  const day = Number(digits.slice(4, 6));
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  let sum = 0;
+  for (let index = 0; index < 12; index += 1) {
+    let digit = Number(digits[index]);
+    if (index % 2 === 1) { digit *= 2; if (digit > 9) digit -= 9; }
+    sum += digit;
+  }
+  if ((10 - (sum % 10)) % 10 !== Number(digits[12])) return null;
+  return Number(digits.slice(6, 10)) >= 5000 ? "Male" : "Female";
+}
+
+function buildRichDetails(profileValue: unknown, onboardingValue: unknown, packValue: unknown, archiveValue: unknown = []) {
+  const profile = parseRecord(profileValue);
+  const onboarding = parseRecord(onboardingValue);
+  const pack = parseRecord(packValue);
+  const raw = parseRecord(onboarding.sumsub_raw);
+  const info = { ...parseRecord(pack.fixedInfo), ...parseRecord(pack.info) };
+  const provenance = parseRecord(pack.data_provenance);
+  const archiveRows = Array.isArray(archiveValue) ? archiveValue.map(parseRecord) : [];
+  const experianArchive = archiveRows.map((row) => parseRecord(row.resource_metadata)).filter((metadata) => {
+    const marker = `${String(metadata.provider || "")} ${String(metadata.source || "")}`.toLowerCase();
+    return marker.includes("experian");
+  });
+  const retainedKyc = raw.experian_kyc_addresses || raw.experian_kyc_contact || experianArchive.length
+    ? { addresses: raw.experian_kyc_addresses, contact: raw.experian_kyc_contact, stats: raw.experian_kyc_stats, archive: experianArchive }
+    : null;
+  const experianKyc = raw.experian_kyc_result ?? parseRecord(pack.experian).kyc ?? retainedKyc;
+  const experianIdmn = raw.experian_idmn_result ?? parseRecord(pack.experian).idmn ?? pack.experian_idmn ?? null;
+  const experian = experianIdmn ?? experianKyc;
+  const choose = (...candidates: Array<[unknown, string]>): { value: unknown; source: string } => {
+    const match = candidates.find(([value]) => value != null && value !== "");
+    return { value: match?.[0] ?? null, source: match?.[1] ?? "Not available" };
+  };
+  const idNumber = choose([profile.id_number,"Profile"],[info.idNumber ?? findProviderValue(info,["idNumber","documentNumber"]),"SumSub"],[findProviderValue(experian,["identityNumber","idNumber","documentNumber"]),"Experian"]);
+  const storedGenderSource = String(provenance.gender || "").toLowerCase().includes("derived") ? "Derived from SA ID" : "SumSub";
+  const explicitGender = choose([profile.gender,"Profile"],[info.gender,storedGenderSource],[findProviderValue(experian,["gender","sex"]),"Experian"]);
+  const inferredGender = inferGenderFromSouthAfricanId(idNumber.value);
+  const gender = explicitGender.value != null
+    ? explicitGender
+    : { value: inferredGender, source: inferredGender ? "Derived from SA ID" : "Not available" };
+  return {
+    fields: {
+      first_name: choose([profile.first_name,"Profile"],[info.firstName ?? info.firstNameEn,"SumSub"],[findProviderValue(experian,["firstName","first_name","forename","givenName"]),"Experian"]),
+      last_name: choose([profile.last_name,"Profile"],[info.lastName ?? info.lastNameEn,"SumSub"],[findProviderValue(experian,["lastName","last_name","surname","familyName"]),"Experian"]),
+      email: choose([profile.email,"Profile"],[info.email,"SumSub"],[findProviderValue(experian,["email","emailAddress"]),"Experian"]),
+      phone: choose([profile.phone_number,"Profile"],[info.phone ?? pack.phone,"SumSub"],[findProviderValue(experian,["phoneNumber","mobileNumber","cellphone","cell"]),"Experian"]),
+      date_of_birth: choose([profile.date_of_birth,"Profile"],[info.dob ?? info.dateOfBirth,"SumSub"],[findProviderValue(experian,["dateOfBirth","birthDate","dob"]),"Experian"]),
+      gender,
+      id_number: idNumber,
+      address: choose([profile.address,"Profile"],[findProviderValue(info,["formattedAddress","residentialAddress","streetAddress"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["formattedAddress","formatted","residentialAddress","streetAddress","address"]),"Experian"]),
+      employer: choose([onboarding.employer_name,"Onboarding"],[findProviderValue(info,["employerName","employer"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["employerName","employer"]),"Experian"]),
+      employment_status: choose([onboarding.employment_status,"Onboarding"],[findProviderValue(info,["employmentStatus","occupation"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["employmentStatus","occupation"]),"Experian"]),
+    },
+    providers: { profile: Object.keys(profile).length>0, sumsub: Boolean(pack.info||pack.fixedInfo), experian: Boolean(experianKyc||experianIdmn) },
+  };
 }
 
 async function resolveCertificateUrl(db: ReturnType<typeof createRetailServiceRoleClient>, rawValue: unknown) {
@@ -264,19 +339,26 @@ export async function GET(req: Request) {
     }
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
 
-    const [{ data: profile }, { data: onboarding }, { data: required }, { data: pack }, { data: holds }, { data: txns }] = await Promise.all([
+    const [{ data: profile }, { data: onboarding }, { data: required }, { data: pack }, { data: experianArchive }, { data: holds }, { data: txns }] = await Promise.all([
       db.from("profiles").select("*").eq("id", userId).maybeSingle(),
       db.from("user_onboarding").select("*").eq("user_id", userId).maybeSingle(),
       db.from("required_actions").select("*").eq("user_id", userId).maybeSingle(),
       db.from("user_onboarding_pack_details").select("pack_details").eq("user_id", userId).maybeSingle(),
-      db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
+      db.from("sumsub_document_archive").select("resource_metadata,archived_at,file_name").eq("profile_id", userId),
+      db.from("stock_holdings_c").select("security_id, strategy_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
       db.from("transactions").select("id, name, description, amount, direction, status, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(25),
     ]);
-    const { data: linkedChild } = await db.from("family_members").select("id,certificate_url,certificate_verification_status,kyc_status,kyc_reviewed_at").eq("linked_user_id", userId).eq("relationship", "child").maybeSingle();
+    const { data: linkedChild } = await db.from("family_members").select("id,primary_user_id,parent_id,relationship,certificate_url,certificate_verification_status,kyc_status,kyc_reviewed_at").eq("linked_user_id", userId).eq("relationship", "child").maybeSingle();
     const linkedCertificateUrl = linkedChild ? await resolveCertificateUrl(db, linkedChild.certificate_url) : null;
+    const linkedParentId = String(linkedChild?.primary_user_id || linkedChild?.parent_id || "");
+    const { data: linkedParent } = linkedParentId
+      ? await db.from("profiles").select("first_name,last_name,email").eq("id", linkedParentId).maybeSingle()
+      : { data: null };
 
     const secIds = [...new Set((holds ?? []).map((h) => h.security_id).filter(Boolean))];
+    const strategyIds = [...new Set((holds ?? []).map((h) => h.strategy_id).filter(Boolean))];
     const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
+    const strategyMap = new Map<string, string>();
     const intradayMap = new Map<string, number>();
     if (secIds.length) {
       const [{ data: secs }, { data: intraday }] = await Promise.all([
@@ -289,6 +371,10 @@ export async function GET(req: Request) {
         if (!intradayMap.has(securityId) && Number(quote.current_price) > 0) intradayMap.set(securityId, Number(quote.current_price));
       }
     }
+    if (strategyIds.length) {
+      const { data: strategies } = await db.from("strategies_c").select("id,name").in("id", strategyIds);
+      for (const strategy of strategies ?? []) strategyMap.set(String(strategy.id), String(strategy.name || ""));
+    }
     const holdings = (holds ?? []).map((h) => {
       const sec = secMap[h.security_id as string];
       const qty = Number(h.quantity) || 0;
@@ -298,14 +384,19 @@ export async function GET(req: Request) {
       const liveRands = priceCents / 100;
       const valueCents = qty * Math.round(liveRands * 100);
       const investedCents = qty * costCents;
-      return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };
+      return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? strategyMap.get(String(h.strategy_id)) ?? null };
     }).sort((a, b) => b.valueCents - a.valueCents);
 
     const sumsubRaw = parseRecord(onboarding?.sumsub_raw);
     const mandateData = parseRecord(sumsubRaw.mandate_data);
     return NextResponse.json({
       ok: true,
-      profile: profile ?? null,
+      profile: profile ? {
+        ...profile,
+        managing_parent: linkedParent ? `${linkedParent.first_name || ""} ${linkedParent.last_name || ""}`.trim() : null,
+        guardian_email: linkedParent?.email ?? null,
+        relationship: linkedChild?.relationship ?? profile.relationship ?? null,
+      } : null,
       onboarding: onboarding ?? null,
       required: required ?? null,
       onboarding_pack: pack?.pack_details ?? null,
@@ -314,6 +405,7 @@ export async function GET(req: Request) {
         data: mandateData,
         signed_agreement_url: onboarding?.signed_agreement_url ?? null,
       },
+      rich_details: buildRichDetails(profile, onboarding, pack?.pack_details, experianArchive),
       kyc: deriveKyc(onboarding ?? undefined, required ?? undefined, pack?.pack_details),
       holdings,
       transactions: txns ?? [],
@@ -349,7 +441,113 @@ export async function POST(req: Request) {
   }
 
   const action = new URL(req.url).searchParams.get("action") || "";
-  const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; family_member_id?: string; decision?: string };
+  const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; family_member_id?: string; decision?: string; computershare_number?: string; password?: string };
+
+  if (action === "sumsub-refresh-batch") {
+    if (!sumsubConfigured()) return NextResponse.json({ ok: false, error: "SumSub credentials are not configured" }, { status: 503 });
+    const db = createRetailServiceRoleClient();
+    const { data: onboardingRows, error: onboardingError } = await db.from("user_onboarding").select("user_id,sumsub_applicant_id");
+    if (onboardingError) return NextResponse.json({ ok: false, error: onboardingError.message }, { status: 500 });
+    const eligible = (onboardingRows ?? []).filter((row) => /^[a-f0-9]{24}$/i.test(String(row.sumsub_applicant_id || "")));
+    const userIds = eligible.map((row) => String(row.user_id));
+    const { data: packRows } = userIds.length
+      ? await db.from("user_onboarding_pack_details").select("user_id,pack_details").in("user_id", userIds)
+      : { data: [] as Array<{ user_id: string; pack_details: unknown }> };
+    const packMap = new Map((packRows ?? []).map((row) => [String(row.user_id), row.pack_details]));
+    const results: Array<{ user_id: string; status: "refreshed" | "not_found" | "failed"; error?: string }> = [];
+    for (const row of eligible) {
+      const userId = String(row.user_id);
+      const result = await getApplicantById(String(row.sumsub_applicant_id));
+      if (!result.ok) {
+        results.push({ user_id: userId, status: result.status === 404 ? "not_found" : "failed", error: result.error || `SumSub returned ${result.status}` });
+        continue;
+      }
+      const fetched = parseRecord(result.data);
+      const existing = parseRecord(packMap.get(userId));
+      const fetchedInfo = { ...parseRecord(fetched.fixedInfo), ...parseRecord(fetched.info) };
+      const existingInfo = parseRecord(existing.info);
+      const refreshedAt = new Date().toISOString();
+      const { error: archiveError } = await db.from("provider_identity_snapshots_c").insert({
+        user_id: userId, provider: "SUMSUB", capture_type: "APPLICANT_BATCH_REFRESH",
+        external_reference: String(row.sumsub_applicant_id), payload: fetched,
+        metadata: { source: "OEM_CLIENT_BATCH_REFRESH" }, captured_at: refreshedAt,
+      });
+      if (archiveError) { results.push({ user_id: userId, status: "failed", error: `Archive failed: ${archiveError.message}` }); continue; }
+      const mergedPack = { ...fetched, ...existing,
+        fixedInfo: Object.keys(parseRecord(fetched.fixedInfo)).length ? parseRecord(fetched.fixedInfo) : existing.fixedInfo,
+        info: { ...fetchedInfo, ...existingInfo }, review: fetched.review ?? existing.review, sumsub_refreshed_at: refreshedAt };
+      const { error } = await db.from("user_onboarding_pack_details").upsert({ user_id: userId, pack_details: mergedPack, updated_at: refreshedAt }, { onConflict: "user_id" });
+      results.push(error ? { user_id: userId, status: "failed", error: error.message } : { user_id: userId, status: "refreshed" });
+    }
+    return NextResponse.json({ ok: true, eligible: eligible.length,
+      refreshed: results.filter((result) => result.status === "refreshed").length,
+      not_found: results.filter((result) => result.status === "not_found").length,
+      failed: results.filter((result) => result.status === "failed").length, results });
+  }
+
+  if (action === "sumsub-refresh") {
+    const userId = String(body.user_id || "").trim();
+    if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
+    if (!sumsubConfigured()) return NextResponse.json({ ok: false, error: "SumSub credentials are not configured" }, { status: 503 });
+    const db = createRetailServiceRoleClient();
+    const [{ data: onboarding }, { data: existingPack }] = await Promise.all([
+      db.from("user_onboarding").select("sumsub_external_user_id,sumsub_applicant_id").eq("user_id", userId).maybeSingle(),
+      db.from("user_onboarding_pack_details").select("pack_details").eq("user_id", userId).maybeSingle(),
+    ]);
+    if (!onboarding) return NextResponse.json({ ok: false, error: "Client has no onboarding record" }, { status: 409 });
+    const externalUserId = String(onboarding.sumsub_external_user_id || userId);
+    const applicantId = String(onboarding.sumsub_applicant_id || "").trim();
+    if (applicantId && !/^[a-f0-9]{24}$/i.test(applicantId)) {
+      return NextResponse.json({ ok: false, error: "This record was verified by Experian, mock, or administrative flow—not SumSub" }, { status: 409 });
+    }
+    const result = applicantId ? await getApplicantById(applicantId) : await getApplicantByExternalId(externalUserId);
+    if (!result.ok) return NextResponse.json({ ok: false, error: result.status === 404 ? "No existing SumSub applicant found" : result.error || `SumSub returned ${result.status}` }, { status: result.status === 404 ? 404 : 502 });
+    const fetched = parseRecord(result.data);
+    const existing = parseRecord(existingPack?.pack_details);
+    const fetchedInfo = { ...parseRecord(fetched.fixedInfo), ...parseRecord(fetched.info) };
+    const existingInfo = parseRecord(existing.info);
+    const mergedPack = {
+      ...fetched,
+      ...existing,
+      fixedInfo: Object.keys(parseRecord(fetched.fixedInfo)).length ? parseRecord(fetched.fixedInfo) : existing.fixedInfo,
+      info: { ...fetchedInfo, ...existingInfo },
+      review: fetched.review ?? existing.review,
+      sumsub_refreshed_at: new Date().toISOString(),
+    };
+    const { error: archiveError } = await db.from("provider_identity_snapshots_c").insert({
+      user_id: userId, provider: "SUMSUB", capture_type: "APPLICANT_REFRESH",
+      external_reference: applicantId || externalUserId, payload: fetched,
+      metadata: { source: "OEM_CLIENT_REFRESH" }, captured_at: mergedPack.sumsub_refreshed_at,
+    });
+    if (archiveError) return NextResponse.json({ ok: false, error: `SumSub data fetched but immutable archive failed: ${archiveError.message}` }, { status: 500 });
+    const { error } = await db.from("user_onboarding_pack_details").upsert({ user_id: userId, pack_details: mergedPack, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, sumsub: result, refreshed_at: mergedPack.sumsub_refreshed_at });
+  }
+
+  if (action === "computershare-number") {
+    if (!isAdminRole(auth.ctx)) return NextResponse.json({ ok: false, error: "Admin access required" }, { status: 403 });
+    const userId = String(body.user_id || "").trim();
+    const familyMemberId = String(body.family_member_id || "").trim();
+    const computershareNumber = String(body.computershare_number || "").trim().toUpperCase();
+    const password = String(body.password || "");
+    if ((!userId && !familyMemberId) || !computershareNumber || !password) {
+      return NextResponse.json({ ok: false, error: "Client, Computershare number and password are required" }, { status: 400 });
+    }
+    if (!/^[A-Z0-9][A-Z0-9\-/ ]{2,39}$/.test(computershareNumber)) {
+      return NextResponse.json({ ok: false, error: "Enter a valid Computershare number" }, { status: 400 });
+    }
+    const verifier = createAnonServerClient();
+    const { error: passwordError } = await verifier.auth.signInWithPassword({ email: auth.ctx.email, password });
+    if (passwordError) return NextResponse.json({ ok: false, error: "Incorrect password" }, { status: 403 });
+    const db = createRetailServiceRoleClient();
+    const target = familyMemberId
+      ? db.from("family_members").update({ computershare_number: computershareNumber, updated_at: new Date().toISOString() }).eq("id", familyMemberId)
+      : db.from("profiles").update({ computershare_number: computershareNumber, updated_at: new Date().toISOString() }).eq("id", userId);
+    const { error } = await target;
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, computershare_number: computershareNumber });
+  }
 
   if (action === "child-certificate-review") {
     const familyMemberId = String(body.family_member_id || "");

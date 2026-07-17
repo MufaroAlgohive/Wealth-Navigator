@@ -31,3 +31,12 @@ export async function getApplicantByExternalId(externalUserId: string): Promise<
   const data = await r.json().catch(() => ({}));
   return { ok: r.ok, status: r.status, data };
 }
+
+/** GET an existing applicant by SumSub's 24-character applicant id. */
+export async function getApplicantById(applicantId: string): Promise<{ ok: boolean; status?: number; data?: unknown; error?: string }> {
+  const path = `/resources/applicants/${encodeURIComponent(applicantId)}/one`;
+  const r = await sumsubFetch("GET", path);
+  if (!r) return { ok: false, error: "SumSub credentials are not configured" };
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
+}

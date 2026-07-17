@@ -49,13 +49,19 @@ export default function StudioPage() {
   const launch = async () => {
     if (!selected) return;
     setLaunching(true);
-    const preview=window.open("about:blank","_blank");
+    const preview=window.open("/admin/studio/preview?loading=1","_blank");
     if(preview){preview.document.title="Preparing client view";preview.document.body.innerHTML='<div style="font-family:system-ui;padding:32px;color:#6d28d9">Preparing secure client sign-in…</div>';}
+    if(preview)preview.location.href="/admin/studio/preview?loading=1";
     try {
       const d = await fetch("/api/admin/studio?action=impersonate", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: selected.id, target: env }),
       }).then((r) => r.json());
-      if (d.ok && d.actionLink){if(preview)preview.location.href=d.actionLink;else window.open(d.actionLink,"_blank","noopener,noreferrer");}
+      if (d.ok && d.actionLink){
+        const payload={actionLink:d.actionLink,environment:env,client:selected,portfolio};
+        const encoded=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+        const previewUrl=`/admin/studio/preview#payload=${encodeURIComponent(encoded)}`;
+        if(preview)preview.location.href=previewUrl;else window.open(previewUrl,"_blank","noopener,noreferrer");
+      }
       else {preview?.close();toast.error(d.error || "Could not open client view");}
     } catch(error){preview?.close();toast.error(error instanceof Error?error.message:"Could not open client view");} finally { setLaunching(false); }
   };
