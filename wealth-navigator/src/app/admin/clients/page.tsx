@@ -64,7 +64,6 @@ export default function ClientsPage() {
   const [computershareNumber, setComputershareNumber] = React.useState("");
   const [computersharePassword, setComputersharePassword] = React.useState("");
   const [computershareSaving, setComputershareSaving] = React.useState(false);
-  const [sumsubBatchBusy, setSumsubBatchBusy] = React.useState(false);
 
   React.useEffect(() => {
     fetch("/api/admin/clients?action=list").then((r) => r.json()).then((d) => {
@@ -106,16 +105,6 @@ export default function ClientsPage() {
     toast.success("Computershare number saved");
     setComputershareEditorOpen(false); setComputersharePassword("");
     await openClient(sel.id);
-  };
-
-  const refreshEligibleSumsub = async () => {
-    setSumsubBatchBusy(true);
-    const result = await fetch("/api/admin/clients?action=sumsub-refresh-batch", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
-      .then((response) => response.json()).catch(() => ({ ok: false, error: "Request failed" }));
-    setSumsubBatchBusy(false);
-    if (!result.ok) return toast.error(result.error || "SumSub refresh failed");
-    toast.success(`SumSub refresh: ${result.refreshed}/${result.eligible} updated${result.not_found ? `, ${result.not_found} not found` : ""}${result.failed ? `, ${result.failed} failed` : ""}`);
-    if (selId) await openClient(selId);
   };
 
   const childCertificateAction = async (decision: "approve" | "reject" | "reevaluate") => {
@@ -275,7 +264,6 @@ export default function ClientsPage() {
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search clients…" className="h-8 pl-8" />
           </div>
-          <Button size="sm" variant="secondary" className="mb-3 w-full" disabled={sumsubBatchBusy} onClick={refreshEligibleSumsub}>{sumsubBatchBusy ? "Refreshing existing SumSub applicants…" : "Refresh eligible SumSub details"}</Button>
           <div className="max-h-[70vh] space-y-1 overflow-y-auto">
             {clients === null ? <p className="py-6 text-center text-xs text-muted-foreground">Loading…</p>
               : filtered.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">No clients.</p>
@@ -393,7 +381,7 @@ export default function ClientsPage() {
                         : detail.transactions.map((t) => (
                           <div key={t.id} className="flex items-center justify-between gap-3 py-2.5">
                             <div className="min-w-0"><p className="truncate text-sm text-foreground">{t.name || t.description || "—"}</p><p className="text-[11px] text-muted-foreground">{t.transaction_date ? new Date(t.transaction_date).toLocaleDateString("en-ZA") : ""} · {t.status || ""}</p></div>
-                            <span className={cn("text-sm font-medium", t.direction === "credit" ? "text-success" : "text-foreground")}>{t.direction === "credit" ? "+" : "-"}R {Math.abs(Number(t.amount) || 0).toLocaleString("en-ZA")}</span>
+                            <span className={cn("text-sm font-medium", t.direction === "credit" ? "text-success" : "text-foreground")}>{t.direction === "credit" ? "+" : "-"}{new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 }).format(Math.abs(Number(t.amount) || 0) / 100)}</span>
                           </div>
                         ))}
                     </div>
@@ -424,10 +412,10 @@ export default function ClientsPage() {
 function RichClientDetails({ details }: { details: RichDetails }) {
   const labels: Record<string,string>={first_name:"First name",last_name:"Last name",email:"Email",phone:"Phone",date_of_birth:"Date of birth",gender:"Gender",id_number:"ID number",address:"Residential address",employer:"Employer",employment_status:"Employment status"};
   const populated=Object.entries(details.fields).filter(([,field])=>field.value!=null&&field.value!=="");
-  return <section className="space-y-3 rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 via-transparent to-transparent p-3">
-    <div className="flex flex-wrap items-center gap-2"><div className="mr-auto"><p className="text-xs font-bold uppercase tracking-wider text-foreground">Rich client record</p><p className="text-[10px] text-muted-foreground">Best available confirmed value with source provenance</p></div>{details.providers.profile&&<ProviderBadge source="Profile"/>}{details.providers.sumsub&&<ProviderBadge source="SumSub"/>}{details.providers.experian&&<ProviderBadge source="Experian"/>}</div>
-    <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">{populated.map(([key,field])=><div key={key} className="rounded-lg border border-border bg-card px-3 py-2"><dt className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">{labels[key]||key.replaceAll("_"," ")}</dt><dd className="mt-0.5 break-words text-[13px] font-medium text-foreground">{formatDetailValue(field.value)}</dd><ProviderBadge source={field.source}/></div>)}</dl>
-  </section>;
+  return <details className="group rounded-xl border border-primary/20 bg-gradient-to-br from-primary/10 via-transparent to-transparent p-3">
+    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2"><div className="mr-auto"><p className="text-xs font-bold uppercase tracking-wider text-foreground">Rich client record</p><p className="text-[10px] text-muted-foreground">Best available confirmed value with source provenance · click to expand</p></div>{details.providers.profile&&<ProviderBadge source="Profile"/>}{details.providers.sumsub&&<ProviderBadge source="SumSub"/>}{details.providers.experian&&<ProviderBadge source="Experian"/>}<span className="text-xs text-muted-foreground transition-transform group-open:rotate-180">⌄</span></summary>
+    <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">{populated.map(([key,field])=><div key={key} className="rounded-lg border border-border bg-card px-3 py-2"><dt className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">{labels[key]||key.replaceAll("_"," ")}</dt><dd className="mt-0.5 break-words text-[13px] font-medium text-foreground">{formatDetailValue(field.value)}</dd><ProviderBadge source={field.source}/></div>)}</dl>
+  </details>;
 }
 
 function ProviderBadge({source}:{source:string}){return <span className={cn("mt-1 inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide",source==="Experian"?"bg-success/15 text-success":source==="SumSub"?"bg-primary/15 text-primary":source==="Onboarding"||source==="Derived from SA ID"?"bg-warning/15 text-warning":"bg-muted text-muted-foreground")}>{source}</span>}

@@ -345,7 +345,7 @@ export async function GET(req: Request) {
       db.from("required_actions").select("*").eq("user_id", userId).maybeSingle(),
       db.from("user_onboarding_pack_details").select("pack_details").eq("user_id", userId).maybeSingle(),
       db.from("sumsub_document_archive").select("resource_metadata,archived_at,file_name").eq("profile_id", userId),
-      db.from("stock_holdings_c").select("security_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
+      db.from("stock_holdings_c").select("security_id, strategy_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).eq("is_active", true).eq("trade_side", "BUY"),
       db.from("transactions").select("id, name, description, amount, direction, status, transaction_date").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(25),
     ]);
     const { data: linkedChild } = await db.from("family_members").select("id,primary_user_id,parent_id,relationship,certificate_url,certificate_verification_status,kyc_status,kyc_reviewed_at").eq("linked_user_id", userId).eq("relationship", "child").maybeSingle();
@@ -356,7 +356,9 @@ export async function GET(req: Request) {
       : { data: null };
 
     const secIds = [...new Set((holds ?? []).map((h) => h.security_id).filter(Boolean))];
+    const strategyIds = [...new Set((holds ?? []).map((h) => h.strategy_id).filter(Boolean))];
     const secMap: Record<string, { symbol: string; name: string | null; last_price: number | null }> = {};
+    const strategyMap = new Map<string, string>();
     const intradayMap = new Map<string, number>();
     if (secIds.length) {
       const [{ data: secs }, { data: intraday }] = await Promise.all([
@@ -369,6 +371,10 @@ export async function GET(req: Request) {
         if (!intradayMap.has(securityId) && Number(quote.current_price) > 0) intradayMap.set(securityId, Number(quote.current_price));
       }
     }
+    if (strategyIds.length) {
+      const { data: strategies } = await db.from("strategies_c").select("id,name").in("id", strategyIds);
+      for (const strategy of strategies ?? []) strategyMap.set(String(strategy.id), String(strategy.name || ""));
+    }
     const holdings = (holds ?? []).map((h) => {
       const sec = secMap[h.security_id as string];
       const qty = Number(h.quantity) || 0;
@@ -378,7 +384,7 @@ export async function GET(req: Request) {
       const liveRands = priceCents / 100;
       const valueCents = qty * Math.round(liveRands * 100);
       const investedCents = qty * costCents;
-      return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? null };
+      return { symbol: sec?.symbol ?? "—", name: sec?.name ?? "—", qty, valueCents, purchaseValueCents: investedCents, pnlCents: valueCents - investedCents, strategy: h.strategy_name_snapshot ?? strategyMap.get(String(h.strategy_id)) ?? null };
     }).sort((a, b) => b.valueCents - a.valueCents);
 
     const sumsubRaw = parseRecord(onboarding?.sumsub_raw);

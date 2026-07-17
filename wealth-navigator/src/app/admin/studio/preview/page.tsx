@@ -1,9 +1,10 @@
 "use client";
 
-import * as React from "react";
-import { ArrowLeft, LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { ArrowLeft, LockKeyhole } from "lucide-react";
+import { useRouter } from "next/navigation";
+import * as React from "react";
 
 interface Holding { id:string;symbol:string;name:string;quantity:number;live:number;marketValue:number;pnl:number;pnlPct:number;pending:boolean }
 interface Transaction { id:string;name:string|null;description:string|null;amount:number;direction:string;transaction_date:string|null }
@@ -16,6 +17,7 @@ function decodePayload():Payload|null{
 }
 
 export default function ClientPreviewPage(){
+  const router=useRouter();
   const [data,setData]=React.useState<Payload|null>(null);
   const [loaded,setLoaded]=React.useState(false);
   const frame=React.useRef<HTMLIFrameElement>(null);
@@ -26,7 +28,7 @@ export default function ClientPreviewPage(){
   const p=data.portfolio;
   return <div className="mx-auto max-w-7xl space-y-4">
     <header className="flex flex-wrap items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
-      <Button size="sm" variant="ghost" onClick={()=>window.close()}><ArrowLeft className="h-4 w-4"/>Close preview</Button><div className="h-5 w-px bg-border"/>
+      <Button size="sm" variant="ghost" onClick={()=>{if(window.history.length>1)router.back();else router.push("/admin/studio")}}><ArrowLeft className="h-4 w-4"/>Close preview</Button><div className="h-5 w-px bg-border"/>
       <div className="min-w-0"><p className="truncate text-sm font-bold text-foreground">{data.client.name}</p><p className="truncate text-[10px] text-muted-foreground">{data.client.email}</p></div>
       <span className={cn("ml-auto rounded-full px-2.5 py-1 text-[10px] font-bold uppercase",data.environment==="live"?"bg-success/15 text-success":"bg-primary/15 text-primary")}>{data.environment}</span>
       <span className="inline-flex items-center gap-1 rounded-full border border-border px-2.5 py-1 text-[10px] font-semibold text-muted-foreground"><LockKeyhole className="h-3 w-3"/>Read-only admin view</span>
