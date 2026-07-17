@@ -461,6 +461,12 @@ export async function POST(req: Request) {
       const fetchedInfo = { ...parseRecord(fetched.fixedInfo), ...parseRecord(fetched.info) };
       const existingInfo = parseRecord(existing.info);
       const refreshedAt = new Date().toISOString();
+      const { error: archiveError } = await db.from("provider_identity_snapshots_c").insert({
+        user_id: userId, provider: "SUMSUB", capture_type: "APPLICANT_BATCH_REFRESH",
+        external_reference: String(row.sumsub_applicant_id), payload: fetched,
+        metadata: { source: "OEM_CLIENT_BATCH_REFRESH" }, captured_at: refreshedAt,
+      });
+      if (archiveError) { results.push({ user_id: userId, status: "failed", error: `Archive failed: ${archiveError.message}` }); continue; }
       const mergedPack = { ...fetched, ...existing,
         fixedInfo: Object.keys(parseRecord(fetched.fixedInfo)).length ? parseRecord(fetched.fixedInfo) : existing.fixedInfo,
         info: { ...fetchedInfo, ...existingInfo }, review: fetched.review ?? existing.review, sumsub_refreshed_at: refreshedAt };
@@ -502,6 +508,12 @@ export async function POST(req: Request) {
       review: fetched.review ?? existing.review,
       sumsub_refreshed_at: new Date().toISOString(),
     };
+    const { error: archiveError } = await db.from("provider_identity_snapshots_c").insert({
+      user_id: userId, provider: "SUMSUB", capture_type: "APPLICANT_REFRESH",
+      external_reference: applicantId || externalUserId, payload: fetched,
+      metadata: { source: "OEM_CLIENT_REFRESH" }, captured_at: mergedPack.sumsub_refreshed_at,
+    });
+    if (archiveError) return NextResponse.json({ ok: false, error: `SumSub data fetched but immutable archive failed: ${archiveError.message}` }, { status: 500 });
     const { error } = await db.from("user_onboarding_pack_details").upsert({ user_id: userId, pack_details: mergedPack, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true, sumsub: result, refreshed_at: mergedPack.sumsub_refreshed_at });
