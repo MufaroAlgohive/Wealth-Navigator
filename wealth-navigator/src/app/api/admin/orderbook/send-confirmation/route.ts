@@ -84,10 +84,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
   }
 
-  // Pull all audit rows for this book.
+  // Pull the audit rows for THIS book. Scope to the book AT THE DB LEVEL
+  // (payload.book_id / payload.strategy / order_id) BEFORE the 500-row window so
+  // the "100% filled" gate below sees the COMPLETE book, not the newest 500 rows
+  // across ALL books. On a busy shared audit table the un-scoped scan could
+  // truncate this book's rows out of the window, letting a not-fully-filled book
+  // pass the fill gate and then stamp real client Fill_date. Mirrors the DB-level
+  // scoping in /api/admin/orderbook/execution; the JS filter below stays as
+  // defense-in-depth. PostgREST filters jsonb via the `->>` text accessor.
+  const v = bookId.replace(/[\\"]/g, ""); // neutralise PostgREST filter metachars
   const { data: rows, error: rowsErr } = await institutional
     .from("oems_order_audit")
     .select("id, order_id, symbol, quantity, status, payload, result_payload")
+    .or(`payload->>book_id.eq."${v}",payload->>strategy.eq."${v}",order_id.eq."${v}"`)
     .order("updated_at", { ascending: false })
     .limit(500);
 
