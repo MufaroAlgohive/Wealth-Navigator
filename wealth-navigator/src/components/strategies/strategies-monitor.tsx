@@ -2,15 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowDownRight, ArrowUpRight, Lock, Minus, RefreshCw, ShieldCheck } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { ArrowDownRight, ArrowUpRight, Lock, Minus, ShieldCheck } from "lucide-react";
 
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
-import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatPct, formatZAR } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -42,6 +40,7 @@ interface StrategyRow {
   nav: number; // Rands
   investorCount: number;
   holdingsCount: number;
+  holdingsPreview: Array<{ symbol: string; logoUrl: string | null }>;
   lastRebalanced: string; // "YYYY-MM-DD" or "—" (already formatted by the BFF)
   deployedAt: string | null;
 }
@@ -205,8 +204,6 @@ export function StrategiesMonitor() {
 }
 
 function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean; onSelect: () => void }) {
-  const router = useRouter();
-  const rebal = s.status === "live" && s.investorCount > 0;
   return (
     <button
       type="button"
@@ -243,41 +240,16 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
         >
           {s.status}
         </Pill>
-        {rebal ? (
-          <Button
-            size="sm"
-            variant="default"
-            className="h-6 gap-1 px-2 text-[10px]"
-            onClick={(e) => {
-              e.stopPropagation();
-              router.push(
-                `/oems/rebalance?strategy=${encodeURIComponent(s.id)}&name=${encodeURIComponent(s.name)}`,
-              );
-            }}
-          >
-            <RefreshCw className="h-2.5 w-2.5" /> Rebalance
-          </Button>
-        ) : (
-          <TooltipProvider delayDuration={150}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button type="button" aria-label={`Rebalance locked — ${s.status === "halted" ? "halted" : "no investors"}`} className="cursor-help">
-                  <Pill tone="destructive" size="xs" dot>
-                    REBALANCE LOCKED — {s.status === "halted" ? "halted" : "no investors"}
-                  </Pill>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-[260px]">
-                {s.status === "halted"
-                  ? "Strategy halted by Risk. Re-deploy after compliance sign-off."
-                  : "No underlying investors linked. Rebalance is meaningless without subscribed capital."}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
+        <HoldingLogoStack holdings={s.holdingsPreview ?? []} />
       </div>
     </button>
   );
+}
+
+function HoldingLogoStack({ holdings }: { holdings: Array<{ symbol: string; logoUrl: string | null }> }) {
+  const visible = holdings.slice(0, 3);
+  const remainder = Math.max(0, holdings.length - visible.length);
+  return <div className="flex items-center -space-x-1.5" aria-label={`${holdings.length} strategy holdings`}>{visible.map((holding) => <div key={holding.symbol} title={holding.symbol} className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full border-2 border-card bg-primary/10 text-[7px] font-bold text-primary">{holding.logoUrl ? <img src={holding.logoUrl} alt={holding.symbol} className="h-full w-full object-cover" /> : holding.symbol.slice(0, 2)}</div>)}{remainder > 0 && <div className="flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-card bg-muted px-1 text-[8px] font-bold text-muted-foreground">+{remainder}</div>}</div>;
 }
 
 function Stat({ label, value, positive }: { label: string; value: string; positive?: boolean }) {

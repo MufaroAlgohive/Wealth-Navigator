@@ -78,7 +78,8 @@ export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
   const hasHiddenSim = realDataOnly && items.some((it) => isIndexOrFxSymbol(it.k));
 
   return (
-    <div className="flex items-center gap-3 overflow-x-auto whitespace-nowrap border-y border-border bg-surface-2/60 py-1.5 pl-3 pr-3 text-[11px] font-mono text-foreground/80 scrollbar-thin mask-fade-x">
+    <div className="relative z-40 flex items-center gap-2 overflow-visible whitespace-nowrap border-y border-border bg-surface-2/60 py-1.5 pl-3 pr-3 text-[11px] font-mono text-foreground/80">
+      <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto scrollbar-thin mask-fade-x">
       <Badge variant={badgeVariant} className="shrink-0">
         {stale ? <AlertTriangle className="h-2.5 w-2.5" /> : fresh ? <Radio className="h-2.5 w-2.5 animate-pulse" /> : null}
         {stale ? "STALE" : feedLabel}
@@ -95,6 +96,7 @@ export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
           </Pill>
         </>
       )}
+      </div>
       {pathname === "/strategies" && <StrategyBarSelect />}
     </div>
   );
