@@ -293,6 +293,58 @@
     .strategy-detail-first-reveal { animation: none; }
   }
 
+  /* CRM-parity strategy selector actions. The environment is communicated by
+     the leading green/UAT-amber status light, so the duplicate LIVE/UAT chip
+     stays out of the row. Actions remain quiet until that row is hovered. */
+  div:has(> button[aria-label^="Actions for "]) > span:first-of-type {
+    display: none;
+  }
+
+  button[aria-label^="Actions for "] {
+    opacity: 0;
+    transition: opacity 120ms ease, background-color 120ms ease;
+  }
+
+  div:has(> button[aria-label^="Actions for "]):hover > button[aria-label^="Actions for "],
+  button[aria-label^="Actions for "]:focus-visible {
+    opacity: 1;
+  }
+
+  div:has(> div > button[aria-label^="Actions for "]) {
+    position: relative;
+  }
+
+  div:has(> button[aria-label^="Actions for "]) + div {
+    position: absolute;
+    z-index: 100;
+    top: 32px;
+    right: 7px;
+    display: flex !important;
+    width: 176px;
+    flex-direction: column;
+    gap: 1px;
+    margin: 0;
+    padding: 4px;
+    border: 1.5px solid hsl(var(--border));
+    border-radius: 10px;
+    background: hsl(var(--popover));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 16%);
+  }
+
+  div:has(> button[aria-label^="Actions for "]) + div > button {
+    width: 100%;
+    padding: 7px 12px;
+    border-radius: 7px;
+    font-size: 12px;
+  }
+
+  div:has(> button[aria-label^="Actions for "]) + div > button:last-child {
+    margin-top: 3px;
+    border-top: 1px solid hsl(var(--border));
+    border-radius: 0 0 7px 7px;
+    padding-top: 9px;
+  }
+
   .strategy-market-ticker {
     animation-name: strategy-market-scroll;
     animation-timing-function: linear;
