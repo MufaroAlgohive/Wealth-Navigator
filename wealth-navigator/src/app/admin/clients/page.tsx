@@ -85,11 +85,12 @@ export default function ClientsPage() {
   const syncSumsub = async () => {
     if (!selId) return;
     setSumsub("Checking…");
-    const d = await fetch(`/api/admin/clients?action=sumsub&user_id=${selId}`).then((r) => r.json()).catch(() => ({ ok: false }));
+    const d = await fetch("/api/admin/clients?action=sumsub-refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: selId }) }).then((r) => r.json()).catch(() => ({ ok: false }));
     if (!d.ok) { setSumsub("SumSub request failed"); return; }
     if (d.configured === false) { setSumsub(d.notice || "SumSub not configured"); return; }
     const data = d.sumsub?.data as { review?: { reviewResult?: { reviewAnswer?: string } }; reviewStatus?: string } | undefined;
-    setSumsub(`SumSub: ${data?.review?.reviewResult?.reviewAnswer || data?.reviewStatus || "unknown"}`);
+    await openClient(selId);
+    setSumsub(`SumSub: ${data?.review?.reviewResult?.reviewAnswer || data?.reviewStatus || "refreshed"}`);
   };
 
   const saveComputershareNumber = async () => {

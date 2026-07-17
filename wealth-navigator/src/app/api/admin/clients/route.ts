@@ -437,6 +437,36 @@ export async function POST(req: Request) {
   const action = new URL(req.url).searchParams.get("action") || "";
   const body = ((await req.json().catch(() => ({}))) ?? {}) as { user_id?: string; family_member_id?: string; decision?: string; computershare_number?: string; password?: string };
 
+  if (action === "sumsub-refresh") {
+    const userId = String(body.user_id || "").trim();
+    if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
+    if (!sumsubConfigured()) return NextResponse.json({ ok: false, error: "SumSub credentials are not configured" }, { status: 503 });
+    const db = createRetailServiceRoleClient();
+    const [{ data: onboarding }, { data: existingPack }] = await Promise.all([
+      db.from("user_onboarding").select("sumsub_external_user_id").eq("user_id", userId).maybeSingle(),
+      db.from("user_onboarding_pack_details").select("pack_details").eq("user_id", userId).maybeSingle(),
+    ]);
+    if (!onboarding) return NextResponse.json({ ok: false, error: "Client has no onboarding record" }, { status: 409 });
+    const externalUserId = String(onboarding.sumsub_external_user_id || userId);
+    const result = await getApplicantByExternalId(externalUserId);
+    if (!result.ok) return NextResponse.json({ ok: false, error: result.status === 404 ? "No existing SumSub applicant found" : result.error || `SumSub returned ${result.status}` }, { status: result.status === 404 ? 404 : 502 });
+    const fetched = parseRecord(result.data);
+    const existing = parseRecord(existingPack?.pack_details);
+    const fetchedInfo = { ...parseRecord(fetched.fixedInfo), ...parseRecord(fetched.info) };
+    const existingInfo = parseRecord(existing.info);
+    const mergedPack = {
+      ...fetched,
+      ...existing,
+      fixedInfo: Object.keys(parseRecord(fetched.fixedInfo)).length ? parseRecord(fetched.fixedInfo) : existing.fixedInfo,
+      info: { ...fetchedInfo, ...existingInfo },
+      review: fetched.review ?? existing.review,
+      sumsub_refreshed_at: new Date().toISOString(),
+    };
+    const { error } = await db.from("user_onboarding_pack_details").upsert({ user_id: userId, pack_details: mergedPack, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    return NextResponse.json({ ok: true, sumsub: result, refreshed_at: mergedPack.sumsub_refreshed_at });
+  }
+
   if (action === "computershare-number") {
     if (!isAdminRole(auth.ctx)) return NextResponse.json({ ok: false, error: "Admin access required" }, { status: 403 });
     const userId = String(body.user_id || "").trim();
