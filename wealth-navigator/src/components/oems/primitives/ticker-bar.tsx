@@ -1,6 +1,8 @@
 "use client";
 
-import { ArrowUp, ArrowDown, Radio, AlertTriangle } from "lucide-react";
+import * as React from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { ArrowUp, ArrowDown, Radio, AlertTriangle, Check, ChevronDown, Search } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useTick, useLastTickTs, useQuoteFeedKind, type TickFeedKind } from "@/lib/store/tick-stream-provider";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
@@ -55,6 +57,7 @@ function isIndexOrFxSymbol(k: string): boolean {
 }
 
 export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
+  const pathname = usePathname();
   const realDataOnly = isRealDataOnlyClient();
   const watchlistSyms = items.filter((it) => WORKER_WATCHLIST.has(it.k)).map((it) => it.k);
   useLiveQuotes(realDataOnly ? watchlistSyms : []);
@@ -91,8 +94,45 @@ export function TickerBar({ items = DEFAULT_ITEMS }: { items?: TickerItem[] }) {
           </Pill>
         </>
       )}
+      {pathname === "/strategies" && <StrategyBarSelect />}
     </div>
   );
+}
+
+interface StrategyOption { id: string; name: string; status: string }
+
+function StrategyBarSelect() {
+  const router = useRouter();
+  const root = React.useRef<HTMLDivElement>(null);
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  const [options, setOptions] = React.useState<StrategyOption[]>([]);
+  const [selected, setSelected] = React.useState("");
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setSelected(params.get("focus") || "");
+    fetch("/api/strategies", { cache: "no-store" }).then((response) => response.json()).then((payload) => {
+      setOptions(Array.isArray(payload.strategies) ? payload.strategies.map((strategy: StrategyOption) => ({ id: strategy.id, name: strategy.name, status: strategy.status })) : []);
+    }).catch(() => setOptions([]));
+  }, []);
+
+  React.useEffect(() => {
+    const close = (event: MouseEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, []);
+
+  const choose = (id: string) => {
+    setSelected(id); setOpen(false); setQuery("");
+    const params = new URLSearchParams(window.location.search);
+    if (id) params.set("focus", id); else params.delete("focus");
+    router.push(`/strategies${params.size ? `?${params.toString()}` : ""}`);
+  };
+  const current = options.find((option) => option.id === selected);
+  const filtered = options.filter((option) => option.name.toLowerCase().includes(query.trim().toLowerCase()));
+
+  return <div ref={root} className="relative ml-auto shrink-0 font-sans"><button type="button" onClick={() => setOpen((value) => !value)} className="flex h-7 min-w-48 items-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-2.5 text-[10px] font-semibold text-foreground shadow-sm transition hover:border-primary/45 hover:bg-primary/15"><span className={cn("h-1.5 w-1.5 rounded-full", current?.status === "live" ? "bg-success" : "bg-muted-foreground")} /><span className="max-w-44 flex-1 truncate text-left">{current?.name || "Select strategy"}</span><ChevronDown className={cn("h-3 w-3 text-muted-foreground transition", open && "rotate-180")} /></button>{open && <div className="absolute right-0 top-9 z-[80] w-72 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl"><div className="relative border-b border-border p-2"><Search className="absolute left-4 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground"/><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search strategies…" className="h-8 w-full rounded-lg border border-border bg-background pl-8 pr-2 text-xs outline-none focus:border-primary"/></div><div className="max-h-72 overflow-y-auto p-1.5"><button type="button" onClick={() => choose("")} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-accent"><span className="flex-1">All strategies</span>{!selected && <Check className="h-3.5 w-3.5 text-primary"/>}</button>{filtered.map((option) => <button key={option.id} type="button" onClick={() => choose(option.id)} className={cn("flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-accent", selected === option.id && "bg-primary/10")}><span className={cn("h-1.5 w-1.5 rounded-full", option.status === "live" ? "bg-success" : "bg-muted-foreground")}/><span className="min-w-0 flex-1 truncate">{option.name}</span>{selected === option.id && <Check className="h-3.5 w-3.5 text-primary"/>}</button>)}{filtered.length === 0 && <p className="px-3 py-5 text-center text-[10px] text-muted-foreground">No matching strategies.</p>}</div></div>}</div>;
 }
 
 function TickerChipMaybe({

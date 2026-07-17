@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowDownRight, ArrowUpRight, Lock, Minus, RefreshCw, ShieldCheck } from "lucide-react";
@@ -98,7 +98,7 @@ function SlimStat({ label, value, tone = "default" }: { label: string; value: st
 function MarketTicker({ items }: { items: Array<{ symbol: string; price: number | null; changePct: number | null }> }) {
   if (!items.length) return <div className="flex h-10 items-center justify-center border-y border-border/60 bg-background/35 text-[10px] text-muted-foreground">Live market prices unavailable</div>;
   const display = [...items, ...items];
-  return <div className="overflow-hidden border-y border-border/60 bg-background/35"><div className="strategy-market-ticker flex w-max items-center whitespace-nowrap">{display.map((item, index) => { const up=(item.changePct??0)>0, down=(item.changePct??0)<0; const Icon=up?ArrowUpRight:down?ArrowDownRight:Minus; return <div key={`${item.symbol}-${index}`} className="flex h-10 items-center gap-2 border-r border-border/60 px-5"><span className="font-mono text-[10px] font-bold tracking-wide text-foreground">{item.symbol}</span><span className="font-mono text-[10px] text-muted-foreground">{item.price == null ? "—" : formatZAR(item.price)}</span><span className={cn("inline-flex items-center gap-0.5 font-mono text-[10px] font-semibold",up?"text-success":down?"text-destructive":"text-muted-foreground")}><Icon className="h-3 w-3"/>{item.changePct == null ? "—" : `${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}%`}</span></div>})}</div><style jsx>{`@keyframes strategyTicker{from{transform:translateX(0)}to{transform:translateX(-50%)}}.strategy-market-ticker{animation:strategyTicker ${Math.max(24,items.length*3)}s linear infinite;will-change:transform}.strategy-market-ticker:hover{animation-play-state:paused}@media(prefers-reduced-motion:reduce){.strategy-market-ticker{animation:none}}`}</style></div>;
+  return <div className="overflow-hidden border-y border-border/60 bg-background/35"><div className="strategy-market-ticker flex w-max items-center whitespace-nowrap" style={{ animationDuration: `${Math.max(24, items.length * 3)}s` }}>{display.map((item, index) => { const up=(item.changePct??0)>0, down=(item.changePct??0)<0; const Icon=up?ArrowUpRight:down?ArrowDownRight:Minus; return <div key={`${item.symbol}-${index}`} className="flex h-10 items-center gap-2 border-r border-border/60 px-5"><span className="font-mono text-[10px] font-bold tracking-wide text-foreground">{item.symbol}</span><span className="font-mono text-[10px] text-muted-foreground">{item.price == null ? "—" : formatZAR(item.price)}</span><span className={cn("inline-flex items-center gap-0.5 font-mono text-[10px] font-semibold",up?"text-success":down?"text-destructive":"text-muted-foreground")}><Icon className="h-3 w-3"/>{item.changePct == null ? "—" : `${item.changePct >= 0 ? "+" : ""}${item.changePct.toFixed(2)}%`}</span></div>})}</div></div>;
 }
 
 /** The "Mandates" tab body — was `/oems/strategies`. Must render inside a Suspense boundary (uses `useSearchParams`). */
@@ -120,6 +120,9 @@ export function StrategiesMonitor() {
   const [selected, setSelected] = useState<string>(
     (focusId && strategies.find((s) => s.id === focusId)?.id) || strategies[0]?.id || "",
   );
+  useEffect(() => {
+    if (focusId && strategies.some((strategy) => strategy.id === focusId)) setSelected(focusId);
+  }, [focusId, strategies]);
   const active = strategies.find((s) => s.id === selected) ?? strategies[0];
 
   if (!realDataOnly) {

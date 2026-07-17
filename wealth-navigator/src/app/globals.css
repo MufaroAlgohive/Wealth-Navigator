@@ -272,6 +272,22 @@
     0%   { background-position: 100% 0; }
     100% { background-position: -100% 0; }
   }
+
+  @keyframes strategy-market-scroll {
+    from { transform: translate3d(0, 0, 0); }
+    to { transform: translate3d(-50%, 0, 0); }
+  }
+
+  .strategy-market-ticker {
+    animation-name: strategy-market-scroll;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    will-change: transform;
+  }
+
+  .strategy-market-ticker:hover {
+    animation-play-state: paused;
+  }
   .shimmer {
     background: linear-gradient(
       90deg,
