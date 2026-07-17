@@ -397,7 +397,7 @@ function RichClientDetails({ details }: { details: RichDetails }) {
   </section>;
 }
 
-function ProviderBadge({source}:{source:string}){return <span className={cn("mt-1 inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide",source==="Experian"?"bg-success/15 text-success":source==="SumSub"?"bg-primary/15 text-primary":source==="Onboarding"?"bg-warning/15 text-warning":"bg-muted text-muted-foreground")}>{source}</span>}
+function ProviderBadge({source}:{source:string}){return <span className={cn("mt-1 inline-flex rounded-full px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide",source==="Experian"?"bg-success/15 text-success":source==="SumSub"?"bg-primary/15 text-primary":source==="Onboarding"||source==="Derived from SA ID"?"bg-warning/15 text-warning":"bg-muted text-muted-foreground")}>{source}</span>}
 
 function Row({ label, value }: { label: string; value: string }) {
   return <div className="flex items-center justify-between gap-3 bg-card px-3 py-2.5"><dt className="text-[11px] text-muted-foreground">{label}</dt><dd className="truncate text-[13px] font-medium text-foreground">{value}</dd></div>;

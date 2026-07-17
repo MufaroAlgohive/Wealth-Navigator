@@ -79,12 +79,29 @@ function findProviderValue(source: unknown, aliases: string[], depth = 0): unkno
   return null;
 }
 
+export function inferGenderFromSouthAfricanId(value: unknown): "Female" | "Male" | null {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (!/^\d{13}$/.test(digits)) return null;
+  const month = Number(digits.slice(2, 4));
+  const day = Number(digits.slice(4, 6));
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  let sum = 0;
+  for (let index = 0; index < 12; index += 1) {
+    let digit = Number(digits[index]);
+    if (index % 2 === 1) { digit *= 2; if (digit > 9) digit -= 9; }
+    sum += digit;
+  }
+  if ((10 - (sum % 10)) % 10 !== Number(digits[12])) return null;
+  return Number(digits.slice(6, 10)) >= 5000 ? "Male" : "Female";
+}
+
 function buildRichDetails(profileValue: unknown, onboardingValue: unknown, packValue: unknown) {
   const profile = parseRecord(profileValue);
   const onboarding = parseRecord(onboardingValue);
   const pack = parseRecord(packValue);
   const raw = parseRecord(onboarding.sumsub_raw);
   const info = { ...parseRecord(pack.fixedInfo), ...parseRecord(pack.info) };
+  const provenance = parseRecord(pack.data_provenance);
   const experianKyc = raw.experian_kyc_result ?? parseRecord(pack.experian).kyc ?? null;
   const experianIdmn = raw.experian_idmn_result ?? parseRecord(pack.experian).idmn ?? pack.experian_idmn ?? null;
   const experian = experianIdmn ?? experianKyc;
@@ -92,6 +109,13 @@ function buildRichDetails(profileValue: unknown, onboardingValue: unknown, packV
     const match = candidates.find(([value]) => value != null && value !== "");
     return { value: match?.[0] ?? null, source: match?.[1] ?? "Not available" };
   };
+  const idNumber = choose([profile.id_number,"Profile"],[info.idNumber ?? findProviderValue(info,["idNumber","documentNumber"]),"SumSub"],[findProviderValue(experian,["identityNumber","idNumber","documentNumber"]),"Experian"]);
+  const storedGenderSource = String(provenance.gender || "").toLowerCase().includes("derived") ? "Derived from SA ID" : "SumSub";
+  const explicitGender = choose([profile.gender,"Profile"],[info.gender,storedGenderSource],[findProviderValue(experian,["gender","sex"]),"Experian"]);
+  const inferredGender = inferGenderFromSouthAfricanId(idNumber.value);
+  const gender = explicitGender.value != null
+    ? explicitGender
+    : { value: inferredGender, source: inferredGender ? "Derived from SA ID" : "Not available" };
   return {
     fields: {
       first_name: choose([profile.first_name,"Profile"],[info.firstName ?? info.firstNameEn,"SumSub"],[findProviderValue(experian,["firstName","forename","givenName"]),"Experian"]),
@@ -99,8 +123,8 @@ function buildRichDetails(profileValue: unknown, onboardingValue: unknown, packV
       email: choose([profile.email,"Profile"],[info.email,"SumSub"],[findProviderValue(experian,["email","emailAddress"]),"Experian"]),
       phone: choose([profile.phone_number,"Profile"],[info.phone ?? pack.phone,"SumSub"],[findProviderValue(experian,["phoneNumber","mobileNumber","cellphone"]),"Experian"]),
       date_of_birth: choose([profile.date_of_birth,"Profile"],[info.dob ?? info.dateOfBirth,"SumSub"],[findProviderValue(experian,["dateOfBirth","birthDate","dob"]),"Experian"]),
-      gender: choose([profile.gender,"Profile"],[info.gender,"SumSub"],[findProviderValue(experian,["gender","sex"]),"Experian"]),
-      id_number: choose([profile.id_number,"Profile"],[info.idNumber ?? findProviderValue(info,["idNumber","documentNumber"]),"SumSub"],[findProviderValue(experian,["identityNumber","idNumber","documentNumber"]),"Experian"]),
+      gender,
+      id_number: idNumber,
       address: choose([profile.address,"Profile"],[findProviderValue(info,["formattedAddress","residentialAddress","streetAddress"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["formattedAddress","residentialAddress","streetAddress","address"]),"Experian"]),
       employer: choose([onboarding.employer_name,"Onboarding"],[findProviderValue(info,["employerName","employer"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["employerName","employer"]),"Experian"]),
       employment_status: choose([onboarding.employment_status,"Onboarding"],[findProviderValue(info,["employmentStatus","occupation"]),"SumSub"],[findProviderValue(experianKyc ?? experian,["employmentStatus","occupation"]),"Experian"]),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { deriveKyc } from "@/app/api/admin/clients/route";
+import { deriveKyc, inferGenderFromSouthAfricanId } from "@/app/api/admin/clients/route";
 
 describe("CRM client KYC parity", () => {
   it("uses the latest GREEN onboarding pack over a stale RED onboarding answer", () => {
@@ -27,5 +27,13 @@ describe("CRM client KYC parity", () => {
     expect(deriveKyc({ kyc_status: "completed" }, undefined, null)).toBe("verified");
     expect(deriveKyc({ kyc_status: "pending" }, undefined, null)).toBe("pending");
     expect(deriveKyc({ kyc_status: "rejected" }, undefined, null)).toBe("rejected");
+  });
+});
+
+describe("South African ID gender fallback", () => {
+  it("derives the sequence classification only from a valid ID", () => {
+    expect(inferGenderFromSouthAfricanId("8001015009087")).toBe("Male");
+    expect(inferGenderFromSouthAfricanId("8001015009088")).toBeNull();
+    expect(inferGenderFromSouthAfricanId("not-an-id")).toBeNull();
   });
 });
