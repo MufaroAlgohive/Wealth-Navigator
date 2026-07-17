@@ -54,6 +54,33 @@ export default function NewsPage() {
   });
   const items = newsQ.data?.items ?? [];
 
+  // JSE SENS announcements from the IRESS PROD feed (NewsVendorGet passthrough).
+  // Dormant until Charles entitles the SENS vendor — returns 0 rows today, so the
+  // SENS tab falls back to the (empty) /api/news bucket. Lights up automatically
+  // the moment the feed delivers, no further code change needed.
+  const sensQ = useQuery<{
+    ok?: boolean;
+    headlines?: Array<{
+      storyId?: string;
+      headline?: string;
+      source?: string;
+      timestamp?: string;
+      ts?: number;
+      relatedCodes?: string[];
+      storyPreview?: string;
+    }>;
+  }>({
+    queryKey: ["iress-sens"],
+    queryFn: async () => {
+      const r = await fetch("/api/iress/news?vendor=SENS&pageSize=50", { cache: "no-store" });
+      if (!r.ok) return { ok: false, headlines: [] };
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
+    ...queryOpts("reference"),
+  });
+
   if (!realDataOnly) {
     return (
       <PageCanvas>
@@ -88,7 +115,24 @@ export default function NewsPage() {
   // /api/news returns the Alliance News wire from the retail News_articles feed,
   // tagged category "WIRE". SENS (category "SENS") needs a separate JSE SENS
   // subscription, so that bucket is empty for now. Bucket client-side.
-  const sens = items.filter((n) => n.category.toUpperCase() === "SENS");
+  // SENS bucket: the IRESS prod feed (NewsVendorGet) first, then any /api/news
+  // SENS-tagged items. Empty today (feed dormant) → same empty state as before.
+  const sensFromIress: NewsItem[] = (sensQ.data?.headlines ?? []).map((h, i) => ({
+    id: h.storyId ?? `iress-sens-${i}`,
+    source: h.source ?? "SENS",
+    category: "SENS",
+    severity: "regulatory",
+    ticker: h.relatedCodes?.[0] ?? null,
+    issuer: null,
+    headline: h.headline ?? "(untitled SENS)",
+    body: h.storyPreview ?? null,
+    url: null,
+    publishedAt: h.timestamp ?? new Date().toISOString(),
+    ts: h.ts ?? 0,
+    priority: "high",
+    tickers: h.relatedCodes ?? [],
+  }));
+  const sens = [...sensFromIress, ...items.filter((n) => n.category.toUpperCase() === "SENS")];
   const wire = items.filter((n) => n.category.toUpperCase() !== "SENS");
 
   const all = items;
