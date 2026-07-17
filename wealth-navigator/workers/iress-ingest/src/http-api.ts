@@ -2284,32 +2284,52 @@ export async function handleRequest(
       sendError(res, 503, "iress_mode_not_live", `Cannot probe in iressMode=${deps.env.iressMode}`);
       return;
     }
+    // Optionally run the probe on the PROD market-data session + endpoint (the
+    // split's prod side) instead of the CT/UAT orders session. Read-only: this
+    // lets us inspect raw PricingQuoteGet fields and NewsVendorGet parameters
+    // against REAL prod data (e.g. confirm the JSE cents-vs-Rands convention, or
+    // test whether SENS needs a From/To/Category param). Prod market data only
+    // uses the iress header (no service session), so headerKind=service is ignored.
+    const useMarketData = b["useMarketData"] === true || b["useMarketData"] === "1";
     const started = Date.now();
     try {
       const session = await deps.sessions.getSession();
+      const md = useMarketData ? await getMarketDataSession() : null;
+      if (useMarketData && !md) {
+        sendError(
+          res,
+          503,
+          "market_data_session_down",
+          "PROD market-data session is not up (check IRESS_MARKET_DATA_PROD + the seat). Cannot run a useMarketData probe.",
+        );
+        return;
+      }
+      const probeSessionKey = md ? md.sessionKey : session.iressSessionKey;
       // Placeholder substitution so we can probe putting the live session key in
       // <Parameters> (some V4 methods read it there, not just the header):
-      //   "$IRESS_SESSION_KEY" → the live IRESSSessionKey
+      //   "$IRESS_SESSION_KEY" → the live IRESSSessionKey (prod key when useMarketData)
       //   "$SERVICE_KEY:IOSPlus" → the cached IOS+ ServiceSessionKey (if any)
       for (const k of Object.keys(parameters)) {
         const v = parameters[k];
-        if (v === "$IRESS_SESSION_KEY") parameters[k] = session.iressSessionKey;
+        if (v === "$IRESS_SESSION_KEY") parameters[k] = probeSessionKey;
         else if (typeof v === "string" && v.startsWith("$SERVICE_KEY:")) {
           parameters[k] = session.serviceKeys[v.slice("$SERVICE_KEY:".length) as IressService] ?? "";
         }
       }
       const transport = createSoapTransport({
-        baseUrl: process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4",
+        baseUrl: md
+          ? marketDataBaseUrl()
+          : (process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4"),
       });
       const serviceKey =
-        headerKind === "service" && typeof b["service"] === "string"
+        !md && headerKind === "service" && typeof b["service"] === "string"
           ? session.serviceKeys[b["service"] as IressService]
           : undefined;
       const header = makeHeader(
-        headerKind === "service"
+        !md && headerKind === "service"
           ? { serviceSessionKey: serviceKey, requestID: newRequestID("raw"), timeout, waitForResponse: true }
           : {
-              sessionKey: session.iressSessionKey,
+              sessionKey: probeSessionKey,
               requestID: newRequestID("raw"),
               timeout,
               waitForResponse: true,
