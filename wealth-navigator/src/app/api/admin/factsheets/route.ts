@@ -55,7 +55,14 @@ export async function GET(req: Request) {
       .order("as_of_date", { ascending: true })
       .limit(800);
     const securities = await securitiesFor([strategy]);
-    return NextResponse.json({ ok: true, strategy, returns: returns ?? [], securities });
+    const { data: clientRows } = await db.from("client_strategy_returns_c").select("user_id,basket_value,ytd_pnl,as_of_date").eq("strategy_id", id).order("as_of_date", { ascending: false }).limit(2000);
+    const latestClients = new Map<string, Record<string, unknown>>();
+    for (const row of (clientRows ?? []) as Array<Record<string, unknown>>) { const userId=String(row.user_id || ""); if(userId&&!latestClients.has(userId)) latestClients.set(userId,row); }
+    const userIds=[...latestClients.keys()];
+    const { data: profiles }=userIds.length?await db.from("profiles").select("id,first_name,last_name,email").in("id",userIds):{data:[]};
+    const profileMap=new Map((profiles??[]).map((profile)=>([String(profile.id),profile])));
+    const investors=[...latestClients.entries()].map(([userId,row])=>{const profile=profileMap.get(userId);const value=Number(row.basket_value||0)/100;const pnl=Number(row.ytd_pnl||0)/100;const cost=value-pnl;return {userId,name:[profile?.first_name,profile?.last_name].filter(Boolean).join(" ")||profile?.email||userId,value,ytd:cost>0?(pnl/cost)*100:null,asOf:row.as_of_date};});
+    return NextResponse.json({ ok: true, strategy, returns: returns ?? [], securities, investors });
   }
 
   if (action === "list") {
