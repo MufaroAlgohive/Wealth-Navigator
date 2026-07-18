@@ -53,7 +53,7 @@ interface UniverseSecurity {
 }
 
 interface EquitiesUniverseResponse {
-  source: "retail-supabase" | "unavailable";
+  source: "hybrid" | "yahoo" | "unavailable";
   count: number;
   /** How many board rows had price/change overlaid from live IRESS. */
   iressOverlay?: number;
@@ -105,7 +105,7 @@ export default function EquitiesPage() {
     const rows = equitiesUniverseQ.data?.securities ?? [];
     return [...rows].sort((a, b) => bareSymbol(a.symbol).localeCompare(bareSymbol(b.symbol)));
   }, [equitiesUniverseQ.data]);
-  const equitiesAvailable = equitiesUniverseQ.data?.source === "retail-supabase";
+  const equitiesAvailable = !!equitiesUniverseQ.data && equitiesUniverseQ.data.source !== "unavailable";
   const topMovers = useMemo(() => {
     if (!realDataOnly || !equitiesAvailable) return [];
     const withChange = (equitiesUniverseQ.data?.securities ?? []).filter((s) =>
