@@ -345,6 +345,75 @@
     padding-top: 9px;
   }
 
+  /* Strategy action modal: one contained, responsive form system for details,
+     edit, rename and delete. Inputs are block-level so `width:100%` never
+     starts beside the label and creates a horizontal scrollbar. */
+  [class~="z-[120]"] > div {
+    max-width: 560px;
+    border-color: hsl(var(--primary) / 0.24);
+    box-shadow: 0 24px 80px rgb(0 0 0 / 42%);
+  }
+
+  [class~="z-[120]"] [class~="overflow-y-auto"] {
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  [class~="z-[120]"] label:has(> input:not([type="checkbox"])),
+  [class~="z-[120]"] label:has(> select),
+  [class~="z-[120]"] label:has(> textarea) {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 7px;
+    color: hsl(var(--foreground));
+    line-height: 1.2;
+  }
+
+  [class~="z-[120]"] label > input:not([type="checkbox"]),
+  [class~="z-[120]"] label > select,
+  [class~="z-[120]"] label > textarea,
+  .strategy-meta-input {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    border: 1px solid hsl(var(--input));
+    border-radius: 10px;
+    background: hsl(var(--background) / 0.72);
+    color: hsl(var(--foreground));
+    font-size: 13px;
+    outline: none;
+    transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+  }
+
+  [class~="z-[120]"] label > input:not([type="checkbox"]),
+  [class~="z-[120]"] label > select,
+  .strategy-meta-input:not(textarea) {
+    min-height: 42px;
+    padding: 0 12px;
+  }
+
+  [class~="z-[120]"] label > textarea,
+  textarea.strategy-meta-input {
+    padding: 10px 12px;
+    line-height: 1.5;
+  }
+
+  [class~="z-[120]"] label > input:focus,
+  [class~="z-[120]"] label > select:focus,
+  [class~="z-[120]"] label > textarea:focus,
+  .strategy-meta-input:focus {
+    border-color: hsl(var(--primary) / 0.75);
+    background: hsl(var(--background));
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.14);
+  }
+
+  @media (max-width: 520px) {
+    [class~="z-[120]"] > div { max-width: calc(100vw - 24px); }
+    [class~="z-[120]"] [class~="grid-cols-2"] { grid-template-columns: 1fr; }
+  }
+
   .strategy-market-ticker {
     animation-name: strategy-market-scroll;
     animation-timing-function: linear;
