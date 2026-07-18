@@ -87,12 +87,18 @@ interface GlassKpiProps {
   value: string;
   sub?: React.ReactNode;
   accent?: "default" | "positive" | "negative" | "primary";
+  /** Optional data-source badge (+ DB chip) shown beside the label. */
+  dataSource?: DataSourceKind;
+  db?: DbName;
 }
 
-export function GlassKpi({ label, value, sub, accent = "default" }: GlassKpiProps) {
+export function GlassKpi({ label, value, sub, accent = "default", dataSource, db }: GlassKpiProps) {
   return (
     <div className="glass-kpi group">
-      <p className="text-caption">{label}</p>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-caption">{label}</p>
+        {(dataSource || db) && <DataSourceBadge source={dataSource ?? "supabase"} db={db} />}
+      </div>
       <p
         className={cn(
           "text-metric mt-1.5",

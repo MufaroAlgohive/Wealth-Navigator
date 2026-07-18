@@ -144,7 +144,9 @@ interface SectorAgg {
 }
 
 interface EquitiesResponse {
-  source: "retail-supabase" | "unavailable";
+  // Data-driven origin: the board is Yahoo (securities_c) with a per-row IRESS-PROD
+  // overlay (quote_snapshot_c). "hybrid" when any row was overlaid, else "yahoo".
+  source: "hybrid" | "yahoo" | "unavailable";
   count: number;
   /** How many board rows had their price/change overlaid from live IRESS. */
   iressOverlay?: number;
@@ -229,7 +231,7 @@ export async function GET() {
   // heatmap, so movers / heatmaps / board all reflect IRESS where available.
   const iressOverlay = await overlayIressQuotes(securities);
   return Response.json({
-    source: securities.length > 0 ? "retail-supabase" : "unavailable",
+    source: securities.length === 0 ? "unavailable" : iressOverlay > 0 ? "hybrid" : "yahoo",
     count: securities.length,
     iressOverlay,
     securities,

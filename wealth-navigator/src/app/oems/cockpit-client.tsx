@@ -17,7 +17,7 @@ import {
   ResearchLabCanvas,
 } from "@/components/oems/primitives/glass";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
-import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
+import { DataSourceBadge, type DataSourceKind, type DbName } from "@/components/oems/primitives/data-source-badge";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { SectorTreemap } from "@/components/oems/primitives/sector-treemap";
@@ -106,7 +106,8 @@ interface EquitiesBffSector {
 }
 
 interface EquitiesBffResponse {
-  source: "retail-supabase" | "unavailable";
+  // Data-driven origin from /api/equities: Yahoo base + per-row IRESS-PROD overlay.
+  source: "hybrid" | "yahoo" | "unavailable";
   count: number;
   securities: EquitiesBffSecurity[];
   sectors: EquitiesBffSector[];
@@ -143,6 +144,8 @@ function CockpitKpi({
   live,
   accent = "default",
   action,
+  dataSource,
+  db,
 }: {
   icon?: React.ReactNode;
   label: string;
@@ -156,25 +159,31 @@ function CockpitKpi({
    * highlighted strategy.
    */
   action?: { href: Route; label: string };
+  /** Optional data-source badge (+ DB chip) shown top-right of the tile. */
+  dataSource?: DataSourceKind;
+  db?: DbName;
 }) {
   return (
     <div className="glass-kpi group relative">
-      <div className="flex items-center gap-2">
-        {icon && (
-          <div
-            className={cn(
-              "flex h-5 w-5 items-center justify-center rounded-lg",
-              accent === "positive" && "bg-up/10 text-up",
-              accent === "negative" && "bg-down/10 text-down",
-              accent === "warning" && "bg-warning/10 text-warning",
-              accent === "primary" && "bg-primary/10 text-primary",
-              accent === "default" && "bg-primary/10 text-primary",
-            )}
-          >
-            {icon}
-          </div>
-        )}
-        <p className="text-caption">{label}</p>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {icon && (
+            <div
+              className={cn(
+                "flex h-5 w-5 items-center justify-center rounded-lg",
+                accent === "positive" && "bg-up/10 text-up",
+                accent === "negative" && "bg-down/10 text-down",
+                accent === "warning" && "bg-warning/10 text-warning",
+                accent === "primary" && "bg-primary/10 text-primary",
+                accent === "default" && "bg-primary/10 text-primary",
+              )}
+            >
+              {icon}
+            </div>
+          )}
+          <p className="text-caption">{label}</p>
+        </div>
+        {(dataSource || db) && <DataSourceBadge source={dataSource ?? "supabase"} db={db} />}
       </div>
       <div
         className={cn(
@@ -518,7 +527,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     ...queryOpts("live"),
   });
   const equitiesData = equitiesQ.data;
-  const equitiesAvailable = equitiesData?.source === "retail-supabase";
+  const equitiesAvailable = !!equitiesData && equitiesData.source !== "unavailable";
   const clientBook = clientBookQ.data;
   const clientBookAvailable = clientBook?.source === "retail-supabase";
   // Cap-weighted broad-market proxy from the JSE constituent universe (real data
