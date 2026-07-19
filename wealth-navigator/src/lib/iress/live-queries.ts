@@ -26,7 +26,7 @@ import {
 } from "@/lib/supabase/server";
 import type { Order, Quote } from "@/types/iress";
 
-export type QuoteSource = "live" | "seed-fallback" | "mock" | "supabase" | "unavailable";
+export type QuoteSource = "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "unavailable";
 
 export interface QuoteWithSource {
   quote: Quote;
@@ -79,7 +79,7 @@ function buildQuoteFromIntraday(
   symbol: string,
   exchange: string,
   iress?: { last: number | null; prev: number | null; asOf?: string | null },
-): Quote {
+): { quote: Quote; iressApplied: boolean } {
   const tickCents = Number(intraday.current_price) || 0;
   const metaCents = Number(meta?.last_price) || 0;
   // IRESS_PRICE_OVERLAY=0 (UAT phase): drop the IRESS snapshot so the quote is
@@ -130,24 +130,32 @@ function buildQuoteFromIntraday(
   // price.
   const ts = tickOk ? tickTs : iressOk ? iressTs : Date.now();
   return {
-    symbol,
-    last,
-    bid: last,
-    ask: last,
-    bidSize: 0,
-    askSize: 0,
-    open: last,
-    high: last,
-    low: last,
-    close: prev,
-    prevClose: prev,
-    change,
-    changePct,
-    volume: 0,
-    vwap: last,
-    currency: "ZAR",
-    marketState: "OPEN",
-    ts,
+    quote: {
+      symbol,
+      last,
+      bid: last,
+      ask: last,
+      bidSize: 0,
+      askSize: 0,
+      open: last,
+      high: last,
+      low: last,
+      close: prev,
+      prevClose: prev,
+      change,
+      changePct,
+      volume: 0,
+      vwap: last,
+      currency: "ZAR",
+      marketState: "OPEN",
+      ts,
+    },
+    // Credit IRESS only when the overlay actually drove the shown PRICE (no
+    // fresher retail tick won) OR the day CHANGE (a usable prev_close existed) —
+    // not merely because a fresh snapshot was present. Otherwise a row whose
+    // price + change both came from the Yahoo tick/securities_c would be
+    // mis-badged IRESS-PROD.
+    iressApplied: iressOk && (!tickOk || (iq?.prev != null && iq.prev > 0)),
   };
 }
 
@@ -257,10 +265,13 @@ async function fetchQuotesFromSupabase(
       out.push(unavailableQuote(sym, exchange));
       continue;
     }
+    const built = buildQuoteFromIntraday(meta, tick, sym, exchange, iressByBare.get(sym));
     out.push({
       symbol: sym,
-      quote: buildQuoteFromIntraday(meta, tick, sym, exchange, iressByBare.get(sym)),
-      source: "supabase",
+      quote: built.quote,
+      // Attribute the row to IRESS-PROD when the overlay actually won, else the
+      // Yahoo-fed securities_c/tick (kept as "supabase" for the retail DB origin).
+      source: built.iressApplied ? "iress" : "supabase",
     });
   }
 

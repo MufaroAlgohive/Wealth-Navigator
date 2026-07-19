@@ -123,7 +123,10 @@ export async function GET(req: Request) {
     mode: useSupabase ? "supabase" : iressConfig.mode,
     useSupabase,
     quotes: summaryQuotes,
-    liveCount: quotes.filter((q) => q.source === "live").length,
+    // "iress" (IRESS-PROD overlay applied) counts as a LIVE row so
+    // deriveDataSource classifies the feed live/hybrid, not mock — the row
+    // carries its precise "iress" source for per-symbol badging.
+    liveCount: quotes.filter((q) => q.source === "live" || q.source === "iress").length,
     fallbackCount: quotes.filter((q) => q.source === "seed-fallback").length,
     mockCount: quotes.filter((q) => q.source === "mock").length,
     supabaseCount: quotes.filter((q) => q.source === "supabase").length,

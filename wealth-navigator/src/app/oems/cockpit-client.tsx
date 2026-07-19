@@ -424,7 +424,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // the worker mode + tick timestamps.
   const primaryWorker = workerQ.data?.workers?.[0] ?? null;
   const wsDataSource = deriveDataSource(
-    ((liveQuotes.data as unknown) as { rows?: Array<{ sym: string; last: number; ts?: number; source: "live" | "supabase" | "mock" | "seed-fallback" | "unavailable" }> })?.rows ?? [],
+    ((liveQuotes.data as unknown) as { rows?: Array<{ sym: string; last: number; ts?: number; source: "live" | "iress" | "supabase" | "mock" | "seed-fallback" | "unavailable" }> })?.rows ?? [],
     {
       liveCount: (liveQuotes.data as { liveCount?: number } | undefined)?.liveCount ?? 0,
       fallbackCount: (liveQuotes.data as { fallbackCount?: number } | undefined)?.fallbackCount ?? 0,

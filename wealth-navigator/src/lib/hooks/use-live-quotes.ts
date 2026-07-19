@@ -83,7 +83,9 @@ export function useLiveQuotes(symbols: string[], enabled = true) {
 
   useEffect(() => {
     if (!q.data?.rows.length) return;
-    const liveRows = q.data.rows.filter((r) => r.source === "supabase" || r.source === "live");
+    const liveRows = q.data.rows.filter(
+      (r) => r.source === "supabase" || r.source === "live" || r.source === "iress",
+    );
     if (liveRows.length === 0) return;
     seedTicksFromQuotes(
       liveRows.map((r) => ({

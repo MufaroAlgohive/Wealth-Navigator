@@ -25,6 +25,7 @@ import type { Bar, MarketDataProvider, ProviderHealth, ProviderQuote } from "./t
 
 const SOURCE_MAP: Record<QuoteWithSource["source"], ProviderQuote["source"]> = {
   live: "iress",
+  iress: "iress",
   "seed-fallback": "mock",
   mock: "mock",
   supabase: "supabase",
