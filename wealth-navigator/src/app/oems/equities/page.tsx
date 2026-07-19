@@ -200,11 +200,15 @@ export default function EquitiesPage() {
             <>
               <GlassKpi
                 label="Equity AUM"
+                dataSource="hybrid"
+                db="institutional"
                 value={formatZAR(realEquityAum)}
                 sub={`${(portfolioQ.data.positions ?? []).length} positions`}
               />
               <GlassKpi
                 label="Open P&L"
+                dataSource="hybrid"
+                db="institutional"
                 value={realEquityPnl.value != null ? formatZAR(realEquityPnl.value) : "—"}
                 sub={
                   realEquityPnl.value != null
@@ -215,13 +219,15 @@ export default function EquitiesPage() {
               />
               <GlassKpi
                 label="Investors"
+                dataSource="uat"
+                db="institutional"
                 value={realInvestors.toString()}
                 sub={`${(portfolioQ.data.accounts ?? []).length} accounts`}
               />
               <GlassKpi label="Pre-trade checks" value="On submit" sub="IRESS halt / borrow / non-tradeable at order time" accent="primary" />
             </>
           ) : (
-            <GlassSection title="Equity KPIs" endpoint="GET /api/portfolio" db="institutional" dataSource="supabase" className="col-span-2 lg:col-span-4">
+            <GlassSection title="Equity KPIs" endpoint="GET /api/portfolio" db="institutional" dataSource="uat" className="col-span-2 lg:col-span-4">
               <EmptyDataState
                 reason={portfolioQ.data?.reason ?? "supabase_query_failed"}
                 migration={portfolioQ.data?.migration}

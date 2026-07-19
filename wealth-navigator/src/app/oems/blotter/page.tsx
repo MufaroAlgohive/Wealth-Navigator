@@ -126,7 +126,7 @@ export default function BlotterPage() {
             )}
             <GlassBadge tone={realDataOnly ? "success" : "neutral"}>
               <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />
-              {realDataOnly ? "Supabase audit" : "Mock book"}
+              {realDataOnly ? "IRESS·UAT audit" : "Mock book"}
             </GlassBadge>
           </div>
         </div>
