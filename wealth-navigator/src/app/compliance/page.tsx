@@ -58,7 +58,7 @@ export default function CompliancePage() {
             title="Pending approvals"
             endpoint="GET /v1/compliance/approvals?status=pending"
             db="retail"
-            dataSource="supabase"
+            dataSource="seed"
             right={<Pill tone="warning" size="xs">{pendingApprovals.length} pending</Pill>}
             className="col-span-12 lg:col-span-7"
             noPadding
@@ -116,7 +116,7 @@ export default function CompliancePage() {
             title="Audit trail"
             endpoint="GET /v1/audit?limit=10"
             db="retail"
-            dataSource="supabase"
+            dataSource="seed"
             right={<span className="font-mono text-[10px]">last 7 events</span>}
             className="col-span-12 lg:col-span-5"
             noPadding
@@ -157,7 +157,7 @@ export default function CompliancePage() {
           title="User & role access"
           endpoint="GET /v1/iam/users"
           db="retail"
-          dataSource="supabase"
+          dataSource="seed"
           right={<Pill tone="info" size="xs">{Object.keys(PERSONA_USERS).length} personas</Pill>}
         >
           <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
