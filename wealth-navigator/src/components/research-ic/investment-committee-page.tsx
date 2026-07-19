@@ -131,7 +131,7 @@ export function InvestmentCommitteePage({
 
       <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
         <div className="space-y-5">
-          <GlassSection title={`Agenda · ${agendaCount} item${agendaCount === 1 ? "" : "s"}`}>
+          <GlassSection title={`Agenda · ${agendaCount} item${agendaCount === 1 ? "" : "s"}`} dataSource="supabase" db="institutional">
             {agendaCount === 0 ? (
               <p className="text-caption">
                 Nothing on the agenda. Submitted proposals and notes appear here.
@@ -162,7 +162,7 @@ export function InvestmentCommitteePage({
             )}
           </GlassSection>
 
-          <GlassSection title={`Approved — ready for order book · ${approvedReqs.length}`}>
+          <GlassSection title={`Approved — ready for order book · ${approvedReqs.length}`} dataSource="supabase" db="institutional">
             {approvedReqs.length === 0 ? (
               <p className="text-caption">No approved proposals waiting.</p>
             ) : (
@@ -180,7 +180,7 @@ export function InvestmentCommitteePage({
             )}
           </GlassSection>
 
-          <GlassSection title="Recent decisions">
+          <GlassSection title="Recent decisions" dataSource="supabase" db="institutional">
             {recent.length === 0 ? (
               <p className="text-caption">No decisions logged yet.</p>
             ) : (
@@ -207,7 +207,7 @@ export function InvestmentCommitteePage({
 
         {/* right rail — standing config */}
         <div className="space-y-5">
-          <GlassSection title="Committee members">
+          <GlassSection title="Committee members" dataSource="seed">
             <div className="space-y-3">
               {MEMBERS.map((m) => (
                 <div key={m.initials} className="flex items-center justify-between gap-2">

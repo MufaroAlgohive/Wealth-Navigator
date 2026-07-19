@@ -288,7 +288,7 @@ export function DeskRhythmPage() {
         </p>
       </header>
 
-      <GlassSection title="Team & Ownership">
+      <GlassSection title="Team & Ownership" dataSource="seed">
         <div className="grid gap-4 md:grid-cols-3">
           {OWNERS.map((o) => (
             <div key={o.initials} className="glass-inset rounded-xl p-4">

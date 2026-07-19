@@ -175,6 +175,7 @@ export function NoteDetail({
       <div className="grid gap-5 lg:grid-cols-[1.6fr_1fr]">
         <GlassSection
           title="Price · 90D with triggers"
+          dataSource="hybrid"
           subtitle={
             series.data?.source === "unavailable" || (series.data?.points.length ?? 0) === 0
               ? "Live series pending — trigger levels shown"
@@ -190,7 +191,7 @@ export function NoteDetail({
             />
           </div>
         </GlassSection>
-        <GlassSection title="Triggers">
+        <GlassSection title="Triggers" dataSource="supabase" db="institutional">
           <div className="space-y-2.5">
             {TRIGGER_ROWS.map((r) => {
               const t = note.triggers?.[r.key];
@@ -218,7 +219,7 @@ export function NoteDetail({
 
       {/* thesis */}
       <div className="grid gap-5 lg:grid-cols-2">
-        <GlassSection title="Bull thesis">
+        <GlassSection title="Bull thesis" dataSource="supabase" db="institutional">
           {th.bull ? (
             <p className="text-sm leading-relaxed text-foreground/85">{th.bull}</p>
           ) : (
@@ -240,7 +241,7 @@ export function NoteDetail({
             </div>
           ) : null}
         </GlassSection>
-        <GlassSection title="Bear case / risks">
+        <GlassSection title="Bear case / risks" dataSource="supabase" db="institutional">
           {th.bear ? (
             <p className="text-sm leading-relaxed text-foreground/85">{th.bear}</p>
           ) : (
@@ -270,6 +271,8 @@ export function NoteDetail({
               ? "Fundamentals · multi-year (Year 1 / Year 2 / Year 3)"
               : "Fundamentals · latest vs forecast"
           }
+          dataSource="supabase"
+          db="institutional"
           noPadding
         >
           {fundamentals.length ? (
@@ -345,6 +348,8 @@ export function NoteDetail({
         <GlassSection
           title="Valuation vs peers · scorecard"
           subtitle="GREEN/AMBER/RED vs peer median (Lovable spec)"
+          dataSource="supabase"
+          db="institutional"
           noPadding
         >
           <PeerScorecard
@@ -398,17 +403,17 @@ export function NoteDetail({
       {/* management */}
       {(th.likesManagement || th.dislikesManagement) && (
         <div className="grid gap-5 lg:grid-cols-2">
-          <GlassSection title="Management — what we love">
+          <GlassSection title="Management — what we love" dataSource="supabase" db="institutional">
             <p className="text-sm leading-relaxed text-foreground/85">{th.likesManagement ?? "—"}</p>
           </GlassSection>
-          <GlassSection title="Management — what worries us">
+          <GlassSection title="Management — what worries us" dataSource="supabase" db="institutional">
             <p className="text-sm leading-relaxed text-foreground/85">{th.dislikesManagement ?? "—"}</p>
           </GlassSection>
         </div>
       )}
 
       {/* IC log */}
-      <GlassSection title="Investment committee log">
+      <GlassSection title="Investment committee log" dataSource="supabase" db="institutional">
         {icLog.length ? (
           <ol className="space-y-3">
             {icLog.map((e) => (
