@@ -437,6 +437,30 @@ if (retailIngestEnabled) {
   );
 }
 
+// CONFIG DIAGNOSTICS — the full-universe IRESS overlay only reaches the dashboard
+// when this loop runs AND the worker is in live mode. These are the two silent
+// misconfigs that leave the board showing Yahoo for every non-watchlist symbol
+// despite IRESS_MARKET_DATA_PROD/IRESS_PRICE_OVERLAY being set — warn loudly so
+// "still all Yahoo" is self-explaining in the logs.
+if (process.env.IRESS_RETAIL_INGEST === "1" && !process.env.RETAIL_SUPABASE_URL) {
+  console.error(
+    "[iress-ingest] CONFIG: IRESS_RETAIL_INGEST=1 but RETAIL_SUPABASE_URL is unset — the full-universe retail loop is OFF, so quote_snapshot_c stays at the ~12-name watchlist and the dashboard shows Yahoo for every other symbol. Set RETAIL_SUPABASE_URL (the mfxng retail URL) to enable it. (The institutional quote_snapshot_c write is independent of IRESS_RETAIL_DRY_RUN, so shadow/dry-run is fine.)",
+  );
+}
+if (
+  env.iressMode !== "live" &&
+  (process.env.IRESS_MARKET_DATA_PROD === "1" || process.env.IRESS_PRICE_OVERLAY === "1")
+) {
+  console.error(
+    `[iress-ingest] CONFIG: IRESS market-data flags are on (MARKET_DATA_PROD/PRICE_OVERLAY) but IRESS_MODE="${env.iressMode}" (not "live") — the worker never fetches real IRESS prices, so nothing lands in quote_snapshot_c and the whole board stays Yahoo. Set IRESS_MODE=live.`,
+  );
+}
+if (retailIngestEnabled && !(process.env.INSTITUTIONAL_SUPABASE_URL || process.env.SUPABASE_URL)) {
+  console.error(
+    "[iress-ingest] CONFIG: retail ingest is on but neither INSTITUTIONAL_SUPABASE_URL nor SUPABASE_URL is set — quote_snapshot_c (the table the dashboard overlay reads) cannot be written. Set the institutional (nnwz) URL + service-role key.",
+  );
+}
+
 // Read-only HTTP API — bound unless explicitly disabled. The Vercel BFF
 // reverse-proxies /orders, /orders/stream, and /health from these handlers
 // so Next.js never holds the IRESS license seat.
