@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { ArrowLeft, LockKeyhole } from "lucide-react";
 import { useRouter } from "next/navigation";
 import * as React from "react";
@@ -41,7 +42,7 @@ export default function ClientPreviewPage(){
         </div><p className="mt-2 text-center text-[10px] text-muted-foreground">Phone-size preview · actions restricted by Admin Preview mode</p>
       </section>
       <aside className="space-y-4 rounded-2xl border border-border bg-card p-5">
-        <div><p className="text-[10px] font-bold uppercase tracking-[.16em] text-primary">Client breakdown</p><h1 className="mt-1 text-xl font-bold text-foreground">Live portfolio inspector</h1><p className="mt-1 text-xs text-muted-foreground">CRM data remains visible beside the client-facing screen.</p></div>
+        <div><div className="flex items-center justify-between gap-2"><p className="text-[10px] font-bold uppercase tracking-[.16em] text-primary">Client breakdown</p><DataSourceBadge source="hybrid" db="retail" /></div><h1 className="mt-1 text-xl font-bold text-foreground">Live portfolio inspector</h1><p className="mt-1 text-xs text-muted-foreground">CRM data remains visible beside the client-facing screen.</p></div>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4"><Metric label="Portfolio" value={ZAR(p?.totalValue||0)}/><Metric label="P&L" value={ZAR(p?.totalPnl||0)} valueNumber={p?.totalPnl}/><Metric label="Return" value={`${(p?.pnlPct||0)>=0?"+":""}${(p?.pnlPct||0).toFixed(2)}%`} valueNumber={p?.pnlPct}/><Metric label="Strategies" value={String(p?.strategyCount||0)}/></div>
         <DataList title="Top holdings">{p?.holdings?.length?p.holdings.slice(0,8).map(h=><div key={h.id} className="flex items-center gap-3 px-3 py-2.5"><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-foreground">{h.symbol}{h.pending&&<span className="ml-1.5 text-[8px] text-warning">PENDING</span>}</p><p className="truncate text-[10px] text-muted-foreground">{h.quantity} × {ZAR(h.live)} · {h.name}</p></div><div className="text-right"><p className="text-xs font-semibold text-foreground">{ZAR(h.marketValue)}</p><p className={cn("text-[10px]",h.pnl>=0?"text-success":"text-destructive")}>{h.pnl>=0?"+":""}{ZAR(h.pnl)} · {h.pnlPct.toFixed(2)}%</p></div></div>):<Empty text="No active holdings."/>}</DataList>
         <DataList title="Recent transactions">{p?.transactions?.length?p.transactions.slice(0,6).map(t=><div key={t.id} className="flex items-center justify-between gap-3 px-3 py-2.5"><div className="min-w-0"><p className="truncate text-xs font-medium text-foreground">{t.name||t.description||"Transaction"}</p><p className="text-[10px] text-muted-foreground">{t.transaction_date?new Date(t.transaction_date).toLocaleDateString("en-ZA"):"—"}</p></div><p className="text-xs font-semibold text-foreground">{ZAR(Math.abs(t.amount||0))}</p></div>):<Empty text="No recent transactions."/>}</DataList>

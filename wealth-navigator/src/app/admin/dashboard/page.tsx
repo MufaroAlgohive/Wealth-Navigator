@@ -6,6 +6,7 @@ import type { Route } from "next";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 
 type Row = Record<string, unknown>;
@@ -145,7 +146,10 @@ export default function DashboardPage() {
       {/* Return Insights */}
       <div className="rounded-2xl border border-border bg-card p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-sm font-bold text-foreground">Return Insights</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-bold text-foreground">Return Insights</h2>
+            <DataSourceBadge source="supabase" db="retail" />
+          </div>
           <div className="flex gap-1 rounded-lg bg-muted p-0.5">
             {(["assets", "strategy"] as const).map((m) => (
               <button key={m} onClick={() => setMode(m)} className={cn("rounded px-3 py-1 text-xs font-medium capitalize", mode === m ? "bg-background text-foreground shadow" : "text-muted-foreground")}>{m === "assets" ? "Assets" : "Strategies"}</button>

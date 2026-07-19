@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 
 const PRIORITIES = ["low", "medium", "high", "critical"];
@@ -190,6 +191,9 @@ export default function CyberCompliancePage() {
       )}
 
       {/* Health strip */}
+      <div className="mb-2 flex justify-end">
+        <DataSourceBadge source="supabase" db="retail" />
+      </div>
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Kpi label="Last Check" value={health ? fmtTime(health.lastChecked) : "—"} />
         <Kpi label="Uptime (24h)" value={health?.uptimePct != null ? `${health.uptimePct}%` : "—"} />

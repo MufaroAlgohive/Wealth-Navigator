@@ -6,6 +6,7 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 
 interface Sec { symbol: string; name: string | null; logo_url: string | null; last_price: number | null; change_percent?: number | null; }
@@ -105,6 +106,9 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       {/* Overview band */}
+      <div className="flex justify-end">
+        <DataSourceBadge source="hybrid" db="retail" />
+      </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Kpi label="Strategies Live" value={String(liveCount)} />
         <Kpi label="Total Investors" value={String(totalInvestors)} />
@@ -262,6 +266,7 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
               {(s.tags ?? []).map((t) => <Tag key={t}>{t}</Tag>)}
             </div>
           </div>
+          <DataSourceBadge source="hybrid" db="retail" />
         </div>
         {s.description && <p className="mt-4 text-sm text-foreground/80">{s.description}</p>}
 
@@ -273,6 +278,9 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
       </div>
 
       {/* Performance summary */}
+      <div className="flex justify-end">
+        <DataSourceBadge source="supabase" db="retail" />
+      </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Kpi label="Best Day" value={pctStr(best)} valueCls={pctCls(best)} />
         <Kpi label="Worst Day" value={pctStr(worst)} valueCls={pctCls(worst)} />
@@ -282,7 +290,10 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
 
       {/* Holdings */}
       <div className="rounded-2xl border border-border bg-card p-5">
-        <h3 className="mb-3 text-sm font-bold text-foreground">Portfolio Holdings</h3>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h3 className="text-sm font-bold text-foreground">Portfolio Holdings</h3>
+          <DataSourceBadge source="hybrid" db="retail" />
+        </div>
         <div className="divide-y divide-border">
           {hs.map((h, i) => {
             const sym = String(h.ticker || h.symbol || "");
@@ -311,7 +322,10 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
       {years.length > 0 && activeYear != null && (
         <div className="rounded-2xl border border-border bg-card p-5">
           <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-foreground">Monthly Returns</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold text-foreground">Monthly Returns</h3>
+              <DataSourceBadge source="supabase" db="retail" />
+            </div>
             <div className="flex gap-1">{years.map((y) => <button key={y} onClick={() => setYear(Number(y))} className={cn("rounded px-2 py-0.5 text-xs", Number(y) === activeYear ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>{y}</button>)}</div>
           </div>
           <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-12">

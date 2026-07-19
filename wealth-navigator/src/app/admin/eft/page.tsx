@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
 interface Profile { id: string; first_name: string | null; last_name: string | null; email: string | null; mint_number: string | null; }
 interface Child { id: string; first_name: string | null; last_name: string | null; available_balance: number | null; }
@@ -117,11 +118,11 @@ export default function EftPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 gap-3">
         <div className={cn(card, "px-5 py-4")}>
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Client Wallets</div>
+          <div className="flex items-center justify-between gap-2"><span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Client Wallets</span><DataSourceBadge source="supabase" db="retail" /></div>
           <div className="mt-1 text-2xl font-bold text-foreground">{stats.count}</div>
         </div>
         <div className={cn(card, "px-5 py-4")}>
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Total Wallet Amount</div>
+          <div className="flex items-center justify-between gap-2"><span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Total Wallet Amount</span><DataSourceBadge source="supabase" db="retail" /></div>
           <div className="mt-1 text-2xl font-bold text-foreground">{ZAR(stats.total)}</div>
         </div>
       </div>

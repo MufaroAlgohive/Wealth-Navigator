@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 
 // ── Reference data (mirrors team.html) ──────────────────────────────────────
@@ -492,7 +493,10 @@ export default function TeamPage() {
         <TabsContent value="members">
           <div className={cardClass}>
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <span className="text-sm font-bold text-foreground">Staff Roster</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-foreground">Staff Roster</span>
+                <DataSourceBadge source="supabase" db="retail" />
+              </div>
               <Button onClick={openInvite}>Invite Member</Button>
             </div>
             <div className="overflow-x-auto">
@@ -570,7 +574,10 @@ export default function TeamPage() {
           <div className={cn(cardClass, "p-5")}>
             <div className="mb-4 flex flex-wrap items-center gap-3">
               <div className="flex-1">
-                <div className="text-sm font-bold text-foreground">Approvals Inbox</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-bold text-foreground">Approvals Inbox</div>
+                  <DataSourceBadge source="supabase" db="retail" />
+                </div>
                 <div className="text-xs text-muted-foreground">Review and authorize pending requests from lower-level staff.</div>
               </div>
               <div className="w-36"><Select value={apStatus} onValueChange={setApStatus}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>
@@ -601,7 +608,10 @@ export default function TeamPage() {
         <TabsContent value="audit">
           <div className={cardClass}>
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <span className="text-sm font-bold text-foreground">Audit Log</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-foreground">Audit Log</span>
+                <DataSourceBadge source="supabase" db="retail" />
+              </div>
               <Button variant="secondary" size="sm" onClick={loadAudit}>Refresh</Button>
             </div>
             {auditNotice && <div className="m-3 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-foreground/80">{auditNotice}</div>}
@@ -623,7 +633,10 @@ export default function TeamPage() {
         <TabsContent value="impersonation">
           <div className={cardClass}>
             <div className="flex items-center justify-between border-b border-border px-4 py-3">
-              <span className="text-sm font-bold text-foreground">Impersonation Log</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-foreground">Impersonation Log</span>
+                <DataSourceBadge source="supabase" db="retail" />
+              </div>
               <Button variant="secondary" size="sm" onClick={loadImp}>Refresh</Button>
             </div>
             <div className="flex flex-wrap items-end gap-3 border-b border-border px-4 py-3">

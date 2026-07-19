@@ -27,6 +27,7 @@ import * as React from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
 
@@ -927,6 +928,7 @@ export function ExecutionView({ bookId }: { bookId: string }) {
             </span>
           ) : null}
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">book {bookId}</span>
+          <DataSourceBadge source="hybrid" db="institutional" />
           {uatEnabled ? (
             <span
               className={cn(
