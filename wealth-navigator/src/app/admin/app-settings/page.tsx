@@ -7,6 +7,7 @@ import { AlertTriangle } from "lucide-react";
 import { useAdmin } from "@/lib/admin/context";
 import { isAdminRole } from "@/lib/admin/pages";
 import { Button } from "@/components/ui/button";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 
 type Kind = "money" | "percent";
@@ -149,7 +150,10 @@ export default function AppSettingsPage() {
       )}
 
       <div className="rounded-2xl border border-border bg-card p-6">
-        <h2 className="text-[15px] font-bold text-foreground">Fees</h2>
+        <div className="flex items-center gap-2">
+          <h2 className="text-[15px] font-bold text-foreground">Fees</h2>
+          <DataSourceBadge source="supabase" db="retail" />
+        </div>
         <p className="mt-1 text-xs text-muted-foreground">
           The single source of truth for platform fees. The app and CRM read these values.
         </p>

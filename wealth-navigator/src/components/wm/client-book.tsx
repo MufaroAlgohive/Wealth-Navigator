@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 import { formatPct, formatZAR } from "@/lib/format";
 
@@ -143,6 +144,7 @@ export function WealthManagerClientBook() {
           <div className="flex items-center gap-2">
             <Users className="h-4 w-4 text-primary" />
             <h2 className="text-sm font-semibold">My Client Book</h2>
+            <DataSourceBadge source="supabase" db="retail" />
           </div>
           <div className="relative ml-auto w-full lg:w-64">
             <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />

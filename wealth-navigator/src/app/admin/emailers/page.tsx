@@ -12,6 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { cn } from "@/lib/cn";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { EmailerCampaigns } from "@/components/admin/emailer-campaigns";
 
 interface Trigger {
@@ -283,7 +284,10 @@ export default function EmailersPage() {
           <div className={cardClass}>
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h2 className="text-[15px] font-bold text-foreground">Configured Triggers</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-[15px] font-bold text-foreground">Configured Triggers</h2>
+                  <DataSourceBadge source="supabase" db="retail" />
+                </div>
                 <p className="mt-0.5 text-xs text-muted-foreground">Each maps a Supabase table event to an email type.</p>
               </div>
               <Button onClick={openAdd}>
@@ -359,7 +363,10 @@ export default function EmailersPage() {
         {/* ── LOGS ── */}
         <TabsContent value="logs" className="space-y-4">
           <div className={cn(cardClass, "flex flex-wrap items-center gap-3")}>
-            <h2 className="flex-1 text-[15px] font-bold text-foreground">Email Send Logs</h2>
+            <div className="flex flex-1 items-center gap-2">
+              <h2 className="text-[15px] font-bold text-foreground">Email Send Logs</h2>
+              <DataSourceBadge source="supabase" db="retail" />
+            </div>
             <div className="w-44">
               <Select value={logType} onValueChange={setLogType}>
                 <SelectTrigger>

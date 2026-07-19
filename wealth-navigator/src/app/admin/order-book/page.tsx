@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { UatBanner } from "@/components/admin/order-book/uat-banner";
 import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
 import { UatTestRunner } from "@/components/admin/order-book/uat-test-runner";
@@ -118,6 +119,7 @@ export default function OrderBookPage() {
           ))}
         </div>
         <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search email / ticker / strategy…" className="h-8 w-64" />
+        <DataSourceBadge source="hybrid" db="retail" />
         <div className="flex-1" />
         <Button variant="secondary" size="sm" onClick={exportCsv}><Download className="h-3.5 w-3.5" /> Export CSV</Button>
         <Button variant="secondary" size="sm" onClick={() => deferred("Capture snapshot")}>Capture snapshot</Button>

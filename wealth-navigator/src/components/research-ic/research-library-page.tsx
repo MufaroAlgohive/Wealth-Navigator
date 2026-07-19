@@ -19,6 +19,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search } from "lucide-react";
 import * as React from "react";
 
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
 import { NoteDetail } from "./note-detail";
@@ -152,6 +153,7 @@ export function ResearchLibraryPage({
               <b className="text-primary">{inFlight}</b> in flight
             </span>
           </div>
+          <DataSourceBadge source="supabase" db="institutional" />
           <button
             type="button"
             onClick={() => setMode({ kind: "new" })}
@@ -183,6 +185,7 @@ export function ResearchLibraryPage({
               <span className="ml-1.5 font-mono text-[10px] tabular-nums text-muted-foreground/70">
                 {filtered.length}
               </span>
+              <DataSourceBadge source="hybrid" db="institutional" className="ml-2 align-middle" />
             </h2>
             <div className="flex items-center gap-1">
               {STATUS_FILTERS.map((f) => {

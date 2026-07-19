@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { cn } from "@/lib/cn";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
 type Kyc = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
 type KycFilter = "all" | Kyc;
@@ -230,6 +231,7 @@ export default function ClientsPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
+      <div className="mb-2 flex justify-end"><DataSourceBadge source="supabase" db="retail" /></div>
       <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
         <ClientMetric label="Total clients" value={clientStats?.total ?? "—"} tone="primary" />
         <ClientMetric label="KYC completed" value={clientStats?.completed ?? "—"} tone="success" />
@@ -292,6 +294,7 @@ export default function ClientsPage() {
                     <div className="text-lg font-bold text-foreground">{sel.name}</div>
                     <div className="text-xs text-muted-foreground">{sel.email} {sel.mint_number ? `· ${sel.mint_number}` : ""}</div>
                   </div>
+                  <DataSourceBadge source="supabase" db="retail" />
                   <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize", kycCls(detail.kyc))}>{kycLabel(detail.kyc)}</span>
                 </div>
 

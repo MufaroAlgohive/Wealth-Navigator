@@ -8,6 +8,7 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, 
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { cn } from "@/lib/cn";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
 /* ── Types (raw payload) ── */
 interface Holding { user_id: string; family_member_id: string | null; security_id: string; strategy_id: string | null; quantity: number; avg_fill: number | null; Expected_fill: number | null; }
@@ -172,6 +173,7 @@ export default function InvestorsPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       {/* KPI bar */}
+      <div className="flex justify-end"><DataSourceBadge source="hybrid" db="retail" /></div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
         <Kpi label="Total AUM" value={R(kpi.aum)} />
         <Kpi label="Invested" value={R(kpi.invested)} />
@@ -257,6 +259,7 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
         </TabsList>
 
         <TabsContent value="performance" className="space-y-4">
+          <div className="flex justify-end"><DataSourceBadge source="supabase" db="retail" /></div>
           {navChart.length > 1 ? (
             <div className="h-56 w-full rounded-xl border border-border p-3">
               <ResponsiveContainer width="100%" height="100%">
@@ -284,6 +287,7 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
         </TabsContent>
 
         <TabsContent value="risk">
+          <div className="mb-3 flex justify-end"><DataSourceBadge source="supabase" db="retail" /></div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
             <Kpi label="Sharpe" value={risk.sharpe == null ? "—" : risk.sharpe.toFixed(2)} />
             <Kpi label="Sortino" value={risk.sortino == null ? "—" : risk.sortino.toFixed(2)} />
@@ -294,6 +298,7 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
         </TabsContent>
 
         <TabsContent value="allocations" className="space-y-4">
+          <div className="flex justify-end"><DataSourceBadge source="hybrid" db="retail" /></div>
           {sectors.length > 0 && (
             <div className="flex flex-col items-center gap-4 sm:flex-row">
               <div className="h-48 w-48">
@@ -379,7 +384,7 @@ function InvestorSpreadsheet({ investor }: { investor: Investor }) {
     const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Portfolio');XLSX.writeFile(wb,`${investor.name}-${investor.strategy||'direct-securities'}-${new Date().toISOString().slice(0,10)}`.replace(/[^a-z0-9.-]+/gi,'-')+'.xlsx');
   };
   return <div className={cn("oem-spreadsheet",dark&&"oem-spreadsheet-dark",full&&"fixed inset-4 z-[100] flex flex-col rounded-xl border border-border bg-background p-3 shadow-2xl")}>
-    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Portfolio Spreadsheet — {investor.name}{investor.strategy?` · ${investor.strategy}`:''}</div><div className="mt-1 max-w-3xl text-[9px] leading-relaxed text-muted-foreground"><b>{investor.strategy || 'Direct securities'} only</b> — fully editable and seeded from live holdings. Formula columns recalculate when Quantity or Avg Fill changes.</div></div><div className="flex gap-1.5"><button type="button" onClick={reset} className="inline-flex h-7 items-center gap-1 rounded-md bg-muted px-2 text-[9px] font-semibold"><RotateCcw className="h-3 w-3"/>Reset from live data</button><button type="button" onClick={()=>void download()} className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2 text-[9px] font-semibold text-primary-foreground shadow-sm"><Download className="h-3 w-3"/>Download .xlsx</button><button type="button" onClick={toggleFull} className="h-7 rounded-md bg-secondary px-2 text-[9px] font-semibold text-secondary-foreground">{full?'× Exit full screen':'✥ Full screen'}</button></div></div>
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><div><div className="flex items-center gap-2"><span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Portfolio Spreadsheet — {investor.name}{investor.strategy?` · ${investor.strategy}`:''}</span><DataSourceBadge source="hybrid" db="retail" /></div><div className="mt-1 max-w-3xl text-[9px] leading-relaxed text-muted-foreground"><b>{investor.strategy || 'Direct securities'} only</b> — fully editable and seeded from live holdings. Formula columns recalculate when Quantity or Avg Fill changes.</div></div><div className="flex gap-1.5"><button type="button" onClick={reset} className="inline-flex h-7 items-center gap-1 rounded-md bg-muted px-2 text-[9px] font-semibold"><RotateCcw className="h-3 w-3"/>Reset from live data</button><button type="button" onClick={()=>void download()} className="inline-flex h-7 items-center gap-1 rounded-md bg-primary px-2 text-[9px] font-semibold text-primary-foreground shadow-sm"><Download className="h-3 w-3"/>Download .xlsx</button><button type="button" onClick={toggleFull} className="h-7 rounded-md bg-secondary px-2 text-[9px] font-semibold text-secondary-foreground">{full?'× Exit full screen':'✥ Full screen'}</button></div></div>
     <div ref={host} className={cn("min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-background",!full&&"h-[500px]")} />
   </div>;
 }

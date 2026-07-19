@@ -2,6 +2,7 @@
 
 import { PersonaHeader } from "@/components/oems/primitives/persona-header";
 import { GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { PlatformShell } from "@/components/platform/platform-shell";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
@@ -36,7 +37,12 @@ export function PersonaRealDataGate({
             <EmptyDataState message={message} />
           </GlassSection>
         ) : (
-          children
+          <>
+            <div className="flex justify-end">
+              <DataSourceBadge source="seed" />
+            </div>
+            {children}
+          </>
         )}
       </PageCanvas>
     </PlatformShell>

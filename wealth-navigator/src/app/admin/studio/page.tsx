@@ -7,6 +7,7 @@ import { Search, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
 interface Client { id: string; name: string; email: string | null; strategy: string | null; isTest?: boolean; }
 interface PortfolioHolding { id: string; symbol: string; name: string; logo_url: string | null; quantity: number; cost: number; live: number; marketValue: number; pnl: number; pnlPct:number; pending:boolean; strategyId:string|null; strategy: string | null; }
@@ -87,6 +88,7 @@ export default function StudioPage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[340px_1fr]">
         {/* Client list */}
         <div className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 flex justify-end"><DataSourceBadge source="supabase" db="retail" /></div>
           <div className="mb-3 flex gap-1 rounded-lg bg-muted p-0.5">
             {(["invested", "all"] as const).map((s) => (
               <button key={s} onClick={() => setScope(s)} className={cn("flex-1 rounded px-2 py-1 text-xs font-medium capitalize", scope === s ? "bg-background text-foreground shadow" : "text-muted-foreground")}>{s === "invested" ? "Invested" : "All Users"}</button>
@@ -131,7 +133,7 @@ export default function StudioPage() {
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-bold text-foreground">{ZAR(portfolio.totalValue)}</div>
-                  <div className="text-[11px] text-muted-foreground">Live positions · ZAR</div>
+                  <div className="mt-0.5 flex items-center justify-end gap-2 text-[11px] text-muted-foreground"><span>Live positions · ZAR</span><DataSourceBadge source="hybrid" db="retail" /></div>
                 </div>
               </div>
 
@@ -170,7 +172,7 @@ export default function StudioPage() {
 
               {/* Recent transactions */}
               <div>
-                <h3 className="mb-2 text-sm font-bold text-foreground">Recent transactions</h3>
+                <div className="mb-2 flex items-center justify-between gap-2"><h3 className="text-sm font-bold text-foreground">Recent transactions</h3><DataSourceBadge source="supabase" db="retail" /></div>
                 {portfolio.transactions.length === 0 ? <p className="text-xs text-muted-foreground">No transactions.</p> : (
                   <div className="divide-y divide-border">
                     {portfolio.transactions.map((t) => (

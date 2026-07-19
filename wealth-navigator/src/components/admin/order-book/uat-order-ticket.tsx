@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 
 /**
@@ -170,6 +171,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
                   >
                     {R(matched.lastRands)}
                   </button>
+                  <DataSourceBadge source="hybrid" db="retail" className="ml-1 align-middle" />
                 </>
               )}
             </span>
