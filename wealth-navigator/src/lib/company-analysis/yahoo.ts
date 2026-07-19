@@ -442,6 +442,8 @@ export interface CompanyChart {
   changePct: number | null;
   /** Annualised CAGR over the window, % (null for <1y windows). */
   cagrPct: number | null;
+  /** Which feed served this series — "iress" (PROD, anchored) or "yahoo". */
+  source?: "iress" | "yahoo";
   error?: string;
 }
 
