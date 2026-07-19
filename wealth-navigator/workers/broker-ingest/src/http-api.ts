@@ -1,8 +1,9 @@
 /**
  * Minimal HTTP API for the Railway `broker-ingest` worker.
  *
- * Endpoints (all require `WORKER_HTTP_TOKEN` if set):
- *   GET  /health                  — heartbeat shape (no broker call)
+ * Endpoints (require `WORKER_HTTP_TOKEN` if set, EXCEPT /health):
+ *   GET  /health                  — heartbeat shape (no broker call); UNAUTHENTICATED
+ *                                    (Railway healthcheck path — served before the gate)
  *   GET  /state                   — current poll state (cursor + fills applied)
  *   POST /debug/inject-fill       — manual fill injection (test only)
  *
@@ -153,12 +154,26 @@ export async function handleRequest(
   deps: HttpApiDeps,
   authToken: string | undefined,
 ): Promise<void> {
+  const url = new URL(req.url ?? "/", "http://worker");
+  const path = url.pathname;
+
+  // /health is the Railway healthcheck path (railway.toml healthcheckPath) and
+  // MUST answer without auth — it is served BEFORE checkAuth on purpose. If it
+  // sat behind the gate, setting WORKER_HTTP_TOKEN (the documented hardening)
+  // would 401 Railway's header-less healthcheck GET and, with
+  // restartPolicyType=on_failure, restart-loop the deploy. /health carries only
+  // operational counters (no secrets/PII) and is already unauthenticated today
+  // (checkAuth fails open while the token is unset), so this adds no exposure.
+  if (req.method === "GET" && path === "/health") {
+    const snapshot = buildHealthSnapshot(deps);
+    send(res, 200, snapshot);
+    return;
+  }
+
   if (!checkAuth(req, authToken)) {
     sendError(res, 401, "unauthorized", "Missing or invalid worker auth token");
     return;
   }
-  const url = new URL(req.url ?? "/", "http://worker");
-  const path = url.pathname;
 
   // SECURITY: checkAuth fails OPEN when WORKER_HTTP_TOKEN is unset (so an
   // auto-deploy that forgets the token never takes the worker down). Emit a
@@ -176,12 +191,6 @@ export async function handleRequest(
           "Mutating worker HTTP request served WITHOUT auth (WORKER_HTTP_TOKEN unset). Set WORKER_HTTP_TOKEN on the worker + BFF, then WORKER_REQUIRE_HTTP_TOKEN=1 to enforce.",
       }),
     );
-  }
-
-  if (req.method === "GET" && path === "/health") {
-    const snapshot = buildHealthSnapshot(deps);
-    send(res, 200, snapshot);
-    return;
   }
 
   if (req.method === "GET" && path === "/state") {
