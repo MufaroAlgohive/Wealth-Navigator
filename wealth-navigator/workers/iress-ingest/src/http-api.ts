@@ -1658,10 +1658,19 @@ export async function handleRequest(
     const to = new Date().toISOString().slice(0, 10);
     const started = Date.now();
     try {
-      const session = await deps.sessions.getSession();
-      const client = getIressClient("live");
-      const res2 = await client.timeSeriesGet2({
-        Header: { SessionKey: session.iressSessionKey, RequestID: newRequestID(`hist-${sym}`), Timeout: 30 },
+      // Price history is MARKET DATA: read it from the PROD market-data seat
+      // (getMarketDataSession), NEVER the CT/UAT order seat. When the split is
+      // off or the prod seat is momentarily down, return empty so the BFF
+      // (/api/history, /api/analysis) falls back to Yahoo — mirrors the
+      // news/quotes/timeseries handlers. History is therefore PROD-or-Yahoo,
+      // never UAT.
+      const md = await getMarketDataSession();
+      if (!md) {
+        send(res, 200, { ok: false, sym, points: [], reason: "market_data_prod_unavailable" });
+        return;
+      }
+      const res2 = await md.client.timeSeriesGet2({
+        Header: { SessionKey: md.sessionKey, RequestID: newRequestID(`hist-${sym}`), Timeout: 30 },
         Code: sym,
         Exchange: exchange,
         DataSource: dataSource,
@@ -1680,7 +1689,7 @@ export async function handleRequest(
         elapsedMs: Date.now() - started,
       });
     } catch (err) {
-      if (isIressSessionDeadError(err)) deps.sessions.invalidate();
+      if (isIressSessionDeadError(err)) invalidateMarketDataSession();
       send(res, 200, { ok: false, sym, points: [], error: err instanceof Error ? err.message : String(err) });
     }
     return;
