@@ -833,6 +833,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Layers className="h-3.5 w-3.5" />}
               label="Platform AUM"
+              dataSource="supabase"
+              db="retail"
               value={clientBookAvailable ? formatZAR(clientBook!.aum) : "—"}
               sub={
                 clientBookAvailable
@@ -850,6 +852,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Day P&L"
+              dataSource="supabase"
+              db="retail"
               value={clientBookAvailable ? formatZAR(clientBook!.dayPnl) : "—"}
               sub={
                 clientBookAvailable
@@ -867,6 +871,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Lock className="h-3.5 w-3.5" />}
               label="Rebalance Locked"
+              dataSource="supabase"
+              db="institutional"
               value={portfolioQ.data?.source === "supabase" ? (portfolioQ.data.rebalanceLocked ? "Yes" : "No") : "—"}
               sub={portfolioRebalanceSub(portfolioQ.data)}
               accent={
@@ -888,6 +894,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<AlertTriangle className="h-3.5 w-3.5" />}
               label="Open Orders"
+              dataSource="uat"
+              db="institutional"
               value={openOrders.length.toString()}
               sub={`${rejected} rejected · audit`}
               accent={openOrders.length > 0 ? "warning" : "default"}
@@ -905,6 +913,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Banknote className="h-3.5 w-3.5" />}
               label="ZARONIA"
+              dataSource="external"
               value={saRates?.zaronia?.value != null ? `${saRates.zaronia.value.toFixed(3)}%` : "—"}
               sub={
                 saRates?.zaronia?.value != null ? (
@@ -919,6 +928,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<TrendingUp className="h-3.5 w-3.5" />}
               label="USD/ZAR"
+              dataSource="external"
               value={fxQ.data?.rate != null ? fxQ.data.rate.toFixed(4) : "—"}
               sub={
                 fxQ.data?.rate != null ? (
@@ -1432,7 +1442,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               title={alsiView === "strategies" ? "JSE All Share · Strategies" : "JSE All Share · Intraday"}
               endpoint={alsiView === "strategies" ? "GET /api/strategies/returns" : "GET /api/indices/J203"}
               db={alsiView === "strategies" ? "retail" : "institutional"}
-              dataSource={alsiView === "strategies" ? "supabase" : alsiBffQ.data.source === "seed-fallback" ? "seed" : alsiBffQ.data.source === "supabase" ? "supabase" : alsiBffQ.data.source === "yahoo" ? "yahoo" : "blocked-external"}
+              dataSource={alsiView === "strategies" ? "hybrid" : alsiBffQ.data.source === "seed-fallback" ? "seed" : alsiBffQ.data.source === "supabase" ? "iress" : alsiBffQ.data.source === "yahoo" ? "yahoo" : "blocked-external"}
               className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
               right={
                 <div className="flex items-center gap-2">
@@ -1604,7 +1614,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             title={`Open Orders · ${openOrders.length}`}
             endpoint="Order audit table · oems_order_audit"
             db="institutional"
-            dataSource={realDataOnly ? "supabase" : "seed"}
+            dataSource={realDataOnly ? "uat" : "seed"}
             noPadding
             className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"
             right={
@@ -1827,7 +1837,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           db="institutional"
           dataSource={
             curveMetricsSource === "supabase" || curveMetricsSource === "live"
-              ? "iress"
+              ? "supabase"
               : "unconfigured"
           }
           className="col-span-12 lg:col-span-4 flex h-[260px] flex-col min-h-0"
@@ -1993,7 +2003,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               title="Portfolio · Positions"
               endpoint="GET /api/portfolio"
               db="institutional"
-              dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+              dataSource={portfolioQ.data?.source === "supabase" ? "uat" : "unconfigured"}
               noPadding
               className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"
               right={
