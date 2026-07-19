@@ -1307,6 +1307,7 @@ export function NoteEditor({
   return (
     <GlassSection
       title={editing ? `Edit note · ${note?.symbol}` : "New research note"}
+      dataSource="hybrid"
       subtitle="Structured workflow · auto-pulls fundamentals & newsflow from the IRESS/repo data layer"
       right={
         <div className="flex items-center gap-1.5">

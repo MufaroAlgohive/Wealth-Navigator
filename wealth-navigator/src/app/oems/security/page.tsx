@@ -123,7 +123,9 @@ function SecurityPageContent() {
             title={`${inst?.symbol ?? "—"} · ${chartRange}`}
             endpoint={realDataOnly ? (chartRange === "1D" ? "GET /api/intraday" : "GET /api/history") : "PricingQuoteGet"}
             db={realDataOnly && chartRange === "1D" ? "retail" : undefined}
-            dataSource={realDataOnly ? "iress" : undefined}
+            // 1D intraday is Yahoo-fed (stock_intraday_c, retail); 5D…All daily
+            // history is IRESS-PROD (TimeSeriesGet2), Yahoo-fallback when blocked.
+            dataSource={realDataOnly ? (chartRange === "1D" ? "yahoo" : "iress") : undefined}
             className="col-span-12 flex h-[400px] min-h-0 flex-col lg:col-span-6"
             noPadding
             right={
@@ -203,7 +205,8 @@ function SecurityPageContent() {
           title={`Key Statistics · ${inst?.name ?? activeSym}`}
           endpoint="GET /api/quote-snapshot + /api/equities"
           db="institutional"
-          dataSource="supabase"
+          // IRESS-PROD L1 (quote_snapshot_c, nnwz) + Yahoo fundamentals (securities_c, mfxng).
+          dataSource="hybrid"
           right={<span className="text-caption font-mono">{inst?.sector ?? inst?.isin ?? ""}</span>}
         >
           <SecurityStatsGrid sym={activeSym} />

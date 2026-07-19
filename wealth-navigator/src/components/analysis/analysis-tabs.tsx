@@ -200,7 +200,7 @@ export function FinancialsTab({ sym }: { sym: string }) {
         <GlassSection
           title="Financial statements"
           subtitle={`${ccySym(d.currency)} · ${period === "annual" ? "annual" : "quarterly"}`}
-          dataSource="yahoo"
+          dataSource="hybrid"
           right={
             <div className="flex flex-wrap items-center gap-2">
               <Seg value={view} onChange={(v) => setView(v as typeof view)} options={[["income", "Income"], ["balance", "Balance"], ["cashflow", "Cash flow"]]} />
@@ -663,7 +663,7 @@ export function ModelingTab({ sym }: { sym: string }) {
   if (dq.isLoading) return <PanelSkeleton rows={8} height="h-[420px]" />;
   if (!d || !d.ok || rev0 == null || ebitMargin == null) {
     return (
-      <GlassSection title="Valuation model (DCF)" subtitle="Discounted cash flow" dataSource="code-gap">
+      <GlassSection title="Valuation model (DCF)" subtitle="Discounted cash flow" dataSource="yahoo">
         <EmptyDataState reason="empty" message={`Not enough statement data to model ${sym}.`} hint="A DCF needs revenue, operating income and cash-flow history, which the free feed did not return for this security." badgeLabel="yahoo" />
       </GlassSection>
     );
@@ -674,7 +674,7 @@ export function ModelingTab({ sym }: { sym: string }) {
   ];
 
   return (
-    <GlassSection title="Valuation model (DCF)" subtitle="Unlevered FCF built from the reported statements. Indicative, not a recommendation." dataSource="code-gap">
+    <GlassSection title="Valuation model (DCF)" subtitle="Unlevered FCF built from the reported statements. Indicative, not a recommendation." dataSource="yahoo">
       <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-7">
         <NumInput label="Rev growth %" value={growth} step={0.5} onChange={setGrowth} icon={<TrendingUp className="h-3.5 w-3.5" />} />
         <NumInput label="Years" value={years} step={1} onChange={(n) => setYears(Math.max(3, Math.min(10, n)))} icon={<CalendarDays className="h-3.5 w-3.5" />} />
@@ -804,11 +804,11 @@ export function NewsTab({ sym }: { sym: string }) {
   });
   const items = q.data?.items ?? [];
   return (
-    <GlassSection title="News" subtitle="Recent company news" dataSource="external">
+    <GlassSection title="News" subtitle="Recent company news" dataSource="yahoo">
       {q.isLoading ? (
         <PanelSkeleton rows={5} />
       ) : !items.length ? (
-        <EmptyDataState reason="empty" message={`No recent news for ${sym}.`} hint={q.data?.error ?? "No headlines from the news feed for this security."} badgeLabel="external" />
+        <EmptyDataState reason="empty" message={`No recent news for ${sym}.`} hint={q.data?.error ?? "No headlines from the news feed for this security."} badgeLabel="yahoo" />
       ) : (
         <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))]/50 overflow-hidden rounded-xl">
           {items.slice(0, 20).map((n, i) => (
