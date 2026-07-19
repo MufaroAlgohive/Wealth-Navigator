@@ -336,7 +336,7 @@ export function LiveModelDashboard({ slug, positions, paperCurveCount, currency,
         title="Live Demo Snapshot"
         subtitle={summary?.from && summary?.to ? `${summary.from} → ${summary.to} · ${summary.days} trading days` : "paper-vs-benchmark"}
         endpoint="GET /api/models/[id]/benchmark"
-        dataSource="supabase"
+        dataSource="hybrid"
         db="institutional"
         right={
           <RangeChips
@@ -389,7 +389,7 @@ export function LiveModelDashboard({ slug, positions, paperCurveCount, currency,
             : "benchmark unavailable — see note below"
         }
         endpoint="GET /api/models/[id]/benchmark"
-        dataSource="supabase"
+        dataSource="hybrid"
         db="institutional"
         right={
           benchAvailable ? (
