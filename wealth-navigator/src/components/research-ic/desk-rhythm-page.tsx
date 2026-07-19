@@ -22,6 +22,14 @@ const ROLE_TONE: Record<Role, string> = {
   ANALYST: "border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.12)] text-up",
 };
 
+// Timeline spine accent per owner — turns the flat slot list into a scannable
+// backbone that also encodes who owns the slot at a glance.
+const ROLE_SPINE: Record<Role, string> = {
+  FM: "border-primary/40",
+  COO: "border-amber-400/40",
+  ANALYST: "border-[hsl(var(--up)/0.40)]",
+};
+
 const OWNERS: { initials: string; name: string; title: string; owns: string; role: Role }[] = [
   {
     initials: "YO",
@@ -327,7 +335,7 @@ export function DeskRhythmPage() {
                   <span className="mt-0.5 w-12 shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
                     {s.time}
                   </span>
-                  <div className="min-w-0 flex-1 space-y-1">
+                  <div className={cn("min-w-0 flex-1 space-y-1 border-l-2 pl-3", ROLE_SPINE[s.role])}>
                     <div className="flex flex-wrap items-center gap-2">
                       <span
                         className={cn(
