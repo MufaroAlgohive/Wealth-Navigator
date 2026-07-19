@@ -244,7 +244,6 @@ async function timeSeriesLoop(): Promise<void> {
       // nominal basket + YFX/YFXD feed; runs on the same (slow) cadence.
       const bondRes = await syncBondUniverse({
         env,
-        sessions,
         supabase,
         codes: timeSeriesConfig.curveCodes,
         exchange: timeSeriesConfig.curveExchange,
