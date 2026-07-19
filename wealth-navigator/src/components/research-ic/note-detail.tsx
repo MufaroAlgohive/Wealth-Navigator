@@ -15,7 +15,6 @@ import { cn } from "@/lib/cn";
 import type { NoteTriggers, ResearchNote, ResearchPerms } from "./types";
 import {
   type ChartTrigger,
-  ConvictionBadge,
   EsgBadge,
   PeerPeBars,
   PeerScorecard,
@@ -63,6 +62,21 @@ function fmtDate(iso: string | null | undefined): string {
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/** Undo double-escaped HTML entities in stored note fields (e.g. "BUY &amp; HOLD"). */
+function decodeEntities(s: string | null | undefined): string {
+  if (!s) return "";
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"');
+}
+
+// Secondary attribute tag — subtle outline (no fill) so the rating pill leads.
+const SUBTLE_TAG =
+  "rounded border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground";
+
 export function NoteDetail({
   note,
   perms,
@@ -100,19 +114,20 @@ export function NoteDetail({
       {/* header */}
       <div className="glass-panel p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-lg font-semibold">{note.symbol}</span>
+          <div className="min-w-0 space-y-2">
+            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+              <span className="font-mono text-xl font-semibold tracking-tight">{note.symbol}</span>
+              <span className="text-sm font-medium text-foreground/90">
+                {th.companyName ?? note.symbol}
+              </span>
+            </div>
+            {/* rating leads (filled); style / conviction / ESG are restrained secondary tags */}
+            <div className="flex flex-wrap items-center gap-1.5">
               <RatingBadge rating={th.rating} />
-              {th.style && (
-                <span className="rounded-full border border-[hsl(var(--glass-border))] px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                  {th.style}
-                </span>
-              )}
-              <ConvictionBadge conviction={th.conviction} />
+              {th.conviction && <span className={SUBTLE_TAG}>{th.conviction}</span>}
+              {th.style && <span className={SUBTLE_TAG}>{decodeEntities(th.style)}</span>}
               <EsgBadge esg={th.esg} />
             </div>
-            <p className="text-sm font-medium">{th.companyName ?? note.symbol}</p>
             <p className="text-caption">
               {[
                 th.sector,
