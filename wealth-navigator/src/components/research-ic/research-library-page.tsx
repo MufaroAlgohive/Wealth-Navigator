@@ -26,12 +26,10 @@ import { NoteDetail } from "./note-detail";
 import { NoteEditor } from "./note-editor";
 import type { NoteStatus, ResearchNote, ResearchPerms } from "./types";
 import {
-  ConvictionBadge,
-  RatingBadge,
+  ConvictionDot,
+  RatingTag,
   STATUS_FILTERS,
-  StatusChip,
-  initialsOf,
-  moneyR,
+  StatusDot,
   signedPct,
   useQuotes,
 } from "./ui";
@@ -127,9 +125,6 @@ export function ResearchLibraryPage({
     const cur = quotes.data?.[n.symbol.toUpperCase()]?.last ?? null;
     const tgt = n.thesis?.targetPrice ?? null;
     return cur != null && tgt != null && cur > 0 ? ((tgt - cur) / cur) * 100 : null;
-  }
-  function currentFor(n: ResearchNote): number | null {
-    return quotes.data?.[n.symbol.toUpperCase()]?.last ?? null;
   }
 
   return (
@@ -231,139 +226,68 @@ export function ResearchLibraryPage({
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            <table className="w-full border-collapse text-[11px]">
-              <thead className="sticky top-0 z-[1] bg-[hsl(var(--background)/0.85)] backdrop-blur">
-                <tr className="text-left text-[9px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-2 py-1.5 font-medium">Symbol</th>
-                  <th className="px-1.5 py-1.5 font-medium">Rating</th>
-                  <th className="px-1.5 py-1.5 font-medium">Status</th>
-                  <th className="px-1.5 py-1.5 text-right font-medium">Price</th>
-                  <th className="px-1.5 py-1.5 text-right font-medium">Upside</th>
-                  <th className="px-1.5 py-1.5 font-medium">Strategy</th>
-                  <th className="px-2 py-1.5 font-medium">Analyst</th>
-                </tr>
-              </thead>
-              <tbody>
-                {notesQuery.isLoading && (
-                  <tr>
-                    <td colSpan={7} className="px-2 py-3 text-caption">
-                      Loading notes…
-                    </td>
-                  </tr>
-                )}
-                {!notesQuery.isLoading && filtered.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="px-2 py-3 text-caption">
-                      No notes match.
-                    </td>
-                  </tr>
-                )}
-                {filtered.map((n) => {
-                  const up = upsideFor(n);
-                  const cur = currentFor(n);
-                  const active = n.id === selectedId && mode.kind === "view";
-                  const linked = (n.thesis?.linkedStrategies ?? []).filter(Boolean);
-                  const analyst =
-                    n.thesis?.analystName ?? n.author_email.split("@")[0] ?? "—";
-                  return (
-                    <tr
-                      key={n.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => {
-                        setSelectedId(n.id);
-                        setMode({ kind: "view" });
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setSelectedId(n.id);
-                          setMode({ kind: "view" });
-                        }
-                      }}
-                      title={`${n.symbol} · ${n.thesis?.companyName ?? ""}`}
-                      className={cn(
-                        "cursor-pointer border-b border-[hsl(var(--glass-border)/0.5)] transition-colors last:border-b-0",
-                        active
-                          ? "bg-primary/10"
-                          : "hover:bg-[hsl(var(--foreground)/0.04)]",
-                      )}
-                    >
-                      <td className="px-2 py-1 align-middle">
-                        <div className="flex min-w-0 items-baseline gap-1">
-                          <span className="truncate font-mono text-[11px] font-semibold text-primary">
-                            {n.symbol}
+          <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+            {notesQuery.isLoading && <p className="px-2 py-3 text-caption">Loading notes…</p>}
+            {!notesQuery.isLoading && filtered.length === 0 && (
+              <p className="px-2 py-3 text-caption">No notes match.</p>
+            )}
+            <div className="flex flex-col gap-0.5">
+              {filtered.map((n) => {
+                const up = upsideFor(n);
+                const active = n.id === selectedId && mode.kind === "view";
+                const linked = (n.thesis?.linkedStrategies ?? []).filter(Boolean);
+                const name = n.thesis?.companyName ?? "";
+                return (
+                  <button
+                    key={n.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedId(n.id);
+                      setMode({ kind: "view" });
+                    }}
+                    title={`${n.symbol} · ${name}${linked.length ? ` · in strategy: ${linked.join(", ")}` : ""}`}
+                    className={cn(
+                      "w-full rounded-md border-l-2 px-2.5 py-1.5 text-left transition-colors",
+                      active
+                        ? "border-primary bg-primary/10"
+                        : "border-transparent hover:bg-[hsl(var(--foreground)/0.04)]",
+                    )}
+                  >
+                    {/* line 1 — ticker (+ conviction / in-strategy markers) · upside */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="font-mono text-[12px] font-semibold text-foreground">{n.symbol}</span>
+                        {n.thesis?.conviction && <ConvictionDot conviction={n.thesis.conviction} />}
+                        {linked.length > 0 && (
+                          <span
+                            aria-label={`In ${linked.length} strateg${linked.length === 1 ? "y" : "ies"}`}
+                            className="text-[8px] text-up/80"
+                          >
+                            ◆
                           </span>
-                          {n.thesis?.conviction && (
-                            <ConvictionBadge conviction={n.thesis.conviction} />
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-1.5 py-1 align-middle">
-                        <RatingBadge rating={n.thesis?.rating} />
-                      </td>
-                      <td className="px-1.5 py-1 align-middle">
-                        <StatusChip status={n.status} />
-                      </td>
-                      <td className="px-1.5 py-1 text-right align-middle font-mono tabular-nums">
-                        {cur != null
-                          ? moneyR(cur, 0)
-                          : quotes.isLoading
-                            ? <span className="text-muted-foreground">…</span>
-                            : <span className="text-muted-foreground">—</span>}
-                      </td>
-                      <td
+                        )}
+                      </div>
+                      <span
                         className={cn(
-                          "px-1.5 py-1 text-right align-middle font-mono tabular-nums",
-                          up == null
-                            ? "text-muted-foreground"
-                            : up >= 0
-                              ? "text-up"
-                              : "text-down",
+                          "shrink-0 font-mono text-[12px] font-semibold tabular-nums",
+                          up == null ? "text-muted-foreground" : up >= 0 ? "text-up" : "text-down",
                         )}
                       >
-                        {up == null
-                          ? quotes.isLoading
-                            ? "…"
-                            : "—"
-                          : signedPct(up)}
-                      </td>
-                      <td className="px-1.5 py-1 align-middle">
-                        {linked.length > 0 ? (
-                          <span
-                            className="inline-flex max-w-full truncate rounded border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.08)] px-1 text-[9px] font-semibold uppercase tracking-wide text-up"
-                            title={`In strategy: ${linked.join(", ")}`}
-                          >
-                            {linked.length}
-                          </span>
-                        ) : (
-                          <span
-                            className="text-[9px] uppercase tracking-wide text-muted-foreground/70"
-                            title="Shortlist — not yet in a strategy"
-                          >
-                            —
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-2 py-1 align-middle">
-                        <div className="flex min-w-0 items-center gap-1">
-                          <span
-                            aria-hidden
-                            className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.08)] text-[8px] font-semibold uppercase text-muted-foreground"
-                          >
-                            {initialsOf(analyst)}
-                          </span>
-                          <span className="truncate text-[11px] text-muted-foreground">
-                            {analyst}
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                        {up == null ? (quotes.isLoading ? "…" : "—") : signedPct(up)}
+                      </span>
+                    </div>
+                    {/* line 2 — company name (+ rating) · status */}
+                    <div className="mt-0.5 flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate text-[11px] text-muted-foreground">{name || "—"}</span>
+                        <RatingTag rating={n.thesis?.rating} />
+                      </div>
+                      <StatusDot status={n.status} />
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </section>
 
