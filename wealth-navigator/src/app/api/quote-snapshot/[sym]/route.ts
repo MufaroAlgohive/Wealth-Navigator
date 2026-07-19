@@ -143,6 +143,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ sym: st
       asOf: row.as_of ?? row.updated_at,
       exchange: row.exchange,
     },
-    source: "supabase",
+    // This row IS the institutional IRESS L1 snapshot (quote_snapshot_c), fresh
+    // past the freshness gate above — attribute it to IRESS-PROD, not the retail DB.
+    source: "iress",
   });
 }
