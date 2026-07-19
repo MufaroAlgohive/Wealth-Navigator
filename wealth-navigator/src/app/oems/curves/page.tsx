@@ -183,22 +183,30 @@ export default function CurvesPage() {
           <>
             <GlassKpi
               label="ZAR govi 10Y"
+              dataSource="supabase"
+              db="institutional"
               value={latestGovi > 0 ? `${latestGovi.toFixed(2)}%` : "—"}
               sub={move ? `${move.level >= 0 ? "+" : ""}${move.level}bp today` : "no PCA"}
               accent={move ? (move.level > 0 ? "negative" : "positive") : "default"}
             />
             <GlassKpi
               label="ZAR NSS 10Y"
+              dataSource="supabase"
+              db="institutional"
               value={latestNss > 0 ? `${latestNss.toFixed(2)}%` : "—"}
               sub={move ? `${move.slope >= 0 ? "+" : ""}${move.slope}bp slope` : "no PCA"}
             />
             <GlassKpi
               label="ZAR real 10Y"
+              dataSource="supabase"
+              db="institutional"
               value={latestReal > 0 ? `${latestReal.toFixed(2)}%` : "—"}
               sub="ILB yield"
             />
             <GlassKpi
               label="Breakeven 10Y"
+              dataSource="supabase"
+              db="institutional"
               value={latestBE > 0 ? `${latestBE.toFixed(2)}%` : "—"}
               sub="expected CPI"
             />
