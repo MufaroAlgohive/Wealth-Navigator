@@ -555,11 +555,13 @@ function OverviewTab({
   // 1D intraday is Yahoo-fed (stock_intraday_c); daily history is IRESS-PROD
   // (TimeSeriesGet2), blocked → entitlement empty, else unavailable.
   const chartSource: "iress" | "yahoo" | "blocked-external" | "unavailable" = usingHistory
-    ? data.sub.history.entitlementBlocked
-      ? "blocked-external"
-      : data.sub.history.source === "iress"
-        ? "iress"
-        : "unavailable"
+    ? data.sub.history.source === "iress"
+      ? "iress"
+      : data.sub.history.source === "yahoo"
+        ? "yahoo"
+        : data.sub.history.entitlementBlocked
+          ? "blocked-external"
+          : "unavailable"
     : data.sub.intraday.source === "supabase"
       ? "yahoo"
       : "unavailable";
