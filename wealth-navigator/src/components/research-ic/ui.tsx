@@ -111,6 +111,54 @@ export function ConvictionBadge({ conviction }: { conviction?: string | null }) 
   return <span className={cn(PILL, "border-primary/35 bg-primary/10 text-primary")}>{conviction}</span>;
 }
 
+// ── compact list primitives ────────────────────────────────────────────────
+// The library list is a narrow (≈400px) picker, so it uses restrained inline
+// indicators instead of the full pills above (which stay for the note detail):
+// a conviction DOT, rating as small coloured text, and a status DOT + label.
+
+/** A small filled dot flagging conviction (solid = high, faded = medium/low). */
+export function ConvictionDot({ conviction }: { conviction?: string | null }) {
+  if (!conviction) return null;
+  const high = /high/i.test(conviction);
+  return (
+    <span
+      title={`${conviction} conviction`}
+      aria-label={`${conviction} conviction`}
+      className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", high ? "bg-primary" : "bg-primary/40")}
+    />
+  );
+}
+
+/** Rating as compact coloured text (no pill) for dense rows. */
+export function RatingTag({ rating }: { rating?: Rating | null }) {
+  if (!rating) return null;
+  const tone =
+    rating === "BUY" || rating === "ACCUMULATE"
+      ? "text-up"
+      : rating === "SELL"
+        ? "text-down"
+        : "text-muted-foreground";
+  return <span className={cn("shrink-0 text-[9px] font-semibold uppercase tracking-wide", tone)}>{rating}</span>;
+}
+
+const STATUS_DOT: Record<NoteStatus, string> = {
+  approved: "bg-up",
+  ic_pending: "bg-primary",
+  in_review: "bg-amber-500",
+  draft: "bg-muted-foreground/60",
+  rejected: "bg-down",
+};
+/** Status as a coloured dot + small label for dense rows. */
+export function StatusDot({ status }: { status: NoteStatus }) {
+  const m = STATUS_META[status] ?? STATUS_META.draft;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+      <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[status] ?? STATUS_DOT.draft)} />
+      {m.label}
+    </span>
+  );
+}
+
 const ACTION_META: Record<CompAction, { label: string; cls: string }> = {
   remove: { label: "REMOVE", cls: "text-down" },
   decrease: { label: "DECREASE", cls: "text-down" },
