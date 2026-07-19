@@ -10,6 +10,12 @@
  * never holds the broker credential. /debug/inject-fill is test-only and
  * gated by `WORKER_HTTP_TOKEN` regardless of mode so an unauthenticated
  * client can't pollute the audit table.
+ *
+ * SECURITY (opt-in enforcement, mirrors iress-ingest): `checkAuth` fails
+ * OPEN when `WORKER_HTTP_TOKEN` is unset so a forgetful deploy never bricks
+ * the worker. Mutating requests served without a token log a loud CRITICAL
+ * line, and setting `WORKER_REQUIRE_HTTP_TOKEN=1` (see index.ts) refuses to
+ * start until the token is present — the deliberate way to close the hole.
  */
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -49,6 +55,17 @@ function checkAuth(req: IncomingMessage, expected: string | undefined): boolean 
   const alt = req.headers["x-worker-token"];
   if (typeof alt === "string" && alt.trim() === expected) return true;
   return false;
+}
+
+/**
+ * Mutating HTTP routes — the fill injector and the heartbeat writer. Used only
+ * to decide whether to log a CRITICAL "served without auth" line when
+ * WORKER_HTTP_TOKEN is unset (fail-open). Read/probe routes stay quiet.
+ * Mirrors the iress-ingest worker so both surfaces harden the same way.
+ */
+function isMutatingRequest(method: string | undefined, path: string): boolean {
+  const m = (method ?? "GET").toUpperCase();
+  return m === "POST" && (path === "/debug/inject-fill" || path === "/heartbeat/refresh");
 }
 
 function send(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
@@ -142,6 +159,24 @@ export async function handleRequest(
   }
   const url = new URL(req.url ?? "/", "http://worker");
   const path = url.pathname;
+
+  // SECURITY: checkAuth fails OPEN when WORKER_HTTP_TOKEN is unset (so an
+  // auto-deploy that forgets the token never takes the worker down). Emit a
+  // loud CRITICAL line on every mutating request served without auth so the
+  // exposure is visible and the operator is nudged to set the token and flip
+  // WORKER_REQUIRE_HTTP_TOKEN=1. Reads stay quiet to avoid log spam.
+  if (!authToken && isMutatingRequest(req.method, path)) {
+    console.error(
+      JSON.stringify({
+        level: "critical",
+        event: "worker_http_unauthenticated_mutation",
+        method: req.method ?? "GET",
+        path,
+        message:
+          "Mutating worker HTTP request served WITHOUT auth (WORKER_HTTP_TOKEN unset). Set WORKER_HTTP_TOKEN on the worker + BFF, then WORKER_REQUIRE_HTTP_TOKEN=1 to enforce.",
+      }),
+    );
+  }
 
   if (req.method === "GET" && path === "/health") {
     const snapshot = buildHealthSnapshot(deps);
