@@ -499,7 +499,7 @@ export function RebalanceBuilderPage({
                   const a = actionFor(h);
                   return (
                     <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
-                      <td className="px-5 py-2 font-semibold text-primary">{h.ticker}</td>
+                      <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                       <td className="px-3 py-2 text-foreground/85">{h.name}</td>
                       <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
                       <td
@@ -623,7 +623,7 @@ export function RebalanceBuilderPage({
                         changed && "bg-primary/5",
                       )}
                     >
-                      <td className="px-5 py-2 font-semibold text-primary">{h.ticker}</td>
+                      <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                       <td className="px-3 py-2 text-foreground/85">{h.name}</td>
                       <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
                       <td className="px-3 py-2">

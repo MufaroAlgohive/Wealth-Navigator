@@ -291,7 +291,7 @@ function CompositionTable({ rows }: { rows: ProposedHolding[] }) {
                 <ActionBadge action={h.action} />
               </td>
               <td className="px-3 py-2">
-                <span className="font-semibold text-primary">{h.ticker}</span>{" "}
+                <span className="font-mono font-semibold text-foreground">{h.ticker}</span>{" "}
                 <span className="text-muted-foreground">{h.name}</span>
               </td>
               <td className="px-3 py-2 text-right font-mono tabular-nums">
