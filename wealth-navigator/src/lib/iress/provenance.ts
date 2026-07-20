@@ -25,7 +25,7 @@ export const DATA_SURFACES: DataSurface[] = [
   { surface: "Cockpit top movers", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed + tick stream", canBeLive: true, v4Method: "PricingQuoteGet", status: "HYBRID", notes: "Live quote API seeds tick store when IRESS_MODE=live" },
   { surface: "Cockpit ALSI intraday chart", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed indices + synthetic intraday", canBeLive: true, v4Method: "TimeSeriesGet2 (J203/ALSI)", status: "SEED" },
   { surface: "Cockpit open orders table", route: "/oems", component: "cockpit-client.tsx", currentSource: "mock.ts → liveOrders", canBeLive: true, v4Method: "OrderPadGetByAccount", status: "SEED", notes: "Needs IRESS_ACCOUNT_CODE" },
-  { surface: "Cockpit SENS feed", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed.ts → sensFeed", canBeLive: false, v4Method: "—", status: "SEED", notes: "No V4 news verb in cut-down WSDL" },
+  { surface: "Cockpit SENS feed", route: "/oems", component: "cockpit-client.tsx", currentSource: "/api/news?category=SENS → institutional news_item_c", canBeLive: true, v4Method: "NewsHeadlineGet (SENSD)", status: "HYBRID", notes: "Reads from worker-ingested rows; flip IRESS_NEWS_INGEST=1 on Railway to populate news_item_c" },
   { surface: "Cockpit news flow", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed.ts → newsFeed", canBeLive: false, v4Method: "—", status: "SEED" },
   { surface: "Cockpit macro pulse", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed.ts → macroIndicators", canBeLive: false, v4Method: "—", status: "SEED" },
   { surface: "Cockpit JIBAR / USDZAR KPIs", route: "/oems", component: "KpiTile + NumberCell", currentSource: "seed + tick stream", canBeLive: true, v4Method: "PricingQuoteGet / TimeSeriesGet2", status: "HYBRID" },
@@ -56,7 +56,7 @@ export const DATA_SURFACES: DataSurface[] = [
   { surface: "Money market instruments", route: "/oems/money-market", component: "money-market/page.tsx", currentSource: "seed.ts", canBeLive: true, v4Method: "TimeSeriesGet2 (JIBAR)", status: "SEED" },
   { surface: "Curves (govi/swap/real)", route: "/oems/curves", component: "curves/page.tsx", currentSource: "seed.ts", canBeLive: true, v4Method: "TimeSeriesGet2", status: "SEED" },
   { surface: "Macro indicators + calendar", route: "/oems/macro", component: "macro/page.tsx", currentSource: "seed.ts", canBeLive: false, v4Method: "—", status: "SEED" },
-  { surface: "News + SENS", route: "/oems/news", component: "news/page.tsx", currentSource: "seed.ts", canBeLive: false, v4Method: "—", status: "SEED" },
+  { surface: "News + SENS", route: "/oems/news", component: "news/page.tsx", currentSource: "/api/iress/news (Path B worker passthrough) + /api/news?category=SENS", canBeLive: true, v4Method: "NewsHeadlineGet (SENSD)", status: "HYBRID", notes: "SENS tab → worker passthrough (live); Wires tab → RSS + Alliance; persistence at institutional news_item_c" },
   { surface: "Integration endpoint health", route: "/oems/integration", component: "integration/page.tsx", currentSource: "seed.ts → endpoints + /api/iress/health", canBeLive: true, v4Method: "IRESSSessionStart", status: "HYBRID" },
 
   // ── Shared infrastructure ────────────────────────────────────────

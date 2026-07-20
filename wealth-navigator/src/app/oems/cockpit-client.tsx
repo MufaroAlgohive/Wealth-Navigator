@@ -458,6 +458,27 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     refetchInterval: 120_000,
     ...queryOpts("reference"),
   });
+  // SENS-only — read from the institutional `news_item_c` table that the
+  // worker `NewsHeadlineGet(SENSD)` loop populates (env-flagged by
+  // `IRESS_NEWS_INGEST=1` + `SUPABASE_ALLOW_WRITES=1` on Railway). This
+  // path does NOT need `IRESS_MODE=live` on Vercel (the IRESS seat
+  // stays on the worker).
+  const sensBffQ = useQuery<{
+    items: Array<{ id: string; headline: string; ts: number; source: string; category: string; tickers: string[]; url: string | null; body: string | null }>;
+    source: string;
+    sourceLabel?: string;
+    message?: string;
+  }>({
+    queryKey: ["bff-news-sens"],
+    queryFn: async () => {
+      const r = await fetch("/api/news?category=SENS&limit=12", { cache: "no-store" });
+      if (!r.ok) throw new Error(`sens ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 120_000,
+    ...queryOpts("reference"),
+  });
   // Real USD/ZAR from the FX BFF (Frankfurter / ECB) — IRESS has no FX feed.
   const fxQ = useQuery<{ pair: string; rate: number | null; change: number | null; changePct: number | null; source: string; sourceLabel?: string }>({
     queryKey: ["bff-fx-usdzar"],
@@ -677,6 +698,21 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       };
     });
   }, [newsBffQ.data]);
+
+  // SENS tape shape consumed by the inline `SensTape` panel. Looser than
+  // the strict `SensItem` enum from `@/types/iress` (the wire rows use raw
+  // category strings like `"SENS"` and severity `"regulatory"` / `"low"`).
+  const realSens = useMemo<Array<{ id: string; ts: number; ticker: string; issuer: string; category: string; severity: string; headline: string }>>(() => {
+    return (sensBffQ.data?.items ?? []).map((n) => ({
+      id: n.id,
+      ts: n.ts,
+      ticker: (n.tickers?.[0] ?? "").toString(),
+      issuer: "",
+      category: (n.category ?? "SENS").toString(),
+      severity: (n.category ?? "").toString().toUpperCase() === "SENS" ? "regulatory" : "info",
+      headline: n.headline,
+    }));
+  }, [sensBffQ.data]);
 
   // Portfolio Accounts (mock investor snippet) — each strategy stands in for an
   // "account" with its holdings value (AUM) and a performance figure for the
@@ -1579,9 +1615,53 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         )}
 
         {realDataOnly ? (
-          <GlassSection title="SENS · Live" endpoint="External vendor required" db="retail" dataSource="unconfigured" className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0">
-            <EmptyDataState message="SENS feed not configured." />
-          </GlassSection>
+          sensBffQ.isLoading ? (
+            <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-4" />
+          ) : realSens.length > 0 ? (
+            <GlassSection
+              title="SENS · Live"
+              endpoint="GET /api/news?category=SENS"
+              db="institutional"
+              dataSource="supabase"
+              noPadding
+              className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
+              right={
+                <Link href="/oems/news" className="text-caption text-primary hover:underline">
+                  News →
+                </Link>
+              }
+            >
+              <GlassScrollBody>
+                <SensTape items={realSens} limit={5} />
+              </GlassScrollBody>
+            </GlassSection>
+          ) : (
+            <GlassSection
+              title="SENS · Live"
+              endpoint="GET /api/news?category=SENS"
+              db="institutional"
+              dataSource="unconfigured"
+              className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
+              right={
+                <Link href="/oems/news" className="text-caption text-primary hover:underline">
+                  News →
+                </Link>
+              }
+            >
+              <EmptyDataState
+                title="No live data"
+                message={
+                  sensBffQ.data?.message ?? "SENS feed not configured."
+                }
+                hint={
+                  sensBffQ.data?.source === "unconfigured"
+                    ? "Worker needs IRESS_NEWS_INGEST=1 + SUPABASE_ALLOW_WRITES=1 on Railway to populate institutional news_item_c."
+                    : "Worker wrote zero rows for today. Try again on the next trading window, or check /oems/news for a wider date range."
+                }
+                badgeLabel="unconfigured"
+              />
+            </GlassSection>
+          )
         ) : sensQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-4" />
         ) : (
@@ -1800,7 +1880,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           with an All / Alliance / SENS source toggle and click-to-expand
           popups (Dialog) showing the full item. The mock path merges the seed
           newswire + SENS feeds; the real-data path reads the `/api/news` BFF
-          (live RSS + Alliance wire; paid SENS feed wires in the data phase).
+          (live RSS + Alliance wire; SENS regulatory tape now lives on the dedicated panel left).
         */}
         {realDataOnly ? (
           newsBffQ.isLoading ? (
@@ -1814,7 +1894,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               dataSource={realNewsFlow.length > 0 ? "external" : "unconfigured"}
               sourceLabel={newsBffQ.data?.sourceLabel ?? "RSS + Alliance"}
               emptyMessage="No news items right now."
-              emptyHint="Live RSS (Moneyweb / BusinessTech) + Alliance wire. Official JSE SENS regulatory announcements still require the paid web feed."
+              emptyHint="Live RSS (Moneyweb / BusinessTech) + Alliance newswire. The dedicated SENS panel to the left carries official JSE regulatory tape (NewsHeadlineGet vendor SENSD)."
               className="col-span-12 lg:col-span-8"
             />
           )
