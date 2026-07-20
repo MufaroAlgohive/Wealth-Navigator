@@ -12,8 +12,11 @@ const STATUS_TO_STATE: Record<string, OrderState> = {
   partial: "PARTIAL",
   filled: "FILLED",
   cancelled: "CANCELLED",
+  cancel_pending: "CANCEL_PENDING",
   expired: "EXPIRED",
   rejected: "REJECTED",
+  amend_pending: "AMEND_PENDING",
+  failed: "FAILED",
   // Legacy / pre-lifecycle values (kept for backwards-compat with audit rows
   // written before the 8-state schema landed):
   created: "WORKING",
@@ -49,7 +52,7 @@ function mapAuditRow(row: AuditRow): Order {
   const limit = row.price_cents != null ? Number(row.price_cents) / 100 : null;
   // Arrival reference (used as the "Last" display fallback). Distinct from the
   // execution fields below, which must stay null when there's no real fill.
-  const arrivalMid = typeof result.arrivalMid === "number" ? result.arrivalMid : limit ?? 0;
+  const arrivalMid = typeof result.arrivalMid === "number" ? result.arrivalMid : (limit ?? 0);
   const filled = typeof payload.filled === "number" ? payload.filled : 0;
   const tsRaw = payload.ts;
   const ts = typeof tsRaw === "number" ? tsRaw : new Date(row.updated_at).getTime();

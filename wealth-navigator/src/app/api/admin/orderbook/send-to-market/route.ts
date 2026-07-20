@@ -133,10 +133,20 @@ interface InFlightOrder {
   security_code: string;
   symbol: string;
   side: "buy" | "sell";
+  /** Original full order quantity (audit row `quantity`). */
   quantity: number;
+  /**
+   * Quantity already filled on the broker side (audit row
+   * `payload->>'filled'`). 0 when the poller hasn't stamped any fill yet.
+   * The reservation math uses `remaining` (= max(0, quantity − filled)),
+   * not `quantity`, so partial fills don't over-reserve (2026-07-20 fix).
+   */
+  filled: number;
+  remaining: number;
   price_cents: number | null;
   // Approx notional in Rands for cash-availability math (uses limit
-  // when available, otherwise the row's avgPx, otherwise null).
+  // when available, otherwise the row's avgPx, otherwise null). Scaled
+  // to `remaining` shares, not the full `quantity` (2026-07-20 fix).
   notionalRands: number | null;
   order_id: string;
 }
@@ -157,6 +167,8 @@ interface LimitSnapshot {
     symbol: string;
     side: string;
     quantity: number;
+    filled: number;
+    remaining: number;
     notional_rands: number | null;
   }>;
 }
@@ -190,7 +202,9 @@ const IN_FLIGHT_STATUSES = new Set([
  * account row, missing price data, etc.) and the caller must stamp the
  * audit row with `limits_enforced: false` so the operator sees the gap.
  */
-async function runLimitGuard(
+// Exported for tests (regression coverage on the partial-fill reservation fix).
+// Not a public API — only consumed by `src/__tests__/runLimitGuard.test.ts`.
+export async function runLimitGuard(
   institutional: SupabaseClient,
   accountCode: string,
   holdings: Holding[],
@@ -253,13 +267,19 @@ async function runLimitGuard(
   // code in `client_account`). BFF send-to-market seeds used the MINT
   // user email there, so we never saw them in this snapshot — meaning
   // outstanding buys/sells were never netted against current positions
-  // for the cash + naked-short math. We now OR in
+  // for the cash + naked-short math. We OR'd in
   // `payload->>broker_account_code.eq.accountCode` to pick up BFF seed
   // rows that route through this same desk account.
+  // 2026-07-20: the new typed `broker_account_code` column supersedes the
+  // JSON workaround — every BFF-seeded row now stamps the IRESS AccountCode
+  // on the typed column directly (see `src/lib/orders/submit.ts`), and the
+  // worker poll mapper stamps it too (`workers/iress-ingest/src/orders.ts`).
+  // The migration `20260720000001_oems_order_audit_broker_account.sql`
+  // backfilled legacy rows. So we filter on the typed column only.
   const { data: ooRows } = await institutional
     .from("oems_order_audit")
     .select("order_id, symbol, side, quantity, price_cents, status, payload")
-    .or(`client_account.eq.${accountCode},payload->>broker_account_code.eq.${accountCode}`)
+    .eq("broker_account_code", accountCode)
     .in("status", Array.from(IN_FLIGHT_STATUSES));
   const inFlight: InFlightOrder[] = ((ooRows ?? []) as Array<{
     order_id: string;
@@ -269,19 +289,25 @@ async function runLimitGuard(
     price_cents: number | null;
     payload: Record<string, unknown> | null;
   }>).map((r) => {
-    // Notional = price_cents/100 * quantity (Rands). Falls back to
+    // Notional = price_cents/100 * REMAINING shares (Rands). Falls back to
     // payload.avgPx / payload.limitPrice. null when no usable price.
+    // 2026-07-20 fix: was full `quantity` — partial fills over-reserved.
+    const qty = Number(r.quantity) || 0;
+    const filled = Number((r.payload as { filled?: number } | null)?.filled) || 0;
+    const remaining = Math.max(0, qty - filled);
     const pxCents =
       r.price_cents ??
       (typeof r.payload?.avgPx === "number" ? Math.round(Number(r.payload.avgPx) * 100) : null) ??
       (typeof r.payload?.limitPrice === "number" ? Math.round(Number(r.payload.limitPrice) * 100) : null);
-    const notional = pxCents != null ? (pxCents / 100) * Number(r.quantity) : null;
+    const notional = pxCents != null ? (pxCents / 100) * remaining : null;
     return {
       order_id: r.order_id,
       security_code: r.symbol,
       symbol: r.symbol,
       side: r.side === "sell" ? "sell" : "buy",
-      quantity: Number(r.quantity) || 0,
+      quantity: qty,
+      filled,
+      remaining,
       price_cents: r.price_cents,
       notionalRands: notional,
     };
@@ -290,6 +316,8 @@ async function runLimitGuard(
   const availableCash =
     account.cash_balance != null
       ? Math.max(0, Number(account.cash_balance)) -
+        // 2026-07-20: reserve by `remaining * px`, not `quantity * px`,
+        // so a partial fill on an existing buy doesn't over-reserve cash.
         inFlight
           .filter((o) => o.side === "buy")
           .reduce((s, o) => s + (o.notionalRands ?? 0), 0)
@@ -303,6 +331,8 @@ async function runLimitGuard(
       symbol: o.symbol,
       side: o.side,
       quantity: o.quantity,
+      filled: o.filled,
+      remaining: o.remaining,
       notional_rands: o.notionalRands,
     })),
   };
@@ -347,13 +377,16 @@ async function runLimitGuard(
           if (o.side !== "buy") return false;
           return o.security_code === symbol || stripExchangeSuffix(o.security_code) === symbolStripped;
         })
-        .reduce((s, o) => s + o.quantity, 0);
+        // 2026-07-20 fix: reserve by `remaining` (qty − filled), not the full
+        // `quantity`. A partial-fill order that still has 60/150 shares left
+        // should only reserve 60 against the next sell, not 150.
+        .reduce((s, o) => s + o.remaining, 0);
       const ooSell = inFlight
         .filter((o) => {
           if (o.side !== "sell") return false;
           return o.security_code === symbol || stripExchangeSuffix(o.security_code) === symbolStripped;
         })
-        .reduce((s, o) => s + o.quantity, 0);
+        .reduce((s, o) => s + o.remaining, 0);
       const effectivePosition = cur + ooBuy - ooSell;
       if (qty > effectivePosition) {
         violations.push({
@@ -646,6 +679,11 @@ export async function POST(req: Request) {
     return {
       order_id: orderId,
       client_account: prof?.email ?? h.user_id,
+      // 2026-07-20: stamp the typed `broker_account_code` column too so
+      // downstream queries (runLimitGuard, worker preflight) can filter
+      // directly without the legacy `payload->>` workaround. The
+      // `payload.broker_account_code` mirror stays for backwards-compat.
+      broker_account_code: deskAccountCode,
       symbol: sec?.symbol ?? "—",
       side: (h.trade_side ?? "buy").toLowerCase() === "sell" ? "sell" : "buy",
       quantity: Number(h.quantity) || 0,
@@ -667,6 +705,10 @@ export async function POST(req: Request) {
         // code on worker poll rows — a `.eq("client_account", "56378")`
         // filter on inflight orders would miss every BFF seed, leaving
         // outstanding buys/sells out of the cash + naked-short math.
+        // 2026-07-20: the typed `broker_account_code` column on the row
+        // is the source of truth; this JSON mirror remains only for
+        // backwards-compat with any consumer still reading the legacy
+        // JSON path.
         broker_account_code: deskAccountCode,
         sent_by: auth.ctx.email,
         sent_at: new Date().toISOString(),

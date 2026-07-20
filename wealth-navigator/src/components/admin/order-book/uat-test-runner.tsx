@@ -25,6 +25,12 @@
  *
  * The panel is itself UAT-gated: it renders nothing when
  * `IRESS_UAT_MODE !== "true"` on Vercel.
+ *
+ * 2026-07-20 refactor: when `/api/admin/orderbook/send-to-market` returns
+ * `422` with a `violations` array (the bulk limit guard fired), the
+ * runner now opens `<GuardrailForceCorrectionDialog/>` in `mode="bulk"`
+ * so the operator can see every offending holding + reason and decide
+ * whether to resubmit (which re-runs the bulk preflight + sends).
  */
 
 import { CheckCircle2, Loader2, Play, XCircle } from "lucide-react";
@@ -33,6 +39,8 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { GuardrailForceCorrectionDialog } from "@/components/oems/primitives/guardrail-force-correction-dialog";
+import type { BulkViolation, PreflightResult, SubmitResult } from "@/lib/orders";
 import { cn } from "@/lib/cn";
 
 interface Scenario1 {
@@ -118,6 +126,17 @@ export function UatTestRunner({ className }: { className?: string }) {
   const [uatEnabled, setUatEnabled] = React.useState(false);
   const [running, setRunning] = React.useState<string | null>(null);
   const [results, setResults] = React.useState<Record<string, ScenarioResult>>({});
+  // Bulk violation modal — opens when send-to-market returns 422 with
+  // `violations`. The modal handles its own resubmit (re-runs the bulk
+  // preflight). Last-fired `bookId` is captured so the modal's "resubmit"
+  // action knows what to retarget.
+  const [bulkModal, setBulkModal] = React.useState<{
+    open: boolean;
+    bookId: string;
+    violations: BulkViolation[];
+    preflight: PreflightResult;
+    lastResult?: ScenarioResult;
+  } | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -194,8 +213,42 @@ export function UatTestRunner({ className }: { className?: string }) {
         results: Array<{ id: string; ok: boolean; iressOrderNumber?: string; error?: string }>;
       };
       notice?: string;
+      violations?: BulkViolation[];
+      code?: string;
     };
     if (!sendRes.ok || !sendBody.ok) {
+      // 422 with violations → bulk force-correction path. The scenario
+      // itself doesn't dispatch; the modal drives the resubmit.
+      if (
+        sendRes.status === 422 &&
+        Array.isArray(sendBody.violations) &&
+        sendBody.violations.length > 0
+      ) {
+        const firstViolation = sendBody.violations[0];
+        setBulkModal({
+          open: true,
+          bookId,
+          violations: sendBody.violations,
+          preflight: {
+            ok: false,
+            verdict: "blocked_unverifiable",
+            code:
+              sendBody.code === "limit_guard_unverified_sell"
+                ? "limit_guard_unverified_sell"
+                : "limit_guard_violation",
+            message:
+              sendBody.error ??
+              `Bulk limit guard refused the dispatch — ${sendBody.violations.length} holding(s) breached the cash / position limits.`,
+          },
+        });
+        return {
+          ok: false,
+          message: "blocked by bulk limit guard",
+          details: sendBody.violations.map(
+            (v) => `  · ${v.side.toUpperCase()} ${v.qty.toLocaleString()} ${v.symbol} — ${v.reason}`,
+          ),
+        };
+      }
       return {
         ok: false,
         message: `send-to-market ${sendRes.status}`,
@@ -250,7 +303,9 @@ export function UatTestRunner({ className }: { className?: string }) {
         setResults((prev) => ({ ...prev, [scenario.id]: res }));
         if (res.ok) {
           toast.success(`${scenario.title} — dispatched`);
-        } else {
+        } else if (!bulkModal?.open) {
+          // Bulk-modal flow already shows the toast in the modal itself;
+          // suppress the duplicate toast here.
           toast.error(`${scenario.title} — ${res.message}`);
         }
       } catch (err) {
@@ -264,8 +319,112 @@ export function UatTestRunner({ className }: { className?: string }) {
         setRunning(null);
       }
     },
-    [runScenario],
+    [runScenario, bulkModal?.open],
   );
+
+  /**
+   * Bulk-modal resubmit: re-calls send-to-market with the same `book_id`.
+   * On pass, closes the modal and updates the per-scenario result. On a
+   * chained 422 with a NEW set of violations, the modal stays open with
+   * the refreshed payload (the modal handles the inline chain error too).
+   */
+  const resubmitBulk = React.useCallback(async (): Promise<SubmitResult> => {
+    if (!bulkModal) {
+      return {
+        ok: false,
+        preflight: {
+          ok: false,
+          verdict: "blocked_unverifiable",
+          code: "limit_guard_violation",
+          message: "No bulk modal state",
+        },
+      };
+    }
+    let res: Response;
+    try {
+      res = await fetch("/api/admin/orderbook/send-to-market", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          book_id: bulkModal.bookId,
+          broker: "JSE",
+          order_type: "limit",
+          uat_test: true,
+        }),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        ok: false,
+        preflight: {
+          ok: false,
+          verdict: "blocked_unverifiable",
+          code: "limit_guard_violation",
+          message: `Resubmit request failed: ${msg}`,
+        },
+      };
+    }
+    const body = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      execution_ids?: string[];
+      uat?: { sent: number; failed: number };
+      notice?: string;
+      error?: string;
+      violations?: BulkViolation[];
+      code?: string;
+    };
+    if (res.ok && body.ok) {
+      const sentCount = body.execution_ids?.length ?? 0;
+      setResults((prev) => ({
+        ...prev,
+        ["bulk-resubmit"]: {
+          ok: true,
+          message: `bulk resubmit dispatched (${sentCount} order${sentCount === 1 ? "" : "s"})`,
+          details: [
+            `book_id: ${bulkModal.bookId}`,
+            `uat sent: ${body.uat?.sent ?? sentCount}/${sentCount}`,
+          ],
+        },
+      }));
+      setBulkModal(null);
+      return {
+        ok: true,
+        preflight: { ok: true, verdict: "pass", code: "pass", message: "Bulk resubmit OK" },
+      };
+    }
+    // 422 with new violations → refresh modal payload, stay open.
+    if (res.status === 422 && Array.isArray(body.violations) && body.violations.length > 0) {
+      setBulkModal((prev) =>
+        prev
+          ? {
+              ...prev,
+              violations: body.violations!,
+              preflight: {
+                ok: false,
+                verdict: "blocked_unverifiable",
+                code:
+                  body.code === "limit_guard_unverified_sell"
+                    ? "limit_guard_unverified_sell"
+                    : "limit_guard_violation",
+                message:
+                  body.error ??
+                  `Bulk limit guard still refusing (${body.violations!.length} remaining violation${body.violations!.length === 1 ? "" : "s"}).`,
+              },
+            }
+          : prev,
+      );
+    }
+    return {
+      ok: false,
+      preflight: {
+        ok: false,
+        verdict: "blocked_unverifiable",
+        code: "limit_guard_violation",
+        message: body.error ?? `send-to-market ${res.status} ${body.notice ?? ""}`,
+      },
+      error: body.error ?? `send-to-market ${res.status}`,
+    };
+  }, [bulkModal]);
 
   if (!uatEnabled) return null;
 
@@ -340,6 +499,26 @@ export function UatTestRunner({ className }: { className?: string }) {
           );
         })}
       </div>
+
+      {bulkModal && (
+        <GuardrailForceCorrectionDialog
+          open={bulkModal.open}
+          onOpenChange={(o) => {
+            setBulkModal((prev) => (prev ? { ...prev, open: o } : prev));
+            if (!o) setBulkModal(null);
+          }}
+          preflight={bulkModal.preflight}
+          mode="bulk"
+          attempted={{
+            symbol: bulkModal.violations[0]?.symbol ?? "—",
+            side: bulkModal.violations[0]?.side ?? "buy",
+            qty: bulkModal.violations.reduce((s, v) => s + v.qty, 0),
+            price_cents: null,
+          }}
+          bulkViolations={bulkModal.violations}
+          onResubmit={resubmitBulk}
+        />
+      )}
     </div>
   );
 }

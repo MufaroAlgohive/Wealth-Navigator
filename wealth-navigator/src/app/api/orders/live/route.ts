@@ -1,8 +1,5 @@
 import { callWorker } from "@/lib/iress/worker-api";
-import {
-  isIressWorkerConfigured,
-  isWorkerLiveMode,
-} from "@/lib/data-policy";
+import { isIressWorkerConfigured, isWorkerLiveMode } from "@/lib/data-policy";
 import type { Order } from "@/types/iress";
 
 export const runtime = "nodejs";

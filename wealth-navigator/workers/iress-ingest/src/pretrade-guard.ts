@@ -34,8 +34,25 @@ export interface SellAvailability {
 
 /** UAT dispatch sources — all route to the desk UAT account. */
 const UAT_SOURCES = ["UAT_ADHOC_ORDER", "OB_SEND_TO_MARKET_UAT"];
-/** Order states where a SELL still has unfilled quantity working at the broker. */
-const OPEN_SELL_STATES = ["working", "pending_ack", "acknowledged", "partial", "amend_pending"];
+/**
+ * Order states where a SELL still has unfilled quantity working at the broker.
+ *
+ * 2026-07-20: `cancel_pending` is now reserved too, aligning the worker with
+ * the BFF `IN_FLIGHT_STATUSES` set in `src/app/api/admin/orderbook/send-to-market/route.ts`.
+ * We reserve until IRESS confirms cancellation — a fill racing a cancel
+ * instruction is a real risk on a single-seat broker, and "release on
+ * cancel_pending" previously let two sells each pass the guard against
+ * shares that were still at risk. `amend_pending` stays reserved for the
+ * same reason — an amend can change qty upward.
+ */
+const OPEN_SELL_STATES = [
+  "working",
+  "pending_ack",
+  "acknowledged",
+  "partial",
+  "amend_pending",
+  "cancel_pending",
+];
 
 export function bareCode(sym: string): string {
   return String(sym ?? "")
@@ -129,7 +146,14 @@ export async function availableToSell(
 // guard fails closed on an infrastructure failure, not on a missing balance.
 
 /** Order states where a BUY still has unfilled quantity working at the broker. */
-const OPEN_BUY_STATES = ["working", "pending_ack", "acknowledged", "partial", "amend_pending"];
+const OPEN_BUY_STATES = [
+  "working",
+  "pending_ack",
+  "acknowledged",
+  "partial",
+  "amend_pending",
+  "cancel_pending",
+];
 
 export interface CashAvailability {
   /** Account cash in RANDS; null when there is no cash source and no configured cap. */
@@ -250,11 +274,88 @@ export async function availableToBuy(
 // reservation (a client's own working sells/buys) — these do NOT yet reserve.
 // FAIL-CLOSED on any read error.
 
+/**
+ * Look up the user's own open (non-terminal) orders from `oems_order_audit`
+ * to reserve quantity / notional against an incoming per-client order.
+ *
+ * 2026-07-20: wired up — previously these guards returned `inflightSells: 0`
+ * with an explicit `(open-order reservation TODO)` note. The reservation
+ * math now mirrors the desk path: subtract `qty - filled` from working
+ * sells, subtract notional of working buys.
+ *
+ * IMPORTANT: until the `mint_number ↔ AccountCode` bridge lands (per
+ * AGENTS.md, deferred past OEMS v1), the only reliable way to scope a
+ * client's open orders is `payload.user_id` or `payload.trader_email`
+ * stamps written by the BFF. Both are written by `submitOrder` today.
+ * When the bridge lands, switch to filtering on `broker_account_code`
+ * the same way the desk path does.
+ */
+async function clientOpenOrderReservations(
+  retail: WorkerSupabase,
+  userId: string,
+  traderEmail: string | null | undefined,
+  symbol: string,
+): Promise<{
+  inflightSells: number;
+  inflightBuysRands: number;
+}> {
+  const code = bareCode(symbol);
+  // Match by either the explicit user_id stamp OR the trader email — both
+  // are written by `src/lib/orders/submit.ts` and cover the row shapes we
+  // see in production today.
+  const filters: string[] = [`payload->>user_id.eq.${userId}`];
+  if (traderEmail) {
+    filters.push(`client_account.eq.${traderEmail}`);
+  }
+  const { data, error } = await retail
+    .from("oems_order_audit")
+    .select("side, quantity, status, payload, price_cents")
+    .or(filters.join(","))
+    .in("symbol", [code, `${code}.JO`])
+    .in("status", [
+      "working",
+      "pending_ack",
+      "acknowledged",
+      "partial",
+      "amend_pending",
+      "cancel_pending",
+    ]);
+  if (error) throw new Error(`oems_order_audit read failed: ${error.message}`);
+
+  let inflightSells = 0;
+  let inflightBuysRands = 0;
+  for (const r of (data ?? []) as Array<{
+    side: string | null;
+    quantity: number | null;
+    status: string | null;
+    payload: Record<string, unknown> | null;
+    price_cents: number | null;
+  }>) {
+    const side = String(r.side ?? "").toLowerCase();
+    const qty = Number(r.quantity) || 0;
+    const filled = Number((r.payload as { filled?: number } | null)?.filled) || 0;
+    const remaining = Math.max(0, qty - filled);
+    if (remaining <= 0) continue;
+    if (side === "sell") {
+      inflightSells += remaining;
+    } else if (side === "buy") {
+      const pxCents = Number(r.price_cents);
+      const px =
+        Number.isFinite(pxCents) && pxCents > 0
+          ? pxCents / 100
+          : Number((r.payload as { avgPx?: number; limitPrice?: number } | null)?.avgPx) || 0;
+      if (px > 0) inflightBuysRands += remaining * px;
+    }
+  }
+  return { inflightSells, inflightBuysRands };
+}
+
 /** Client SELL availability from the retail per-client ledger (stock_holdings_c). */
 export async function availableToSellForClient(
   retail: WorkerSupabase,
   userId: string,
   symbol: string,
+  opts?: { traderEmail?: string | null },
 ): Promise<SellAvailability> {
   const code = bareCode(symbol);
   const sec = await retail
@@ -287,12 +388,26 @@ export async function availableToSellForClient(
     held += String(r.trade_side ?? "").toUpperCase() === "SELL" ? -q : q;
   }
   held = Math.max(0, held);
+
+  // Reserve that user's own open (working) sells so two of their sells
+  // can't each consume the whole position. (Per-client reservation wired
+  // on 2026-07-20; was a TODO before.)
+  const { inflightSells } = await clientOpenOrderReservations(
+    retail,
+    userId,
+    opts?.traderEmail ?? null,
+    symbol,
+  );
+
   return {
     held,
-    inflightSells: 0,
-    available: held,
+    inflightSells,
+    available: Math.max(0, held - inflightSells),
     source: "retail_holdings",
-    note: `retail stock_holdings_c client ${userId.slice(0, 8)} held ${held} (open-order reservation TODO)`,
+    note:
+      inflightSells > 0
+        ? `retail stock_holdings_c client ${userId.slice(0, 8)} held ${held}, ${inflightSells} in open sells`
+        : `retail stock_holdings_c client ${userId.slice(0, 8)} held ${held}`,
   };
 }
 
@@ -300,6 +415,7 @@ export async function availableToSellForClient(
 export async function availableToBuyForClient(
   retail: WorkerSupabase,
   userId: string,
+  opts?: { traderEmail?: string | null },
 ): Promise<CashAvailability> {
   const w = await retail
     .from("wallets")
@@ -309,14 +425,28 @@ export async function availableToBuyForClient(
     .maybeSingle();
   if (w.error) throw new Error(`wallets read failed: ${w.error.message}`);
   const cash = w.data != null ? Number((w.data as { balance: number }).balance) || 0 : null;
+
+  // Reserve the user's own open (working) buys' notional so two of their
+  // buys can't each spend the whole wallet. Mirrors the desk path's
+  // `availableToBuy` notional chain. (Per-client reservation wired on
+  // 2026-07-20; was a TODO before.)
+  const { inflightBuysRands } = await clientOpenOrderReservations(
+    retail,
+    userId,
+    opts?.traderEmail ?? null,
+    "*",
+  );
+
   return {
     cash,
-    inflightBuys: 0,
-    available: cash != null ? Math.max(0, cash) : null,
+    inflightBuys: inflightBuysRands,
+    available: cash != null ? Math.max(0, cash - inflightBuysRands) : null,
     source: cash != null ? "wallet" : "none",
     note:
       cash != null
-        ? `retail wallet client ${userId.slice(0, 8)} R${cash} (open-order reservation TODO)`
+        ? inflightBuysRands > 0
+          ? `retail wallet client ${userId.slice(0, 8)} R${cash}, R${inflightBuysRands.toFixed(2)} in open buys`
+          : `retail wallet client ${userId.slice(0, 8)} R${cash}`
         : "no wallet row — advisory",
   };
 }

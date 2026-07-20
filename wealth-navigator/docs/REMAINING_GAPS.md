@@ -13,6 +13,11 @@ Last updated: 2026-06-26. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_
 | Integration worker status | `integration_worker_health` | `/api/worker-health` |
 | Instrument metadata | `securities_c` | joined in `/api/quotes` |
 | Blotter mock create/cancel | Hidden in prod | `blotter/page.tsx` |
+| Blotter new-order preflight + force-correction | `submitOrder()` core + `/uat/preflight` worker | `submitOrder`, `uat-preflight-route.test.ts`, `force-correction-dialog.test.tsx` (2026-07-20) |
+| UAT ad-hoc preflight gate | `/api/admin/orderbook/uat-order` calls worker preflight before insert | `uat-preflight-route.test.ts` (2026-07-20) |
+| Bulk `runLimitGuard` partial-fill reservation | `qty - filled` instead of `quantity` | `runLimitGuard.test.ts` (2026-07-20) |
+| Per-client open-order reservation (IRESS_PER_CLIENT_GUARD) | wired in `pretrade-guard.ts` | dormant behind flag (2026-07-20) |
+| Typed `broker_account_code` column | `oems_order_audit.broker_account_code` + migration | `supabase/migrations/20260720000001_oems_order_audit_broker_account.sql` (2026-07-20) |
 | Security lookup quotes | `/api/quotes` | `security/page.tsx` |
 | Equities grid quotes | `/api/quotes` | `equities/page.tsx` |
 | Ticker bar (equities) | Supabase ticks only | `ticker-bar.tsx` |

@@ -129,6 +129,51 @@ describe("availableToSell", () => {
     const db = fakeDb({ positionError: "db down" });
     await expect(availableToSell(db, "56378", "CAC")).rejects.toThrow(/oems_position_c/);
   });
+
+  // 2026-07-20 fix — partial-fill orders reserve ONLY their remaining quantity.
+  // Previously a partial-fill sell reserved its full original quantity, which
+  // blocked legitimate subsequent sells on the same position. The bulk
+  // runLimitGuard had the same bug; both now use `qty - filled`.
+  it("partial fill: reserves only remaining quantity (qty - filled)", async () => {
+    // Held 100, one sell of 150 already partial with 60 filled → 90 remaining
+    // reserved, only 10 left to sell. The previous code reserved 150 (the full
+    // original quantity) and let this scenario block the next sell.
+    const db = fakeDb({
+      position: { quantity: 100 },
+      audit: [buy("b1", 100), sell("s1", 150, "partial", 60)],
+    });
+    const r = await availableToSell(db, "56378", "CAC", "current-sell");
+    expect(r.held).toBe(100);
+    expect(r.inflightSells).toBe(90);
+    expect(r.available).toBe(10);
+  });
+
+  // 2026-07-20 alignment — `cancel_pending` reserves too. The BFF
+  // IN_FLIGHT_STATUSES set already reserves it; the worker's
+  // OPEN_SELL_STATES now matches. A fill racing a cancel instruction
+  // is a real risk on a single-seat broker, so the safer default is
+  // to keep reserving until IRESS confirms cancellation.
+  it("cancel_pending: reserves quantity until IRESS confirms cancellation", async () => {
+    const db = fakeDb({
+      position: { quantity: 100 },
+      audit: [buy("b1", 100), sell("s1", 50, "cancel_pending", 0)],
+    });
+    const r = await availableToSell(db, "56378", "CAC", "current-sell");
+    expect(r.inflightSells).toBe(50);
+    expect(r.available).toBe(50);
+  });
+
+  // `amend_pending` is reserved for the same reason — an amend can change
+  // quantity upward (e.g. operator raises a 50-share limit to 80 shares).
+  it("amend_pending: reserves quantity while a desk amend is in flight", async () => {
+    const db = fakeDb({
+      position: { quantity: 100 },
+      audit: [buy("b1", 100), sell("s1", 50, "amend_pending", 0)],
+    });
+    const r = await availableToSell(db, "56378", "CAC", "current-sell");
+    expect(r.inflightSells).toBe(50);
+    expect(r.available).toBe(50);
+  });
 });
 
 const openBuy = (id: string, quantity: number, priceCents: number | null, status = "working"): AuditRow => ({
@@ -197,6 +242,14 @@ function fakeRetailDb(opts: {
   holdingsError?: string;
   wallet?: { balance: number } | null;
   walletError?: string;
+  audit?: Array<{
+    id: string;
+    side: string;
+    quantity: number;
+    status: string;
+    payload: Record<string, unknown> | null;
+    price_cents?: number | null;
+  }>;
 }): WorkerSupabase {
   return {
     from(table: string) {
@@ -205,6 +258,7 @@ function fakeRetailDb(opts: {
       builder.select = chain;
       builder.eq = chain;
       builder.in = chain;
+      builder.or = chain; // 2026-07-20: per-client reservation uses `.or(...)` to filter on either user_id OR client_account
       builder.limit = chain;
       builder.maybeSingle = () =>
         Promise.resolve(
@@ -216,8 +270,18 @@ function fakeRetailDb(opts: {
         );
       builder.then = (resolve: (v: unknown) => unknown) =>
         Promise.resolve({
-          data: table === "stock_holdings_c" ? opts.holdings ?? [] : [],
-          error: opts.holdingsError ? { message: opts.holdingsError } : null,
+          data:
+            table === "stock_holdings_c"
+              ? (opts.holdings ?? [])
+              : table === "oems_order_audit"
+                ? (opts.audit ?? [])
+                : [],
+          error:
+            opts.holdingsError
+              ? { message: opts.holdingsError }
+              : opts.walletError
+                ? { message: opts.walletError }
+                : null,
         }).then(resolve);
       return builder;
     },
@@ -272,6 +336,51 @@ describe("availableToBuyForClient (retail wallet)", () => {
   it("throws on a wallets read error (fail-closed on infra failure)", async () => {
     const db = fakeRetailDb({ walletError: "db down" });
     await expect(availableToBuyForClient(db, "user-1")).rejects.toThrow(/wallets/);
+  });
+
+  // 2026-07-20: per-client reservation is wired up. A client's own open
+  // sells now reserve against their available-to-sell so two of their
+  // sells can't each consume the whole position.
+  it("reserves the client's own open sells against their own available-to-sell", async () => {
+    const db = fakeRetailDb({
+      security: { id: "sec-1" },
+      holdings: [{ quantity: 100, trade_side: "BUY" }],
+      audit: [
+        {
+          id: "s-self-1",
+          side: "sell",
+          quantity: 60,
+          status: "working",
+          payload: null,
+        },
+      ],
+    });
+    const r = await availableToSellForClient(db, "user-1", "AGL");
+    expect(r.held).toBe(100);
+    expect(r.inflightSells).toBe(60);
+    expect(r.available).toBe(40);
+    expect(r.note).toMatch(/60 in open sells/);
+  });
+
+  it("reserves the client's own open buys' notional against their own available cash", async () => {
+    const db = fakeRetailDb({
+      wallet: { balance: 1000 },
+      audit: [
+        {
+          id: "b-self-1",
+          side: "buy",
+          quantity: 100,
+          status: "working",
+          payload: null,
+          price_cents: 200, // 100 @ R2 = R200 reserved
+        },
+      ],
+    });
+    const r = await availableToBuyForClient(db, "user-1");
+    expect(r.cash).toBe(1000);
+    expect(r.inflightBuys).toBe(200);
+    expect(r.available).toBe(800);
+    expect(r.note).toMatch(/R200\.00 in open buys/);
   });
 });
 

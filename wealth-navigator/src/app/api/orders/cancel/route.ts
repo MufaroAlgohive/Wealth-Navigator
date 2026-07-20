@@ -37,10 +37,7 @@ export async function POST(req: Request) {
     );
   }
   if (auth.status !== "ok" || !can(auth.ctx, "orderbook", "send_to_market")) {
-    return Response.json(
-      { ok: false, status: 403, code: "forbidden", error: "forbidden" },
-      { status: 403 },
-    );
+    return Response.json({ ok: false, status: 403, code: "forbidden", error: "forbidden" }, { status: 403 });
   }
 
   if (!isIressWorkerConfigured()) {

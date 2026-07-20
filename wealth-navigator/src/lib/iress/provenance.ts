@@ -33,7 +33,12 @@ export const DATA_SURFACES: DataSurface[] = [
 
   // ── Blotter ──────────────────────────────────────────────────────
   { surface: "Blotter orders table", route: "/oems/blotter", component: "blotter/page.tsx", currentSource: "mock.ts → liveOrders", canBeLive: true, v4Method: "OrderPadGetByAccount", status: "SEED" },
-  { surface: "Blotter new order", route: "/oems/blotter", component: "new-order-dialog.tsx", currentSource: "mock client orderCreate3", canBeLive: true, v4Method: "OrderCreate3", status: "MOCK", notes: "Uses in-process mock even in live mode (client-side)" },
+  // 2026-07-20: Blotter new order now routes through /api/orders/preflight
+  // (worker gate) → /api/orders/submit (worker fan-out). The provenance
+  // flipped MOCK → LIVE; the BFF now writes an audit row in the same shape
+  // as the admin UAT route, and the worker pre-trade guard runs BEFORE the
+  // insert so no phantom working rows survive a blocked verdict.
+  { surface: "Blotter new order", route: "/oems/blotter", component: "new-order-dialog.tsx", currentSource: "BFF /api/orders/submit → worker /uat/preflight + /uat/send-to-market", canBeLive: true, v4Method: "OrderCreate3", status: "LIVE", notes: "Routed via BFF since 2026-07-20 — see src/lib/orders/" },
   { surface: "Blotter cancel/amend", route: "/oems/blotter", component: "blotter/page.tsx", currentSource: "mock client", canBeLive: true, v4Method: "OrderDelete / OrderAmend2", status: "MOCK" },
 
   // ── Security ─────────────────────────────────────────────────────
