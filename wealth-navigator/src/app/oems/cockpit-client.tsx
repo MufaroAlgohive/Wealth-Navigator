@@ -463,20 +463,45 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // `IRESS_NEWS_INGEST=1` + `SUPABASE_ALLOW_WRITES=1` on Railway). This
   // path does NOT need `IRESS_MODE=live` on Vercel (the IRESS seat
   // stays on the worker).
+  // IRESS SENS live (Path B: Vercel BFF → Railway worker → NewsHeadlineGet
+  // vendor SENSD). Window defaults to today UTC so the call always has an
+  // anchor and the server doesn't return a bare 0-row "no time window" set.
   const sensBffQ = useQuery<{
-    items: Array<{ id: string; headline: string; ts: number; source: string; category: string; tickers: string[]; url: string | null; body: string | null }>;
+    ok?: boolean;
     source: string;
-    sourceLabel?: string;
-    message?: string;
+    tier?: string;
+    headlines: Array<{
+      storyId: string;
+      headline: string;
+      source: string;
+      timestamp: string;
+      ts: number;
+      category: string | null;
+      relatedCodes: string[] | null;
+      storyPreview: string | null;
+    }>;
+    dataRowCount?: number;
+    error?: { code?: string; message?: string } | null;
+    elapsedMs?: number;
   }>({
-    queryKey: ["bff-news-sens"],
+    queryKey: ["bff-iress-sens"],
     queryFn: async () => {
-      const r = await fetch("/api/news?category=SENS&limit=12", { cache: "no-store" });
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const y = now.getUTCFullYear();
+      const m = pad(now.getUTCMonth() + 1);
+      const d = pad(now.getUTCDate());
+      const dateFrom = `${y}-${m}-${d}T00:00:00`;
+      const dateTo = `${y}-${m}-${d}T23:59:59`;
+      const r = await fetch(
+        `/api/iress/news?vendor=SENSD&pageSize=12&dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`,
+        { cache: "no-store" },
+      );
       if (!r.ok) throw new Error(`sens ${r.status}`);
       return r.json();
     },
     enabled: realDataOnly,
-    refetchInterval: 120_000,
+    refetchInterval: 60_000,
     ...queryOpts("reference"),
   });
   // Real USD/ZAR from the FX BFF (Frankfurter / ECB) — IRESS has no FX feed.
@@ -700,18 +725,25 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   }, [newsBffQ.data]);
 
   // SENS tape shape consumed by the inline `SensTape` panel. Looser than
-  // the strict `SensItem` enum from `@/types/iress` (the wire rows use raw
-  // category strings like `"SENS"` and severity `"regulatory"` / `"low"`).
+  // the strict `SensItem` enum from `@/types/iress` — the IRESS passthrough
+  // hands us `relatedCodes[]` (per Headline SecurityCodeList) instead of
+  // a single `ticker`, and `category` is a raw code like `"105000000"`
+  // or `"SENS"`.
   const realSens = useMemo<Array<{ id: string; ts: number; ticker: string; issuer: string; category: string; severity: string; headline: string }>>(() => {
-    return (sensBffQ.data?.items ?? []).map((n) => ({
-      id: n.id,
-      ts: n.ts,
-      ticker: (n.tickers?.[0] ?? "").toString(),
-      issuer: "",
-      category: (n.category ?? "SENS").toString(),
-      severity: (n.category ?? "").toString().toUpperCase() === "SENS" ? "regulatory" : "info",
-      headline: n.headline,
-    }));
+    return (sensBffQ.data?.headlines ?? []).map((n) => {
+      const code = (n.relatedCodes?.[0] ?? "").toString();
+      const rawCat = (n.category ?? "SENS").toString();
+      const upCat = rawCat.toUpperCase();
+      return {
+        id: n.storyId,
+        ts: typeof n.ts === "number" ? n.ts : Date.parse(n.timestamp ?? ""),
+        ticker: code,
+        issuer: "",
+        category: upCat === "SENS" ? "SENS" : rawCat,
+        severity: upCat === "SENS" ? "regulatory" : "info",
+        headline: n.headline,
+      };
+    });
   }, [sensBffQ.data]);
 
   // Portfolio Accounts (mock investor snippet) — each strategy stands in for an
@@ -1620,9 +1652,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           ) : realSens.length > 0 ? (
             <GlassSection
               title="SENS · Live"
-              endpoint="GET /api/news?category=SENS"
-              db="institutional"
-              dataSource="supabase"
+              endpoint="GET /api/iress/news (vendor SENSD)"
+              db="retail"
+              dataSource="iress"
               noPadding
               className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
               right={
@@ -1638,8 +1670,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           ) : (
             <GlassSection
               title="SENS · Live"
-              endpoint="GET /api/news?category=SENS"
-              db="institutional"
+              endpoint="GET /api/iress/news (vendor SENSD)"
+              db="retail"
               dataSource="unconfigured"
               className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
               right={
@@ -1651,12 +1683,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               <EmptyDataState
                 title="No live data"
                 message={
-                  sensBffQ.data?.message ?? "SENS feed not configured."
+                  (sensBffQ.data?.error?.message as string | undefined) ??
+                    "SENS feed not configured."
                 }
                 hint={
-                  sensBffQ.data?.source === "unconfigured"
-                    ? "Worker needs IRESS_NEWS_INGEST=1 + SUPABASE_ALLOW_WRITES=1 on Railway to populate institutional news_item_c."
-                    : "Worker wrote zero rows for today. Try again on the next trading window, or check /oems/news for a wider date range."
+                  sensBffQ.data?.error?.code === "not_configured"
+                    ? "Set IRESS_WORKER_URL (or RAILWAY_SERVICE_URL) on Vercel — the BFF can't reach the worker."
+                    : sensBffQ.data?.error?.code === "worker_mode_off"
+                      ? "Set USE_SUPABASE_QUOTES=true on Vercel so the BFF forwards requests to the worker."
+                      : sensBffQ.data?.error?.code === "T5_NOT_PERSISTED"
+                        ? "IRESS_MODE is still 'mock' on Vercel — flip it to 'live' so the BFF can call the worker."
+                        : "Worker returned zero rows for today. Try a wider window in /oems/news, or wait for the next trading pulse."
                 }
                 badgeLabel="unconfigured"
               />
