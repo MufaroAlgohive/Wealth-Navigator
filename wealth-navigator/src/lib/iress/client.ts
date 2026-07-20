@@ -169,87 +169,71 @@ export interface SecuritySearchGetRequest {
 // ─── News (Iress Pro) ────────────────────────────────────────────────────
 
 /**
- * Known `NewsVendorGet` vendor codes (per V4 spec).
+ * Known `NewsHeadlineGet` vendor codes for the JSE / SA feed (per the
+ * live IRESS CT build, `za1-ct-ds1.prod.iress.com.au:4502`, confirmed
+ * 2026-07-20 via `/debug/soap-raw`).
  *
- * Charles confirmed 2026-06-25 that `NewsVendorGet` is the correct method for
- * Market Data / News; the vendor parameter selects which vendor's feed to
- * query. The SA-flavoured OEMS mostly cares about `SENS` (JSE Stock Exchange
- * News Service) and `IRESS` (broker-sourced general news). Defaults to
- * `IRESS` in the live client (broker-sourced, general market news — chosen
- * over `SENS` because the `DFM@Mint` IRESS Pro entitlement is for the
- * broker feed); the mock + probe accept any of these. Override at the
- * call site (BFF query string, worker probe `?vendor=…`) to use any of
- * the other supported vendors.
- *
- * Note: this is the V4 vendor *enum*, NOT the `NewsItem.source` taxonomy on
- * the typed `NewsItem` interface (`Reuters | Bloomberg | Moneyweb | ...`).
- * The mapper below collapses whatever the row reports into the matching
- * `NewsItem.source` value where possible, falling back to `IRESS`.
+ * The earlier docs guessed `SENS`/`IRESS` as the vendor enum; in fact
+ * `SENSD` ("SENS NEWS DELAYED") is the vendor code that the CT build
+ * returns from both `NewsVendorGet` and `NewsHeadlineGet`. Real-time SENS
+ * is the unprefixed `SENS`; delayed is `SENSD`. `DFM@Mint` is entitled
+ * to delayed only as of 2026-07-20.
  */
-export type NewsVendor =
-  | "SENS"
-  | "IRESS"
-  | "Reuters"
-  | "Bloomberg"
-  | "Moneyweb"
-  | "Dow Jones"
-  | "Business Day";
+export type NewsVendorCode = "SENSD" | "SENS" | "IRESS" | (string & {});
 
-export interface NewsVendorGetRequest {
+export interface NewsHeadlineGetRequest {
   Header: IressHeader;
   /**
-   * Vendor code — e.g. `"SENS"`, `"IRESS"`, `"Reuters"`. Required;
-   * an empty / missing `Vendor` faults `25018` at the SOAP layer.
-   *
-   * The default at every call site (worker probe + BFF passthrough) is
-   * `"IRESS"` — broker-sourced general market news. `SENS` (JSE
-   * Stock Exchange News Service) is still a valid override when the
-   * caller wants only SENS announcements.
+   * Vendor code — must be `"SENSD"` for JSE SENS announcements on this
+   * CT build (confirmed 2026-07-20 via the working probe). The CT
+   * server returns the fault `"No valid vendor specified"` for any
+   * other value until the real-time `SENS` entitlement is flipped on.
    */
-  Vendor: NewsVendor | string;
+  VendorCode: NewsVendorCode;
   /**
-   * Optional per-vendor parameters. V4 spec accepts a free-form `<Parameters>`
-   * block (Charles' example was empty). Common sub-keys:
-   *   - `Category`      — narrow to a SENS category (RESULTS, DIVIDEND, …)
-   *   - `SecurityCode`  — single-symbol filter (RIC or IRESS code)
-   *   - `From` / `To`   — ISO timestamp range
-   *   - `MaxResults`    — cap; the global `<PageSize>` also applies
-   * The live client sends whatever the caller supplies — no server-side
-   * validation here (the SOAP layer is the source of truth).
+   * Inclusive lower bound, ISO-naive date `YYYY-MM-DDTHH:MM:SS`
+   * (the CT server rejects the trailing `Z`). One trading day is the
+   * smallest window that returns rows — passing only a start date
+   * with no `DateTimeEnd` faults at the SOAP layer.
    */
-  Parameters?: Record<string, unknown>;
+  DateTimeStart: string;
+  /** Exclusive upper bound, same format as `DateTimeStart`. */
+  DateTimeEnd: string;
+  /**
+   * Hint / soft cap on the row count. The CT server has been observed
+   * to return the full window regardless of `Count` (e.g. 17 rows
+   * for one trading day on the base session, 40 on the prod
+   * market-data session). Operational upper bound is 500.
+   */
+  Count?: number;
 }
 
 /**
- * Normalised `NewsVendorGet` row. Only fields the schema is known to
- * return are surfaced; entitlement-blocked fields (story body, RIC list,
- * etc.) are TODO-marked and surfaced as `null` until a live probe confirms
- * what the CT build returns.
+ * Normalised `NewsHeadlineGet` row. Field names are taken verbatim
+ * from the live CT probe captured on 2026-07-20
+ * (see `docs/SENS_NEWSHEADLINE_WIRE.md`). The IRESS entity
+ * enumerates rows as `Headline` records; previously we tried to
+ * match a generic `NewsStory` shape that didn't fit the CT build.
  */
 export interface NewsStory {
-  /** IRESS story id (string — V4 doesn't pin a numeric type). */
+  /** IRESS-assigned 64-bit headline id (string for JSON safety). */
   StoryId: string;
-  /** Headline text. Confirmed live on every IRESS Pro build. */
+  /** Short headline. Available on every row of the CT build. */
   Headline: string;
-  /** Vendor code as reported by the row (often "SENS", "Reuters", …). */
+  /** Vendor code as reported by the row (typically `"SENSD"`). */
   Source: string;
-  /** Story timestamp (ISO 8601 string from V4, parsed to ms). */
+  /** Headline timestamp from IRESS (ISO-naive, server local time). */
   Timestamp: string;
   /** ISO → epoch ms convenience copy; 0 when unparseable. */
   ts: number;
-  /**
-   * Full story body. ENTITLEMENT-DEPENDENT — the DFM@Mint profile may only
-   * return headlines; we keep the field but emit `null` until a live probe
-   * confirms. See worker `/debug/news-vendor-probe` for verification.
-   */
+  /** Full HTML/plain-text story body when `HasTextStory=true`. */
   Story?: string | null;
-  /**
-   * RICs / IRESS codes the story is attached to (free-form string list).
-   * TODO(entitlement): confirm with a probe; expected empty on CT headine-only.
-   */
+  /** Comma-separated IRESS codes the story attaches to (e.g. `"NPN,MTN"`). */
   RelatedCodes?: string[];
-  /** Vendor-specific category label (e.g. SENS category). TODO: typed map. */
+  /** Vendor-specific category id (e.g. `105000000` for SENS corporate). */
   Category?: string | null;
+  /** True if the story is market-sensitive (SENS flag). */
+  MarketSensitive?: boolean;
   /** Free-form pass-through for any field we haven't normalised. */
   [k: string]: unknown;
 }
@@ -399,23 +383,26 @@ export interface IressClient {
 
   /**
    * Market data / news headlines & bodies via the IRESS Pro News service.
-   * Charles Ntjana confirmed 2026-06-25 that `NewsVendorGet` is the V4 verb
-   * for Market Data and News. Runs on the base IRIS session (no IOS+/IPS/
-   * FIX+ service session needed).
+   * The actual story-fetching verb on this CT build is `NewsHeadlineGet`
+   * (verified 2026-07-20 — `NewsVendorGet` returns the vendor catalog
+   * only, not stories). Run on the **prod market-data session** so the
+   * vendor entitlement (`SENSD` / "SENS NEWS DELAYED") is honoured —
+   * the base session returns test-fixture rows instead of the real
+   * day's announcements.
    *
-   * Entitlement gate: the user's IRESS profile must include `NewsVendorGet`
-   * (Charles has to enable). 25010 / 25034 → `IressError(…)` bubbles up;
-   * the BFF surfaces it as an `unconfigured` empty state.
+   * Entitlement gate: `NewsHeadlineGet` on the prod market-data
+   * session. 25010 / 25034 → `IressError(…)` bubbles up; the BFF
+   * surfaces it as an `unconfigured` empty state.
    *
    * T5 (vendor content) policy: this client is **read-only** — the worker
    * does NOT persist the response to Supabase. The BFF proxies the response
    * through as a Path B passthrough; news panels show `UNCONFIGURED` when
    * the source is unconfigured and never fall back to seed.
    *
-   * Spec: `Documentation & Vision/iress-v4-docs/05-services/market-data/03-news-vendor-get.md`
-   * (to be created on first probe confirmation).
+   * Spec: `wealth-navigator/docs/SENS_NEWSHEADLINE_WIRE.md`
+   * (captured envelope from the 2026-07-20 working probe).
    */
-  newsVendorGet(req: NewsVendorGetRequest): Promise<IressResponse<NewsStory>>;
+  newsHeadlineGet(req: NewsHeadlineGetRequest): Promise<IressResponse<NewsStory>>;
 
   // ── trading (IOS+) ──────────────────────────────────────────────
   orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response>;

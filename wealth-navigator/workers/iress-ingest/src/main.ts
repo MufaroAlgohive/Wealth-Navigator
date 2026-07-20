@@ -14,6 +14,7 @@ import { pollUatForFills, stampLastUatPollAt } from "./order-poller";
 import { pollAccountsForOrders } from "./orders";
 import { syncWatchlistQuotes } from "./quotes";
 import { syncRetailPrices } from "./retail-ingest";
+import { syncNewsHeadlines } from "./news-ingest";
 import { evaluateTriggers } from "./alerts";
 import { LICENSE_RELEASE_DELAY_MS, WorkerSessionManager } from "./session";
 import { tearDownMarketDataSession } from "./market-data";
@@ -362,6 +363,57 @@ async function retailIngestLoop(): Promise<void> {
   }
 }
 
+/**
+ * `IRESS_NEWS_INGEST=1` enables this loop; otherwise it stays dormant.
+ *
+ * Pulls JSE SENS announcements via `NewsHeadlineGet` (vendor `SENSD`,
+ * today's UTC window) and upserts them into `public.news_item_c` on the
+ * institutional Supabase. Honours the worker-wide `dryRun` /
+ * `allowWrites` gates. Default cadence is 6 hours (env
+ * `IRESS_NEWS_INGEST_INTERVAL_SEC`, floor 300 s).
+ *
+ * Rationale: the OEMS News & SENS page reads from the worker probe
+ * (live passthrough) AND from `news_item_c` (historical). The passthrough
+ * is enough for "what's today"; the persistence leg keeps the panel
+ * alive across worker redeploys and lets the desk run queries against
+ * yesterday's announcements.
+ */
+async function newsIngestLoop(): Promise<void> {
+  const enabled = process.env.IRESS_NEWS_INGEST === "1";
+  if (!enabled) return;
+  const intervalSec = Math.max(300, Number(process.env.IRESS_NEWS_INGEST_INTERVAL_SEC ?? "21600"));
+  console.warn(
+    `[iress-ingest] NEWS INGEST ${env.dryRun || !env.allowWrites ? "(shadow)" : "(WRITE)"} → news_item_c, interval ${intervalSec}s`,
+  );
+  while (!shuttingDown) {
+    try {
+      const r = await syncNewsHeadlines({ env, sessions, supabase });
+      if (r.error) {
+        console.warn(`[iress-ingest] news ingest error: ${r.error}`);
+      } else if (r.requested > 0) {
+        console.info(
+          JSON.stringify({
+            level: "info",
+            event: "news_loop_tick",
+            source: "iress-worker",
+            vendorCode: r.vendorCode,
+            windowStart: r.windowStart,
+            windowEnd: r.windowEnd,
+            requested: r.requested,
+            upserted: r.upserted,
+            dryRun: r.dryRun,
+            elapsedMs: r.durationMs,
+          }),
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] news ingest loop error: ${msg}`);
+    }
+    await sleep(intervalSec * 1000);
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -436,6 +488,9 @@ if (retailIngestEnabled) {
       `(${process.env.IRESS_RETAIL_DRY_RUN === "0" ? "LIVE WRITES" : "shadow/dry-run"}). Interval ${retailIngestIntervalSec}s.`,
   );
 }
+// News ingest (SENS) is opt-in via `IRESS_NEWS_INGEST=1`; defaults to dormant
+// so the worker doesn't wake the CT seat on the second.
+if (process.env.IRESS_NEWS_INGEST === "1") void newsIngestLoop();
 
 // CONFIG DIAGNOSTICS — the full-universe IRESS overlay only reaches the dashboard
 // when this loop runs AND the worker is in live mode. These are the two silent

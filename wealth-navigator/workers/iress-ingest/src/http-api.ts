@@ -48,7 +48,7 @@ import {
   marketDataBaseUrl,
   marketDataProdEnabled,
 } from "./market-data";
-import { availableToSell, availableToBuy } from "./pretrade-guard";
+import { availableToSell, availableToBuy, type SellAvailability, type CashAvailability } from "./pretrade-guard";
 import { fetchLiveQuote } from "./quotes";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import { type WorkerSupabase, writeHeartbeat } from "./supabase";
@@ -212,6 +212,9 @@ interface NewsProbeRow {
 interface NewsProbeResult {
   ok: boolean;
   vendor: string;
+  /** Echoed ISO-naive `YYYY-MM-DDTHH:MM:SS` window the probe queried. */
+  dateTimeStart: string;
+  dateTimeEnd: string;
   pageSize: number;
   timeout: number;
   errorNumber: number | null;
@@ -353,15 +356,26 @@ async function probeTimeSeriesInterval(
 }
 
 /**
- * One-shot `NewsVendorGet` probe — Charles Ntjana confirmed 2026-06-25
- * that this is the V4 verb for Market Data / News. Runs on the base
- * IRIS session (no IOS+/IPS/FIX+ service session required).
+ * One-shot `NewsHeadlineGet` probe — confirmed working envelope:
+ *   <Parameters>
+ *     <VendorCode>SENSD</VendorCode>     ("SENS NEWS DELAYED" on this CT build)
+ *     <DateTimeStart>2026-07-20T00:00:00</DateTimeStart>
+ *     <DateTimeEnd>2026-07-20T23:59:59</DateTimeEnd>
+ *     <Count>20</Count>
+ *   </Parameters>
+ *
+ * Runs on the **prod market-data session** (so the SENS entitlement is
+ * honoured — see `wealth-navigator/docs/SENS_NEWSHEADLINE_WIRE.md`).
+ * `NewsVendorGet` returns the vendor catalog only (1 row); the actual
+ * story-fetching verb on this CT build is `NewsHeadlineGet`.
  *
  * Wire shape mirrors `probeTimeSeriesInterval`:
- *   - caller supplies `vendor` (default `IRESS` — broker-sourced
- *     general market news; override with `SENS`, `Reuters`, `Bloomberg`,
- *     `Moneyweb`, `Dow Jones`, `Business Day`)
- *   - `pageSize` capped at 1000 (the CT max per Charles' example)
+ *   - caller supplies `vendor` (default `SENSD` — the code that the
+ *     server actually accepts on the prod market-data session for
+ *     SENS announcements; the catalog row labels it "SENS NEWS DELAYED")
+ *   - `dateFrom` / `dateTo` default to today (UTC) when not supplied;
+ *     both inclusive lower / inclusive upper in ISO-naive format
+ *   - `pageSize` (Count) capped at 1000 (the CT max)
  *   - `timeout` capped at 25 (the CT ceiling for this method)
  *   - per-process throttle (10s default — see `newsProbeThrottleOrError`)
  *     so a runaway loop can't burn the CT license seat.
@@ -373,6 +387,8 @@ async function probeTimeSeriesInterval(
 async function probeNewsVendor(
   deps: HttpApiDeps,
   vendor: string,
+  dateTimeStart: string,
+  dateTimeEnd: string,
   pageSize: number,
   timeout: number,
   includeBody: boolean,
@@ -381,29 +397,12 @@ async function probeNewsVendor(
   try {
     const session = await deps.sessions.getSession();
     // News is market data: use the PROD market-data session when the split is
-    // on, else the UAT session.
+    // on, else the UAT session. On this CT build the prod session is what
+    // carries the SENS entitlement; the base session returns test fixtures.
     const md = await getMarketDataSession();
-    if (!md && marketDataProdEnabled()) {
-      // Split on but prod momentarily down: skip UAT (no market-data IDS there).
-      return {
-        ok: false,
-        vendor,
-        pageSize,
-        timeout,
-        errorNumber: null,
-        errorDescription: "Prod market-data session unavailable; news skipped (UAT has no market-data IDS).",
-        rawFault: null,
-        dataRowCount: 0,
-        firstRow: null,
-        headlines: [],
-        iressMode: deps.env.iressMode,
-        elapsedMs: Date.now() - started,
-        probedAt: new Date().toISOString(),
-        build: PROBE_BUILD,
-      };
-    }
+    void marketDataProdEnabled(); // kept for symmetry / future diagnostics
     const client = md ? md.client : getIressClient("live");
-    const res = await client.newsVendorGet({
+    const res = await client.newsHeadlineGet({
       Header: {
         SessionKey: md ? md.sessionKey : session.iressSessionKey,
         RequestID: newRequestID(`news-${vendor}`),
@@ -414,7 +413,10 @@ async function probeNewsVendor(
         PageSize: pageSize,
         Timeout: timeout,
       },
-      Vendor: vendor,
+      VendorCode: vendor,
+      DateTimeStart: dateTimeStart,
+      DateTimeEnd: dateTimeEnd,
+      Count: pageSize,
     });
     const headlines: NewsProbeRow[] = res.DataRows.slice(0, 10).map((s) => ({
       storyId: s.StoryId,
@@ -429,6 +431,8 @@ async function probeNewsVendor(
     return {
       ok: res.Header.ErrorNumber === 0,
       vendor,
+      dateTimeStart,
+      dateTimeEnd,
       pageSize,
       timeout,
       errorNumber: res.Header.ErrorNumber ?? null,
@@ -441,6 +445,11 @@ async function probeNewsVendor(
       elapsedMs: Date.now() - started,
       probedAt: new Date().toISOString(),
       build: PROBE_BUILD,
+      // Market-data session presence is informational only — `md.sessionKey`
+      // above vs. `session.iressSessionKey` is the indicator and we don't
+      // want to leak the env var.
+      // if/when we add it. Today `md.sessionKey` versus `session.iressSessionKey`
+      // is the indicator and we don't want to leak the env var.
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -448,6 +457,8 @@ async function probeNewsVendor(
     return {
       ok: false,
       vendor,
+      dateTimeStart,
+      dateTimeEnd,
       pageSize,
       timeout,
       errorNumber: faultCode,
@@ -2024,7 +2035,7 @@ export async function handleRequest(
   }
 
   /**
-   * `GET /debug/news-vendor-probe` — one-shot `NewsVendorGet` verifier.
+   * `GET /debug/news-vendor-probe` — one-shot `NewsHeadlineGet` verifier.
    *
    * Mirrors `/debug/timeseries-probe`'s shape but uses GET + query string
    * (the only call site is the BFF passthrough / a curl from the operator,
@@ -2032,9 +2043,15 @@ export async function handleRequest(
    * probe).
    *
    * Query params (all optional):
-   *   - `vendor`       default "IRESS" (broker-sourced general market news;
-   *                    override with `SENS`, `Reuters`, `Bloomberg`,
-   *                    `Moneyweb`, `Dow Jones`, `Business Day`)
+   *   - `vendor`       default `"SENSD"` ("SENS NEWS DELAYED" — the
+   *                    vendor code the CT build returns from
+   *                    `NewsVendorGet` and accepts on `NewsHeadlineGet`
+   *                    for JSE SENS announcements on the prod
+   *                    market-data session).
+   *   - `dateFrom`     ISO-naive `YYYY-MM-DDTHH:MM:SS` (no `Z`).
+   *                    Default: today 00:00:00 UTC.
+   *   - `dateTo`       ISO-naive `YYYY-MM-DDTHH:MM:SS`. Default:
+   *                    today 23:59:59 UTC.
    *   - `pageSize`     default 50, capped at 1000 (CT max)
    *   - `timeout`      default 25, capped at 25 (CT ceiling)
    *   - `includeBody`  "1" to include a 200-char preview of each story body
@@ -2071,18 +2088,24 @@ export async function handleRequest(
       );
       return;
     }
-    const vendorRaw = url.searchParams.get("vendor") ?? "SENS";
+    const vendorRaw = url.searchParams.get("vendor") ?? "SENSD";
     const vendor = vendorRaw.trim();
     if (!vendor) {
-      sendError(res, 400, "bad_request", "`vendor` query param required (e.g. ?vendor=IRESS)");
+      sendError(res, 400, "bad_request", "`vendor` query param required (e.g. ?vendor=SENSD)");
       return;
     }
+    const today = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const defaultStart = `${today.getUTCFullYear()}-${pad(today.getUTCMonth() + 1)}-${pad(today.getUTCDate())}T00:00:00`;
+    const defaultEnd = `${today.getUTCFullYear()}-${pad(today.getUTCMonth() + 1)}-${pad(today.getUTCDate())}T23:59:59`;
+    const dateTimeStart = url.searchParams.get("dateFrom")?.trim() || defaultStart;
+    const dateTimeEnd = url.searchParams.get("dateTo")?.trim() || defaultEnd;
     const pageSizeRaw = Number(url.searchParams.get("pageSize") ?? "50");
     const pageSize = Number.isFinite(pageSizeRaw) ? Math.min(1000, Math.max(1, Math.trunc(pageSizeRaw))) : 50;
     const timeoutRaw = Number(url.searchParams.get("timeout") ?? "25");
     const timeout = Number.isFinite(timeoutRaw) ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw))) : 25;
     const includeBody = url.searchParams.get("includeBody") === "1";
-    const result = await probeNewsVendor(deps, vendor, pageSize, timeout, includeBody);
+    const result = await probeNewsVendor(deps, vendor, dateTimeStart, dateTimeEnd, pageSize, timeout, includeBody);
     send(res, 200, result);
     return;
   }
@@ -2529,7 +2552,7 @@ export async function handleRequest(
   // real client books.
   // ──────────────────────────────────────────────────────────────────
 
-  if (path === "/uat/send-to-market" || path === "/uat/execution-stream" || path === "/uat/status") {
+  if (path === "/uat/send-to-market" || path === "/uat/preflight" || path === "/uat/execution-stream" || path === "/uat/status") {
     if (!deps.env.uatMode) {
       sendError(
         res,
@@ -2540,6 +2563,117 @@ export async function handleRequest(
       );
       return;
     }
+  }
+
+  if (req.method === "POST" && path === "/uat/preflight") {
+    // Pure read-only pre-trade gate. The BFF calls this BEFORE writing
+    // the audit row so a blocked verdict never creates a phantom `working`
+    // row that reserves quantity against the next corrected order.
+    //
+    // 2026-07-20: ships with the OEMS guardrail + force-correction refactor.
+    if (!deps.env.uatMode) {
+      sendError(
+        res,
+        403,
+        "uat_mode_disabled",
+        "UAT mode is not enabled on this worker (set IRESS_UAT_MODE=1)",
+        { uatMode: false },
+      );
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    if (!body || typeof body !== "object") {
+      sendError(
+        res,
+        400,
+        "bad_request",
+        "Body must be JSON with `account_code`, `symbol`, `side`, `qty`",
+      );
+      return;
+    }
+    const b = body as Record<string, unknown>;
+    const accountCode =
+      typeof b["account_code"] === "string" && (b["account_code"] as string).trim()
+        ? (b["account_code"] as string).trim()
+        : (deps.env.uatAccountCode ?? "");
+    const symbol =
+      typeof b["symbol"] === "string" ? (b["symbol"] as string).trim() : "";
+    const sideRaw = String(b["side"] ?? "buy").toLowerCase();
+    const side: 1 | 2 = sideRaw === "sell" ? 2 : 1;
+    const qty = Number(b["qty"]);
+    const priceCentsRaw = b["price_cents"];
+    const priceCents =
+      priceCentsRaw != null && Number.isFinite(Number(priceCentsRaw)) && Number(priceCentsRaw) > 0
+        ? Math.round(Number(priceCentsRaw))
+        : null;
+
+    if (!accountCode) {
+      sendError(res, 400, "bad_request", "`account_code` (or IRESS_UAT_ACCOUNT_CODE) is required");
+      return;
+    }
+    if (!symbol) {
+      sendError(res, 400, "bad_request", "`symbol` is required");
+      return;
+    }
+    if (!Number.isFinite(qty) || qty <= 0) {
+      sendError(res, 400, "bad_request", "`qty` must be a positive number");
+      return;
+    }
+
+    const guard = await runUatPreflight(deps, {
+      accountCode,
+      symbol,
+      side,
+      qty: Math.floor(qty),
+      priceCents,
+      excludeAuditId:
+        typeof b["exclude_audit_id"] === "string"
+          ? (b["exclude_audit_id"] as string)
+          : undefined,
+      arrivalMidRands:
+        Number(b["arrival_mid_rands"]) > 0 ? Number(b["arrival_mid_rands"]) : null,
+    });
+
+    if (guard.ok) {
+      send(res, 200, {
+        ok: true,
+        verdict: "pass",
+        code: "pass",
+        message: guard.message,
+        sell: guard.sell,
+        cash: guard.cash,
+        account_code: accountCode,
+        symbol,
+        side: sideRaw === "sell" ? "sell" : "buy",
+        qty: Math.floor(qty),
+      });
+      return;
+    }
+    send(res, guard.status, {
+      ok: false,
+      status: guard.status,
+      verdict:
+        guard.code === "naked_short_blocked"
+          ? "blocked_naked_short"
+          : guard.code === "insufficient_cash_blocked"
+            ? "blocked_insufficient_cash"
+            : "blocked_unverifiable",
+      code: guard.code,
+      message: guard.message,
+      sell: guard.sell,
+      cash: guard.cash,
+      account_code: accountCode,
+      symbol,
+      side: sideRaw === "sell" ? "sell" : "buy",
+      qty: Math.floor(qty),
+    });
+    return;
   }
 
   if (req.method === "POST" && path === "/uat/send-to-market") {
@@ -3056,6 +3190,140 @@ async function stampAfterOrderCreate3(opts: {
   return { stampedAt, writeErr };
 }
 
+/**
+ * Shared preflight computation, called by both `POST /uat/preflight` (the
+ * BFF pre-submit gate) AND `uatSendToMarket` (the worker-side guard right
+ * before `OrderCreate3`). Returns the same shape both call sites consume,
+ * so the BFF and the worker never disagree on what's available.
+ *
+ * Extracted from `uatSendToMarket` on 2026-07-20 as part of the OEMS
+ * guardrail + force-correction refactor — the previous placement
+ * (audit-row-INSERT-then-guard) left rejected orders as ghost `working`
+ * rows that reserved their full quantity against the next corrected order.
+ */
+async function runUatPreflight(
+  deps: HttpApiDeps,
+  opts: {
+    accountCode: string;
+    symbol: string;
+    side: 1 | 2;
+    qty: number;
+    priceCents: number | null;
+    excludeAuditId?: string;
+    /** For market orders, derive RANDS value from `arrivalMid` if available. */
+    arrivalMidRands?: number | null;
+  },
+): Promise<
+  | { ok: true; verdict: "pass"; sell?: SellAvailability; cash?: CashAvailability; message: string }
+  | {
+      ok: false;
+      status: number;
+      code:
+        | "sell_guard_unavailable"
+        | "buy_guard_unavailable"
+        | "naked_short_blocked"
+        | "insufficient_cash_blocked";
+      message: string;
+      sell?: SellAvailability;
+      cash?: CashAvailability;
+    }
+> {
+  const db = deps.supabase;
+  if (!db) {
+    return {
+      ok: false,
+      status: 503,
+      code: "sell_guard_unavailable",
+      message: "Worker has no Supabase client",
+    };
+  }
+
+  if (opts.side === 2) {
+    let avail;
+    try {
+      avail = await availableToSell(db, opts.accountCode, opts.symbol, opts.excludeAuditId);
+    } catch (guardErr) {
+      const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
+      console.warn(
+        `[iress-ingest/uat] sell guard could not verify holdings for ${opts.symbol} on ${opts.accountCode}: ${m}`,
+      );
+      return {
+        ok: false,
+        status: 422,
+        code: "sell_guard_unavailable",
+        message: `Sell blocked: could not verify holdings for ${opts.symbol} on account ${opts.accountCode} (${m}). Try again.`,
+      };
+    }
+    if (opts.qty > avail.available) {
+      console.warn(
+        `[iress-ingest/uat] NAKED-SHORT BLOCKED ${opts.symbol} sell ${opts.qty} > available ${avail.available} on ${opts.accountCode} (held ${avail.held}, inflight ${avail.inflightSells}, src ${avail.source})`,
+      );
+      return {
+        ok: false,
+        status: 422,
+        code: "naked_short_blocked",
+        message: `Sell blocked: ${opts.qty} ${opts.symbol} exceeds available-to-sell ${avail.available} on account ${opts.accountCode} — held ${avail.held}, ${avail.inflightSells} in open sells (${avail.note}). We only sell stock we own.`,
+        sell: avail,
+      };
+    }
+    return {
+      ok: true,
+      verdict: "pass",
+      sell: avail,
+      message: `Sell guard OK: ${opts.qty} ${opts.symbol} <= available ${avail.available} on account ${opts.accountCode} (${avail.note}).`,
+    };
+  }
+
+  // BUY side
+  const capEnv = process.env.IRESS_BUY_GUARD_CAP_RANDS;
+  const capRands =
+    capEnv != null && capEnv !== "" && Number.isFinite(Number(capEnv)) ? Number(capEnv) : null;
+  const buffer = Number(process.env.IRESS_MARKET_BUY_BUFFER ?? "1.02");
+  let cash;
+  try {
+    cash = await availableToBuy(db, opts.accountCode, opts.excludeAuditId, {
+      fallbackCapRands: capRands,
+    });
+  } catch (guardErr) {
+    const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
+    console.warn(
+      `[iress-ingest/uat] buy guard could not verify cash for ${opts.symbol} on ${opts.accountCode}: ${m}`,
+    );
+    return {
+      ok: false,
+      status: 422,
+      code: "buy_guard_unavailable",
+      message: `Buy blocked: could not verify cash for account ${opts.accountCode} (${m}). Try again.`,
+    };
+  }
+  const priceRands =
+    opts.priceCents != null ? opts.priceCents / 100 : undefined;
+  const orderValue =
+    priceRands != null
+      ? priceRands * opts.qty
+      : opts.arrivalMidRands != null
+        ? opts.arrivalMidRands * opts.qty * buffer
+        : null;
+  if (cash.available != null && orderValue != null && orderValue > cash.available) {
+    console.warn(
+      `[iress-ingest/uat] INSUFFICIENT-CASH BLOCKED ${opts.symbol} buy value ${orderValue.toFixed(2)} > available ${cash.available.toFixed(2)} on ${opts.accountCode} (cash ${cash.cash}, inflight ${cash.inflightBuys.toFixed(2)}, src ${cash.source})`,
+    );
+    return {
+      ok: false,
+      status: 422,
+      code: "insufficient_cash_blocked",
+      message: `Buy blocked: ${opts.symbol} value R${orderValue.toFixed(2)} exceeds available cash R${cash.available.toFixed(2)} on account ${opts.accountCode} — ${cash.note}. We only buy within available cash.`,
+      cash,
+    };
+  }
+  return {
+    ok: true,
+    verdict: "pass",
+    cash,
+    message: `Buy guard ${cash.available == null ? "ADVISORY (no cash source)" : "OK"} ${opts.symbol} value ${orderValue?.toFixed(2) ?? "?"} <= available ${cash.available?.toFixed(2) ?? "∞"} on account ${opts.accountCode} (src ${cash.source}).`,
+  };
+}
+
 async function uatSendToMarket(
   deps: HttpApiDeps,
   orderAuditId: string,
@@ -3124,84 +3392,29 @@ async function uatSendToMarket(
   const exchange = "JSE";
   const tif = "DAY";
 
-  // ── PRE-TRADE NAKED-SHORT GUARD ──────────────────────────────────────────
-  // IRESS does NOT validate oversells — pre-trade compliance is the OEMS's job
-  // (iress-v4-docs/11-mint-oems). Every UAT dispatch passes through here, so
-  // this is the single chokepoint before the broker. For a SELL, block unless
-  // the account has enough available-to-sell. Fail-closed: a lookup error blocks.
-  if (side === 2) {
-    let avail;
-    try {
-      avail = await availableToSell(db, accountCode, symbol, audit.id);
-    } catch (guardErr) {
-      const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
-      console.warn(
-        `[iress-ingest/uat] sell guard could not verify holdings for ${symbol} on ${accountCode}: ${m}`,
-      );
-      return {
-        ok: false,
-        status: 422,
-        code: "sell_guard_unavailable",
-        message: `Sell blocked: could not verify holdings for ${symbol} on account ${accountCode} (${m}). Try again.`,
-      };
-    }
-    if (qty > avail.available) {
-      console.warn(
-        `[iress-ingest/uat] NAKED-SHORT BLOCKED ${symbol} sell ${qty} > available ${avail.available} on ${accountCode} (held ${avail.held}, inflight ${avail.inflightSells}, src ${avail.source})`,
-      );
-      return {
-        ok: false,
-        status: 422,
-        code: "naked_short_blocked",
-        message: `Sell blocked: ${qty} ${symbol} exceeds available-to-sell ${avail.available} on account ${accountCode} — held ${avail.held}, ${avail.inflightSells} in open sells (${avail.note}). We only sell stock we own.`,
-      };
-    }
-    console.info(
-      `[iress-ingest/uat] sell guard OK ${symbol} ${qty} <= available ${avail.available} on ${accountCode} (src ${avail.source})`,
-    );
-  }
-
-  // ── PRE-TRADE CASH / BUYING-POWER GUARD (BUY side) ───────────────────────
-  // Mirror of the sell guard for buys. ADVISORY when no cash source exists
-  // (oems_account_c empty in UAT, no cap set) so a cash-feed gap can't brick
-  // legitimate buying; blocks only when cash is KNOWN and insufficient. Set
-  // IRESS_BUY_GUARD_CAP_RANDS to force a hard cap in UAT.
-  if (side === 1) {
-    const capEnv = process.env.IRESS_BUY_GUARD_CAP_RANDS;
-    const capRands = capEnv != null && capEnv !== "" && Number.isFinite(Number(capEnv)) ? Number(capEnv) : null;
-    const buffer = Number(process.env.IRESS_MARKET_BUY_BUFFER ?? "1.02");
-    let cash;
-    try {
-      cash = await availableToBuy(db, accountCode, audit.id, { fallbackCapRands: capRands });
-    } catch (guardErr) {
-      const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
-      console.warn(
-        `[iress-ingest/uat] buy guard could not verify cash for ${symbol} on ${accountCode}: ${m}`,
-      );
-      return {
-        ok: false,
-        status: 422,
-        code: "buy_guard_unavailable",
-        message: `Buy blocked: could not verify cash for account ${accountCode} (${m}). Try again.`,
-      };
-    }
-    // Value the incoming order in RANDS: LMT = qty*price; MKT = qty*last*buffer.
-    const lastRands = Number((audit.result_payload as { arrivalMid?: number } | null)?.arrivalMid) || null;
-    const orderValue = priceRands != null ? priceRands * qty : lastRands != null ? lastRands * qty * buffer : null;
-    if (cash.available != null && orderValue != null && orderValue > cash.available) {
-      console.warn(
-        `[iress-ingest/uat] INSUFFICIENT-CASH BLOCKED ${symbol} buy value ${orderValue.toFixed(2)} > available ${cash.available.toFixed(2)} on ${accountCode} (cash ${cash.cash}, inflight ${cash.inflightBuys.toFixed(2)}, src ${cash.source})`,
-      );
-      return {
-        ok: false,
-        status: 422,
-        code: "insufficient_cash_blocked",
-        message: `Buy blocked: ${symbol} value R${orderValue.toFixed(2)} exceeds available cash R${cash.available.toFixed(2)} on account ${accountCode} — ${cash.note}. We only buy within available cash.`,
-      };
-    }
-    console.info(
-      `[iress-ingest/uat] buy guard ${cash.available == null ? "ADVISORY (no cash source)" : "OK"} ${symbol} value ${orderValue?.toFixed(2) ?? "?"} <= available ${cash.available?.toFixed(2) ?? "∞"} on ${accountCode} (src ${cash.source})`,
-    );
+  // ── PRE-TRADE NAKED-SHORT + CASH GUARD ─────────────────────────────────────
+  // 2026-07-20: shared with the new `POST /uat/preflight` endpoint via
+  // `runUatPreflight()` — both paths compute the exact same verdict so the
+  // BFF pre-submit gate and the worker submit-time gate can never disagree.
+  // (See the comment on `runUatPreflight` above for the rationale.)
+  const guard = await runUatPreflight(deps, {
+    accountCode,
+    symbol,
+    side: side as 1 | 2,
+    qty,
+    priceCents: audit.price_cents ?? null,
+    excludeAuditId: audit.id,
+    arrivalMidRands:
+      Number((audit.result_payload as { arrivalMid?: number } | null)?.arrivalMid) || null,
+  });
+  if (!guard.ok) {
+    return {
+      ok: false,
+      status: guard.status,
+      code: guard.code,
+      message: guard.message,
+      extra: { sell: guard.sell, cash: guard.cash },
+    };
   }
 
   // IDEMPOTENCY: re-use any pre-existing tag from the audit payload, else mint a UUID.

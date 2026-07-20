@@ -54,10 +54,14 @@ export default function NewsPage() {
   });
   const items = newsQ.data?.items ?? [];
 
-  // JSE SENS announcements from the IRESS PROD feed (NewsVendorGet passthrough).
-  // Dormant until Charles entitles the SENS vendor — returns 0 rows today, so the
-  // SENS tab falls back to the (empty) /api/news bucket. Lights up automatically
-  // the moment the feed delivers, no further code change needed.
+  // JSE SENS announcements from the IRESS PROD feed (`NewsHeadlineGet`
+  // passthrough, captured envelope 2026-07-20 — see
+  // `wealth-navigator/docs/SENS_NEWSHEADLINE_WIRE.md`).
+  //
+  // The vendor code for this CT build is `SENSD` ("SENS NEWS DELAYED");
+  // `SENS` (real-time) is not entitled yet. The probe returns real
+  // announcements as long as the worker is on the prod market-data
+  // session (default on Railway).
   const sensQ = useQuery<{
     ok?: boolean;
     headlines?: Array<{
@@ -69,11 +73,26 @@ export default function NewsPage() {
       relatedCodes?: string[];
       storyPreview?: string;
     }>;
+    dataRowCount?: number;
+    error?: { code?: string; message?: string } | null;
   }>({
     queryKey: ["iress-sens"],
     queryFn: async () => {
-      const r = await fetch("/api/iress/news?vendor=SENS&pageSize=50", { cache: "no-store" });
-      if (!r.ok) return { ok: false, headlines: [] };
+      // Default the window to today's UTC trading day so the call never
+      // gets a 0-row "no time anchor" reply; the operator can override via
+      // ?dateFrom=YYYY-MM-DDTHH:MM:SS if they want an older day.
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const y = now.getUTCFullYear();
+      const m = pad(now.getUTCMonth() + 1);
+      const d = pad(now.getUTCDate());
+      const dateFrom = `${y}-${m}-${d}T00:00:00`;
+      const dateTo = `${y}-${m}-${d}T23:59:59`;
+      const r = await fetch(
+        `/api/iress/news?vendor=SENSD&pageSize=50&dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`,
+        { cache: "no-store" },
+      );
+      if (!r.ok) return { ok: false, headlines: [], dataRowCount: 0, error: { code: "http_error", message: `HTTP ${r.status}` } };
       return r.json();
     },
     enabled: realDataOnly,
@@ -178,9 +197,12 @@ export default function NewsPage() {
         title={`News tape · ${filtered.length} items`}
         db="retail"
         // Tab-aware: All/Wires = external (RSS + Alliance wire); SENS = the IRESS
-        // PROD news vendor (IRESS·PROD once it delivers, blocked-vendor while dormant).
+        // PROD news vendor (`NewsHeadlineGet` passthrough). When items flow
+        // we label the source `iress`; when the entitlement is off or the
+        // window has no rows we label `blocked-vendor` so the operator
+        // sees the honest empty state.
         dataSource={tab === "sens" ? (sens.length > 0 ? "iress" : "blocked-vendor") : "external"}
-        endpoint="GET /api/news"
+        endpoint={tab === "sens" ? "GET /api/iress/news" : "GET /api/news"}
         noPadding
         className="flex h-[calc(100vh-220px)] min-h-0 flex-col"
       >
@@ -201,8 +223,15 @@ export default function NewsPage() {
           ) : filtered.length === 0 ? (
             <EmptyDataState
               message="No news items ingested."
-              hint={newsQ.data?.message ?? "SENS requires the JSE SENS Web Feed subscription. Wires require Reuters / Bloomberg / Moneyweb contracts."}
-              badgeLabel="blocked-vendor"
+              hint={
+                // Per-tab hint: SENS tab pulls from the IRESS prod market-data
+                // session (`NewsHeadlineGet` vendor `SENSD`); the Wires tab
+                // requires Alliance / Reuters / Bloomberg contracts.
+                tab === "sens"
+                  ? "SENS reads live from `GET /api/iress/news` (worker `NewsHeadlineGet`, vendor `SENSD`). Empty usually means no announcements in the window — try a wider `dateFrom`/`dateTo`."
+                  : "Wires require Reuters / Bloomberg / Moneyweb contracts."
+              }
+              badgeLabel={tab === "sens" ? "unconfigured" : "blocked-vendor"}
             />
           ) : (
             <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))] overflow-hidden">
