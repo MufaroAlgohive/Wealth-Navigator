@@ -4,7 +4,8 @@
  * Research note detail (read view) — the institutional note: thesis, triggers,
  * fundamentals, valuation-vs-peers, management view and the IC log. CURRENT
  * price + UPSIDE are live (from /api/quotes); the 90-day chart pulls
- * /api/intraday and overlays the trigger levels.
+ * IRESS-PROD daily closes via /api/company-analysis/[sym]/chart?range=3M
+ * (Yahoo fallback only when IRESS is empty/unanchored) and overlays triggers.
  */
 
 import { Pencil, Send } from "lucide-react";
@@ -26,7 +27,7 @@ import {
   medianOf,
   moneyR,
   signedPct,
-  useIntradaySeries,
+  usePriceHistorySeries,
   useQuotes,
 } from "./ui";
 
@@ -62,6 +63,15 @@ function fmtDate(iso: string | null | undefined): string {
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/** Display a fundamentals cell; append % when the row unit is percent. */
+function fmtFundCell(raw: unknown, unit?: string): string {
+  if (raw == null || raw === "" || raw === "—") return "—";
+  const s = String(raw).trim();
+  if (!s || s === "—") return "—";
+  if (unit === "%" && !s.includes("%") && /^-?\d+(\.\d+)?$/.test(s)) return `${s}%`;
+  return s;
+}
+
 /** Undo double-escaped HTML entities in stored note fields (e.g. "BUY &amp; HOLD"). */
 function decodeEntities(s: string | null | undefined): string {
   if (!s) return "";
@@ -92,7 +102,7 @@ export function NoteDetail({
 }) {
   const th = note.thesis ?? {};
   const quotes = useQuotes([note.symbol]);
-  const series = useIntradaySeries(note.symbol);
+  const series = usePriceHistorySeries(note.symbol);
   const current = quotes.data?.[note.symbol.toUpperCase()]?.last ?? null;
   const priceLoading = quotes.isLoading;
   const target = typeof th.targetPrice === "number" ? th.targetPrice : null;
@@ -190,11 +200,19 @@ export function NoteDetail({
       <div className="grid gap-5 lg:grid-cols-[1.6fr_1fr]">
         <GlassSection
           title="Price · 90D with triggers"
-          dataSource="hybrid"
+          dataSource={
+            series.data?.source === "iress"
+              ? "iress"
+              : series.data?.source === "yahoo"
+                ? "yahoo"
+                : "hybrid"
+          }
           subtitle={
-            series.data?.source === "unavailable" || (series.data?.points.length ?? 0) === 0
-              ? "Live series pending — trigger levels shown"
-              : undefined
+            series.isLoading
+              ? "Loading daily series…"
+              : series.data?.source === "unavailable" || (series.data?.points.length ?? 0) === 0
+                ? "Daily series pending — trigger levels shown"
+                : undefined
           }
           className="flex h-[280px] flex-col"
         >
@@ -323,26 +341,26 @@ export function NoteDetail({
                           {f.unit ? ` (${f.unit})` : ""}
                         </td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                          {f.prior}
+                          {fmtFundCell(f.prior, f.unit)}
                         </td>
                         <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
-                          {f.current}
+                          {fmtFundCell(f.current, f.unit)}
                         </td>
                         {years.length > 0 ? (
                           <>
                             <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                              {years[0] !== undefined && years[0] !== "" ? String(years[0]) : "—"}
+                              {fmtFundCell(years[0], f.unit)}
                             </td>
                             <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                              {years[1] !== undefined && years[1] !== "" ? String(years[1]) : "—"}
+                              {fmtFundCell(years[1], f.unit)}
                             </td>
                             <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                              {years[2] !== undefined && years[2] !== "" ? String(years[2]) : "—"}
+                              {fmtFundCell(years[2], f.unit)}
                             </td>
                           </>
                         ) : (
                           <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                            {f.forecast}
+                            {fmtFundCell(f.forecast, f.unit)}
                           </td>
                         )}
                         <td className="px-5 py-2">

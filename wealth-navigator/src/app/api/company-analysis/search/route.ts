@@ -41,19 +41,23 @@ async function searchSaUniverse(q: string): Promise<SymbolHit[]> {
     const sb = createRetailServiceRoleClient();
     const { data, error } = await sb
       .from("securities_c")
-      .select("symbol,name,sector")
+      .select("symbol,name,sector,isin")
       .or(`symbol.ilike.%${safe}%,name.ilike.%${safe}%`)
       .order("market_cap", { ascending: false, nullsFirst: false })
       .limit(8);
     if (error || !data) return [];
-    return (data as Array<{ symbol: string; name: string | null }>).map((r) => ({
-      symbol: r.symbol,
-      display: bareCode(r.symbol),
-      name: r.name ?? bareCode(r.symbol),
-      exchange: "JSE",
-      type: "EQUITY",
-      source: "iress" as const,
-    }));
+    return (data as Array<{ symbol: string; name: string | null; sector: string | null; isin: string | null }>).map(
+      (r) => ({
+        symbol: r.symbol,
+        display: bareCode(r.symbol),
+        name: r.name ?? bareCode(r.symbol),
+        exchange: "JSE",
+        type: "EQUITY",
+        source: "iress" as const,
+        sector: r.sector,
+        isin: r.isin,
+      }),
+    );
   } catch {
     return [];
   }

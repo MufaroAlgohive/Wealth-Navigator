@@ -17,6 +17,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
@@ -46,6 +47,8 @@ export function ResearchLibraryPage({
   viewerName: string | null;
 }) {
   const qc = useQueryClient();
+  const searchParams = useSearchParams();
+  const noteFromUrl = searchParams.get("note");
   const notesQuery = useQuery<{ notes: ResearchNote[]; notice?: string }>({
     queryKey: ["ric-notes"],
     refetchInterval: 30_000,
@@ -75,12 +78,17 @@ export function ResearchLibraryPage({
     );
   });
 
-  // Keep a valid selection.
+  // Keep a valid selection; honour ?note= deep links from IC agenda.
   React.useEffect(() => {
     if (mode.kind !== "view") return;
+    if (noteFromUrl && notes.some((n) => n.id === noteFromUrl)) {
+      setSelectedId(noteFromUrl);
+      setFilter("all");
+      return;
+    }
     if (selectedId && notes.some((n) => n.id === selectedId)) return;
     setSelectedId(filtered[0]?.id ?? notes[0]?.id ?? null);
-  }, [notes, filtered, selectedId, mode.kind]);
+  }, [notes, filtered, selectedId, mode.kind, noteFromUrl]);
 
   const selected = notes.find((n) => n.id === selectedId) ?? null;
   const approvedCount = notes.filter((n) => n.status === "approved").length;

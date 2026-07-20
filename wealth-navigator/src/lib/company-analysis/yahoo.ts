@@ -453,6 +453,7 @@ const RANGE_CFG: Record<string, { yr: string; interval: string; years: number; s
   "1D": { yr: "1d", interval: "5m", years: 0 },
   "1W": { yr: "5d", interval: "30m", years: 0 },
   "1M": { yr: "1mo", interval: "1d", years: 1 / 12 },
+  "3M": { yr: "3mo", interval: "1d", years: 0.25 },
   "6M": { yr: "6mo", interval: "1d", years: 0.5 },
   YTD: { yr: "ytd", interval: "1d", years: 0.5 },
   "1Y": { yr: "1y", interval: "1d", years: 1 },
@@ -596,6 +597,9 @@ export interface SymbolHit {
   /** "EQUITY" | "ETF". */
   type: string;
   source: "iress" | "yahoo";
+  /** Present when the hit came from securities_c (SA universe). */
+  sector?: string | null;
+  isin?: string | null;
 }
 
 /**

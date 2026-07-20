@@ -13,11 +13,20 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Calendar, Check, MinusCircle, Rocket, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import { Calendar, Check, ExternalLink, MinusCircle, Rocket, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import Link from "next/link";
 import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
+import {
+  agendaKindForNote,
+  agendaKindForRebalance,
+  icRebalanceActionLabel,
+  icResearchApproveLabel,
+  linkedNoteForRebalance,
+  linkedRebalanceForNote,
+} from "./ic-agenda";
 import type { ProposedHolding, RebalanceRequest, ResearchNote, ResearchPerms } from "./types";
 import { ActionBadge, RatingBadge, moneyR, rebalanceCodeMap, signedPct, useQuotes, weightPct } from "./ui";
 
@@ -143,7 +152,9 @@ export function InvestmentCommitteePage({
                     key={r.id}
                     req={r}
                     code={rebCodes.get(r.id) ?? "REB"}
+                    linkedNote={linkedNoteForRebalance(r, agendaNotes)}
                     canApprove={perms.approveRebalance}
+                    canApproveNote={perms.approveNote}
                     canVote={perms.approveRebalance}
                     viewerEmail={viewerEmail}
                     onChanged={refresh}
@@ -153,6 +164,7 @@ export function InvestmentCommitteePage({
                   <ResearchAgendaItem
                     key={n.id}
                     note={n}
+                    linkedRebalance={linkedRebalanceForNote(n, pendingReqs)}
                     perms={perms}
                     viewerEmail={viewerEmail}
                     onChanged={refresh}
@@ -364,23 +376,31 @@ function useVote() {
 function RebalanceAgendaItem({
   req,
   code,
+  linkedNote,
   canApprove,
+  canApproveNote,
   canVote,
   viewerEmail,
   onChanged,
 }: {
   req: RebalanceRequest;
   code: string;
+  linkedNote?: ResearchNote;
   canApprove: boolean;
+  canApproveNote: boolean;
   canVote: boolean;
   viewerEmail: string | null;
   onChanged: () => void;
 }) {
   const { busy, go } = useTransition("rebalance");
+  const noteTransition = useTransition("note");
   const vote = useVote();
   const [open, setOpen] = React.useState(false);
   const rows = Array.isArray(req.proposed_composition) ? req.proposed_composition : [];
   const changes = rows.filter((r) => r.action && r.action !== "hold").length;
+  const kind = agendaKindForRebalance(req, linkedNote ? [linkedNote] : []);
+  const actionLabel = icRebalanceActionLabel(kind);
+  const canCombinedApprove = kind === "both" && canApprove && canApproveNote && linkedNote;
 
   const votes = req.votes ?? [];
   const tally =
@@ -388,7 +408,13 @@ function RebalanceAgendaItem({
   const myVote = viewerEmail
     ? votes.find((v) => v.voter_email.toLowerCase() === viewerEmail.toLowerCase())?.vote ?? null
     : null;
-  const busyAny = busy != null || vote.busy != null;
+  const busyAny = busy != null || vote.busy != null || noteTransition.busy != null;
+
+  async function approveBoth() {
+    if (!linkedNote) return;
+    await noteTransition.go(linkedNote.id, "approved", onChanged, "IC approved with rebalance");
+    await go(req.id, "ic_approved", onChanged, "IC approved with research");
+  }
 
   // Per-member vote state for the committee-member pills (matches the Lovable
   // spec's "YO TM LN" row under the Vote: heading). The viewer's own pill is
@@ -449,13 +475,31 @@ function RebalanceAgendaItem({
           </span>
         </div>
         <div className="flex items-center gap-3">
+          {linkedNote ? (
+            <Link
+              href={`/oems/research?note=${encodeURIComponent(linkedNote.id)}`}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+            >
+              View research <ExternalLink className="h-3 w-3" />
+            </Link>
+          ) : null}
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
             className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
           >
-            {open ? "Hide" : "Open"} ▾
+            {open ? "Hide" : actionLabel} ▾
           </button>
+          {kind === "both" ? (
+            <button
+              type="button"
+              disabled={!canCombinedApprove || busyAny}
+              onClick={approveBoth}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            >
+              <Check className="h-3.5 w-3.5" /> {actionLabel}
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={!canApprove || busyAny}
@@ -581,18 +625,37 @@ function ApprovedItem({
 
 function ResearchAgendaItem({
   note,
+  linkedRebalance,
   perms,
   viewerEmail,
   onChanged,
 }: {
   note: ResearchNote;
+  linkedRebalance?: RebalanceRequest;
   perms: ResearchPerms;
   viewerEmail: string | null;
   onChanged: () => void;
 }) {
+  void viewerEmail;
   const qc = useQueryClient();
   const { busy, go } = useTransition("note");
+  const rebalanceTransition = useTransition("rebalance");
   const [voting, setVoting] = React.useState<string | null>(null);
+  const kind = agendaKindForNote(note, linkedRebalance ? [linkedRebalance] : []);
+  const approveLabel = icResearchApproveLabel(kind);
+  const canCombinedApprove =
+    kind === "both" ? perms.approveNote && perms.approveRebalance : perms.approveNote;
+  const busyAny = busy != null || rebalanceTransition.busy != null;
+
+  async function handleApprove() {
+    if (kind === "both" && linkedRebalance && perms.approveRebalance) {
+      await go(note.id, "approved", onChanged, "IC approved with rebalance");
+      await rebalanceTransition.go(linkedRebalance.id, "ic_approved", onChanged, "IC approved with research");
+      return;
+    }
+    await go(note.id, "approved", onChanged, "IC approved");
+  }
+
   const th = note.thesis ?? {};
   const quotes = useQuotes([note.symbol]);
   const current = quotes.data?.[note.symbol.toUpperCase()]?.last ?? null;
@@ -646,6 +709,12 @@ function ResearchAgendaItem({
           )}
           {th.analystName && <span>Analyst {th.analystName}</span>}
           {th.horizon && <span>Horizon {th.horizon}</span>}
+          <Link
+            href={`/oems/research?note=${encodeURIComponent(note.id)}`}
+            className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+          >
+            View research <ExternalLink className="h-3 w-3" />
+          </Link>
         </div>
       </div>
       {th.bull && <p className="mt-2 text-xs leading-relaxed text-foreground/80">{th.bull}</p>}
@@ -684,7 +753,7 @@ function ResearchAgendaItem({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            disabled={!perms.approveNote || busy != null}
+            disabled={!perms.approveNote || busyAny}
             onClick={() => go(note.id, "rejected", onChanged, "IC rejected")}
             className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
           >
@@ -692,11 +761,11 @@ function ResearchAgendaItem({
           </button>
           <button
             type="button"
-            disabled={!perms.approveNote || busy != null}
-            onClick={() => go(note.id, "approved", onChanged, "IC approved")}
+            disabled={!canCombinedApprove || busyAny}
+            onClick={handleApprove}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
-            <Check className="h-3.5 w-3.5" /> Approve to Rebalance
+            <Check className="h-3.5 w-3.5" /> {approveLabel}
           </button>
         </div>
       </div>

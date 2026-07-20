@@ -36,6 +36,7 @@ export const dynamic = "force-dynamic";
 const RANGE_DAYS: Record<string, number> = {
   "5D": 8,
   "1M": 33,
+  "3M": 100,
   "6M": 190,
   "1Y": 370,
   "5Y": 1830,

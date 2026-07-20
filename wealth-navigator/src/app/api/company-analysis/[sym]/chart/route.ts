@@ -27,6 +27,7 @@ export const dynamic = "force-dynamic";
 const IRESS_INTRADAY_RANGES = new Set(["1D", "1W"]);
 const IRESS_RANGE_DAYS: Record<string, number> = {
   "1M": 33,
+  "3M": 100,
   "6M": 190,
   "1Y": 370,
   "3Y": 1100,
