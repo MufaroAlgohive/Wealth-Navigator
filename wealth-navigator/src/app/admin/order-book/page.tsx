@@ -146,7 +146,7 @@ export default function OrderBookPage() {
             <UatBanner />
             <UatOrderTicket onPlaced={() => setUatRefresh((n) => n + 1)} />
             <UatTestRunner />
-            <UatBasketBook />
+            <UatBasketBook key={uatRefresh} />
             <div className="rounded-xl border border-border">
               <button
                 type="button"
