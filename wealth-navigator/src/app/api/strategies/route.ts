@@ -212,14 +212,20 @@ async function loadRetailStrategies(
     positions.set(posKey, pos);
   }
 
-  const agg = new Map<string, { aum: number; users: Set<string> }>();
+  // `cash` tracks the strategy's uninvested sleeve (execution buffer +
+  // rebalance residual) separately from `aum` — same underlying cents, just
+  // also kept as its own running total so the UI can show "how much of this
+  // strategy's AUM is sitting in cash right now" (e.g. Yield holds a real
+  // cash position between rebalances) without re-deriving it from AUM.
+  const agg = new Map<string, { aum: number; cash: number; users: Set<string> }>();
   for (const [, pos] of positions) {
     let bufferCents = 0;
     pos.txIds.forEach((txId) => {
       bufferCents += bufferByTxId.get(txId) ?? 0;
     });
-    const a = agg.get(pos.strategyId) ?? { aum: 0, users: new Set<string>() };
+    const a = agg.get(pos.strategyId) ?? { aum: 0, cash: 0, users: new Set<string>() };
     a.aum += pos.positionsCents + bufferCents;
+    a.cash += bufferCents;
     a.users.add(pos.userId);
     agg.set(pos.strategyId, a);
   }
@@ -229,7 +235,10 @@ async function loadRetailStrategies(
     const residualCents = residualByPos.get(posKey) ?? 0;
     if (!residualCents) continue;
     const a = agg.get(pos.strategyId);
-    if (a) a.aum += residualCents;
+    if (a) {
+      a.aum += residualCents;
+      a.cash += residualCents;
+    }
   }
   // Strategy-level YTD and Day P&L% are the model's own chain-preserved
   // return (from the guarded daily publisher) — NOT derived from an
@@ -253,9 +262,10 @@ async function loadRetailStrategies(
   }
 
   const view = strategies.map((s) => {
-    const a = agg.get(s.id) ?? { aum: 0, users: new Set<string>() };
+    const a = agg.get(s.id) ?? { aum: 0, cash: 0, users: new Set<string>() };
     // basket_value / pnl are integer CENTS in retail (see /api/client-book).
     const aumR = a.aum / 100;
+    const cashR = a.cash / 100;
     const day1Pct = day1PctByStrategy.get(s.id) ?? null;
     const dayPnlR = day1Pct != null ? aumR * (day1Pct / 100) : 0;
     const sector = String(s.sector ?? "").toLowerCase();
@@ -297,6 +307,11 @@ async function loadRetailStrategies(
       benchmark: s.benchmark_name ?? s.benchmark_symbol ?? "—",
       aum: aumR,
       dayPnl: dayPnlR,
+      // Live cash sleeve (execution buffer + rebalance residual) held by
+      // this strategy's real positions right now — e.g. Yield genuinely
+      // sits on cash between rebalances. Same underlying cents as the
+      // portion of `aum` that isn't in securities, exposed separately.
+      cash: cashR,
       // MTD P&L + cash weight aren't computed from the retail aggregation —
       // return null so the UI renders "—" rather than a fake R0.00 / 0.0%.
       pnlMtd: null,

@@ -36,6 +36,7 @@ interface StrategyRow {
   manager: string | null;
   benchmark: string | null;
   aum: number; // Rands
+  cash: number; // Rands — execution buffer + rebalance residual held right now
   dayPnl: number; // Rands
   pnlMtd: number | null; // Rands — null when not computed (shows "—")
   ytd: number | null; // percent — null when no cost basis (shows "—")
@@ -258,7 +259,14 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
         >
           {s.status}
         </Pill>
-        <HoldingLogoStack holdings={s.holdingsPreview ?? []} />
+        <div className="flex items-center gap-2">
+          {s.cash > 0 && (
+            <span className="text-caption whitespace-nowrap" title="Execution buffer + rebalance residual held right now">
+              Cash {formatZAR(s.cash)}
+            </span>
+          )}
+          <HoldingLogoStack holdings={s.holdingsPreview ?? []} />
+        </div>
       </div>
     </button>
   );
