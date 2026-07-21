@@ -1,10 +1,15 @@
 /**
  * GET /api/strategies/returns
  *
- * Per-strategy daily NAV series (retail `strategies_returns_c.basket_value`)
- * plus a JSE All Share (J203) daily benchmark aligned to the same date range,
- * for the cockpit "Strategies" performance view. The client rebases every
- * series to 100 on a common start date, so the raw basket_value unit is moot.
+ * Per-strategy daily NAV series from the canonical
+ * `strategy_returns_effective_c` view (guarded publication > promoted repair
+ * shadow > legacy nightly, per date — the same single read contract the CRM
+ * and retail app use), plus a JSE All Share (J203) daily benchmark aligned to
+ * the same date range, for the cockpit "Strategies" performance view. The
+ * client rebases every series to 100 on a common start date, so the raw
+ * basket_value unit is moot. Previously read the legacy `strategies_returns_c`
+ * table directly, which does not include repaired history or the guarded
+ * daily publications that keep YTD chain-preserved across rebalances.
  *
  * The J203 daily series comes from Yahoo `^J203.JO` (the IRESS index feed is
  * entitlement-blocked); it is fetched for the exact window the strategy data
@@ -66,8 +71,8 @@ export async function GET() {
   const db = createRetailServiceRoleClient();
   const [returnsRes, stratRes] = await Promise.all([
     db
-      .from("strategies_returns_c")
-      .select("strategy_id, as_of_date, basket_value")
+      .from("strategy_returns_effective_c")
+      .select("strategy_id, as_of_date, basket_value_cents")
       .order("as_of_date", { ascending: true })
       .limit(6000),
     db.from("strategies_c").select("id, name"),
@@ -90,10 +95,10 @@ export async function GET() {
   for (const r of (returnsRes.data ?? []) as Array<{
     strategy_id: string;
     as_of_date: string | null;
-    basket_value: number | string | null;
+    basket_value_cents: number | string | null;
   }>) {
-    if (!r.strategy_id || !r.as_of_date || r.basket_value == null) continue;
-    const v = Number(r.basket_value);
+    if (!r.strategy_id || !r.as_of_date || r.basket_value_cents == null) continue;
+    const v = Number(r.basket_value_cents);
     const t = new Date(r.as_of_date).getTime();
     if (!Number.isFinite(v) || v <= 0 || !Number.isFinite(t)) continue;
     let arr = bySid.get(r.strategy_id);

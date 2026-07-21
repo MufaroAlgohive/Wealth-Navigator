@@ -114,37 +114,68 @@ async function loadRetailStrategies(
     market.sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
 
-  // Aggregate AUM / day-PnL / YTD-PnL / investors per strategy at the latest date.
-  const agg = new Map<string, { aum: number; day: number; ytd: number; users: Set<string> }>();
-  const { data: latestRows } = await retail
-    .from("client_strategy_returns_c")
-    .select("as_of_date")
-    .order("as_of_date", { ascending: false })
-    .limit(1);
-  const asOf = (latestRows?.[0]?.as_of_date as string | undefined) ?? null;
-  if (asOf) {
-    const { data: rows } = await retail
-      .from("client_strategy_returns_c")
-      .select('strategy_id,user_id,basket_value,"1d_pnl","ytd_pnl"')
-      .eq("as_of_date", asOf);
-    for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
+  // Aggregate AUM / day-PnL / investors per strategy from the canonical
+  // per-owner effective view (client_strategy_returns_effective_latest_c) —
+  // one row per (user, strategy) at THAT owner's own latest publication date.
+  // The legacy client_strategy_returns_c approach picked a single GLOBAL
+  // latest as_of_date and filtered every strategy to exactly that date; since
+  // different strategies/clients publish on different days (repairs, ragged
+  // cron cadence, weekends), any strategy whose clients last published on a
+  // different day showed zero rows — R0 AUM, "—" YTD/Day P&L — even though
+  // real, current client data existed. The effective view has no such global
+  // date to miss: it is already "latest per owner" by construction.
+  //
+  // Day P&L (Rand) is approximated per client as
+  // complete_nav_cents × (client's own daily chain 1d_pct) / 100 — i.e. the
+  // NAV implied one trading day ago, subtracted from today's NAV. This uses
+  // each owner's own chain (fee-aware, cash-neutral), not a strategy-wide
+  // approximation, so it stays correct even when clients hold different
+  // amounts of continuity cash after a rebalance.
+  const agg = new Map<string, { aum: number; day: number; users: Set<string> }>();
+  // No single global "asOf" exists anymore (each owner publishes on their own
+  // date) — track the most recent as_of_date seen across all rows purely for
+  // the informational lastUpdatedAt field below.
+  let latestAsOf: string | null = null;
+  const { data: clientRows, error: clientRowsErr } = await retail
+    .from("client_strategy_returns_effective_latest_c")
+    .select('strategy_id,user_id,basket_value_cents,"1d_pct",as_of_date');
+  if (!clientRowsErr) {
+    for (const r of (clientRows ?? []) as Array<Record<string, unknown>>) {
       const k = String(r["strategy_id"] ?? "");
       if (!k) continue;
-      const a = agg.get(k) ?? { aum: 0, day: 0, ytd: 0, users: new Set<string>() };
-      a.aum += toNumber(r["basket_value"] as number);
-      a.day += toNumber(r["1d_pnl"] as number);
-      a.ytd += toNumber(r["ytd_pnl"] as number);
+      const a = agg.get(k) ?? { aum: 0, day: 0, users: new Set<string>() };
+      const navCents = toNumber(r["basket_value_cents"] as number);
+      const day1Pct = r["1d_pct"] == null ? 0 : toNumber(r["1d_pct"] as number);
+      a.aum += navCents;
+      a.day += navCents * (day1Pct / 100);
       if (r["user_id"]) a.users.add(String(r["user_id"]));
       agg.set(k, a);
+      const rowAsOf = r["as_of_date"] as string | null;
+      if (rowAsOf && (!latestAsOf || rowAsOf > latestAsOf)) latestAsOf = rowAsOf;
+    }
+  }
+
+  // Strategy-level YTD is the model's own chain-preserved return (from the
+  // guarded daily publisher) — NOT derived from an aggregate client cost
+  // basis. A rebalance never resets this; it is the same number the CRM and
+  // the retail app show for the strategy.
+  const ytdByStrategy = new Map<string, number>();
+  const { data: strategyReturnRows, error: strategyReturnErr } = await retail
+    .from("strategy_returns_effective_latest_c")
+    .select("strategy_id,ytd_pct");
+  if (!strategyReturnErr) {
+    for (const r of (strategyReturnRows ?? []) as Array<Record<string, unknown>>) {
+      const k = String(r["strategy_id"] ?? "");
+      if (!k) continue;
+      const y = r["ytd_pct"];
+      if (y != null) ytdByStrategy.set(k, toNumber(y as number));
     }
   }
 
   const view = strategies.map((s) => {
-    const a = agg.get(s.id) ?? { aum: 0, day: 0, ytd: 0, users: new Set<string>() };
+    const a = agg.get(s.id) ?? { aum: 0, day: 0, users: new Set<string>() };
     // basket_value / pnl are integer CENTS in retail (see /api/client-book).
     const aumR = a.aum / 100;
-    const ytdR = a.ytd / 100;
-    const cost = aumR - ytdR;
     const sector = String(s.sector ?? "").toLowerCase();
     const kind = sector.includes("money")
       ? "money_market"
@@ -187,9 +218,10 @@ async function loadRetailStrategies(
       // MTD P&L + cash weight aren't computed from the retail aggregation —
       // return null so the UI renders "—" rather than a fake R0.00 / 0.0%.
       pnlMtd: null,
-      // YTD needs a cost basis; with no subscribed capital there's nothing to
-      // annualise, so null → "—" instead of an implied-flat 0.00%.
-      ytd: cost > 0 ? (ytdR / cost) * 100 : null,
+      // The strategy's own chain-preserved YTD (guarded daily publisher) —
+      // independent of which clients are currently invested, and never reset
+      // by a rebalance. null only if the strategy has never published.
+      ytd: ytdByStrategy.has(s.id) ? (ytdByStrategy.get(s.id) as number) : null,
       cashWeight: null,
       nav: aumR,
       investorCount: a.users.size,
@@ -211,7 +243,7 @@ async function loadRetailStrategies(
     market,
     source: "supabase",
     count: view.length,
-    lastUpdatedAt: asOf ? new Date(asOf).toISOString() : null,
+    lastUpdatedAt: latestAsOf ? new Date(latestAsOf).toISOString() : null,
   };
 }
 
