@@ -185,7 +185,7 @@ export function UatBasketBook() {
                     </tr>
                     {open && (
                       <tr className="border-b border-border/30 last:border-b-0">
-                        <td colSpan={COLS} className="bg-card/20 px-3">
+                        <td colSpan={COLS} className="p-0">
                           <BasketDetail group={g} onDeferred={deferred} />
                         </td>
                       </tr>

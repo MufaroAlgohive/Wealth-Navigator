@@ -13,6 +13,9 @@ interface ExecutionApiRow {
   state: string;
   filled_pct: number;
   avg_fill_price: number | null;
+  limit_price: number | null;
+  slippage_cents: number | null;
+  day1_pnl_cents: number | null;
 }
 interface ExecutionApiResponse {
   ok: boolean;
@@ -20,12 +23,17 @@ interface ExecutionApiResponse {
 }
 
 /**
- * Basket drill-down — CRM orderbook.html's exact pattern: two tables shown
- * together ("Holdings under {strategy}" grouped by security, "Investors in
- * {strategy}" one row per investor), plus a per-security IRESS status pill.
- * Clicking an investor row filters the securities table to that investor's
- * own holdings (mirrors CRM's toggle-to-revert behavior) and shows a small
- * stat strip for that investor's own P&L subtotal.
+ * Basket drill-down — CRM orderbook.html's basket-> securities/investors
+ * pattern, flattened into the SAME table the basket header row lives in
+ * (no nested bordered "panel" — attaches directly under the header row,
+ * matching the upper ExecutionView panel's single-continuous-table look).
+ *
+ * Each security is its own collapsed aggregate row (qty/avg fill/order
+ * value/last summed across whoever holds it) — click it to expand the
+ * individual underlying holdings/orders that make up that total, each with
+ * its own execution-level detail (Slip / Day-1 P&L, Limit, IRESS status).
+ * Those three columns are per-order attributes, not summable across
+ * different holders, so they only render once expanded.
  *
  * Execution rows are fetched lazily (only while this component is mounted,
  * i.e. only while the basket is expanded) — most baskets have never been
@@ -37,6 +45,7 @@ export function BasketDetail({
   onDeferred,
 }: { group: StrategyGroup; onDeferred: (label: string) => void }) {
   const [selectedInvestorKey, setSelectedInvestorKey] = React.useState<string | null>(null);
+  const [expandedSecurities, setExpandedSecurities] = React.useState<Set<string>>(new Set());
 
   const { data: execData } = usePolling<ExecutionApiResponse>(
     `/api/admin/orderbook/execution?book_id=${encodeURIComponent(group.strategy)}`,
@@ -56,6 +65,9 @@ export function BasketDetail({
         state: r.state,
         filled_pct: r.filled_pct,
         avg_fill_price: r.avg_fill_price,
+        limit_price: r.limit_price,
+        slippage_cents: r.slippage_cents,
+        day1_pnl_cents: r.day1_pnl_cents,
       };
       if (r.holding_id) m.set(r.holding_id, slice);
       m.set(r.id, slice);
@@ -80,6 +92,12 @@ export function BasketDetail({
   }, [group.rows]);
 
   const toggleInvestor = (key: string) => setSelectedInvestorKey((prev) => (prev === key ? null : key));
+  const toggleSecurity = (key: string) =>
+    setExpandedSecurities((prev) => {
+      const n = new Set(prev);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
 
   const visibleRows = React.useMemo(
     () =>
@@ -105,48 +123,48 @@ export function BasketDetail({
   }, [group.rows, selectedInvestorKey]);
 
   return (
-    <div className="space-y-3 py-3">
-      <div>
-        <div className="px-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Holdings under {group.strategy}
-          {selectedInvestor && (
-            <span className="ml-2 normal-case text-foreground">— filtered to {selectedInvestor.client}</span>
-          )}
-        </div>
-        <div className="overflow-x-auto rounded-lg border border-border/60">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="border-b border-border/60 bg-card/40">
-                {[
-                  "Instrument",
-                  "Side",
-                  "Qty",
-                  "Avg Fill",
-                  "Order Value",
-                  "Last",
-                  "Client P&L",
-                  "MINT P&L",
-                  "IRESS",
-                ].map((c) => (
-                  <th key={c} className={th}>
-                    {c}
-                  </th>
-                ))}
+    <div className="space-y-3 pb-3">
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse">
+          <thead>
+            <tr className="border-b border-border/60 bg-card/40">
+              {[
+                "Instrument",
+                "Side",
+                "Qty",
+                "Avg Fill",
+                "Order Value",
+                "Last",
+                "Slip / Day-1 P&L",
+                "Limit",
+                "IRESS",
+              ].map((c) => (
+                <th key={c} className={th}>
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {securities.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                  No holdings.
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {securities.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="px-3 py-6 text-center text-sm text-muted-foreground">
-                    No holdings.
-                  </td>
-                </tr>
-              ) : (
-                securities.map((sec) => <SecurityRow key={sec.key} sec={sec} onDeferred={onDeferred} />)
-              )}
-            </tbody>
-          </table>
-        </div>
+            ) : (
+              securities.map((sec) => (
+                <SecurityRow
+                  key={sec.key}
+                  sec={sec}
+                  expanded={expandedSecurities.has(sec.key)}
+                  onToggle={() => toggleSecurity(sec.key)}
+                  onDeferred={onDeferred}
+                />
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
 
       {selectedInvestor && selectedStats && (
@@ -165,9 +183,13 @@ export function BasketDetail({
       <div>
         <div className="px-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
           Investors in {group.strategy}
-          <span className="ml-2 normal-case text-muted-foreground/70">
-            (click a row to see this client&apos;s individual fills)
-          </span>
+          {selectedInvestor ? (
+            <span className="ml-2 normal-case text-foreground">— filtered to {selectedInvestor.client}</span>
+          ) : (
+            <span className="ml-2 normal-case text-muted-foreground/70">
+              (click a row to see this client&apos;s individual fills)
+            </span>
+          )}
         </div>
         <InvestorFilterTable
           investors={investors}
