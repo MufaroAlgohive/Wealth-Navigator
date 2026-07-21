@@ -266,7 +266,10 @@ async function loadRetailStrategies(
     const a = agg.get(s.id) ?? { aum: 0, cash: 0, users: new Set<string>() };
     // basket_value / pnl are integer CENTS in retail (see /api/client-book).
     const aumR = a.aum / 100;
-    const cashR = a.cash / 100;
+    // Cash as a % of AUM, not a summed Rand total — the point is "how much
+    // of this basket is currently cash", a ratio that doesn't grow just
+    // because more investors hold the strategy.
+    const cashPct = a.aum > 0 ? (a.cash / a.aum) * 100 : null;
     const day1Pct = day1PctByStrategy.get(s.id) ?? null;
     const dayPnlR = day1Pct != null ? aumR * (day1Pct / 100) : 0;
     const sector = String(s.sector ?? "").toLowerCase();
@@ -308,19 +311,18 @@ async function loadRetailStrategies(
       benchmark: s.benchmark_name ?? s.benchmark_symbol ?? "—",
       aum: aumR,
       dayPnl: dayPnlR,
-      // Rebalance residual only (the cash asset class left in the basket
-      // after a liquidation, not yet redeployed) — 0 for a strategy that
-      // hasn't rebalanced or has none outstanding. Same cents as the
-      // residual portion already folded into `aum`, exposed separately.
-      cash: cashR,
-      // MTD P&L + cash weight aren't computed from the retail aggregation —
-      // return null so the UI renders "—" rather than a fake R0.00 / 0.0%.
+      // MTD P&L isn't computed from the retail aggregation — return null so
+      // the UI renders "—" rather than a fake R0.00.
       pnlMtd: null,
       // The strategy's own chain-preserved YTD (guarded daily publisher) —
       // independent of which clients are currently invested, and never reset
       // by a rebalance. null only if the strategy has never published.
       ytd: ytdByStrategy.has(s.id) ? (ytdByStrategy.get(s.id) as number) : null,
-      cashWeight: null,
+      // Rebalance residual as a % of AUM — the cash asset class left in the
+      // basket after a liquidation, not yet redeployed. null when there's no
+      // AUM to divide by; 0 (not null) when there's AUM but no residual, so
+      // "0.0%" reads as "confirmed none", same convention as everywhere else.
+      cashWeight: cashPct,
       nav: aumR,
       investorCount: a.users.size,
       holdingsCount: Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0,
