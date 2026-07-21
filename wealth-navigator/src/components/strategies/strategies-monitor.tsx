@@ -36,7 +36,7 @@ interface StrategyRow {
   manager: string | null;
   benchmark: string | null;
   aum: number; // Rands
-  cash: number; // Rands — execution buffer + rebalance residual held right now
+  cash: number; // Rands — rebalance residual only (cash asset class left after a liquidation); 0 when none
   dayPnl: number; // Rands
   pnlMtd: number | null; // Rands — null when not computed (shows "—")
   ytd: number | null; // percent — null when no cost basis (shows "—")
@@ -259,14 +259,7 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
         >
           {s.status}
         </Pill>
-        <div className="flex items-center gap-2">
-          {s.cash > 0 && (
-            <span className="text-caption whitespace-nowrap" title="Execution buffer + rebalance residual held right now">
-              Cash {formatZAR(s.cash)}
-            </span>
-          )}
-          <HoldingLogoStack holdings={s.holdingsPreview ?? []} />
-        </div>
+        <HoldingLogoStack holdings={s.holdingsPreview ?? []} />
       </div>
     </button>
   );
@@ -315,7 +308,11 @@ function StrategyDetail({ strategy, showSummary, firstReveal, onView }: { strate
           <DetailStat label="YTD" value={strategy.ytd != null ? formatPct(strategy.ytd) : "—"} tone={strategy.ytd == null ? "default" : strategy.ytd >= 0 ? "positive" : "negative"} />
           <DetailStat label="MTD P&L" value={strategy.pnlMtd != null ? formatZAR(strategy.pnlMtd) : "—"} tone={strategy.pnlMtd == null ? "default" : strategy.pnlMtd >= 0 ? "positive" : "negative"} />
           <DetailStat label="NAV" value={strategy.nav > 0 ? formatZAR(strategy.nav) : "—"} />
-          <DetailStat label="Cash" value={strategy.cashWeight != null ? `${strategy.cashWeight.toFixed(1)}%` : "—"} />
+          <DetailStat
+            label="Cash"
+            value={strategy.cash > 0 ? formatZAR(strategy.cash) : "—"}
+            tone={strategy.cash > 0 ? "primary" : "default"}
+          />
           <DetailStat label="Holdings" value={strategy.holdingsCount.toString()} />
           <DetailStat label="Investors" value={strategy.investorCount.toString()} />
           <DetailStat label="Last rebal" value={strategy.lastRebalanced || "—"} />

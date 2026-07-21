@@ -212,11 +212,13 @@ async function loadRetailStrategies(
     positions.set(posKey, pos);
   }
 
-  // `cash` tracks the strategy's uninvested sleeve (execution buffer +
-  // rebalance residual) separately from `aum` — same underlying cents, just
-  // also kept as its own running total so the UI can show "how much of this
-  // strategy's AUM is sitting in cash right now" (e.g. Yield holds a real
-  // cash position between rebalances) without re-deriving it from AUM.
+  // `cash` tracks ONLY the rebalance residual — the cash asset class left
+  // over when a holding was liquidated (sold down/out) and hasn't been
+  // redeployed into a new security yet. A basket is its securities PLUS
+  // whatever cash it's currently holding from the last rebalance, so this
+  // is the "cash asset class the basket holds after liquidation" figure,
+  // not the pre-trade execution buffer (which is reserved, not liquidated
+  // cash sitting in the basket) — deliberately excluded here.
   const agg = new Map<string, { aum: number; cash: number; users: Set<string> }>();
   for (const [, pos] of positions) {
     let bufferCents = 0;
@@ -225,7 +227,6 @@ async function loadRetailStrategies(
     });
     const a = agg.get(pos.strategyId) ?? { aum: 0, cash: 0, users: new Set<string>() };
     a.aum += pos.positionsCents + bufferCents;
-    a.cash += bufferCents;
     a.users.add(pos.userId);
     agg.set(pos.strategyId, a);
   }
@@ -307,10 +308,10 @@ async function loadRetailStrategies(
       benchmark: s.benchmark_name ?? s.benchmark_symbol ?? "—",
       aum: aumR,
       dayPnl: dayPnlR,
-      // Live cash sleeve (execution buffer + rebalance residual) held by
-      // this strategy's real positions right now — e.g. Yield genuinely
-      // sits on cash between rebalances. Same underlying cents as the
-      // portion of `aum` that isn't in securities, exposed separately.
+      // Rebalance residual only (the cash asset class left in the basket
+      // after a liquidation, not yet redeployed) — 0 for a strategy that
+      // hasn't rebalanced or has none outstanding. Same cents as the
+      // residual portion already folded into `aum`, exposed separately.
       cash: cashR,
       // MTD P&L + cash weight aren't computed from the retail aggregation —
       // return null so the UI renders "—" rather than a fake R0.00 / 0.0%.
