@@ -432,6 +432,8 @@ export function RebalanceBuilderPage({
         {/* working / current basket */}
         <GlassSection
           title="Current basket — click to trim / grow"
+          dataSource="hybrid"
+          db="retail"
           right={
             <button
               type="button"
@@ -497,7 +499,7 @@ export function RebalanceBuilderPage({
                   const a = actionFor(h);
                   return (
                     <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
-                      <td className="px-5 py-2 font-semibold text-primary">{h.ticker}</td>
+                      <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                       <td className="px-3 py-2 text-foreground/85">{h.name}</td>
                       <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
                       <td
@@ -562,6 +564,7 @@ export function RebalanceBuilderPage({
         {/* proposed basket */}
         <GlassSection
           title="Proposed basket"
+          dataSource="hybrid"
           subtitle={`${changes} change${changes === 1 ? "" : "s"} pending`}
           right={
             <button
@@ -620,7 +623,7 @@ export function RebalanceBuilderPage({
                         changed && "bg-primary/5",
                       )}
                     >
-                      <td className="px-5 py-2 font-semibold text-primary">{h.ticker}</td>
+                      <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                       <td className="px-3 py-2 text-foreground/85">{h.name}</td>
                       <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
                       <td className="px-3 py-2">
@@ -700,6 +703,8 @@ function InvestorImpactPanel({
   return (
     <GlassSection
       title="Affected investors — cash & shares"
+      dataSource="hybrid"
+      db="retail"
       subtitle="Read-only impact of this rebalance"
       right={
         <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-400">
@@ -863,7 +868,7 @@ function ProposalsList({
   };
 
   return (
-    <GlassSection title="Proposals — at IC or executed" endpoint="GET /api/rebalance/requests">
+    <GlassSection title="Proposals — at IC or executed" endpoint="GET /api/rebalance/requests" dataSource="supabase" db="institutional">
       {q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p>}
       {requests.length === 0 && !q.isLoading ? (
         <p className="text-caption">No proposals yet. Build one above and submit it to the IC.</p>

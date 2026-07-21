@@ -552,14 +552,18 @@ function OverviewTab({
   const analytics = useMemo(() => computeAnalytics(points), [points]);
 
   const chartEndpoint = usingHistory ? "GET /api/history" : "GET /api/intraday";
-  const chartSource: "iress" | "supabase" | "blocked-external" | "unavailable" = usingHistory
-    ? data.sub.history.entitlementBlocked
-      ? "blocked-external"
-      : data.sub.history.source === "iress"
-        ? "iress"
-        : "unavailable"
+  // 1D intraday is Yahoo-fed (stock_intraday_c); daily history is IRESS-PROD
+  // (TimeSeriesGet2), blocked → entitlement empty, else unavailable.
+  const chartSource: "iress" | "yahoo" | "blocked-external" | "unavailable" = usingHistory
+    ? data.sub.history.source === "iress"
+      ? "iress"
+      : data.sub.history.source === "yahoo"
+        ? "yahoo"
+        : data.sub.history.entitlementBlocked
+          ? "blocked-external"
+          : "unavailable"
     : data.sub.intraday.source === "supabase"
-      ? "supabase"
+      ? "yahoo"
       : "unavailable";
 
   return (
@@ -683,7 +687,7 @@ function OverviewTab({
           title="Price & volume analytics"
           subtitle="OEMS-only — computed from the loaded history"
           endpoint="client-compute"
-          dataSource={data.sub.history.source === "iress" ? "iress" : "supabase"}
+          dataSource={data.sub.history.source === "iress" ? "iress" : "yahoo"}
         >
           <div className="grid grid-cols-2 gap-px overflow-hidden sm:grid-cols-3">
             <FieldRow
@@ -902,7 +906,7 @@ function FinancialsTab({ sym: _sym, data }: { sym: string; data: AnalysisRespons
         title={`${view === "income" ? "Income statement" : view === "balance" ? "Balance sheet" : "Cash flow"} · ${period === "annual" ? "FY" : "FQ"}`}
         subtitle="Current period only; full financial statements require additional data sources"
         endpoint="GET /api/equities"
-        dataSource="yahoo"
+        dataSource="blocked-vendor"
       >
         <div className="glass-inset overflow-hidden">
           <div className="overflow-x-auto scrollbar-thin">
@@ -1422,7 +1426,7 @@ function ModelingTab({ sym, lastRands }: { sym: string; lastRands: number | null
         title="Context"
         subtitle="Inputs vs current last"
         endpoint="client-compute"
-        dataSource="unconfigured"
+        dataSource="hybrid"
       >
         <div className="grid grid-cols-1 gap-px overflow-hidden sm:grid-cols-2">
           <FieldRow k="Symbol" v={sym} />

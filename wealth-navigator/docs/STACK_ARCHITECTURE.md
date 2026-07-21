@@ -175,6 +175,7 @@ flowchart LR
 | Live quotes / last | Worker → `market_quotes` (+ Redis) | UI, blotter, heatmap → `/api/quotes` → Postgres |
 | Reference (instruments, curves) | Worker periodic `*Get` → tables | All OEMS pages |
 | Orders / blotter | Worker or BFF on **user action** → `orders` + audit | Blotter, compliance |
+| Order preflight (sell-guard / cash-guard) | Worker `POST /uat/preflight` returns the same `SellAvailability` / `CashAvailability` shape `uat/send-to-market` computes, **before** any audit row is written. BFF `/api/orders/{preflight,submit}` and `/api/admin/orderbook/uat-order` call this first; a blocked verdict returns 422 with no audit row, killing ghost "working" reservations at the source. Local fallback (`localPreflight` in `src/lib/orders/preflight.ts`) keeps the desk online if Railway hiccups. | All order-entry surfaces (UAT ad-hoc, bulk send-to-market, blotter dialog, future research-lab / paper-model consumers) |
 | Health / admin | Worker heartbeat row or `/api/iress/health` against worker | Integration page |
 
 ### Phased rollout

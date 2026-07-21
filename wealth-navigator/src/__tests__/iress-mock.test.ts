@@ -335,27 +335,42 @@ describe("ipsPositionGetAll1 (mock)", () => {
   });
 });
 
-describe("newsVendorGet (mock)", () => {
+describe("newsHeadlineGet (mock)", () => {
   it("returns an empty page with ErrorNumber=0 (T5 vendor content is seed-until-contracted)", async () => {
     // The mock must NEVER fabricate news — T5 policy is "honest empty
     // state when the source is unconfigured". The UI distinguishes a
     // configured-but-empty feed from a not-configured feed via the BFF
     // envelope, not the mock contract.
-    const res = await mockIressClient.newsVendorGet({
+    const res = await mockIressClient.newsHeadlineGet({
       Header: { SessionKey: "TEST-KEY", RequestID: "rid-news" },
-      Vendor: "SENS",
+      VendorCode: "SENSD",
+      DateTimeStart: "2026-07-20T00:00:00",
+      DateTimeEnd: "2026-07-20T23:59:59",
     });
     expect(res.Header?.ErrorNumber).toBe(0);
     expect(Array.isArray(res.DataRows)).toBe(true);
     expect(res.DataRows.length).toBe(0);
   });
 
-  it("throws IressError 25018 when the caller omits `Vendor` (mirror the live 25018)", async () => {
+  it("throws IressError 25018 when the caller omits `VendorCode` (mirror the live 25018)", async () => {
     await expect(
-      mockIressClient.newsVendorGet({
+      mockIressClient.newsHeadlineGet({
         Header: { SessionKey: "TEST-KEY", RequestID: "rid-news-no-vendor" },
-        Vendor: "",
+        VendorCode: "",
+        DateTimeStart: "2026-07-20T00:00:00",
+        DateTimeEnd: "2026-07-20T23:59:59",
       }),
-    ).rejects.toMatchObject({ code: 25018, method: "NewsVendorGet" });
+    ).rejects.toMatchObject({ code: 25018, method: "NewsHeadlineGet" });
+  });
+
+  it("throws IressError 25018 when the caller omits the date window (mirror the live 25018)", async () => {
+    await expect(
+      mockIressClient.newsHeadlineGet({
+        Header: { SessionKey: "TEST-KEY", RequestID: "rid-news-no-window" },
+        VendorCode: "SENSD",
+        DateTimeStart: "",
+        DateTimeEnd: "",
+      }),
+    ).rejects.toMatchObject({ code: 25018, method: "NewsHeadlineGet" });
   });
 });

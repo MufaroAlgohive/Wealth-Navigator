@@ -29,7 +29,7 @@ export interface NormalisedQuoteRow {
   changePct?: number;
   volume?: number;
   vwap?: number;
-  source: "live" | "seed-fallback" | "mock" | "supabase" | "unavailable";
+  source: "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "unavailable";
 }
 
 /** BFF `/api/quotes` response (subset). */
@@ -45,7 +45,7 @@ export interface BffQuotesResponse {
     change?: number;
     change_pct?: number;
     ts?: number;
-    source: "live" | "seed-fallback" | "mock" | "supabase" | "unavailable";
+    source: "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "unavailable";
   }>;
   liveCount: number;
   fallbackCount: number;

@@ -19,6 +19,11 @@ const PUBLIC_PREFIXES = [
   "/api/ticks",
   "/api/webhooks",
   "/api/cron",
+  // Ozone EFT top-up callback: session-less server-to-server POST from the
+  // payment provider, authenticated by HMAC (OZONE_WEBHOOK_SECRET) in the route,
+  // not by a Supabase session. isPublic matches exact path, so only this route
+  // opens — /api/admin/eft (admin actions) stays session-gated.
+  "/api/admin/eft/ozone-callback",
 ];
 
 function isPublic(pathname: string): boolean {

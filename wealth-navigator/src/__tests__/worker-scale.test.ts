@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chooseDisplayCents } from "../../workers/iress-ingest/src/scale";
+import { anchorHistoryToRands, chooseDisplayCents } from "../../workers/iress-ingest/src/scale";
 
 /**
  * Reference-anchored JSE price scaling. The numbers below are real cases from
@@ -50,5 +50,81 @@ describe("chooseDisplayCents", () => {
     expect(chooseDisplayCents(897.26, 89726).centsMultiplier).toBe(100);
     // 100x-mislabel → multiplier 1 (value is already cents)
     expect(chooseDisplayCents(4125, 3090).centsMultiplier).toBe(1);
+  });
+});
+
+/**
+ * `anchorHistoryToRands` resolves an IRESS price SERIES (ambiguous rands|cents)
+ * to RANDS against a known reference — the guard that stops a labelled chart
+ * rendering 100× off. NPN ≈ R4,180 → ~418000c; both a cents series and a rands
+ * series must resolve to the same ~R4,180 points.
+ */
+describe("anchorHistoryToRands", () => {
+  const ref = 418_000; // securities_c.last_price for NPN, in cents
+
+  it("resolves a CENTS series (v≈418000) to rands (~4180)", () => {
+    const a = anchorHistoryToRands(
+      [
+        { t: 1, v: 410_000 },
+        { t: 2, v: 418_000 },
+        { t: 3, v: 415_000 },
+      ],
+      ref,
+    );
+    expect(a.anchored).toBe(true);
+    expect(a.multiplier).toBe(0.01);
+    expect(a.points.map((p) => p.c)).toEqual([4100, 4180, 4150]);
+  });
+
+  it("resolves a RANDS series (v≈4180) to the SAME rands (~4180)", () => {
+    const a = anchorHistoryToRands(
+      [
+        { t: 1, v: 4100 },
+        { t: 2, v: 4180 },
+        { t: 3, v: 4150 },
+      ],
+      ref,
+    );
+    expect(a.anchored).toBe(true);
+    expect(a.multiplier).toBe(1);
+    expect(a.points.map((p) => p.c)).toEqual([4100, 4180, 4150]);
+  });
+
+  it("picks the series scale from the MEDIAN so one outlier can't flip it", () => {
+    const a = anchorHistoryToRands(
+      [
+        { t: 1, v: 418_000 },
+        { t: 2, v: 415_000 },
+        { t: 3, v: 5 }, // a single bad tick must not flip the whole series to the wrong scale
+      ],
+      ref,
+    );
+    expect(a.multiplier).toBe(0.01); // median 415000 → cents → /100
+    expect(a.points.find((p) => p.t === 2)?.c).toBe(4150);
+  });
+
+  it("reports anchored=false with no reference (caller should prefer Yahoo)", () => {
+    const a = anchorHistoryToRands([{ t: 1, v: 4180 }], 0);
+    expect(a.anchored).toBe(false);
+    expect(a.basis).toBe("no-reference");
+  });
+
+  it("reports anchored=false + empty points for an empty series", () => {
+    const a = anchorHistoryToRands([], ref);
+    expect(a.anchored).toBe(false);
+    expect(a.points).toEqual([]);
+  });
+
+  it("drops non-finite / non-positive points and keeps ascending time order", () => {
+    const a = anchorHistoryToRands(
+      [
+        { t: 3, v: 415_000 },
+        { t: 1, v: 410_000 },
+        { t: 2, v: Number.NaN },
+        { t: 4, v: -10 },
+      ],
+      ref,
+    );
+    expect(a.points.map((p) => p.t)).toEqual([1, 3]);
   });
 });

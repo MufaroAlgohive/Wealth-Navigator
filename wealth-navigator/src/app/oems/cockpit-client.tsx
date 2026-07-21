@@ -17,7 +17,7 @@ import {
   ResearchLabCanvas,
 } from "@/components/oems/primitives/glass";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
-import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
+import { DataSourceBadge, type DataSourceKind, type DbName } from "@/components/oems/primitives/data-source-badge";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { SectorTreemap } from "@/components/oems/primitives/sector-treemap";
@@ -106,7 +106,8 @@ interface EquitiesBffSector {
 }
 
 interface EquitiesBffResponse {
-  source: "retail-supabase" | "unavailable";
+  // Data-driven origin from /api/equities: Yahoo base + per-row IRESS-PROD overlay.
+  source: "hybrid" | "yahoo" | "unavailable";
   count: number;
   securities: EquitiesBffSecurity[];
   sectors: EquitiesBffSector[];
@@ -143,6 +144,8 @@ function CockpitKpi({
   live,
   accent = "default",
   action,
+  dataSource,
+  db,
 }: {
   icon?: React.ReactNode;
   label: string;
@@ -156,25 +159,31 @@ function CockpitKpi({
    * highlighted strategy.
    */
   action?: { href: Route; label: string };
+  /** Optional data-source badge (+ DB chip) shown top-right of the tile. */
+  dataSource?: DataSourceKind;
+  db?: DbName;
 }) {
   return (
     <div className="glass-kpi group relative">
-      <div className="flex items-center gap-2">
-        {icon && (
-          <div
-            className={cn(
-              "flex h-5 w-5 items-center justify-center rounded-lg",
-              accent === "positive" && "bg-up/10 text-up",
-              accent === "negative" && "bg-down/10 text-down",
-              accent === "warning" && "bg-warning/10 text-warning",
-              accent === "primary" && "bg-primary/10 text-primary",
-              accent === "default" && "bg-primary/10 text-primary",
-            )}
-          >
-            {icon}
-          </div>
-        )}
-        <p className="text-caption">{label}</p>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {icon && (
+            <div
+              className={cn(
+                "flex h-5 w-5 items-center justify-center rounded-lg",
+                accent === "positive" && "bg-up/10 text-up",
+                accent === "negative" && "bg-down/10 text-down",
+                accent === "warning" && "bg-warning/10 text-warning",
+                accent === "primary" && "bg-primary/10 text-primary",
+                accent === "default" && "bg-primary/10 text-primary",
+              )}
+            >
+              {icon}
+            </div>
+          )}
+          <p className="text-caption">{label}</p>
+        </div>
+        {(dataSource || db) && <DataSourceBadge source={dataSource ?? "supabase"} db={db} />}
       </div>
       <div
         className={cn(
@@ -415,7 +424,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // the worker mode + tick timestamps.
   const primaryWorker = workerQ.data?.workers?.[0] ?? null;
   const wsDataSource = deriveDataSource(
-    ((liveQuotes.data as unknown) as { rows?: Array<{ sym: string; last: number; ts?: number; source: "live" | "supabase" | "mock" | "seed-fallback" | "unavailable" }> })?.rows ?? [],
+    ((liveQuotes.data as unknown) as { rows?: Array<{ sym: string; last: number; ts?: number; source: "live" | "iress" | "supabase" | "mock" | "seed-fallback" | "unavailable" }> })?.rows ?? [],
     {
       liveCount: (liveQuotes.data as { liveCount?: number } | undefined)?.liveCount ?? 0,
       fallbackCount: (liveQuotes.data as { fallbackCount?: number } | undefined)?.fallbackCount ?? 0,
@@ -447,6 +456,52 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     },
     enabled: realDataOnly,
     refetchInterval: 120_000,
+    ...queryOpts("reference"),
+  });
+  // SENS-only — read from the institutional `news_item_c` table that the
+  // worker `NewsHeadlineGet(SENSD)` loop populates (env-flagged by
+  // `IRESS_NEWS_INGEST=1` + `SUPABASE_ALLOW_WRITES=1` on Railway). This
+  // path does NOT need `IRESS_MODE=live` on Vercel (the IRESS seat
+  // stays on the worker).
+  // IRESS SENS live (Path B: Vercel BFF → Railway worker → NewsHeadlineGet
+  // vendor SENSD). Window defaults to today UTC so the call always has an
+  // anchor and the server doesn't return a bare 0-row "no time window" set.
+  const sensBffQ = useQuery<{
+    ok?: boolean;
+    source: string;
+    tier?: string;
+    headlines: Array<{
+      storyId: string;
+      headline: string;
+      source: string;
+      timestamp: string;
+      ts: number;
+      category: string | null;
+      relatedCodes: string[] | null;
+      storyPreview: string | null;
+    }>;
+    dataRowCount?: number;
+    error?: { code?: string; message?: string } | null;
+    elapsedMs?: number;
+  }>({
+    queryKey: ["bff-iress-sens"],
+    queryFn: async () => {
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const y = now.getUTCFullYear();
+      const m = pad(now.getUTCMonth() + 1);
+      const d = pad(now.getUTCDate());
+      const dateFrom = `${y}-${m}-${d}T00:00:00`;
+      const dateTo = `${y}-${m}-${d}T23:59:59`;
+      const r = await fetch(
+        `/api/iress/news?vendor=SENSD&pageSize=12&dateFrom=${encodeURIComponent(dateFrom)}&dateTo=${encodeURIComponent(dateTo)}`,
+        { cache: "no-store" },
+      );
+      if (!r.ok) throw new Error(`sens ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
     ...queryOpts("reference"),
   });
   // Real USD/ZAR from the FX BFF (Frankfurter / ECB) — IRESS has no FX feed.
@@ -518,7 +573,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     ...queryOpts("live"),
   });
   const equitiesData = equitiesQ.data;
-  const equitiesAvailable = equitiesData?.source === "retail-supabase";
+  const equitiesAvailable = !!equitiesData && equitiesData.source !== "unavailable";
   const clientBook = clientBookQ.data;
   const clientBookAvailable = clientBook?.source === "retail-supabase";
   // Cap-weighted broad-market proxy from the JSE constituent universe (real data
@@ -668,6 +723,28 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       };
     });
   }, [newsBffQ.data]);
+
+  // SENS tape shape consumed by the inline `SensTape` panel. Looser than
+  // the strict `SensItem` enum from `@/types/iress` — the IRESS passthrough
+  // hands us `relatedCodes[]` (per Headline SecurityCodeList) instead of
+  // a single `ticker`, and `category` is a raw code like `"105000000"`
+  // or `"SENS"`.
+  const realSens = useMemo<Array<{ id: string; ts: number; ticker: string; issuer: string; category: string; severity: string; headline: string }>>(() => {
+    return (sensBffQ.data?.headlines ?? []).map((n) => {
+      const code = (n.relatedCodes?.[0] ?? "").toString();
+      const rawCat = (n.category ?? "SENS").toString();
+      const upCat = rawCat.toUpperCase();
+      return {
+        id: n.storyId,
+        ts: typeof n.ts === "number" ? n.ts : Date.parse(n.timestamp ?? ""),
+        ticker: code,
+        issuer: "",
+        category: upCat === "SENS" ? "SENS" : rawCat,
+        severity: upCat === "SENS" ? "regulatory" : "info",
+        headline: n.headline,
+      };
+    });
+  }, [sensBffQ.data]);
 
   // Portfolio Accounts (mock investor snippet) — each strategy stands in for an
   // "account" with its holdings value (AUM) and a performance figure for the
@@ -824,6 +901,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Layers className="h-3.5 w-3.5" />}
               label="Platform AUM"
+              dataSource="supabase"
+              db="retail"
               value={clientBookAvailable ? formatZAR(clientBook!.aum) : "—"}
               sub={
                 clientBookAvailable
@@ -841,6 +920,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Activity className="h-3.5 w-3.5" />}
               label="Day P&L"
+              dataSource="supabase"
+              db="retail"
               value={clientBookAvailable ? formatZAR(clientBook!.dayPnl) : "—"}
               sub={
                 clientBookAvailable
@@ -858,6 +939,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Lock className="h-3.5 w-3.5" />}
               label="Rebalance Locked"
+              dataSource="supabase"
+              db="institutional"
               value={portfolioQ.data?.source === "supabase" ? (portfolioQ.data.rebalanceLocked ? "Yes" : "No") : "—"}
               sub={portfolioRebalanceSub(portfolioQ.data)}
               accent={
@@ -879,6 +962,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<AlertTriangle className="h-3.5 w-3.5" />}
               label="Open Orders"
+              dataSource="uat"
+              db="institutional"
               value={openOrders.length.toString()}
               sub={`${rejected} rejected · audit`}
               accent={openOrders.length > 0 ? "warning" : "default"}
@@ -896,6 +981,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Banknote className="h-3.5 w-3.5" />}
               label="ZARONIA"
+              dataSource="external"
               value={saRates?.zaronia?.value != null ? `${saRates.zaronia.value.toFixed(3)}%` : "—"}
               sub={
                 saRates?.zaronia?.value != null ? (
@@ -910,6 +996,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<TrendingUp className="h-3.5 w-3.5" />}
               label="USD/ZAR"
+              dataSource="external"
               value={fxQ.data?.rate != null ? fxQ.data.rate.toFixed(4) : "—"}
               sub={
                 fxQ.data?.rate != null ? (
@@ -1423,7 +1510,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               title={alsiView === "strategies" ? "JSE All Share · Strategies" : "JSE All Share · Intraday"}
               endpoint={alsiView === "strategies" ? "GET /api/strategies/returns" : "GET /api/indices/J203"}
               db={alsiView === "strategies" ? "retail" : "institutional"}
-              dataSource={alsiView === "strategies" ? "supabase" : alsiBffQ.data.source === "seed-fallback" ? "seed" : alsiBffQ.data.source === "supabase" ? "supabase" : alsiBffQ.data.source === "yahoo" ? "yahoo" : "blocked-external"}
+              dataSource={alsiView === "strategies" ? "hybrid" : alsiBffQ.data.source === "seed-fallback" ? "seed" : alsiBffQ.data.source === "supabase" ? "iress" : alsiBffQ.data.source === "yahoo" ? "yahoo" : "blocked-external"}
               className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
               right={
                 <div className="flex items-center gap-2">
@@ -1560,9 +1647,58 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         )}
 
         {realDataOnly ? (
-          <GlassSection title="SENS · Live" endpoint="External vendor required" db="retail" dataSource="unconfigured" className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0">
-            <EmptyDataState message="SENS feed not configured." />
-          </GlassSection>
+          sensBffQ.isLoading ? (
+            <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-4" />
+          ) : realSens.length > 0 ? (
+            <GlassSection
+              title="SENS · Live"
+              endpoint="GET /api/iress/news (vendor SENSD)"
+              db="retail"
+              dataSource="iress"
+              noPadding
+              className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
+              right={
+                <Link href="/oems/news" className="text-caption text-primary hover:underline">
+                  News →
+                </Link>
+              }
+            >
+              <GlassScrollBody>
+                <SensTape items={realSens} limit={5} />
+              </GlassScrollBody>
+            </GlassSection>
+          ) : (
+            <GlassSection
+              title="SENS · Live"
+              endpoint="GET /api/iress/news (vendor SENSD)"
+              db="retail"
+              dataSource="unconfigured"
+              className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
+              right={
+                <Link href="/oems/news" className="text-caption text-primary hover:underline">
+                  News →
+                </Link>
+              }
+            >
+              <EmptyDataState
+                title="No live data"
+                message={
+                  (sensBffQ.data?.error?.message as string | undefined) ??
+                    "SENS feed not configured."
+                }
+                hint={
+                  sensBffQ.data?.error?.code === "not_configured"
+                    ? "Set IRESS_WORKER_URL (or RAILWAY_SERVICE_URL) on Vercel — the BFF can't reach the worker."
+                    : sensBffQ.data?.error?.code === "worker_mode_off"
+                      ? "Set USE_SUPABASE_QUOTES=true on Vercel so the BFF forwards requests to the worker."
+                      : sensBffQ.data?.error?.code === "T5_NOT_PERSISTED"
+                        ? "IRESS_MODE is still 'mock' on Vercel — flip it to 'live' so the BFF can call the worker."
+                        : "Worker returned zero rows for today. Try a wider window in /oems/news, or wait for the next trading pulse."
+                }
+                badgeLabel="unconfigured"
+              />
+            </GlassSection>
+          )
         ) : sensQ.isLoading ? (
           <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-4" />
         ) : (
@@ -1595,7 +1731,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             title={`Open Orders · ${openOrders.length}`}
             endpoint="Order audit table · oems_order_audit"
             db="institutional"
-            dataSource={realDataOnly ? "supabase" : "seed"}
+            dataSource={realDataOnly ? "uat" : "seed"}
             noPadding
             className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"
             right={
@@ -1781,7 +1917,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           with an All / Alliance / SENS source toggle and click-to-expand
           popups (Dialog) showing the full item. The mock path merges the seed
           newswire + SENS feeds; the real-data path reads the `/api/news` BFF
-          (live RSS + Alliance wire; paid SENS feed wires in the data phase).
+          (live RSS + Alliance wire; SENS regulatory tape now lives on the dedicated panel left).
         */}
         {realDataOnly ? (
           newsBffQ.isLoading ? (
@@ -1795,7 +1931,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               dataSource={realNewsFlow.length > 0 ? "external" : "unconfigured"}
               sourceLabel={newsBffQ.data?.sourceLabel ?? "RSS + Alliance"}
               emptyMessage="No news items right now."
-              emptyHint="Live RSS (Moneyweb / BusinessTech) + Alliance wire. Official JSE SENS regulatory announcements still require the paid web feed."
+              emptyHint="Live RSS (Moneyweb / BusinessTech) + Alliance newswire. The dedicated SENS panel to the left carries official JSE regulatory tape (NewsHeadlineGet vendor SENSD)."
               className="col-span-12 lg:col-span-8"
             />
           )
@@ -1818,7 +1954,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           db="institutional"
           dataSource={
             curveMetricsSource === "supabase" || curveMetricsSource === "live"
-              ? "iress"
+              ? "supabase"
               : "unconfigured"
           }
           className="col-span-12 lg:col-span-4 flex h-[260px] flex-col min-h-0"
@@ -1984,7 +2120,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               title="Portfolio · Positions"
               endpoint="GET /api/portfolio"
               db="institutional"
-              dataSource={portfolioQ.data?.source === "supabase" ? "supabase" : "unconfigured"}
+              dataSource={portfolioQ.data?.source === "supabase" ? "uat" : "unconfigured"}
               noPadding
               className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"
               right={

@@ -307,7 +307,7 @@ export default function IntegrationPage() {
             subtitle="Endpoint health · last 30 min"
             db="institutional"
             endpoint="GET /api/worker-health"
-            dataSource="worker"
+            dataSource="mock"
             className="col-span-12 flex h-[420px] flex-col lg:col-span-8"
             noPadding
           >
@@ -520,8 +520,8 @@ export default function IntegrationPage() {
         <GlassSection
           title="Method coverage · V4 (this adapter)"
           db="institutional"
-          endpoint="GET /api/worker-health"
-          dataSource="worker"
+          endpoint="static adapter config"
+          dataSource="seed"
           className="col-span-12 flex h-[260px] flex-col lg:col-span-6"
           noPadding
         >

@@ -126,7 +126,7 @@ export default function BlotterPage() {
             )}
             <GlassBadge tone={realDataOnly ? "success" : "neutral"}>
               <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />
-              {realDataOnly ? "Supabase audit" : "Mock book"}
+              {realDataOnly ? "IRESS·UAT audit" : "Mock book"}
             </GlassBadge>
           </div>
         </div>
@@ -249,7 +249,7 @@ function OrderRow({ order }: { order: Order }) {
       <td className="px-2.5 py-1.5 text-[9.5px] text-muted-foreground">{order.isin}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">{order.qty.toLocaleString()}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">
-        {order.filled.toLocaleString()} <span className="text-muted-foreground/70">({Math.round((order.filled / order.qty) * 100)}%)</span>
+        {order.filled.toLocaleString()} <span className="text-muted-foreground/70">({order.qty > 0 ? Math.round((order.filled / order.qty) * 100) : 0}%)</span>
       </td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">{order.limit?.toFixed(2) ?? "MKT"}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">

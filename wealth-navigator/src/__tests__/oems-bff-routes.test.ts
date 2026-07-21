@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+// POST /api/orders/cancel now requires admin RBAC (it cancels a real broker
+// order). These tests exercise the BFF envelope/gate logic, not the auth wall,
+// so resolve an authorised admin. Only the orders/cancel route imports rbac;
+// the other DB-first read routes in this file are unaffected.
+vi.mock("@/lib/admin/rbac", () => ({
+  getAdminContext: async () => ({
+    status: "ok",
+    ctx: { email: "desk@mint.test", permissions: {}, approverTier: "master" },
+  }),
+  can: () => true,
+}));
+
 /**
  * Tests for the new OEMS BFF envelope shape:
  *

@@ -79,7 +79,7 @@ export default function BusinessPage() {
             title="House view performance"
             endpoint="GET /v1/strategies?salesView=true"
             db="retail"
-            dataSource="supabase"
+            dataSource="seed"
             right={<Pill tone="info" size="xs">SALES</Pill>}
             className="col-span-12 lg:col-span-7"
             noPadding
@@ -117,7 +117,7 @@ export default function BusinessPage() {
             title="Pipeline"
             endpoint="GET /v1/crm/deals?stage=open"
             db="retail"
-            dataSource="supabase"
+            dataSource="seed"
             right={<Pill tone="primary" size="xs">{deals.length} deals</Pill>}
             className="col-span-12 lg:col-span-5"
             noPadding
@@ -147,7 +147,7 @@ export default function BusinessPage() {
           title="Compliance flags"
           endpoint="GET /v1/compliance/flags?scope=business"
           db="retail"
-          dataSource="supabase"
+          dataSource="seed"
           right={<Pill tone="warning" size="xs">{COMPLIANCE_FLAGS.length} open</Pill>}
           noPadding
         >

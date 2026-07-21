@@ -17,7 +17,7 @@
 import type { IressClient } from "../../../src/lib/iress/client";
 import { getIressProdCredentialsFromEnv } from "../../../src/lib/iress/config";
 import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
-import { createLiveIressClient, iressConfig } from "../../../src/lib/iress/index";
+import { createLiveIressClient, iressConfig, tearDownIressWireSession } from "../../../src/lib/iress/index";
 
 export interface MarketDataSession {
   client: IressClient;
@@ -64,6 +64,39 @@ export function marketDataBaseUrl(): string {
 /** Drop the cached prod session (call after a session-dead error so it rebuilds). */
 export function invalidateMarketDataSession(): void {
   cache = null;
+}
+
+/**
+ * Release the prod market-data seat on shutdown. Best-effort + idempotent:
+ * awaits any in-flight bring-up so we don't leak the seat it is about to cache,
+ * ends the IRESS wire session (no service sessions — market data runs on the
+ * base Iress session), and parks `backoffUntil` so a late caller can't re-mint
+ * mid-shutdown. Never throws. No-op when nothing was established (e.g. the split
+ * is disabled — IRESS_MARKET_DATA_PROD unset — which is the case today).
+ */
+export async function tearDownMarketDataSession(): Promise<void> {
+  if (inflight) {
+    try {
+      await inflight;
+    } catch {
+      /* bring-up failed; nothing to tear down */
+    }
+  }
+  const session = cache?.session;
+  cache = null;
+  backoffUntil = Number.MAX_SAFE_INTEGER;
+  if (!session) return;
+  try {
+    await tearDownIressWireSession({
+      iressSessionKey: session.sessionKey,
+      client: session.client,
+      releaseDelayMs: 0,
+    });
+    console.info("[market-data-prod] session released on shutdown");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[market-data-prod] shutdown teardown failed (continuing): ${msg}`);
+  }
 }
 
 /** Invalidate + rethrow only when the error means the prod session died. */

@@ -67,6 +67,14 @@ function newRequestID(prefix: string): string {
 interface OrderAuditRow {
   order_id: string;
   client_account: string;
+  /**
+   * 2026-07-20: typed `broker_account_code` column. The worker poll mapper
+   * stamps the IRESS AccountCode here on every upsert, mirroring what the
+   * BFF `submitOrder` writes. Lets downstream queries (BFF `runLimitGuard`,
+   * worker `availableToSell`, future per-client filtering) drop the
+   * `or(client_account.eq.X, payload->>broker_account_code.eq.X)` workaround.
+   */
+  broker_account_code?: string;
   symbol: string;
   side: string;
   quantity: number;
@@ -87,6 +95,7 @@ function toAuditRow(order: Order): OrderAuditRow {
     // book into one audit row.
     order_id: order.id || order.orderTag,
     client_account: order.account,
+    broker_account_code: order.account,
     symbol: order.symbol,
     side: mapSide(order.side),
     quantity: order.qty,
@@ -128,6 +137,8 @@ function toAuditRow(order: Order): OrderAuditRow {
       // like actionStatus, not a UI-computed metric.
       iressErrorNumber: order.iressErrorNumber ?? null,
       iressErrorDescription: order.iressErrorDescription ?? null,
+      // Backwards-compat: keep the JSON key for any consumer still reading it.
+      broker_account_code: order.account,
     },
     result_payload: {
       rejectReason: order.rejectReason,

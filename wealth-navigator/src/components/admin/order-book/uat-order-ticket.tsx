@@ -1,10 +1,12 @@
 "use client";
-
 import * as React from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
+import { GuardrailForceCorrectionDialog } from "@/components/oems/primitives/guardrail-force-correction-dialog";
+import type { PreflightResult, SubmitResult } from "@/lib/orders";
 import { cn } from "@/lib/cn";
 
 /**
@@ -13,6 +15,14 @@ import { cn } from "@/lib/cn";
  * via POST /api/admin/orderbook/uat-order. The order lands in the shared
  * "UAT-ADHOC" book so the ExecutionView below tracks its full lifecycle
  * (fills, route, status) live.
+ *
+ * 2026-07-20 refactor: the route now runs a preflight BEFORE writing the
+ * audit row, so a blocked verdict (naked-short, insufficient cash) never
+ * creates a phantom `working` row. On a 422 response we open the shared
+ * `<GuardrailForceCorrectionDialog/>` primitive so the trader stays on
+ * the entry screen and can correct qty/price + resubmit without leaving
+ * the page. Toast errors are reserved for transport failures (worker
+ * offline, network, 500) where the modal isn't appropriate.
  */
 
 interface SecurityOpt {
@@ -28,9 +38,20 @@ interface PlaceResult {
   error?: string;
   notice?: string;
   orderId?: string;
+  code?: string;
+  preflight?: PreflightResult;
 }
 
 const R = (n: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 }).format(n || 0);
+
+const GUARDRAIL_BLOCK_CODES = new Set([
+  "naked_short_blocked",
+  "insufficient_cash",
+  "sell_guard_unavailable",
+  "buy_guard_unavailable",
+  "limit_guard_violation",
+  "limit_guard_unverified_sell",
+]);
 
 export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
   const [securities, setSecurities] = React.useState<SecurityOpt[]>([]);
@@ -40,6 +61,8 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
   const [price, setPrice] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [result, setResult] = React.useState<PlaceResult | null>(null);
+  const [modalOpen, setModalOpen] = React.useState(false);
+  const [modalPreflight, setModalPreflight] = React.useState<PreflightResult | null>(null);
 
   React.useEffect(() => {
     let alive = true;
@@ -72,22 +95,26 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
   const value = Number.isFinite(qtyN) && qtyN > 0 && Number.isFinite(priceN) && priceN > 0 ? qtyN * priceN : null;
   const canSubmit = symbol.trim().length > 0 && Number.isFinite(qtyN) && qtyN > 0 && !busy;
 
+  const postPlace = async (body: Record<string, unknown>): Promise<PlaceResult> => {
+    const r = await fetch("/api/admin/orderbook/uat-order", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return (await r.json()) as PlaceResult;
+  };
+
   const submit = async () => {
     if (!canSubmit) return;
     setBusy(true);
     setResult(null);
     try {
-      const r = await fetch("/api/admin/orderbook/uat-order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol: symbol.trim().toUpperCase(),
-          side,
-          qty: Math.floor(qtyN),
-          price: priceN > 0 ? priceN : null,
-        }),
+      const d = await postPlace({
+        symbol: symbol.trim().toUpperCase(),
+        side,
+        qty: Math.floor(qtyN),
+        price: priceN > 0 ? priceN : null,
       });
-      const d = (await r.json()) as PlaceResult;
       setResult(d);
       if (d.ok) {
         toast.success(
@@ -96,6 +123,11 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
             : "Order recorded (audit-only, worker not configured)",
         );
         onPlaced?.();
+      } else if (d.code && GUARDRAIL_BLOCK_CODES.has(d.code) && d.preflight) {
+        // Open the shared force-correction modal — trader stays on the
+        // entry screen, can correct qty/price and resubmit.
+        setModalPreflight(d.preflight);
+        setModalOpen(true);
       } else {
         toast.error(`Order rejected: ${d.error ?? "unknown error"}`);
       }
@@ -107,6 +139,73 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
       setBusy(false);
     }
   };
+
+  /**
+   * Resubmit handler wired to the modal's "Resubmit order" button.
+   * Converts the modal's Rands/qty back into the route contract and
+   * re-runs `postPlace`. On chained failure, we update the modal's
+   * preflight payload via `setModalPreflight` (the modal's internal
+   * `chainError` already handles the inline message).
+   */
+  const resubmitFromModal = async (next: {
+    qty: number;
+    price_cents?: number | null;
+  }): Promise<SubmitResult> => {
+    const d = await postPlace({
+      symbol: symbol.trim().toUpperCase(),
+      side,
+      qty: next.qty,
+      price: next.price_cents != null ? next.price_cents / 100 : null,
+    });
+    // Mirror the PlaceResult shape into SubmitResult so the modal's
+    // success / chain-error logic works. `preflight` is always present
+    // on a 422, and on a worker post-insert reject it's `null`/empty.
+    if (d.ok) {
+      setResult(d);
+      toast.success(
+        d.mode === "uat"
+          ? `Order sent to IRESS UAT: #${d.iressOrderNumber ?? "?"} (${d.status ?? "working"})`
+          : "Order recorded (audit-only, worker not configured)",
+      );
+      onPlaced?.();
+      return {
+        ok: true,
+        order_audit_id: d.orderId,
+        status: d.status,
+        preflight: d.preflight ?? { ok: true, verdict: "pass", code: "pass", message: "ok" },
+      };
+    }
+    if (d.code && GUARDRAIL_BLOCK_CODES.has(d.code) && d.preflight) {
+      // Update the modal's preflight so the next chained attempt renders
+      // the new verdict + summary.
+      setModalPreflight(d.preflight);
+    }
+    setResult(d);
+    return {
+      ok: false,
+      order_audit_id: d.orderId,
+      preflight:
+        d.preflight ?? {
+          ok: false,
+          verdict: "blocked_unverifiable",
+          code: "sell_guard_unavailable",
+          message: d.error ?? "Order rejected",
+        },
+      error: d.error,
+      worker_code: d.code,
+    };
+  };
+
+  const attempted = React.useMemo(() => {
+    const priceCents =
+      Number.isFinite(priceN) && priceN > 0 ? Math.round(priceN * 100) : null;
+    return {
+      symbol: symbol.trim().toUpperCase() || "—",
+      side,
+      qty: Number.isFinite(qtyN) && qtyN > 0 ? Math.floor(qtyN) : 0,
+      price_cents: priceCents,
+    };
+  }, [symbol, side, qtyN, priceN]);
 
   return (
     <div className="rounded-xl border border-border bg-card p-4">
@@ -170,6 +269,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
                   >
                     {R(matched.lastRands)}
                   </button>
+                  <DataSourceBadge source="hybrid" db="retail" className="ml-1 align-middle" />
                 </>
               )}
             </span>
@@ -202,7 +302,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
         </Button>
       </div>
 
-      {result && (
+      {result && !modalOpen && (
         <div
           className={cn(
             "mt-3 rounded-lg border px-3 py-2 text-xs",
@@ -224,6 +324,20 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
             <span>Rejected: {result.error ?? "unknown error"}</span>
           )}
         </div>
+      )}
+
+      {modalPreflight && (
+        <GuardrailForceCorrectionDialog
+          open={modalOpen}
+          onOpenChange={(o) => {
+            setModalOpen(o);
+            if (!o) setModalPreflight(null);
+          }}
+          preflight={modalPreflight}
+          mode="single"
+          attempted={attempted}
+          onResubmit={resubmitFromModal}
+        />
       )}
     </div>
   );

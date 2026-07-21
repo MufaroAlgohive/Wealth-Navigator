@@ -34,7 +34,7 @@ import type {
   IressSessionStartRequest,
   IressSessionStartResponse,
   NewOrder,
-  NewsVendorGetRequest,
+  NewsHeadlineGetRequest,
   NewsStory,
   OrderCreate3Request,
   OrderCreate3Response,
@@ -235,12 +235,20 @@ export const mockIressClient: IressClient = {
   // T5 vendor content — the mock NEVER fabricates news headlines. The BFF
   // surfaces `source: "unconfigured"` to the UI when no live IRESS vendor
   // feed is reachable, and the mock honours that contract by returning an
-  // empty page. The mock still validates the request shape (Vendor is
-  // required) so callers don't silently hit a 25018 in production for a
-  // shape mismatch they could have caught in dev.
-  async newsVendorGet(req: NewsVendorGetRequest): Promise<IressResponse<NewsStory>> {
-    if (!req.Vendor || typeof req.Vendor !== "string") {
-      throw new IressError(25018, "NewsVendorGet", "NewsVendorGet: missing required field `Vendor`");
+  // empty page. The mock still validates the request shape (VendorCode,
+  // DateTimeStart, DateTimeEnd are required) so callers don't silently
+  // hit a 25018 in production for a shape mismatch they could have caught
+  // in dev.
+  async newsHeadlineGet(req: NewsHeadlineGetRequest): Promise<IressResponse<NewsStory>> {
+    if (!req.VendorCode || typeof req.VendorCode !== "string") {
+      throw new IressError(25018, "NewsHeadlineGet", "NewsHeadlineGet: missing required field `VendorCode`");
+    }
+    if (!req.DateTimeStart || !req.DateTimeEnd) {
+      throw new IressError(
+        25018,
+        "NewsHeadlineGet",
+        "NewsHeadlineGet: `DateTimeStart` and `DateTimeEnd` are required",
+      );
     }
     return {
       Header: {

@@ -6,17 +6,20 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/iress/news?vendor=IRESS&pageSize=50
+ * GET /api/iress/news?vendor=SENSD&pageSize=50[&dateFrom=YYYY-MM-DDTHH:MM:SS&dateTo=…]
  *
  * Path B BFF passthrough for the worker's `/debug/news-vendor-probe`. The
  * worker is the only process that holds the IRESS license seat; this
- * route reverse-proxies its `NewsVendorGet` so the UI can show real
+ * route reverse-proxies its `NewsHeadlineGet` so the UI can show real
  * headlines & bodies without ever seeing IRESS credentials.
  *
  * T5 vendor content — the route does **NOT** persist to Supabase.
  * "Seed until contracted" is the standing policy; once a vendor
  * contract is in place the worker can ingest to `news_item_c` and the
  * UI can switch to `/api/news`. Until then this is a pure read.
+ *
+ * Default vendor is `"SENSD"` ("SENS NEWS DELAYED") — the code the CT
+ * build accepts for JSE SENS announcements as of 2026-07-20.
  *
  * Failure modes (every one returns a typed envelope — never 500 — so the
  * UI renders the honest empty state):
@@ -30,7 +33,6 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: Request) {
   if (iressConfig.mode === "mock") {
-    // Vercel BFF stays on mock — never call IRESS from Vercel directly.
     return Response.json(
       {
         ok: false,
@@ -86,9 +88,11 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url);
-  // SENS is the JSE SENS-announcements vendor code (Charles, 2026-06-26). The
-  // earlier "IRESS" was not a valid vendor code, so it always returned 0 rows.
-  const vendorRaw = url.searchParams.get("vendor") ?? "SENS";
+  // SENSD = "SENS NEWS DELAYED" — the JSE-SENS vendor code the CT build
+  // accepts on the prod market-data session. Charles confirmed the
+  // unprefixed SENS entitlement is real-time only (still pending); the
+  // only enabled vendor today is SENSD.
+  const vendorRaw = url.searchParams.get("vendor") ?? "SENSD";
   const vendor = vendorRaw.trim();
   if (!vendor) {
     return Response.json(
@@ -96,7 +100,7 @@ export async function GET(req: Request) {
         ok: false,
         source: "unconfigured",
         tier: "T5",
-        error: { code: "bad_request", message: "`vendor` query param required (e.g. ?vendor=IRESS)" },
+        error: { code: "bad_request", message: "`vendor` query param required (e.g. ?vendor=SENSD)" },
         headlines: [],
       },
       { status: 400 },
@@ -107,16 +111,22 @@ export async function GET(req: Request) {
   const timeoutRaw = Number(url.searchParams.get("timeout") ?? "25");
   const timeout = Number.isFinite(timeoutRaw) ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw))) : 25;
   const includeBody = url.searchParams.get("includeBody") === "1";
+  const dateFrom = url.searchParams.get("dateFrom")?.trim() ?? "";
+  const dateTo = url.searchParams.get("dateTo")?.trim() ?? "";
 
-  // Forward to the worker probe. The worker is the only process that
-  // actually speaks SOAP to IRESS for this method; the Vercel BFF is a
-  // dumb reverse-proxy.
-  const query = `vendor=${encodeURIComponent(vendor)}&pageSize=${pageSize}&timeout=${timeout}${
-    includeBody ? "&includeBody=1" : ""
-  }`;
+  const queryParts = [
+    `vendor=${encodeURIComponent(vendor)}`,
+    `pageSize=${pageSize}`,
+    `timeout=${timeout}`,
+  ];
+  if (includeBody) queryParts.push("includeBody=1");
+  if (dateFrom) queryParts.push(`dateFrom=${encodeURIComponent(dateFrom)}`);
+  if (dateTo) queryParts.push(`dateTo=${encodeURIComponent(dateTo)}`);
   const result = await callWorker<{
     ok: boolean;
     vendor: string;
+    dateTimeStart: string;
+    dateTimeEnd: string;
     pageSize: number;
     timeout: number;
     errorNumber: number | null;
@@ -138,7 +148,7 @@ export async function GET(req: Request) {
     elapsedMs: number;
     probedAt: string;
     build: string;
-  }>({ path: `/debug/news-vendor-probe?${query}` });
+  }>({ path: `/debug/news-vendor-probe?${queryParts.join("&")}` });
 
   if (!result.ok) {
     return Response.json(
@@ -159,9 +169,6 @@ export async function GET(req: Request) {
     );
   }
 
-  // Bubble the worker's full envelope through. The UI distinguishes
-  // `ok=false` (entitlement/rate-limited/etc.) from `ok=true` (real
-  // headlines) by `dataRowCount` and the per-row shape.
   return Response.json(
     { source: result.body.ok ? "live" : "unavailable", tier: "T5", ...result.body },
     { status: 200 },

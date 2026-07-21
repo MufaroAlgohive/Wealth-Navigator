@@ -25,7 +25,7 @@ export const DATA_SURFACES: DataSurface[] = [
   { surface: "Cockpit top movers", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed + tick stream", canBeLive: true, v4Method: "PricingQuoteGet", status: "HYBRID", notes: "Live quote API seeds tick store when IRESS_MODE=live" },
   { surface: "Cockpit ALSI intraday chart", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed indices + synthetic intraday", canBeLive: true, v4Method: "TimeSeriesGet2 (J203/ALSI)", status: "SEED" },
   { surface: "Cockpit open orders table", route: "/oems", component: "cockpit-client.tsx", currentSource: "mock.ts → liveOrders", canBeLive: true, v4Method: "OrderPadGetByAccount", status: "SEED", notes: "Needs IRESS_ACCOUNT_CODE" },
-  { surface: "Cockpit SENS feed", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed.ts → sensFeed", canBeLive: false, v4Method: "—", status: "SEED", notes: "No V4 news verb in cut-down WSDL" },
+  { surface: "Cockpit SENS feed", route: "/oems", component: "cockpit-client.tsx", currentSource: "/api/iress/news → Railway worker → NewsHeadlineGet (SENSD)", canBeLive: true, v4Method: "NewsHeadlineGet (SENSD)", status: "HYBRID", notes: "Live sub-second path on Vercel; flip IRESS_MODE=live + IRESS_WORKER_URL + USE_SUPABASE_QUOTES=true on Vercel to enable. /oems/news archive also reads institutional news_item_c (worker ingest)." },
   { surface: "Cockpit news flow", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed.ts → newsFeed", canBeLive: false, v4Method: "—", status: "SEED" },
   { surface: "Cockpit macro pulse", route: "/oems", component: "cockpit-client.tsx", currentSource: "seed.ts → macroIndicators", canBeLive: false, v4Method: "—", status: "SEED" },
   { surface: "Cockpit JIBAR / USDZAR KPIs", route: "/oems", component: "KpiTile + NumberCell", currentSource: "seed + tick stream", canBeLive: true, v4Method: "PricingQuoteGet / TimeSeriesGet2", status: "HYBRID" },
@@ -33,7 +33,12 @@ export const DATA_SURFACES: DataSurface[] = [
 
   // ── Blotter ──────────────────────────────────────────────────────
   { surface: "Blotter orders table", route: "/oems/blotter", component: "blotter/page.tsx", currentSource: "mock.ts → liveOrders", canBeLive: true, v4Method: "OrderPadGetByAccount", status: "SEED" },
-  { surface: "Blotter new order", route: "/oems/blotter", component: "new-order-dialog.tsx", currentSource: "mock client orderCreate3", canBeLive: true, v4Method: "OrderCreate3", status: "MOCK", notes: "Uses in-process mock even in live mode (client-side)" },
+  // 2026-07-20: Blotter new order now routes through /api/orders/preflight
+  // (worker gate) → /api/orders/submit (worker fan-out). The provenance
+  // flipped MOCK → LIVE; the BFF now writes an audit row in the same shape
+  // as the admin UAT route, and the worker pre-trade guard runs BEFORE the
+  // insert so no phantom working rows survive a blocked verdict.
+  { surface: "Blotter new order", route: "/oems/blotter", component: "new-order-dialog.tsx", currentSource: "BFF /api/orders/submit → worker /uat/preflight + /uat/send-to-market", canBeLive: true, v4Method: "OrderCreate3", status: "LIVE", notes: "Routed via BFF since 2026-07-20 — see src/lib/orders/" },
   { surface: "Blotter cancel/amend", route: "/oems/blotter", component: "blotter/page.tsx", currentSource: "mock client", canBeLive: true, v4Method: "OrderDelete / OrderAmend2", status: "MOCK" },
 
   // ── Security ─────────────────────────────────────────────────────
@@ -51,7 +56,7 @@ export const DATA_SURFACES: DataSurface[] = [
   { surface: "Money market instruments", route: "/oems/money-market", component: "money-market/page.tsx", currentSource: "seed.ts", canBeLive: true, v4Method: "TimeSeriesGet2 (JIBAR)", status: "SEED" },
   { surface: "Curves (govi/swap/real)", route: "/oems/curves", component: "curves/page.tsx", currentSource: "seed.ts", canBeLive: true, v4Method: "TimeSeriesGet2", status: "SEED" },
   { surface: "Macro indicators + calendar", route: "/oems/macro", component: "macro/page.tsx", currentSource: "seed.ts", canBeLive: false, v4Method: "—", status: "SEED" },
-  { surface: "News + SENS", route: "/oems/news", component: "news/page.tsx", currentSource: "seed.ts", canBeLive: false, v4Method: "—", status: "SEED" },
+  { surface: "News + SENS", route: "/oems/news", component: "news/page.tsx", currentSource: "/api/iress/news (Path B worker passthrough) + /api/news?category=SENS", canBeLive: true, v4Method: "NewsHeadlineGet (SENSD)", status: "HYBRID", notes: "SENS tab → worker passthrough (live); Wires tab → RSS + Alliance; persistence at institutional news_item_c" },
   { surface: "Integration endpoint health", route: "/oems/integration", component: "integration/page.tsx", currentSource: "seed.ts → endpoints + /api/iress/health", canBeLive: true, v4Method: "IRESSSessionStart", status: "HYBRID" },
 
   // ── Shared infrastructure ────────────────────────────────────────

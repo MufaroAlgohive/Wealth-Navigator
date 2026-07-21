@@ -148,11 +148,35 @@ process.once("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
+// SECURITY (opt-in enforcement): the worker HTTP surface fails OPEN when
+// WORKER_HTTP_TOKEN is unset (see http-api.ts checkAuth) so an auto-deploy that
+// forgets the token never bricks the worker. To CLOSE that hole deliberately,
+// set WORKER_HTTP_TOKEN *and* WORKER_REQUIRE_HTTP_TOKEN=1. If enforcement is
+// required but the token is missing, refuse to start — loud and recoverable.
+// Mirrors the iress-ingest worker so both surfaces harden the same way.
+if (
+  process.env.WORKER_REQUIRE_HTTP_TOKEN === "1" &&
+  !process.env.WORKER_HTTP_TOKEN &&
+  process.env.WORKER_HTTP_DISABLED !== "1"
+) {
+  console.error(
+    "[broker-ingest] refusing to start: WORKER_REQUIRE_HTTP_TOKEN=1 but WORKER_HTTP_TOKEN is unset (set the token, or clear the require flag)",
+  );
+  process.exit(1);
+}
+
 logStartup();
 void heartbeatLoop();
 void pollLoop();
 
 if (process.env.WORKER_HTTP_DISABLED !== "1") {
+  if (!process.env.WORKER_HTTP_TOKEN) {
+    console.error(
+      "[broker-ingest] CRITICAL: worker HTTP API is UNAUTHENTICATED (WORKER_HTTP_TOKEN unset). " +
+        "Anyone who can reach this port can inject fills into the audit table. " +
+        "Set WORKER_HTTP_TOKEN on the worker + BFF, then WORKER_REQUIRE_HTTP_TOKEN=1 to enforce.",
+    );
+  }
   startHttpApi({ env, supabase, state }).catch((err) => {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[broker-ingest] http api failed to start: ${message}`);

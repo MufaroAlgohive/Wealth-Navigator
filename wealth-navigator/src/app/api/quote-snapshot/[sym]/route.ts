@@ -14,7 +14,7 @@
  */
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
+import { iressPriceOverlayEnabled, iressQuoteMaxAgeMs } from "@/lib/iress/overlay-policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -108,6 +108,21 @@ export async function GET(_req: Request, { params }: { params: Promise<{ sym: st
     });
   }
 
+  // Freshness gate: a snapshot older than the shared max-age window (worker
+  // stopped, weekend, backfill) is stale and must not render as a live price —
+  // drop it so the Security page falls back to the Yahoo-fed board. Same window
+  // as /api/equities and live-queries (overlay-policy.iressQuoteMaxAgeMs).
+  const asOf = row.as_of ?? row.updated_at;
+  const asOfMs = asOf ? new Date(asOf).getTime() : Number.NaN;
+  if (!Number.isFinite(asOfMs) || Date.now() - asOfMs > iressQuoteMaxAgeMs()) {
+    return Response.json({
+      symbol: sym,
+      snapshot: null,
+      source: "stale",
+      message: `IRESS L1 snapshot for ${sym} is older than the freshness window — not shown as live; the Yahoo-fed board is used instead.`,
+    });
+  }
+
   return Response.json({
     symbol: sym,
     snapshot: {
@@ -128,6 +143,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ sym: st
       asOf: row.as_of ?? row.updated_at,
       exchange: row.exchange,
     },
-    source: "supabase",
+    // This row IS the institutional IRESS L1 snapshot (quote_snapshot_c), fresh
+    // past the freshness gate above — attribute it to IRESS-PROD, not the retail DB.
+    source: "iress",
   });
 }

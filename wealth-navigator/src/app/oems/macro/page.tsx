@@ -129,7 +129,6 @@ export default function MacroPage() {
         title="Macro indicators"
         subtitle="SARB repo · prime · inflation · FX"
         endpoint="GET /api/macro"
-        db="institutional"
         dataSource="external"
       >
         {isLoading ? (

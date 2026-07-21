@@ -265,7 +265,7 @@ DELETE FROM stock_holdings_c WHERE strategy_name_snapshot LIKE 'UAT-%';
 
 - Worker code: `wealth-navigator/workers/iress-ingest/src/order-poller.ts` (UAT poll loop), `http-api.ts` (`/uat/*` routes), `main.ts` (uatOrderLoop), `env.ts` (UAT env).
 - BFF: `wealth-navigator/src/app/api/admin/orderbook/send-to-market/route.ts`, `uat-status/route.ts`, `stream/route.ts`, `test-seed-holding/route.ts`.
-- UI: `wealth-navigator/src/components/admin/order-book/page.tsx`, `uat-banner.tsx`, `uat-test-runner.tsx`, `execution-view.tsx` (SSE consumer).
+- UI: `wealth-navigator/src/app/admin/order-book/page.tsx` (live route) + `src/components/admin/order-book/` (`uat-banner.tsx`, `uat-test-runner.tsx`, `execution-view.tsx` — SSE consumer).
 - IRESS V4 reference: `Documentation & Vision/iress-v4-docs/05-services/ios-plus/` (OrderCreate3, OrderPadGetByAccount, OrderDelete).
 - Architecture: `wealth-navigator/docs/STACK_ARCHITECTURE.md`, `docs/DB_TOPOLOGY_DECISION.md`, `docs/REMAINING_GAPS.md`.
 - Go-live context: `wealth-navigator/docs/MINT_GO_LIVE_RUNBOOK.html`.

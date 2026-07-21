@@ -125,19 +125,23 @@ export default function MoneyMarketPage() {
           <>
             <GlassKpi
               label="SARB Repo"
+              dataSource="external"
               value={fmtRate(sa?.repo)}
               sub={sa?.repo?.asOf ? sa.repo.asOf.slice(0, 10) : "SARB"}
               accent="primary"
             />
-            <GlassKpi label="Prime" value={fmtRate(sa?.prime)} sub="SARB" />
+            <GlassKpi label="Prime" dataSource="external" value={fmtRate(sa?.prime)} sub="SARB" />
             <GlassKpi
               label="ZARONIA"
+              dataSource="external"
               value={fmtRate(sa?.zaronia)}
               sub={sa?.zaronia?.asOf ? sa.zaronia.asOf.slice(0, 10) : "overnight · SARB"}
             />
-            <GlassKpi label="Sabor" value={fmtRate(sa?.sabor)} sub="overnight · SARB" />
+            <GlassKpi label="Sabor" dataSource="external" value={fmtRate(sa?.sabor)} sub="overnight · SARB" />
             <GlassKpi
               label="MM instruments"
+              dataSource="supabase"
+              db="institutional"
               value={instruments.length.toString()}
               sub="eligible NCD/TB/FRN"
             />
@@ -160,7 +164,7 @@ export default function MoneyMarketPage() {
             title="JIBAR fixings"
             endpoint="GET /api/money-market"
             db="institutional"
-            dataSource="blocked-external"
+            dataSource="external"
             className="col-span-12 lg:col-span-4"
             noPadding
           >
@@ -200,7 +204,7 @@ export default function MoneyMarketPage() {
             title="Eligible money-market instruments"
             endpoint="GET /api/money-market"
             db="institutional"
-            dataSource="blocked-external"
+            dataSource="supabase"
             className="col-span-12 lg:col-span-8"
             noPadding
             right={

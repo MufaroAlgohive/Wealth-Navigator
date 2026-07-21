@@ -393,6 +393,7 @@
           <li><a class="sub" href="#phase-2">Phase 2 — Railway worker</a></li>
           <li><a class="sub" href="#phase-3">Phase 3 — Vercel env</a></li>
           <li><a class="sub" href="#phase-4">Phase 4 — Wire UI</a></li>
+          <li><a class="sub" href="#phase-45">Phase 4.5 — Order preflight + force-correction</a></li>
           <li><a class="sub" href="#phase-5">Phase 5 — Hardening</a></li>
           <li><a class="sub" href="#phase-6">Phase 6 — Rollout</a></li>
         </ol>
@@ -421,6 +422,7 @@
         <a href="#phase-2">Phase 2</a>
         <a href="#phase-3">Phase 3</a>
         <a href="#phase-4">Phase 4</a>
+        <a href="#phase-45">Phase 4.5</a>
         <a href="#phase-5">Phase 5</a>
         <a href="#phase-6">Phase 6</a>
         <a href="#risks">Risks</a>
@@ -801,6 +803,28 @@ USE_SUPABASE_QUOTES=false                # toggle in Phase 4</code></pre>
           <li>Legacy mock / live paths still green.</li>
         </ul>
         <div class="pause">the UI must show live ticks sourced from Supabase before Phase 5.</div>
+      </div>
+
+      <div class="phase" id="phase-45">
+        <div class="phase-head"><span class="phase-tag">PHASE 4.5</span><h3>Order preflight + force-correction guardrails</h3></div>
+        <p><strong>Goal.</strong> Every order-entry surface (UAT ad-hoc, bulk strategy-book, <code>/oems/blotter</code> new-order dialog, future research-lab / paper-model consumers) routes through <code>submitOrder()</code> in <code>src/lib/orders/</code>, which calls the worker's <code>POST /uat/preflight</code> <em>before</em> writing any <code>oems_order_audit</code> row. A blocked verdict returns 422 with no audit row, killing the ghost-"working" reservation that previously let rejected sells lock quantity for the next sell.</p>
+
+        <h4>Pre-prod checklist</h4>
+        <ol>
+          <li>Run the new migration <code>supabase/migrations/20260720000001_oems_order_audit_broker_account.sql</code> in the institutional Supabase SQL editor (idempotent; backfills <code>broker_account_code</code> from the legacy <code>payload-&gt;&gt;broker_account_code</code> mirror).</li>
+          <li>Confirm the worker's <code>/uat/preflight</code> endpoint is reachable: <code>curl -X POST $IRESS_WORKER_URL/uat/preflight -d '{"account_code":"56378","symbol":"SOL","side":"sell","qty":99999,"source":"UAT_ADHOC_ORDER"}' -H "content-type: application/json" -H "authorization: Bearer $WORKER_HTTP_TOKEN"</code> → expect <code>naked_short_blocked</code> (or the analogous 5xx from the local fallback).</li>
+          <li>Open <code>/oems/blotter</code>, attempt an oversold SOL. Expect the <code>&lt;GuardrailForceCorrectionDialog/&gt;</code> modal with the worker's verbatim message; resubmit with a clamped qty and confirm a single <code>working</code> audit row (no rejected ghost row).</li>
+          <li>Open <code>/admin/orderbook</code>, send a strategy book with a partial-fill seller and a fresh seller of the same symbol — confirm the partial is reserved by <em>remaining</em>, not the full original quantity (<code>runLimitGuard.test.ts</code> covers this).</li>
+          <li>Smoke a post-insert worker rejection by killing the IRESS session between preflight and submit (or by stubbing <code>uat/send-to-market</code>) — the audit row must flip to <code>status: "rejected"</code> with <code>result_payload.rejectReason</code> set (<code>orders-submit.test.ts</code>, <code>uat-preflight-route.test.ts</code>).</li>
+          <li><strong>Per-client guard</strong> is wired but dormant. Only flip <code>IRESS_PER_CLIENT_GUARD=true</code> after the <code>mint_number</code> ↔ IRESS <code>AccountCode</code> bridge lands (AGENTS.md "client↔account bridge").</li>
+        </ol>
+
+        <div class="callout tip">
+          <h4>Why a worker preflight, not a BFF-only check</h4>
+          <p>The BFF can read <code>oems_position_c</code> for a fall-back, but the worker holds the IRESS entitlement and the freshest IPS snapshot. Running the guard in the worker keeps a single source of truth for the sell/cash math, and lets the BFF short-circuit (422, no audit row) without re-implementing the same logic.</p>
+        </div>
+
+        <div class="pause">all 44 OEMS guardrail tests green (<code>pretrade-guard.test.ts</code>, <code>runLimitGuard.test.ts</code>, <code>uat-preflight-route.test.ts</code>, <code>orders-submit.test.ts</code>, <code>force-correction-dialog.test.tsx</code>) before flipping to production.</div>
       </div>
 
       <div class="phase" id="phase-5">

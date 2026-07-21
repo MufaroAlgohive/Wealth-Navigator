@@ -52,7 +52,10 @@ const STYLES: Record<DataSourceKind, string> = {
 
 const LABELS: Record<DataSourceKind, string> = {
   live: "LIVE",
-  iress: "IRESS",
+  // Market data comes ONLY from the IRESS PRODUCTION seat (webservices.iress.co.za);
+  // the UAT/CT seat is orders-only and is labelled IRESS·UAT below. So an `iress`
+  // source badge always means production market data.
+  iress: "IRESS·PROD",
   yahoo: "YAHOO",
   external: "EXTERNAL",
   mock: "MOCK",
@@ -61,7 +64,9 @@ const LABELS: Record<DataSourceKind, string> = {
   supabase: "SUPABASE",
   stream: "STREAM",
   worker: "WORKER",
-  uat: "UAT",
+  // The IRESS UAT/CT order seat (orders / blotter / execution / cash) — a sandbox
+  // seat, NEVER production and NEVER a market-data source.
+  uat: "IRESS·UAT",
   unconfigured: "UNCONFIGURED",
   unavailable: "UNAVAILABLE",
   "blocked-external": "BLOCKED-EXTERNAL",

@@ -32,6 +32,10 @@ function SecurityPageContent() {
   const searchParams = useSearchParams();
   const [sym, setSym] = useState("NPN");
   const [chartRange, setChartRange] = useState("1D");
+  // Resolved chart data source, reported by SecurityChart once its query lands,
+  // so the badge reflects the TRUE source (IRESS-PROD vs a Yahoo fallback)
+  // instead of a static range guess that could mask a fallback.
+  const [chartSource, setChartSource] = useState<string | undefined>(undefined);
 
   // Subscribe to the entire JSE universe on mount so a click on any
   // watchlist row in the panel is instant — no per-symbol BFF round-trip
@@ -51,6 +55,12 @@ function SecurityPageContent() {
   const quoteSource = liveQuotes.dataSource;
   const tick = useTick(activeSym);
   const hasLiveQuote = tick.ts > 0;
+  // Drop the resolved chart source when the range/symbol changes so the badge
+  // reverts to the range guess (not the previous range's source) until the new
+  // query resolves.
+  useEffect(() => {
+    setChartSource(undefined);
+  }, [chartRange, activeSym]);
 
   return (
     <div className="space-y-4">
@@ -123,7 +133,23 @@ function SecurityPageContent() {
             title={`${inst?.symbol ?? "—"} · ${chartRange}`}
             endpoint={realDataOnly ? (chartRange === "1D" ? "GET /api/intraday" : "GET /api/history") : "PricingQuoteGet"}
             db={realDataOnly && chartRange === "1D" ? "retail" : undefined}
-            dataSource={realDataOnly ? "iress" : undefined}
+            // Data-driven: 1D intraday is Yahoo-fed (stock_intraday_c); 5D…All
+            // daily history is IRESS-PROD when TimeSeriesGet2 serves it, else a
+            // Yahoo fallback. The badge tracks the resolved source (chartSource)
+            // and only falls back to a range guess while the query is loading.
+            dataSource={
+              !realDataOnly
+                ? undefined
+                : chartSource === "iress"
+                  ? "iress"
+                  : chartSource === "yahoo" || chartSource === "supabase"
+                    ? "yahoo"
+                    : chartSource === "unavailable"
+                      ? "unavailable"
+                      : chartRange === "1D"
+                        ? "yahoo"
+                        : "iress"
+            }
             className="col-span-12 flex h-[400px] min-h-0 flex-col lg:col-span-6"
             noPadding
             right={
@@ -153,7 +179,7 @@ function SecurityPageContent() {
                 {realDataOnly && chartRange === "1D" && !hasLiveQuote ? (
                   <EmptyDataState message="No intraday data available yet. Try a longer time range." />
                 ) : (
-                  <SecurityChart sym={activeSym} realDataOnly={realDataOnly} range={chartRange} />
+                  <SecurityChart sym={activeSym} realDataOnly={realDataOnly} range={chartRange} onSource={setChartSource} />
                 )}
               </div>
             </div>
@@ -203,7 +229,8 @@ function SecurityPageContent() {
           title={`Key Statistics · ${inst?.name ?? activeSym}`}
           endpoint="GET /api/quote-snapshot + /api/equities"
           db="institutional"
-          dataSource="supabase"
+          // IRESS-PROD L1 (quote_snapshot_c, nnwz) + Yahoo fundamentals (securities_c, mfxng).
+          dataSource="hybrid"
           right={<span className="text-caption font-mono">{inst?.sector ?? inst?.isin ?? ""}</span>}
         >
           <SecurityStatsGrid sym={activeSym} />
@@ -338,8 +365,10 @@ function SecurityStatsGrid({ sym }: { sym: string }) {
       if (!r.ok) throw new Error(`quote-snapshot ${r.status}`);
       return r.json();
     },
-    refetchInterval: 15_000,
+    // queryOpts("live") FIRST so the intended 15s cadence wins (the "live"
+    // preset's refetchInterval: 5_000 would otherwise clobber it).
     ...queryOpts("live"),
+    refetchInterval: 15_000,
   });
   const eqQ = useQuery<{ securities: EquityFundamentals[] }>({
     queryKey: ["equities-universe"],
@@ -433,7 +462,17 @@ interface L1Snapshot {
   currency: string | null; marketState: string | null; asOf: string;
 }
 
-function SecurityChart({ sym, realDataOnly, range = "1D" }: { sym: string; realDataOnly: boolean; range?: string }) {
+function SecurityChart({
+  sym,
+  realDataOnly,
+  range = "1D",
+  onSource,
+}: {
+  sym: string;
+  realDataOnly: boolean;
+  range?: string;
+  onSource?: (s: string | undefined) => void;
+}) {
   const isIntraday = range === "1D";
   // 1D = intraday ticks (/api/intraday → stock_intraday_c). 5D…All = daily
   // history (/api/history → worker → IRESS TimeSeriesGet2).
@@ -445,8 +484,10 @@ function SecurityChart({ sym, realDataOnly, range = "1D" }: { sym: string; realD
       return r.json();
     },
     enabled: realDataOnly && isIntraday,
-    refetchInterval: 15_000,
+    // queryOpts("live") FIRST so the intended 15s cadence wins (the "live"
+    // preset's refetchInterval: 5_000 would otherwise clobber it).
     ...queryOpts("live"),
+    refetchInterval: 15_000,
   });
   const historyQ = useQuery<{ points: Array<{ t: number; v: number }>; source: string }>({
     queryKey: ["bff-history", sym, range],
@@ -458,6 +499,16 @@ function SecurityChart({ sym, realDataOnly, range = "1D" }: { sym: string; realD
     enabled: realDataOnly && !isIntraday,
     ...queryOpts("reference"),
   });
+  // Report the resolved source up to the badge (the active query's `source`).
+  const resolvedSource = realDataOnly
+    ? isIntraday
+      ? intradayQ.data?.source
+      : historyQ.data?.source
+    : undefined;
+  useEffect(() => {
+    onSource?.(resolvedSource);
+  }, [resolvedSource, onSource]);
+
   const fallback = realDataOnly ? 0 : (initialQuotes()[sym]?.last ?? seedLastFor(sym));
   const livePoints = useTickSeries(sym, fallback, 90);
   const points = realDataOnly

@@ -1,30 +1,36 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+/**
+ * POST /api/admin/orderbook/uat-order
+ *
+ * Ad-hoc single-order UAT tester. Thin wrapper around `submitOrder()` from
+ * the core `src/lib/orders/` module — the same helper every other order
+ * entry point uses, so the preflight + audit + worker fanout + force-
+ * correction contract is shared.
+ *
+ * Body: { symbol: string, side: "buy" | "sell", qty: number, price?: number }
+ *   - `price` is in RANDS (limit); omit/0 for a market order.
+ * Returns: { ok, orderAuditId, orderId, bookId, mode, iressOrderNumber?, status?, preflight?, error? }
+ *
+ * Gated: admin + orderbook.send_to_market, and IRESS_UAT_MODE=true (never
+ * touches the production account; the worker enforces the UAT account).
+ *
+ * Force-correction contract (2026-07-20):
+ *   - A blocked preflight returns `422` with `{ ok: false, preflight }` and
+ *     writes NO audit row. The trader stays on the entry screen, edits
+ *     qty/price, and resubmits.
+ *   - A post-insert worker rejection (race window where another order
+ *     lands between preflight and submit) stamps the audit row `rejected`
+ *     and returns `200 { ok: false, error, worker_code, order_audit_id }`
+ *     so the operator sees the truth.
+ *
+ * See plan §2 (BFF routes → thin wrappers) for the rationale.
+ */
+
 import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
-import { callWorker } from "@/lib/iress/worker-api";
-import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
-
-/**
- * POST /api/admin/orderbook/uat-order
- *
- * Ad-hoc single-order UAT tester. Places one BUY/SELL on the IRESS UAT (IOS+)
- * seat without the book/holdings machinery of send-to-market: it writes ONE
- * `oems_order_audit` row (tagged book_id "UAT-ADHOC", uat_test) and, when the
- * worker is configured + IRESS_UAT_MODE is on, fans out to the worker's
- * `POST /uat/send-to-market` which calls OrderCreate3 on MINT_CT and stamps the
- * broker OrderNumber back. Lifecycle (fills/route/status) is then polled via
- * /api/admin/orderbook/execution?book_id=UAT-ADHOC and the SSE stream, exactly
- * like the scenario runner.
- *
- * Body: { symbol: string, side: "buy" | "sell", qty: number, price?: number }
- *   - `price` is in RANDS (limit); omit/0 for a market order.
- * Returns: { ok, orderAuditId, orderId, bookId, mode, iressOrderNumber?, status?, error? }
- *
- * Gated: admin + orderbook.send_to_market, and IRESS_UAT_MODE=true (never
- * touches the production account; the worker enforces the UAT account).
- */
+import { openSupabaseClients, preflight, submitOrder } from "@/lib/orders";
+import type { SubmitResult } from "@/lib/orders";
 
 export const dynamic = "force-dynamic";
 
@@ -34,25 +40,10 @@ const BOOK_ID = "UAT-ADHOC";
 // IRESS_UAT_DESTINATION overrides without a redeploy.
 const BROKER = process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE";
 
-interface Security {
-  id: string;
-  symbol: string;
-  name: string | null;
-  isin: string | null;
-  last_price: number | null;
-}
-
-interface WorkerUatResponse {
-  ok: boolean;
-  iressOrderNumber?: string;
-  status?: string;
-  errorNumber?: number;
-  errorDescription?: string;
-}
-
 export async function POST(req: Request) {
   const auth = await getAdminContext();
-  if (auth.status === "no-session") return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
+  if (auth.status === "no-session")
+    return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
   if (auth.status !== "ok" || !can(auth.ctx, "orderbook", "send_to_market")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
@@ -65,127 +56,127 @@ export async function POST(req: Request) {
   const side = String(body.side ?? "").toLowerCase() === "sell" ? "sell" : "buy";
   const qty = Math.floor(Number(body.qty));
   const priceRaw = body.price == null || body.price === "" ? null : Number(body.price);
-  const priceRands = priceRaw != null && Number.isFinite(priceRaw) && priceRaw > 0 ? priceRaw : null;
+  // Convert Rands → cents for the core `submitOrder` contract.
+  const priceCents =
+    priceRaw != null && Number.isFinite(priceRaw) && priceRaw > 0 ? Math.round(priceRaw * 100) : null;
 
-  if (!rawSymbol) return NextResponse.json({ ok: false, error: "symbol is required" }, { status: 400 });
-  if (!Number.isFinite(qty) || qty <= 0) return NextResponse.json({ ok: false, error: "qty must be a positive integer" }, { status: 400 });
-
-  let retail: SupabaseClient;
-  try {
-    retail = createRetailServiceRoleClient();
-  } catch {
-    return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
+  if (!rawSymbol) {
+    return NextResponse.json({ ok: false, error: "symbol is required" }, { status: 400 });
+  }
+  if (!Number.isFinite(qty) || qty <= 0) {
+    return NextResponse.json({ ok: false, error: "qty must be a positive integer" }, { status: 400 });
   }
 
-  // Resolve the security by symbol (accept bare or .JO form).
-  const bare = rawSymbol.replace(/\.(JO|JSE)$/i, "");
-  const { data: secs } = await retail
-    .from("securities_c")
-    .select("id, symbol, name, isin, last_price")
-    .in("symbol", [rawSymbol, `${bare}.JO`, bare]);
-  const sec = (secs ?? [])[0] as Security | undefined;
-  if (!sec) return NextResponse.json({ ok: false, error: `Unknown ticker '${rawSymbol}' (not in securities_c).` }, { status: 404 });
-
-  let institutional: SupabaseClient;
-  try {
-    institutional = createInstitutionalServiceRoleClient();
-  } catch {
-    return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
-  }
-
-  const orderId = `UAT-ADHOC-${Date.now().toString(36)}`;
-  const nowIso = new Date().toISOString();
-  const auditRow = {
-    order_id: orderId,
-    client_account: auth.ctx.email,
-    symbol: sec.symbol,
+  // Preflight explicitly so we can return the worker's exact preflight
+  // payload (vs the synthetic 503 the core module returns when the worker
+  // is offline). This matches the legacy contract where the BFF surfaced
+  // the worker's `naked_short_blocked` reason verbatim.
+  const pre = await preflight({
+    account_code: BROKER,
+    symbol: rawSymbol,
     side,
-    quantity: qty,
-    price_cents: priceRands != null ? Math.round(priceRands * 100) : null,
-    status: "working",
+    qty,
+    price_cents: priceCents,
     source: "UAT_ADHOC_ORDER",
-    payload: {
-      book_id: BOOK_ID,
-      broker: BROKER,
-      order_type: priceRands != null ? "limit" : "market",
-      strategy: BOOK_ID,
-      security_id: sec.id,
-      isin: sec.isin ?? null,
-      limitPrice: priceRands,
-      sent_by: auth.ctx.email,
-      sent_at: nowIso,
-      trader: auth.ctx.email,
-      uat_test: true,
-    },
-    result_payload: {
-      broker: BROKER,
-      venue: "JSE",
-      tif: "DAY",
-      arrivalMid: sec.last_price != null ? Number(sec.last_price) / 100 : null,
-      uat_test: true,
-    },
-  };
-
-  const { data: inserted, error: insErr } = await institutional
-    .from("oems_order_audit")
-    .insert(auditRow)
-    .select("id, order_id")
-    .maybeSingle();
-  if (insErr || !inserted) {
-    return NextResponse.json({ ok: false, error: insErr?.message ?? "audit insert failed" }, { status: 500 });
+    book_id: BOOK_ID,
+  });
+  if (!pre.ok) {
+    // NO AUDIT ROW WRITTEN. Trader stays on the entry screen. The UI
+    // opens `<GuardrailForceCorrectionDialog/>` with `pre` as the payload.
+    return NextResponse.json(
+      {
+        ok: false,
+        bookId: BOOK_ID,
+        mode: "uat",
+        status: "blocked",
+        code: pre.code,
+        error: pre.message,
+        preflight: pre,
+      },
+      { status: 422 },
+    );
   }
-  const auditId = inserted.id as string;
 
-  // Fan out to the worker (audit row is the source of truth either way).
-  if (!isIressWorkerConfigured()) {
+  let supabase;
+  try {
+    supabase = await openSupabaseClients();
+  } catch (e) {
+    return NextResponse.json(
+      { ok: false, error: e instanceof Error ? e.message : "Supabase not configured" },
+      { status: 503 },
+    );
+  }
+
+  const result: SubmitResult = await submitOrder(
+    supabase,
+    {
+      account_code: BROKER,
+      symbol: rawSymbol,
+      side,
+      qty,
+      price_cents: priceCents,
+      source: "UAT_ADHOC_ORDER",
+      book_id: BOOK_ID,
+      trader_email: auth.ctx.email,
+    },
+    { bookId: BOOK_ID, broker: BROKER, uatTest: true },
+  );
+
+  if (!result.ok && !result.order_audit_id) {
+    // Defense in depth — the explicit preflight above already passed,
+    // but if `submitOrder` re-rejected (e.g. local fallback when worker
+    // offline), bubble the same shape.
+    return NextResponse.json(
+      {
+        ok: false,
+        bookId: BOOK_ID,
+        mode: "uat",
+        status: "blocked",
+        code: result.preflight.code,
+        error: result.preflight.message,
+        preflight: result.preflight,
+      },
+      { status: 422 },
+    );
+  }
+
+  // Audit-only fallback (worker not configured) → return the same
+  // `mode: "audit-only"` shape the legacy route used, for UI continuity.
+  if (result.ok && !result.iress_order_number && !isIressWorkerConfigured()) {
     return NextResponse.json({
       ok: true,
-      orderAuditId: auditId,
-      orderId,
+      orderAuditId: result.order_audit_id,
+      orderId: result.order_id,
       bookId: BOOK_ID,
       mode: "audit-only",
       notice: "IRESS_WORKER_URL not configured on Vercel; order recorded, not sent to IRESS.",
     });
   }
 
-  const res = await callWorker<WorkerUatResponse>({
-    method: "POST",
-    path: "/uat/send-to-market",
-    body: { order_audit_id: auditId, broker_destination: BROKER },
-    timeoutMs: 15_000,
-  });
-
-  if (res.ok && res.body?.ok) {
+  if (!result.ok) {
+    // Worker rejected AFTER the audit row was inserted (race condition).
+    // `submitOrder` already stamped the row `rejected`; we just relay.
     return NextResponse.json({
-      ok: true,
-      orderAuditId: auditId,
-      orderId,
+      ok: false,
+      orderAuditId: result.order_audit_id,
+      orderId: result.order_id,
       bookId: BOOK_ID,
       mode: "uat",
-      iressOrderNumber: res.body.iressOrderNumber ?? null,
-      status: res.body.status ?? "working",
+      status: "rejected",
+      error: result.error ?? "unknown worker error",
+      code: result.worker_code,
+      preflight: result.preflight,
     });
   }
 
-  // Surface the worker's actual reason. On a non-2xx (e.g. the 422 the
-  // pre-trade naked-short guard returns) callWorker's `error` is the generic
-  // "Worker returned 422" — the useful message ("Sell blocked: 200 CAC exceeds
-  // available-to-sell 100…") is in `errorBody`. Prefer it so the desk sees WHY.
-  const upstream =
-    !res.ok && res.errorBody && typeof res.errorBody === "object"
-      ? (res.errorBody as { message?: string; error?: string; code?: string })
-      : undefined;
-  const errMsg = res.ok
-    ? (res.body?.errorDescription ?? res.body?.errorNumber?.toString() ?? "unknown worker error")
-    : (upstream?.message ?? upstream?.error ?? res.error);
   return NextResponse.json({
-    ok: false,
-    orderAuditId: auditId,
-    orderId,
+    ok: true,
+    orderAuditId: result.order_audit_id,
+    orderId: result.order_id,
     bookId: BOOK_ID,
     mode: "uat",
-    status: "rejected",
-    error: errMsg,
-    code: upstream?.code ?? (res.ok ? undefined : res.code),
+    iressOrderNumber: result.iress_order_number ?? null,
+    status: result.status ?? "working",
+    preflight: result.preflight,
   });
 }

@@ -3,9 +3,9 @@
 /**
  * Shared presentation kit for the Research & IC tabs: money/percent formatters,
  * rating/status/ESG/action badges, live-quote hooks (via /api/quotes and
- * /api/intraday), and two dependency-free inline-SVG charts (price-with-triggers
- * and peer P/E). Kept theme-aware by leaning on the existing text-up / text-down
- * / text-primary utilities and glass CSS variables.
+ * /api/history?range=3M), and two dependency-free inline-SVG charts
+ * (price-with-triggers and peer P/E). Kept theme-aware by leaning on the
+ * existing text-up / text-down / text-primary utilities and glass CSS variables.
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -13,6 +13,7 @@ import { Minus, TrendingDown, TrendingUp } from "lucide-react";
 import * as React from "react";
 
 import { cn } from "@/lib/cn";
+import { priceTriggerYDomain } from "./chart-domain";
 import type { CompAction, Esg, NoteStatus, Peer, Quote, Rating } from "./types";
 
 // ── formatters ─────────────────────────────────────────────────────────────
@@ -111,6 +112,54 @@ export function ConvictionBadge({ conviction }: { conviction?: string | null }) 
   return <span className={cn(PILL, "border-primary/35 bg-primary/10 text-primary")}>{conviction}</span>;
 }
 
+// ── compact list primitives ────────────────────────────────────────────────
+// The library list is a narrow (≈400px) picker, so it uses restrained inline
+// indicators instead of the full pills above (which stay for the note detail):
+// a conviction DOT, rating as small coloured text, and a status DOT + label.
+
+/** A small filled dot flagging conviction (solid = high, faded = medium/low). */
+export function ConvictionDot({ conviction }: { conviction?: string | null }) {
+  if (!conviction) return null;
+  const high = /high/i.test(conviction);
+  return (
+    <span
+      title={`${conviction} conviction`}
+      aria-label={`${conviction} conviction`}
+      className={cn("inline-block h-1.5 w-1.5 shrink-0 rounded-full", high ? "bg-primary" : "bg-primary/40")}
+    />
+  );
+}
+
+/** Rating as compact coloured text (no pill) for dense rows. */
+export function RatingTag({ rating }: { rating?: Rating | null }) {
+  if (!rating) return null;
+  const tone =
+    rating === "BUY" || rating === "ACCUMULATE"
+      ? "text-up"
+      : rating === "SELL"
+        ? "text-down"
+        : "text-muted-foreground";
+  return <span className={cn("shrink-0 text-[9px] font-semibold uppercase tracking-wide", tone)}>{rating}</span>;
+}
+
+const STATUS_DOT: Record<NoteStatus, string> = {
+  approved: "bg-up",
+  ic_pending: "bg-primary",
+  in_review: "bg-amber-500",
+  draft: "bg-muted-foreground/60",
+  rejected: "bg-down",
+};
+/** Status as a coloured dot + small label for dense rows. */
+export function StatusDot({ status }: { status: NoteStatus }) {
+  const m = STATUS_META[status] ?? STATUS_META.draft;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+      <span className={cn("h-1.5 w-1.5 rounded-full", STATUS_DOT[status] ?? STATUS_DOT.draft)} />
+      {m.label}
+    </span>
+  );
+}
+
 const ACTION_META: Record<CompAction, { label: string; cls: string }> = {
   remove: { label: "REMOVE", cls: "text-down" },
   decrease: { label: "DECREASE", cls: "text-down" },
@@ -160,32 +209,53 @@ export function useQuotes(symbols: string[]) {
   });
 }
 
-export interface IntradaySeries {
+export interface PriceHistorySeries {
   points: { t: number; v: number }[];
   prevClose: number | null;
   source: string | null;
 }
-export function useIntradaySeries(symbol: string | null) {
-  return useQuery<IntradaySeries>({
-    queryKey: ["ric-intraday", symbol],
+
+/**
+ * ~90 calendar days of daily closes for the Research note chart.
+ *
+ * IRESS-PROD first via `/api/company-analysis/[sym]/chart?range=3M`
+ * (TimeSeriesGet2, anchored to securities_c.last_price so the ambiguous
+ * rands|cents scale can't 100× a labelled chart). Yahoo only as fallback when
+ * IRESS is empty / unanchored / entitlement-blocked — same contract as the
+ * Analysis tab charts (PR #20). Do NOT use `/api/intraday?limit=90` (ticks,
+ * not days) or force `provider=yahoo`.
+ */
+export function usePriceHistorySeries(symbol: string | null) {
+  return useQuery<PriceHistorySeries>({
+    queryKey: ["ric-history-3m-iress", symbol],
     enabled: !!symbol,
+    staleTime: 5 * 60_000,
     queryFn: async () => {
-      const res = await fetch(`/api/intraday/${encodeURIComponent(symbol ?? "")}?limit=90`, {
-        cache: "no-store",
-      });
+      const bare = (symbol ?? "").replace(/\.(JO|JSE)$/i, "").toUpperCase();
+      const res = await fetch(
+        `/api/company-analysis/${encodeURIComponent(bare)}.JO/chart?range=3M`,
+        { cache: "no-store" },
+      );
       const json = (await res.json().catch(() => ({}))) as {
-        points?: { t: number; v: number }[];
-        prevClose?: number | null;
+        ok?: boolean;
+        points?: Array<{ t: number; c?: number; v?: number }>;
         source?: string;
       };
+      const points = (Array.isArray(json.points) ? json.points : [])
+        .map((p) => ({ t: Number(p.t), v: Number(p.c ?? p.v) }))
+        .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v) && p.v > 0)
+        .sort((a, b) => a.t - b.t);
       return {
-        points: Array.isArray(json.points) ? json.points : [],
-        prevClose: json.prevClose ?? null,
-        source: json.source ?? null,
+        points,
+        prevClose: points.length >= 2 ? (points[points.length - 2]?.v ?? null) : null,
+        source: typeof json.source === "string" ? json.source : points.length > 0 ? "yahoo" : null,
       };
     },
   });
 }
+
+/** @deprecated Use `usePriceHistorySeries` — kept as an alias for any stray imports. */
+export const useIntradaySeries = usePriceHistorySeries;
 
 // ── charts (inline SVG, theme-aware) ─────────────────────────────────────────
 export interface ChartTrigger {
@@ -221,22 +291,9 @@ export function PriceTriggerChart({
 
   const trigPrices = triggers.map((t) => t.price).filter((n) => Number.isFinite(n));
   const pricePts = points.map((p) => p.v).filter((n) => Number.isFinite(n) && n > 0);
+  const domain = priceTriggerYDomain(pricePts, trigPrices, current);
 
-  // Y-range with a sane fallback when the data is flat or sparse. Anchor on
-  // current price first so an isolated intraday tick still renders usefully,
-  // then widen to fit triggers + data range, then add 8% headroom.
-  const anchor =
-    current != null && Number.isFinite(current)
-      ? current
-      : pricePts.length > 0
-        ? pricePts[pricePts.length - 1] ?? null
-        : trigPrices.length > 0
-          ? trigPrices.slice().sort((a, b) => a - b)[Math.floor(trigPrices.length / 2)] ?? null
-          : null;
-  const allV = [...pricePts, ...trigPrices, ...(current != null ? [current] : [])].filter((n) =>
-    Number.isFinite(n),
-  );
-  if (anchor == null && allV.length === 0) {
+  if (domain == null) {
     return (
       <div className="flex h-full w-full items-center justify-center text-caption">
         Live series pending — no price or trigger data.
@@ -244,17 +301,9 @@ export function PriceTriggerChart({
     );
   }
 
-  const dataLo = pricePts.length > 0 ? Math.min(...pricePts) : anchor ?? 0;
-  const dataHi = pricePts.length > 0 ? Math.max(...pricePts) : anchor ?? 0;
-  const lo = Math.min(dataLo, ...trigPrices, anchor ?? Number.POSITIVE_INFINITY);
-  const hi = Math.max(dataHi, ...trigPrices, anchor ?? Number.NEGATIVE_INFINITY);
-  const baseSpan = hi - lo;
-  // If everything is at the same value (flat data, single point), give the
-  // chart a ±5% band so the line and current marker are still readable.
-  const span = baseSpan > 0 ? baseSpan : (anchor ?? 1) * 0.05 || 1;
-  const min = lo - span * 0.08;
-  const max = hi + span * 0.08;
+  const { min, max } = domain;
   const range = max - min || 1;
+  const offScaleSet = new Set(domain.offScale);
 
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
@@ -290,6 +339,18 @@ export function PriceTriggerChart({
 
   const lastPoint = points.length > 0 ? points[points.length - 1] : null;
   const lastX = points.length > 0 ? xAt(points.length - 1) : null;
+
+  // Precompute edge-stack slots for off-scale triggers (avoid mutating during map).
+  const offScaleSlots = new Map<string, { above: boolean; stack: number }>();
+  {
+    let aboveIdx = 0;
+    let belowIdx = 0;
+    for (const t of triggers) {
+      if (!offScaleSet.has(t.price)) continue;
+      const above = t.price > max;
+      offScaleSlots.set(t.label, { above, stack: above ? aboveIdx++ : belowIdx++ });
+    }
+  }
 
   return (
     <svg
@@ -341,16 +402,37 @@ export function PriceTriggerChart({
         </text>
       ))}
 
-      {/* trigger levels */}
+      {/* trigger levels — in-range dashed lines; far-off levels as edge annotations */}
       {triggers.map((t) => {
-        const yy = yAt(t.price);
-        if (!Number.isFinite(yy)) return null;
         const cls =
           t.tone === "buy"
             ? "text-up"
             : t.tone === "sell"
               ? "text-down"
               : "text-muted-foreground";
+        const off = offScaleSet.has(t.price);
+        if (off) {
+          const slot = offScaleSlots.get(t.label);
+          const above = slot?.above ?? t.price > max;
+          const stack = slot?.stack ?? 0;
+          const yy = above ? padT + 10 + stack * 12 : padT + innerH - 4 - stack * 12;
+          return (
+            <g key={t.label} className={cls}>
+              <text
+                x={W - padR + 6}
+                y={yy}
+                fill="currentColor"
+                fontSize={10}
+                className="font-mono tabular-nums"
+                opacity={0.85}
+              >
+                {above ? "↑" : "↓"} {t.label} · R{fmtR(t.price)}
+              </text>
+            </g>
+          );
+        }
+        const yy = yAt(t.price);
+        if (!Number.isFinite(yy)) return null;
         return (
           <g key={t.label} className={cls}>
             <line

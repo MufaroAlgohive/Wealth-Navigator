@@ -4,7 +4,8 @@
  * Research note detail (read view) — the institutional note: thesis, triggers,
  * fundamentals, valuation-vs-peers, management view and the IC log. CURRENT
  * price + UPSIDE are live (from /api/quotes); the 90-day chart pulls
- * /api/intraday and overlays the trigger levels.
+ * IRESS-PROD daily closes via /api/company-analysis/[sym]/chart?range=3M
+ * (Yahoo fallback only when IRESS is empty/unanchored) and overlays triggers.
  */
 
 import { Pencil, Send } from "lucide-react";
@@ -15,7 +16,6 @@ import { cn } from "@/lib/cn";
 import type { NoteTriggers, ResearchNote, ResearchPerms } from "./types";
 import {
   type ChartTrigger,
-  ConvictionBadge,
   EsgBadge,
   PeerPeBars,
   PeerScorecard,
@@ -27,7 +27,7 @@ import {
   medianOf,
   moneyR,
   signedPct,
-  useIntradaySeries,
+  usePriceHistorySeries,
   useQuotes,
 } from "./ui";
 
@@ -63,6 +63,30 @@ function fmtDate(iso: string | null | undefined): string {
   return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/** Display a fundamentals cell; append % when the row unit is percent. */
+function fmtFundCell(raw: unknown, unit?: string): string {
+  if (raw == null || raw === "" || raw === "—") return "—";
+  const s = String(raw).trim();
+  if (!s || s === "—") return "—";
+  if (unit === "%" && !s.includes("%") && /^-?\d+(\.\d+)?$/.test(s)) return `${s}%`;
+  return s;
+}
+
+/** Undo double-escaped HTML entities in stored note fields (e.g. "BUY &amp; HOLD"). */
+function decodeEntities(s: string | null | undefined): string {
+  if (!s) return "";
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"');
+}
+
+// Secondary attribute tag — subtle outline (no fill) so the rating pill leads.
+const SUBTLE_TAG =
+  "rounded border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground";
+
 export function NoteDetail({
   note,
   perms,
@@ -78,7 +102,7 @@ export function NoteDetail({
 }) {
   const th = note.thesis ?? {};
   const quotes = useQuotes([note.symbol]);
-  const series = useIntradaySeries(note.symbol);
+  const series = usePriceHistorySeries(note.symbol);
   const current = quotes.data?.[note.symbol.toUpperCase()]?.last ?? null;
   const priceLoading = quotes.isLoading;
   const target = typeof th.targetPrice === "number" ? th.targetPrice : null;
@@ -100,19 +124,20 @@ export function NoteDetail({
       {/* header */}
       <div className="glass-panel p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-lg font-semibold">{note.symbol}</span>
+          <div className="min-w-0 space-y-2">
+            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+              <span className="font-mono text-xl font-semibold tracking-tight">{note.symbol}</span>
+              <span className="text-sm font-medium text-foreground/90">
+                {th.companyName ?? note.symbol}
+              </span>
+            </div>
+            {/* rating leads (filled); style / conviction / ESG are restrained secondary tags */}
+            <div className="flex flex-wrap items-center gap-1.5">
               <RatingBadge rating={th.rating} />
-              {th.style && (
-                <span className="rounded-full border border-[hsl(var(--glass-border))] px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                  {th.style}
-                </span>
-              )}
-              <ConvictionBadge conviction={th.conviction} />
+              {th.conviction && <span className={SUBTLE_TAG}>{th.conviction}</span>}
+              {th.style && <span className={SUBTLE_TAG}>{decodeEntities(th.style)}</span>}
               <EsgBadge esg={th.esg} />
             </div>
-            <p className="text-sm font-medium">{th.companyName ?? note.symbol}</p>
             <p className="text-caption">
               {[
                 th.sector,
@@ -175,10 +200,19 @@ export function NoteDetail({
       <div className="grid gap-5 lg:grid-cols-[1.6fr_1fr]">
         <GlassSection
           title="Price · 90D with triggers"
+          dataSource={
+            series.data?.source === "iress"
+              ? "iress"
+              : series.data?.source === "yahoo"
+                ? "yahoo"
+                : "hybrid"
+          }
           subtitle={
-            series.data?.source === "unavailable" || (series.data?.points.length ?? 0) === 0
-              ? "Live series pending — trigger levels shown"
-              : undefined
+            series.isLoading
+              ? "Loading daily series…"
+              : series.data?.source === "unavailable" || (series.data?.points.length ?? 0) === 0
+                ? "Daily series pending — trigger levels shown"
+                : undefined
           }
           className="flex h-[280px] flex-col"
         >
@@ -190,7 +224,7 @@ export function NoteDetail({
             />
           </div>
         </GlassSection>
-        <GlassSection title="Triggers">
+        <GlassSection title="Triggers" dataSource="supabase" db="institutional">
           <div className="space-y-2.5">
             {TRIGGER_ROWS.map((r) => {
               const t = note.triggers?.[r.key];
@@ -218,7 +252,7 @@ export function NoteDetail({
 
       {/* thesis */}
       <div className="grid gap-5 lg:grid-cols-2">
-        <GlassSection title="Bull thesis">
+        <GlassSection title="Bull thesis" dataSource="supabase" db="institutional">
           {th.bull ? (
             <p className="text-sm leading-relaxed text-foreground/85">{th.bull}</p>
           ) : (
@@ -240,7 +274,7 @@ export function NoteDetail({
             </div>
           ) : null}
         </GlassSection>
-        <GlassSection title="Bear case / risks">
+        <GlassSection title="Bear case / risks" dataSource="supabase" db="institutional">
           {th.bear ? (
             <p className="text-sm leading-relaxed text-foreground/85">{th.bear}</p>
           ) : (
@@ -270,6 +304,8 @@ export function NoteDetail({
               ? "Fundamentals · multi-year (Year 1 / Year 2 / Year 3)"
               : "Fundamentals · latest vs forecast"
           }
+          dataSource="supabase"
+          db="institutional"
           noPadding
         >
           {fundamentals.length ? (
@@ -305,26 +341,26 @@ export function NoteDetail({
                           {f.unit ? ` (${f.unit})` : ""}
                         </td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                          {f.prior}
+                          {fmtFundCell(f.prior, f.unit)}
                         </td>
                         <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
-                          {f.current}
+                          {fmtFundCell(f.current, f.unit)}
                         </td>
                         {years.length > 0 ? (
                           <>
                             <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                              {years[0] !== undefined && years[0] !== "" ? String(years[0]) : "—"}
+                              {fmtFundCell(years[0], f.unit)}
                             </td>
                             <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                              {years[1] !== undefined && years[1] !== "" ? String(years[1]) : "—"}
+                              {fmtFundCell(years[1], f.unit)}
                             </td>
                             <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                              {years[2] !== undefined && years[2] !== "" ? String(years[2]) : "—"}
+                              {fmtFundCell(years[2], f.unit)}
                             </td>
                           </>
                         ) : (
                           <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                            {f.forecast}
+                            {fmtFundCell(f.forecast, f.unit)}
                           </td>
                         )}
                         <td className="px-5 py-2">
@@ -345,6 +381,8 @@ export function NoteDetail({
         <GlassSection
           title="Valuation vs peers · scorecard"
           subtitle="GREEN/AMBER/RED vs peer median (Lovable spec)"
+          dataSource="supabase"
+          db="institutional"
           noPadding
         >
           <PeerScorecard
@@ -398,17 +436,17 @@ export function NoteDetail({
       {/* management */}
       {(th.likesManagement || th.dislikesManagement) && (
         <div className="grid gap-5 lg:grid-cols-2">
-          <GlassSection title="Management — what we love">
+          <GlassSection title="Management — what we love" dataSource="supabase" db="institutional">
             <p className="text-sm leading-relaxed text-foreground/85">{th.likesManagement ?? "—"}</p>
           </GlassSection>
-          <GlassSection title="Management — what worries us">
+          <GlassSection title="Management — what worries us" dataSource="supabase" db="institutional">
             <p className="text-sm leading-relaxed text-foreground/85">{th.dislikesManagement ?? "—"}</p>
           </GlassSection>
         </div>
       )}
 
       {/* IC log */}
-      <GlassSection title="Investment committee log">
+      <GlassSection title="Investment committee log" dataSource="supabase" db="institutional">
         {icLog.length ? (
           <ol className="space-y-3">
             {icLog.map((e) => (

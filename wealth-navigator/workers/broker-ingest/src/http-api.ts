@@ -1,8 +1,9 @@
 /**
  * Minimal HTTP API for the Railway `broker-ingest` worker.
  *
- * Endpoints (all require `WORKER_HTTP_TOKEN` if set):
- *   GET  /health                  — heartbeat shape (no broker call)
+ * Endpoints (require `WORKER_HTTP_TOKEN` if set, EXCEPT /health):
+ *   GET  /health                  — heartbeat shape (no broker call); UNAUTHENTICATED
+ *                                    (Railway healthcheck path — served before the gate)
  *   GET  /state                   — current poll state (cursor + fills applied)
  *   POST /debug/inject-fill       — manual fill injection (test only)
  *
@@ -10,6 +11,12 @@
  * never holds the broker credential. /debug/inject-fill is test-only and
  * gated by `WORKER_HTTP_TOKEN` regardless of mode so an unauthenticated
  * client can't pollute the audit table.
+ *
+ * SECURITY (opt-in enforcement, mirrors iress-ingest): `checkAuth` fails
+ * OPEN when `WORKER_HTTP_TOKEN` is unset so a forgetful deploy never bricks
+ * the worker. Mutating requests served without a token log a loud CRITICAL
+ * line, and setting `WORKER_REQUIRE_HTTP_TOKEN=1` (see index.ts) refuses to
+ * start until the token is present — the deliberate way to close the hole.
  */
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -49,6 +56,17 @@ function checkAuth(req: IncomingMessage, expected: string | undefined): boolean 
   const alt = req.headers["x-worker-token"];
   if (typeof alt === "string" && alt.trim() === expected) return true;
   return false;
+}
+
+/**
+ * Mutating HTTP routes — the fill injector and the heartbeat writer. Used only
+ * to decide whether to log a CRITICAL "served without auth" line when
+ * WORKER_HTTP_TOKEN is unset (fail-open). Read/probe routes stay quiet.
+ * Mirrors the iress-ingest worker so both surfaces harden the same way.
+ */
+function isMutatingRequest(method: string | undefined, path: string): boolean {
+  const m = (method ?? "GET").toUpperCase();
+  return m === "POST" && (path === "/debug/inject-fill" || path === "/heartbeat/refresh");
 }
 
 function send(res: ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
@@ -136,17 +154,43 @@ export async function handleRequest(
   deps: HttpApiDeps,
   authToken: string | undefined,
 ): Promise<void> {
-  if (!checkAuth(req, authToken)) {
-    sendError(res, 401, "unauthorized", "Missing or invalid worker auth token");
-    return;
-  }
   const url = new URL(req.url ?? "/", "http://worker");
   const path = url.pathname;
 
+  // /health is the Railway healthcheck path (railway.toml healthcheckPath) and
+  // MUST answer without auth — it is served BEFORE checkAuth on purpose. If it
+  // sat behind the gate, setting WORKER_HTTP_TOKEN (the documented hardening)
+  // would 401 Railway's header-less healthcheck GET and, with
+  // restartPolicyType=on_failure, restart-loop the deploy. /health carries only
+  // operational counters (no secrets/PII) and is already unauthenticated today
+  // (checkAuth fails open while the token is unset), so this adds no exposure.
   if (req.method === "GET" && path === "/health") {
     const snapshot = buildHealthSnapshot(deps);
     send(res, 200, snapshot);
     return;
+  }
+
+  if (!checkAuth(req, authToken)) {
+    sendError(res, 401, "unauthorized", "Missing or invalid worker auth token");
+    return;
+  }
+
+  // SECURITY: checkAuth fails OPEN when WORKER_HTTP_TOKEN is unset (so an
+  // auto-deploy that forgets the token never takes the worker down). Emit a
+  // loud CRITICAL line on every mutating request served without auth so the
+  // exposure is visible and the operator is nudged to set the token and flip
+  // WORKER_REQUIRE_HTTP_TOKEN=1. Reads stay quiet to avoid log spam.
+  if (!authToken && isMutatingRequest(req.method, path)) {
+    console.error(
+      JSON.stringify({
+        level: "critical",
+        event: "worker_http_unauthenticated_mutation",
+        method: req.method ?? "GET",
+        path,
+        message:
+          "Mutating worker HTTP request served WITHOUT auth (WORKER_HTTP_TOKEN unset). Set WORKER_HTTP_TOKEN on the worker + BFF, then WORKER_REQUIRE_HTTP_TOKEN=1 to enforce.",
+      }),
+    );
   }
 
   if (req.method === "GET" && path === "/state") {

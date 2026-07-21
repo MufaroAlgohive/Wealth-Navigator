@@ -1,6 +1,8 @@
 import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { fetchYahooChart } from "@/lib/company-analysis/yahoo";
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
-import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
+import { iressPriceOverlayEnabled, iressQuoteMaxAgeMs } from "@/lib/iress/overlay-policy";
+import { anchorHistoryToRands } from "@/lib/iress/price-scale";
 import { callWorker } from "@/lib/iress/worker-api";
 /**
  * GET /api/analysis/[sym]?range=1Y
@@ -51,8 +53,43 @@ const RANGE_DAYS: Record<HistoryRange, number> = {
   MAX: 7300,
 };
 
+// Analysis history range → the range fetchYahooChart accepts (nearest wider
+// bucket where Yahoo has no exact one) for the Yahoo fallback.
+const YAHOO_RANGE: Record<HistoryRange, string> = {
+  "1D": "1D",
+  "5D": "1W",
+  "1M": "1M",
+  "3M": "6M",
+  "6M": "6M",
+  YTD: "YTD",
+  "1Y": "1Y",
+  "3Y": "3Y",
+  "5Y": "5Y",
+  "10Y": "MAX",
+  MAX: "MAX",
+};
+
 function normaliseSym(raw: string): string {
   return raw.replace(/\.(JO|JSE)$/i, "").toUpperCase();
+}
+
+/** securities_c.last_price (cents) — anchors the IRESS history series' ambiguous
+ *  rands/cents scale so a labelled chart is never rendered 100x off. */
+async function historyReferenceCents(sym: string): Promise<number> {
+  if (!isRetailSupabaseConfigured()) return 0;
+  try {
+    const sb = createRetailServiceRoleClient();
+    const { data } = await sb
+      .from("securities_c")
+      .select("last_price")
+      .in("symbol", [sym, `${sym}.JO`])
+      .not("last_price", "is", null)
+      .limit(1);
+    const lp = Number((data?.[0] as { last_price?: number | string } | undefined)?.last_price ?? 0);
+    return Number.isFinite(lp) && lp > 0 ? lp : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function asNumber(v: unknown): number | null {
@@ -146,6 +183,18 @@ async function loadInstitutionalSnapshot(sym: string): Promise<{
         snapshot: null,
         source: "pending-first-write",
         message: `No IRESS L1 snapshot for ${sym} yet — the worker writes it once the symbol is in the quote watchlist and the table is migrated.`,
+      };
+    }
+    // Freshness gate: drop a snapshot older than the shared max-age window so a
+    // stale/backfilled row never renders as a live price — the Analysis header
+    // then falls back to the Yahoo-fed last_price. Matches /api/equities.
+    const asOf = row.as_of ?? row.updated_at;
+    const asOfMs = asOf ? new Date(asOf).getTime() : Number.NaN;
+    if (!Number.isFinite(asOfMs) || Date.now() - asOfMs > iressQuoteMaxAgeMs()) {
+      return {
+        snapshot: null,
+        source: "stale",
+        message: `IRESS L1 snapshot for ${sym} is older than the freshness window — not shown as live; the Yahoo-fed price is used instead.`,
       };
     }
     return {
@@ -321,55 +370,73 @@ async function loadHistory(
   message?: string;
   entitlementBlocked?: boolean;
 }> {
+  const days = RANGE_DAYS[range] ?? RANGE_DAYS[DEFAULT_RANGE];
+  const ref = await historyReferenceCents(sym);
+  let iressEntitlement = false;
+  let iressErr: string | undefined;
+  // 1) IRESS-PROD via the worker /history endpoint (PROD seat, never UAT).
+  //    Anchored to RANDS against securities_c.last_price so the ambiguous
+  //    rands/cents scale can't render the chart 100x off; only trusted when the
+  //    anchor resolves it (else fall through to Yahoo).
   try {
-    const days = RANGE_DAYS[range] ?? RANGE_DAYS[DEFAULT_RANGE];
     const res = await callWorker<{
       ok: boolean;
       sym: string;
       points?: Array<{ t: number; v: number }>;
       error?: string;
+      reason?: string;
     }>({
       path: `/history?sym=${encodeURIComponent(sym)}&days=${days}&exchange=JSE`,
       timeoutMs: 30_000,
     });
-    if (!res.ok) {
+    if (res.ok) {
+      const raw = Array.isArray(res.body?.points) ? res.body.points : [];
+      if (res.body?.ok && raw.length > 0 && ref > 0) {
+        const anchored = anchorHistoryToRands(raw, ref);
+        if (anchored.anchored && anchored.points.length > 0) {
+          return { points: anchored.points.map((p) => ({ t: p.t, v: p.c })), source: "iress" };
+        }
+      }
+      // Reachable but not usable → try Yahoo. Distinguish the causes for the
+      // honest final reason (only surfaced if Yahoo ALSO fails): an EMPTY series
+      // is likely an entitlement / prod-seat gap; a series WITH points but no
+      // securities_c anchor (ref<=0) is a missing-reference, not entitlement.
+      iressEntitlement = raw.length === 0;
+      iressErr = res.body?.error ?? res.body?.reason ?? (raw.length > 0 ? "no_reference_anchor" : undefined);
+    } else {
       const msg = res.error ?? "worker_unreachable";
-      // Worker logs 25014 (or 25008) for entitlement-blocked. Map to a typed
-      // reason so the page renders the shared EntitlementRequired block.
-      const isEntitlement = /25014|entitlement|TimeSeriesGet2/i.test(msg);
-      return {
-        points: [],
-        source: "unavailable",
-        reason: isEntitlement ? "entitlement_blocked" : "worker_not_running",
-        error: msg,
-        entitlementBlocked: isEntitlement,
-        message: isEntitlement
-          ? "IRESS TimeSeriesGet2 entitlement required on DFM@Mint."
-          : "Railway Iress-Worker offline or returned an error.",
-      };
+      iressEntitlement = /25014|25008|entitlement|TimeSeriesGet2|market_data_prod/i.test(msg);
+      iressErr = msg;
     }
-    const raw = Array.isArray(res.body?.points) ? res.body?.points : [];
-    const points = raw
-      .filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.v) && p.v > 0)
-      .sort((a, b) => a.t - b.t);
-    if (points.length === 0) {
-      return {
-        points: [],
-        source: "unavailable",
-        reason: "entitlement_blocked",
-        entitlementBlocked: true,
-        message: "Worker returned no points — TimeSeriesGet2 likely entitlement-blocked.",
-      };
-    }
-    return { points, source: "iress" };
   } catch (e) {
-    return {
-      points: [],
-      source: "unavailable",
-      reason: "worker_not_running",
-      error: e instanceof Error ? e.message : "unknown",
-    };
+    iressErr = e instanceof Error ? e.message : "unknown";
   }
+  // 2) Yahoo fallback — append .JO so fetchYahooChart de-cents JSE to RANDS and
+  //    returns the correct JSE instrument (a bare code fetches the US-listed
+  //    same-ticker company). Keeps the chart from blanking.
+  try {
+    const yahoo = await fetchYahooChart(`${sym}.JO`, YAHOO_RANGE[range] ?? "1Y");
+    if (yahoo.ok) {
+      const points = yahoo.points
+        .filter((p) => p && Number.isFinite(p.t) && Number.isFinite(p.c) && p.c > 0)
+        .map((p) => ({ t: p.t, v: p.c }))
+        .sort((a, b) => a.t - b.t);
+      if (points.length >= 2) return { points, source: "yahoo" };
+    }
+  } catch {
+    /* fall through to the honest unavailable state */
+  }
+  // 3) Neither source served — surface the honest reason.
+  return {
+    points: [],
+    source: "unavailable",
+    reason: iressEntitlement ? "entitlement_blocked" : "worker_not_running",
+    error: iressErr,
+    entitlementBlocked: iressEntitlement,
+    message: iressEntitlement
+      ? "IRESS TimeSeriesGet2 unavailable/entitlement-blocked and the Yahoo fallback returned no data."
+      : "Price history unavailable from both IRESS and Yahoo.",
+  };
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ sym: string }> }) {
@@ -431,6 +498,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
         snap.source === "supabase" && "iress",
         intraday.source === "supabase" && "supabase-intraday",
         history.source === "iress" && "iress-history",
+        history.source === "yahoo" && "yahoo-history",
         fundamentals.source === "supabase" && "yahoo",
       ]
         .filter(Boolean)

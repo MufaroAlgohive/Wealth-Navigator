@@ -88,7 +88,10 @@ export function usePortfolio(enabled = true) {
     queryKey: ["portfolio"],
     queryFn: fetchPortfolio,
     enabled,
-    refetchInterval: 30_000,
+    // Spread queryOpts("live") FIRST so the intended 30s cadence wins — the
+    // "live" preset carries refetchInterval: 5_000, which would otherwise
+    // clobber the 30s documented above (Audit #35).
     ...queryOpts("live"),
+    refetchInterval: 30_000,
   });
 }

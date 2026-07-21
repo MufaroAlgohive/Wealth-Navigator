@@ -1,20 +1,31 @@
 /**
  * GET /api/news
  *
- * Real SA financial news, merged from two real sources:
- *   1. Live public RSS (Moneyweb, BusinessTech) — always fetched, keeps the
- *      feed fresh. The official JSE SENS web feed is a paid subscription IRESS
- *      V4 doesn't expose, so this is the "real alternative source".
+ * Real SA financial news, merged from three real sources:
+ *   1. Live public RSS (Moneyweb, BusinessTech) — always fetched.
  *   2. The retail `News_articles` table (Alliance News wire) when configured.
+ *   3. The institutional `news_item_c` table — JSE SENS announcements
+ *      persisted by the worker via `NewsHeadlineGet` (vendor `SENSD`,
+ *      see `wealth-navigator/docs/SENS_NEWSHEADLINE_WIRE.md`).
  *
- * Items are tagged with their publisher and category "WIRE" — NOT presented as
- * official SENS regulatory announcements (a SENS-only request returns empty).
- * Server-side fetch + Next data cache (5 min) so upstreams are never hammered.
+ * Items carry `category` `"WIRE"` for RSS / Alliance, and `"SENS"` for
+ * IRESS-persisted JSE SENS rows. RSS / Alliance is NOT presented as
+ * official SENS regulatory announcements.
+ *
+ * `?category=SENS` returns only the institutional `news_item_c` rows
+ * (when the table is populated) — the historical blocked-vendor guard
+ * was removed 2026-07-20 once `NewsHeadlineGet` (vendor `SENSD`) was
+ * confirmed working and the worker persistence leg was wired.
  */
 import { XMLParser } from "fast-xml-parser";
 
 import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
-import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
+import {
+  createInstitutionalServiceRoleClient,
+  createRetailServiceRoleClient,
+  isInstitutionalSupabaseConfigured,
+  isRetailSupabaseConfigured,
+} from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -42,6 +53,19 @@ interface NewsRow {
   body_text: string | null;
   published_at: string;
   companies: string[] | null;
+}
+
+interface SensRow {
+  item_id: string;
+  source: string | null;
+  category: string | null;
+  severity: string | null;
+  ticker: string | null;
+  headline: string;
+  body: string | null;
+  url: string | null;
+  published_at: string;
+  payload: { tickers?: string[] } | null;
 }
 
 const RSS_FEEDS: Array<{ url: string; publisher: string }> = [
@@ -74,6 +98,26 @@ function wireToItem(r: NewsRow): NewsItem {
     publishedAt: r.published_at,
     ts: new Date(r.published_at).getTime(),
     priority: "low",
+    tickers,
+  };
+}
+
+function sensRowToItem(r: SensRow): NewsItem {
+  const tickers = Array.isArray(r.payload?.tickers) ? (r.payload as { tickers: string[] }).tickers.filter(Boolean) : [];
+  const source = (r.source ?? "SENSD").toUpperCase();
+  return {
+    id: r.item_id,
+    source,
+    category: "SENS",
+    severity: r.severity ?? "regulatory",
+    ticker: r.ticker ?? tickers[0] ?? null,
+    issuer: null,
+    headline: r.headline,
+    body: r.body ?? null,
+    url: r.url ?? null,
+    publishedAt: r.published_at,
+    ts: new Date(r.published_at).getTime(),
+    priority: "high",
     tickers,
   };
 }
@@ -112,25 +156,65 @@ async function fetchRss(url: string, publisher: string): Promise<NewsItem[]> {
   }
 }
 
+/**
+ * SENS-only read: pulls from the institutional `news_item_c` table
+ * (populated by the worker `NewsHeadlineGet` loop). Returns an empty
+ * array (with the right `source` reason) when the institutional client
+ * isn't configured so the UI keeps the honest empty state.
+ */
+async function fetchSens(limit: number): Promise<{
+  items: NewsItem[];
+  source: string;
+  reason?: string;
+}> {
+  if (!isUseSupabaseQuotesEnabled() || !isInstitutionalSupabaseConfigured()) {
+    return {
+      items: [],
+      source: "unconfigured",
+      reason: "institutional_supabase_not_configured",
+    };
+  }
+  try {
+    const supabase = createInstitutionalServiceRoleClient();
+    const { data, error } = await supabase
+      .from("news_item_c")
+      .select("item_id, source, category, severity, ticker, headline, body, url, published_at, payload")
+      .eq("category", "SENS")
+      .order("published_at", { ascending: false })
+      .limit(limit);
+    if (error) {
+      return { items: [], source: "error", reason: error.message };
+    }
+    const items = ((data ?? []) as SensRow[]).map(sensRowToItem);
+    return { items, source: items.length ? "supabase" : "empty" };
+  } catch (err) {
+    return {
+      items: [],
+      source: "error",
+      reason: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 200);
   const category = url.searchParams.get("category") ?? undefined;
 
-  // SENS = official regulatory announcements (paid IRESS NewsVendorGet).
-  // Return a `blocked-vendor` empty state so the UI renders the honest badge
-  // (see `cockpit-news-flow.tsx` / `data-source-badge.tsx`) instead of
-  // pretending the feed is broken. Unblock requires Charles/IRESS to flip
-  // the NewsVendorGet entitlement for SENS on DFM@Mint — see
-  // `docs/VENDOR_ENTITLEMENT_STATUS.md`.
+  // SENS-only request → read straight from the institutional table.
+  // The historical "blocked-vendor" guard was removed once the IRESS
+  // NewsHeadlineGet + worker persistence path was confirmed working.
   if (category && category.toUpperCase() === "SENS") {
+    const sens = await fetchSens(limit);
     return Response.json({
-      items: [],
-      source: "blocked-vendor",
-      count: 0,
-      reason: "sens_entitlement_pending",
+      items: sens.items,
+      source: sens.source,
+      count: sens.items.length,
+      ...(sens.reason !== undefined ? { reason: sens.reason } : {}),
       message:
-        "JSE SENS regulatory announcements require the IRESS NewsVendorGet entitlement on DFM@Mint — Charles/IRESS to flip the access.",
+        sens.items.length === 0 && sens.source === "empty"
+          ? "No SENS announcements persisted yet — worker needs `IRESS_NEWS_INGEST=1` enabled."
+          : undefined,
     });
   }
 

@@ -43,7 +43,7 @@ import type {
   TimeSeriesGet2Request,
   SecuritySearchGetRequest,
   SecuritySearchRow,
-  NewsVendorGetRequest,
+  NewsHeadlineGetRequest,
   NewsStory,
   IPSTransactionGetByAccount5Request,
   IPSAccountGetAll1Request,
@@ -575,81 +575,84 @@ function emptyQuote(): Quote {
 }
 
 /**
- * Map a raw `NewsVendorGet` row into the normalised `NewsStory` shape.
+ * Map a raw `NewsHeadlineGet` row into the normalised `NewsStory` shape.
  *
- * The CT build's field names are not yet pinned empirically — Charles'
- * example was an empty `<Parameters />` payload, so we have no sample row
- * to inspect. The mapper does best-effort reads across common V4 naming
- * variants (camelCase + short forms) so a future live probe "just works"
- * once we know which one CT returns. Fields we don't find stay `null`.
+ * Field names are taken verbatim from the CT build envelope captured
+ * 2026-07-20 (`za1-ct-ds1.prod.iress.com.au:4502`). The server emits:
  *
- * TODO(entitlement): the live CT build may only return headlines for
- * non-provisioned profiles. When the worker's `/debug/news-vendor-probe`
- * reports what the row actually contains, narrow the `str(...)` fallbacks
- * here and remove the entitlement-blocked branches.
+ *   {
+ *     "HeadlineID":          string (64-bit numeric id, JSON-safe),
+ *     "HeadlineDateTime":    "2026-07-20T15:00:00.000" (ISO-naive, server local),
+ *     "HeadlineText":        "Vesting of Shares Awarded to Directors …",
+ *     "SecurityCodeList":    "NPN,MTN"   (comma-separated IRESS codes),
+ *     "ExchangeList":        "JSE,JSE"   (parallel comma list),
+ *     "MarketSensitiveList": "*,*"       ("*" indicates market-sensitive),
+ *     "MarketSensitive":     true|false  (boolean mirror at row level),
+ *     "VendorCode":          "SENSD",
+ *     "CategoryIDList":      "105000000" (vendor-specific category id),
+ *     "HasTextStory":        true,
+ *     "HasHTMLTextStory":    true|false,
+ *     "StoryURL":            "",
+ *     "NewsSummary":         "<html>…</html>" (story body, when present),
+ *     "PagingBookmark":      { HeadlineID: … }  // only on header row
+ *   }
+ *
+ * `PagingBookmark` on the *header row* (not data rows) is filtered out
+ * before reaching this mapper. Rows without a `HeadlineText` are
+ * dropped (honest parsing — no "(untitled)" fabrications).
  */
 function mapNewsStory(row: Record<string, unknown> | undefined): NewsStory | null {
-  const str = (...keys: string[]) => {
-    if (!row) return "";
+  if (!row) return null;
+  const str = (...keys: string[]): string => {
     for (const k of keys) {
       const v = row[k];
-      if (v !== undefined && v !== null && v !== "") return String(v);
+      if (v !== undefined && v !== null && v !== "" && typeof v !== "object") {
+        return String(v);
+      }
     }
     return "";
   };
-  const tsRaw = str(
-    "Timestamp",
-    "StoryTimestamp",
-    "StoryTime",
-    "PublishDate",
-    "PublishDateTime",
-    "DateTime",
-    "TimeStamp",
-    "WebServiceTimeStamp",
-  );
+  const tsRaw = str("HeadlineDateTime", "Timestamp", "StoryTimestamp", "DateTime", "WebServiceTimeStamp");
   const ts = tsRaw ? Date.parse(tsRaw) || 0 : 0;
-  // Related codes / RICs can be a delimited string, an array of strings,
-  // or an array of objects. The V4 doc hasn't pinned this — keep the
-  // surface small and let the caller decide what to do with the raw form.
-  const rawRelated =
-    row?.["RelatedCodes"] ?? row?.["RelatedRICs"] ?? row?.["Codes"] ?? row?.["Symbols"];
+  const headline = str("HeadlineText", "Headline", "Title", "StoryHeadline");
+  if (!headline) return null;
+  const storyId = str("HeadlineID", "StoryId", "StoryID", "Id", "NewsId") ||
+    `news-${ts || Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const rawRelated = row["SecurityCodeList"] ?? row["RelatedCodes"] ?? row["RelatedRICs"];
   let relatedCodes: string[] | undefined;
-  if (Array.isArray(rawRelated)) {
-    relatedCodes = rawRelated.map((c) => String(c ?? "").trim()).filter(Boolean);
-    if (relatedCodes.length === 0) relatedCodes = undefined;
-  } else if (typeof rawRelated === "string" && rawRelated.trim() !== "") {
-    relatedCodes = rawRelated
+  if (typeof rawRelated === "string" && rawRelated.trim() !== "") {
+    const split = rawRelated
       .split(/[\s,;]+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    if (relatedCodes.length === 0) relatedCodes = undefined;
+    if (split.length > 0) relatedCodes = split;
+  } else if (Array.isArray(rawRelated)) {
+    const split = rawRelated
+      .map((c) => (typeof c === "object" ? "" : String(c ?? "").trim()))
+      .filter(Boolean);
+    if (split.length > 0) relatedCodes = split;
   }
-  // Honest parsing: if no headline field can be read, the row shape did not
-  // match (the V4 news row schema is not yet pinned on CT), so drop it rather
-  // than fabricate a clean-looking "(untitled) / IRESS" item. Likewise leave
-  // Source empty when absent instead of inventing an attribution.
-  const headline = str("Headline", "Title", "StoryHeadline");
-  if (!headline) return null;
-  const storyId =
-    str("StoryId", "StoryID", "Id", "NewsId", "ID") ||
-    `news-${ts || Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const story: NewsStory = {
+  const source = str("VendorCode", "Source", "Vendor", "Feed", "Provider");
+  const storyBody = str("NewsSummary", "Story", "Body", "Text", "Content");
+  const marketSensitiveRaw = row["MarketSensitive"];
+  const marketSensitive =
+    marketSensitiveRaw === true ||
+    marketSensitiveRaw === "true" ||
+    str("MarketSensitiveList") === "*";
+  return {
     StoryId: storyId,
     Headline: headline,
-    Source: str("Source", "Vendor", "VendorCode", "Feed", "Provider") || "",
+    Source: source || "SENSD",
     Timestamp: tsRaw,
     ts,
-    Story: (() => {
-      const body = str("Story", "Body", "Text", "Content", "StoryBody");
-      return body === "" ? null : body;
-    })(),
+    Story: storyBody || null,
     RelatedCodes: relatedCodes,
     Category: (() => {
-      const c = str("Category", "StoryCategory", "Section");
+      const c = str("CategoryIDList", "Category", "StoryCategory", "Section");
       return c === "" ? null : c;
     })(),
+    MarketSensitive: marketSensitive,
   };
-  return story;
 }
 
 function mapOrder(row: Record<string, unknown>): Order {
@@ -1300,10 +1303,9 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     },
 
     /**
-     * `NewsVendorGet` — Market Data / News via the IRESS Pro News service.
+     * `NewsHeadlineGet` — Market Data / News via the IRESS Pro News service.
      *
-     * Confirmed method name + envelope by Charles Ntjana (2026-06-25). The
-     * accepted V4 call shape is:
+     * Captured envelope (2026-07-20, prod market-data session, vendor `SENSD`):
      *
      *   <Header>
      *     <SessionKey>…</SessionKey>
@@ -1314,46 +1316,43 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
      *     <Updates>false</Updates>
      *     <Timeout>25</Timeout>
      *     <PageSize>1000</PageSize>
-     *     <InputLocalizationType>0</InputLocalizationType>
-     *     <OutputLocalizationType>0</OutputLocalizationType>
      *   </Header>
      *   <Parameters>
-     *     <Vendor>SENS</Vendor>
-     *     <!-- additional vendor-specific filters (Category, SecurityCode, …) -->
+     *     <VendorCode>SENSD</VendorCode>
+     *     <DateTimeStart>2026-07-20T00:00:00</DateTimeStart>
+     *     <DateTimeEnd>2026-07-20T23:59:59</DateTimeEnd>
+     *     <Count>20</Count>
      *   </Parameters>
      *
-     * `IressHeader` already covers the standard `<Header>` fields. The two
-     * `*LocalizationType` integers are V4-wide concerns; we don't surface
-     * them on `IressHeader` (the OEMS never needs to override them) but the
-     * transport's `WaitForResponse` / `Timeout` / `PageSize` defaults are
-     * fine. Charles' sample doesn't include them, so the probe is the only
-     * way to confirm whether the CT build wants them — flag for follow-up
-     * if the probe 25010s with a "missing localization" fault.
+     * Note: `NewsVendorGet` is the vendor-CATALOG method (returns
+     * `{VendorCode, VendorDescription}` rows only — 1 row, no stories).
+     * The actual story-fetching verb is `NewsHeadlineGet`, with these
+     * required parameters. Calling `NewsHeadlineGet` against the prod
+     * market-data session (`useMarketData: true` on the worker probe)
+     * is what yields the real day's SENS announcements.
      *
-     * T5 policy: this method does **not** persist to Supabase. News is T5
-     * "vendor content — seed until contracted", so the worker reads the
-     * response on demand (Path B passthrough), and news panels render
-     * `UNCONFIGURED` when the source is unconfigured. We deliberately
-     * keep the `IRESS_RETAIL_DRY_RUN` / `SUPABASE_ALLOW_WRITES` gates out
-     * of this client — news is read-only end-to-end.
+     * T5 policy: this method is read-only — the worker does NOT persist
+     * the response to Supabase. News panels show `UNCONFIGURED` when
+     * the source is unconfigured and never fall back to seed.
      *
      * Entitlement failures (25010 / 25034) and SOAP faults bubble up as
-     * `IressError`; the BFF surfaces them with a typed code so the UI can
-     * render the honest empty state ("`NewsVendorGet` entitlement not
-     * enabled — ask Charles").
+     * `IressError`; the BFF surfaces them with a typed code so the UI
+     * can render the honest empty state ("`NewsHeadlineGet`
+     * entitlement not enabled — ask Charles").
      */
-    async newsVendorGet(req: NewsVendorGetRequest): Promise<IressResponse<NewsStory>> {
-      requireSessionKey(req.Header, "NewsVendorGet");
-      require(req.Vendor, "Vendor", "NewsVendorGet");
-      // V4 puts the vendor at the TOP of `<Parameters>` (alongside the
-      // vendor-specific filters). The transport flattens nested objects
-      // into XML elements automatically.
+    async newsHeadlineGet(req: NewsHeadlineGetRequest): Promise<IressResponse<NewsStory>> {
+      requireSessionKey(req.Header, "NewsHeadlineGet");
+      require(req.VendorCode, "VendorCode", "NewsHeadlineGet");
+      require(req.DateTimeStart, "DateTimeStart", "NewsHeadlineGet");
+      require(req.DateTimeEnd, "DateTimeEnd", "NewsHeadlineGet");
       const parameters: Record<string, unknown> = {
-        Vendor: req.Vendor,
-        ...(req.Parameters ?? {}),
+        VendorCode: req.VendorCode,
+        DateTimeStart: req.DateTimeStart,
+        DateTimeEnd: req.DateTimeEnd,
+        ...(req.Count != null ? { Count: req.Count } : {}),
       };
       const result = await transport.call({
-        method: "NewsVendorGet",
+        method: "NewsHeadlineGet",
         header: makeHeader({
           sessionKey: req.Header.SessionKey,
           requestID: req.Header.RequestID,
@@ -1366,26 +1365,23 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
         }),
         parameters,
       });
+      // The CT server emits the paging bookmark on a separate header row
+      // (`{PagingBookmark:{HeadlineID:…}}`) — keep only true data rows
+      // (every row that has `HeadlineID` as a string scalar).
+      const dataOnly = result.dataRows.filter(
+        (r) => r && typeof r["HeadlineID"] === "string",
+      );
       const mapped = mapResponse<NewsStory>({
         header: result.header,
-        dataRows: result.dataRows
-          .map((r) => mapNewsStory(r))
-          .filter((s): s is NewsStory => s !== null),
+        dataRows: dataOnly.map((r) => mapNewsStory(r)).filter((s): s is NewsStory => s !== null),
       });
-      // Surface the raw rows too — same pattern as `PricingQuoteGet`. The
-      // mapper above collapses some fields to `null` (story body, related
-      // codes) and the worker probe needs to see exactly what came back so
-      // we can narrow the fallbacks after the first live run.
-      (mapped as { RawDataRows?: Array<Record<string, unknown>> }).RawDataRows = result.dataRows;
-      // Same fault-as-OK-with-ErrorNumber trap as PricingQuoteGet: refuse
-      // to silently mask entitlement failures (25010 / 25034) by
-      // returning a 200 with `ErrorNumber != 0`.
+      (mapped as { RawDataRows?: Array<Record<string, unknown>> }).RawDataRows = dataOnly;
       if (mapped.Header.ErrorNumber !== 0) {
         throw new IressError(
           mapped.Header.ErrorNumber,
-          "NewsVendorGet",
+          "NewsHeadlineGet",
           mapped.Header.ErrorDescription ??
-            `NewsVendorGet error ${mapped.Header.ErrorNumber}`,
+            `NewsHeadlineGet error ${mapped.Header.ErrorNumber}`,
         );
       }
       return mapped;

@@ -165,7 +165,7 @@ Production (Vercel): `IRESS_MODE=mock`, `USE_SUPABASE_QUOTES=true`, `NEXT_PUBLIC
 | Surface | Route/Component | Current source | Live via IRESS? | V4 method | Status |
 |---------|-----------------|----------------|-----------------|-----------|--------|
 | Orders table | blotter/page | mock → liveOrders | Yes* | OrderPadGetByAccount | SEED |
-| New order | new-order-dialog | mock client | Yes | OrderCreate3 | MOCK |
+| New order | new-order-dialog → `/api/orders/{preflight,submit}` → worker `/uat/{preflight,send-to-market}` | worker passthrough | Yes | OrderCreate3 | LIVE (worker preflight gate, 2026-07-20) |
 | Cancel/amend | blotter/page | mock client | Yes | OrderDelete/Amend2 | MOCK |
 
 ## Security (`/oems/security`)

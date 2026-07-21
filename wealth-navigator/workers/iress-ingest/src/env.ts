@@ -187,9 +187,19 @@ export function loadWorkerEnv(): WorkerEnv {
     dryRun: parseBool(process.env.IRESS_WORKER_DRY_RUN, true),
     allowWrites: parseBool(process.env.SUPABASE_ALLOW_WRITES, false),
     priceOverlayOff: process.env.IRESS_PRICE_OVERLAY === "0",
-    heartbeatSec: Number(process.env.IRESS_WORKER_HEARTBEAT_SEC ?? "30"),
-    quoteIntervalSec: Number(process.env.IRESS_WORKER_QUOTE_INTERVAL_SEC ?? "15"),
-    orderPollIntervalSec: Number(process.env.IRESS_WORKER_ORDER_POLL_SEC ?? "60"),
+    // Clamp loop intervals so NaN/0/negative can't turn sleep(sec*1000) into a
+    // seat-hammering busy loop. `Number(...) || default` neutralizes NaN and 0;
+    // Math.max floors negatives. Neither of these two loops has a disable
+    // sentinel, so collapsing 0/neg to the floor is correct.
+    heartbeatSec: Math.max(5, Number(process.env.IRESS_WORKER_HEARTBEAT_SEC ?? "30") || 30),
+    quoteIntervalSec: Math.max(5, Number(process.env.IRESS_WORKER_QUOTE_INTERVAL_SEC ?? "15") || 15),
+    // orderPollIntervalSec: <= 0 is a DELIBERATE disable sentinel (main.ts
+    // orderLoop: `if (env.orderPollIntervalSec <= 0) return;`). Preserve it —
+    // convert only NaN to the default, keep <= 0 as "disabled", floor positives.
+    orderPollIntervalSec: (() => {
+      const n = Number(process.env.IRESS_WORKER_ORDER_POLL_SEC ?? "60");
+      return Number.isFinite(n) ? (n <= 0 ? n : Math.max(5, n)) : 60;
+    })(),
     watchlistSymbols: symbols,
     watchlistEntries: entries,
     watchlistExchanges: exchanges,

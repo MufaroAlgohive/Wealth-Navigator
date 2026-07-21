@@ -36,6 +36,7 @@ export const dynamic = "force-dynamic";
 const RANGE_DAYS: Record<string, number> = {
   "5D": 8,
   "1M": 33,
+  "3M": 100,
   "6M": 190,
   "1Y": 370,
   "5Y": 1830,
@@ -125,7 +126,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
   // ── Yahoo fallback (default for non-JSE, explicit `?provider=yahoo`,
   //    or the IRESS-fallthrough case above) ────────────────────────────
   try {
-    const yahoo = await fetchYahooChart(code, range === "YTD" ? "YTD" : range);
+    // `code` is the .JO/.JSE-stripped bare code. fetchYahooChart only treats a
+    // symbol as JSE when it carries the .JO/.JSE suffix (otherwise it queries
+    // the US-listed ticker of the same letters — e.g. bare "SOL" → ReneSola,
+    // not Sasol). Re-append .JO for JSE symbols so the fallback returns the
+    // correct JSE instrument (in rands), not a same-ticker foreign security.
+    const yahooSymbol = isJseLikeSymbol(code) ? `${code}.JO` : code;
+    const yahoo = await fetchYahooChart(yahooSymbol, range === "YTD" ? "YTD" : range);
     if (yahoo.ok) {
       const points = yahoo.points.map((p) => ({ t: p.t, v: p.c }));
       return Response.json({

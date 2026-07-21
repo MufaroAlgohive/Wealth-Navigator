@@ -4,7 +4,9 @@
  * Create / edit a research note via a 6-step wizard:
  *
  *   1. Identify         — ticker typeahead (searches JSE IRESS universe + Yahoo
- *                         global), pre-fills company / sector / exchange.
+ *                         global), pre-fills company / sector / ISIN from
+ *                         securities_c; linked strategies from strategies_c
+ *                         holdings (read-only).
  *   2. Auto-fetch       — fires /api/company-analysis/[sym] + /peers and offers
  *                         a pre-fill card the analyst accepts or skips. Pulls:
  *                           - Valuation block: P/E, EV/EBITDA, ROE, Div yield,
@@ -41,6 +43,7 @@ import * as React from "react";
 
 import { GlassSection } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
+import { TrendArrow } from "./ui";
 import type {
   Esg,
   Fundamental,
@@ -96,6 +99,8 @@ interface SymbolHit {
   exchange: string;
   type: string;
   source: "iress" | "yahoo";
+  sector?: string | null;
+  isin?: string | null;
 }
 interface SearchResponse {
   ok: boolean;
@@ -106,7 +111,9 @@ interface SearchResponse {
 }
 interface AnalysisMetric {
   value: number | null;
-  format: "pct" | "pct100" | "x" | "ratio" | "money" | "price" | "int";
+  /** Yahoo module uses `fmt`; tolerate legacy `format` if present. */
+  fmt?: "pct" | "pct100" | "x" | "ratio" | "money" | "price" | "int";
+  format?: "pct" | "pct100" | "x" | "ratio" | "money" | "price" | "int";
   asOf?: string;
   note?: string;
 }
@@ -156,14 +163,29 @@ const RATINGS: Rating[] = ["BUY", "ACCUMULATE", "HOLD", "SELL"];
 const ESGS: (Esg | "")[] = ["", "GREEN", "AMBER", "RED"];
 
 // ── helpers ────────────────────────────────────────────────────────────────
-function metricValue(groups: CompanyAnalysis["groups"] | undefined, group: string, key: string): number | null {
+function metricOf(
+  groups: CompanyAnalysis["groups"] | undefined,
+  group: string,
+  key: string,
+): AnalysisMetric | null {
   const m = groups?.[group]?.[key];
   if (!m || m.value == null || !Number.isFinite(m.value)) return null;
-  return m.value;
+  return m;
 }
-function pct100(v: number | null): number | null {
-  // Yahoo "pct" values are fractions (0.18 for 18%). "pct100" are already %.
-  return v == null ? null : v;
+function metricValue(groups: CompanyAnalysis["groups"] | undefined, group: string, key: string): number | null {
+  return metricOf(groups, group, key)?.value ?? null;
+}
+/** Convert a Yahoo metric to display percent (e.g. 7.2 for 7.2%). Handles
+ *  `pct` (fraction) vs `pct100` (already percent). */
+function metricAsPercent(
+  groups: CompanyAnalysis["groups"] | undefined,
+  group: string,
+  key: string,
+): number | null {
+  const m = metricOf(groups, group, key);
+  if (!m || m.value == null) return null;
+  const kind = m.fmt ?? m.format ?? "pct";
+  return kind === "pct" ? m.value * 100 : m.value;
 }
 function fmtPctDisplay(v: number | null): string {
   if (v == null || !Number.isFinite(v)) return "—";
@@ -174,13 +196,61 @@ function fmtX(v: number | null): string {
   return `${v.toFixed(1)}x`;
 }
 
+/** Parse a cell that may be "5.5%", "5.5", "—", or empty → number | null. */
+function parsePctCell(raw: unknown): number | null {
+  if (raw == null) return null;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  const s = String(raw).trim().replace(/%/g, "");
+  if (!s || s === "—" || s === "-") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Ensure a % metric cell always shows a trailing %. */
+function withPctSuffix(raw: unknown): string {
+  const n = parsePctCell(raw);
+  if (n == null) {
+    const s = String(raw ?? "").trim();
+    return !s || s === "—" ? "" : s;
+  }
+  return `${n}%`;
+}
+
+/** Auto-derive trend from prior→current (fallback current→Y1). Returns
+ *  direction + signed percent delta for display. */
+function deriveTrend(f: {
+  prior?: unknown;
+  current?: unknown;
+  forecastYears?: Array<number | string> | null;
+  unit?: string;
+}): { trend: "up" | "down" | "flat"; deltaPct: number | null } {
+  const cur = parsePctCell(f.current);
+  const prior = parsePctCell(f.prior);
+  const y1 = Array.isArray(f.forecastYears) ? parsePctCell(f.forecastYears[0]) : null;
+  let delta: number | null = null;
+  if (cur != null && prior != null) delta = cur - prior;
+  else if (y1 != null && cur != null) delta = y1 - cur;
+  else if (cur != null) {
+    // Single-point heuristics for growth metrics (positive = up).
+    if (f.unit === "%" || f.unit == null) {
+      if (cur > 0.5) return { trend: "up", deltaPct: cur };
+      if (cur < -0.5) return { trend: "down", deltaPct: cur };
+      return { trend: "flat", deltaPct: cur };
+    }
+  }
+  if (delta == null) return { trend: "flat", deltaPct: null };
+  if (delta > 0.25) return { trend: "up", deltaPct: delta };
+  if (delta < -0.25) return { trend: "down", deltaPct: delta };
+  return { trend: "flat", deltaPct: delta };
+}
+
 /** Derive Net Debt / EBITDA = Net Debt / (Margins.EBITDA × Profile.Revenue). */
 function deriveNetDebtToEbitda(g: CompanyAnalysis["groups"] | undefined): number | null {
   const netDebt = metricValue(g, "Financial Health", "Net Debt");
   const rev = metricValue(g, "Profile", "Revenue");
-  const ebitdaMargin = metricValue(g, "Margins", "EBITDA");
+  const ebitdaMargin = metricAsPercent(g, "Margins", "EBITDA");
   if (netDebt == null || rev == null || ebitdaMargin == null) return null;
-  const ebitda = rev * ebitdaMargin;
+  const ebitda = rev * (ebitdaMargin / 100);
   if (!Number.isFinite(ebitda) || ebitda === 0) return null;
   return netDebt / ebitda;
 }
@@ -189,11 +259,37 @@ function deriveNetDebtToEbitda(g: CompanyAnalysis["groups"] | undefined): number
 function deriveEvToCashflow(g: CompanyAnalysis["groups"] | undefined): number | null {
   const ev = metricValue(g, "Profile", "EV");
   const rev = metricValue(g, "Profile", "Revenue");
-  const fcfMargin = metricValue(g, "Margins", "FCF");
+  const fcfMargin = metricAsPercent(g, "Margins", "FCF");
   if (ev == null || rev == null || fcfMargin == null) return null;
-  const fcf = rev * fcfMargin;
+  const fcf = rev * (fcfMargin / 100);
   if (!Number.isFinite(fcf) || fcf === 0) return null;
   return ev / fcf;
+}
+
+async function fetchPeerMetrics(sym: string): Promise<Peer> {
+  const bare = sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
+  const empty: Peer = { name: bare, pe: 0 };
+  try {
+    const r = await fetch(`/api/company-analysis/${encodeURIComponent(`${bare}.JO`)}`, {
+      cache: "no-store",
+    });
+    if (!r.ok) return empty;
+    const a = (await r.json()) as CompanyAnalysis;
+    if (!a?.ok) return empty;
+    const pe = metricValue(a.groups, "Valuation (TTM)", "P/E");
+    const ev = metricValue(a.groups, "Valuation (TTM)", "EV/EBITDA");
+    const roe = metricAsPercent(a.groups, "Returns", "ROE");
+    const div = metricAsPercent(a.groups, "Dividends", "Yield");
+    return {
+      name: bare,
+      pe: pe != null && Number.isFinite(pe) ? Number(pe.toFixed(2)) : 0,
+      evEbitda: ev != null && Number.isFinite(ev) ? Number(ev.toFixed(2)) : undefined,
+      roe: roe != null && Number.isFinite(roe) ? Number(roe.toFixed(2)) : undefined,
+      divYield: div != null && Number.isFinite(div) ? Number(div.toFixed(2)) : undefined,
+    };
+  } catch {
+    return empty;
+  }
 }
 
 // ── ticker typeahead (mirrors analysis/ticker-search.tsx shape) ─────────────
@@ -402,9 +498,10 @@ export function NoteEditor({
   const [targetPrice, setTargetPrice] = React.useState<string>(
     th.targetPrice != null ? String(th.targetPrice) : "",
   );
-  const [linkedStrategies, setLinkedStrategies] = React.useState<string>(
-    (th.linkedStrategies ?? []).join(", "),
+  const [linkedStrategies, setLinkedStrategies] = React.useState<string[]>(
+    th.linkedStrategies ?? [],
   );
+  const [linkedStrategiesLoading, setLinkedStrategiesLoading] = React.useState(false);
   const [bull, setBull] = React.useState<string>(th.bull ?? "");
   const [bear, setBear] = React.useState<string>(th.bear ?? "");
   const [catalysts, setCatalysts] = React.useState<string>((th.catalysts ?? []).join("\n"));
@@ -459,12 +556,75 @@ export function NoteEditor({
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  // Resolve sector / ISIN / linked strategies from retail master data.
+  // Linked strategies are derived (not free-text) — which model portfolios hold this ticker.
+  const applyIdentifyMeta = React.useCallback(
+    async (
+      bare: string,
+      opts?: {
+        /** Overwrite sector/ISIN even if the form already has values (ticker pick). */
+        overwriteIdentity?: boolean;
+        forceName?: boolean;
+      },
+    ) => {
+      const code = bare.replace(/\.(JO|JSE)$/i, "").toUpperCase();
+      if (!code) return;
+      setLinkedStrategiesLoading(true);
+      try {
+        const res = await fetch(`/api/research/identify/${encodeURIComponent(code)}`, {
+          cache: "no-store",
+        });
+        const json = (await res.json().catch(() => null)) as {
+          ok?: boolean;
+          name?: string | null;
+          sector?: string | null;
+          industry?: string | null;
+          isin?: string | null;
+          linkedStrategies?: string[];
+        } | null;
+        if (!json?.ok) {
+          setLinkedStrategies([]);
+          return;
+        }
+        if (opts?.forceName && json.name) setCompanyName(json.name);
+        if (opts?.overwriteIdentity) {
+          if (json.sector) setSector(json.sector);
+          else if (json.industry) setSector(json.industry);
+          else setSector("");
+          setIsin(json.isin ?? "");
+        } else {
+          setSector((prev) => prev || json.sector || json.industry || "");
+          setIsin((prev) => prev || json.isin || "");
+          setCompanyName((prev) => prev || json.name || "");
+        }
+        setLinkedStrategies(Array.isArray(json.linkedStrategies) ? json.linkedStrategies : []);
+      } catch {
+        setLinkedStrategies([]);
+      } finally {
+        setLinkedStrategiesLoading(false);
+      }
+    },
+    [],
+  );
+
   // step 1: ticker pick handler
   const onTickerPick = (hit: SymbolHit) => {
-    setSymbol(hit.symbol.replace(/\.(JO|JSE)$/i, ""));
+    const bare = hit.symbol.replace(/\.(JO|JSE)$/i, "").toUpperCase();
+    setSymbol(bare);
     setCompanyName(hit.name);
-    // Sector stays user-editable; hint comes from auto-fetch.
+    setSector("");
+    setIsin("");
+    setLinkedStrategies([]);
+    void applyIdentifyMeta(bare, { overwriteIdentity: true });
   };
+
+  // When the symbol is set (new note after pick, or edit existing), refresh
+  // linked strategies. Sector/ISIN only fill blanks so analyst edits stick.
+  React.useEffect(() => {
+    if (!symbol) return;
+    void applyIdentifyMeta(symbol, { overwriteIdentity: false });
+  }, [symbol, applyIdentifyMeta]);
+
 
   // step 2: auto-fetch hook
   const fetchSymbol = symbol.replace(/\.(JO|JSE)$/i, "");
@@ -493,126 +653,106 @@ export function NoteEditor({
 
   // prefill derived metrics once analysis arrives
   const prefilledRef = React.useRef<string | null>(null);
+  const peersHydratedFor = React.useRef<string | null>(null);
   React.useEffect(() => {
     if (!analysis || !analysis.ok) return;
-    if (prefilledRef.current === analysis.symbol + analysis.asOf) return;
-    prefilledRef.current = analysis.symbol + analysis.asOf;
-
+    const stamp = analysis.symbol + analysis.asOf;
     const g = analysis.groups;
-    // Valuation block (only fill if currently empty)
-    const pe = metricValue(g, "Valuation (TTM)", "P/E");
-    const evEbitdaV = metricValue(g, "Valuation (TTM)", "EV/EBITDA");
-    const roeV = pct100(metricValue(g, "Returns", "ROE"));
-    const divV = pct100(metricValue(g, "Dividends", "Yield"));
-    if (peMultiple === "" && pe != null) setPeMultiple(pe.toFixed(2));
-    if (evEbitda === "" && evEbitdaV != null) setEvEbitda(evEbitdaV.toFixed(2));
-    if (roePct === "" && roeV != null) setRoePct(roeV.toFixed(2));
-    if (divYieldPct === "" && divV != null) setDivYieldPct(divV.toFixed(2));
 
-    // Target price
-    const tgt = metricValue(g, "Valuation (NTM)", "Price Target");
-    if (targetPrice === "" && tgt != null) setTargetPrice(tgt.toFixed(2));
+    if (prefilledRef.current !== stamp) {
+      prefilledRef.current = stamp;
 
-    // Overview fields
-    if (companyName === "" && analysis.overview.name) setCompanyName(analysis.overview.name);
-    if (sector === "" && analysis.overview.sector) setSector(analysis.overview.sector);
+      // Valuation block (only fill if currently empty) — ROE / Div are percent points.
+      const pe = metricValue(g, "Valuation (TTM)", "P/E");
+      const evEbitdaV = metricValue(g, "Valuation (TTM)", "EV/EBITDA");
+      const roeV = metricAsPercent(g, "Returns", "ROE");
+      const divV = metricAsPercent(g, "Dividends", "Yield");
+      if (peMultiple === "" && pe != null) setPeMultiple(pe.toFixed(2));
+      if (evEbitda === "" && evEbitdaV != null) setEvEbitda(evEbitdaV.toFixed(2));
+      if (roePct === "" && roeV != null) setRoePct(roeV.toFixed(2));
+      if (divYieldPct === "" && divV != null) setDivYieldPct(divV.toFixed(2));
 
-    // Fundamentals table — only fill if user hasn't populated yet
-    if (funds.length === 0) {
-      const rows: Fundamental[] = [];
-      const revGrowth = metricValue(g, "Growth (CAGR)", "Rev 3Yr");
-      const opMargin = pct100(metricValue(g, "Margins", "Operating"));
-      const hepsGrowth = metricValue(g, "Growth (CAGR)", "Dil EPS 3Yr");
-      const roeRow = pct100(metricValue(g, "Returns", "ROE"));
-      const ndEbitda = deriveNetDebtToEbitda(g);
-      const evCf = deriveEvToCashflow(g);
-      const roic = pct100(metricValue(g, "Returns", "ROIC"));
+      const tgt = metricValue(g, "Valuation (NTM)", "Price Target");
+      if (targetPrice === "" && tgt != null) setTargetPrice(tgt.toFixed(2));
 
-      const cagrLabel = (yrs: number | null) => (yrs == null ? "—" : `${yrs.toFixed(1)}%`);
+      if (companyName === "" && analysis.overview.name) setCompanyName(analysis.overview.name);
+      if (sector === "" && analysis.overview.sector) setSector(analysis.overview.sector);
 
-      rows.push({
-        metric: "Revenue growth (3y CAGR)",
-        prior: cagrLabel(null),
-        current: cagrLabel(revGrowth),
-        forecast: "—",
-        forecastYears: ["", "", ""],
-        trend:
-          revGrowth != null ? (revGrowth > 8 ? "up" : revGrowth < 0 ? "down" : "flat") : "flat",
-        unit: "%",
-      });
-      rows.push({
-        metric: "Operating margin",
-        prior: "—",
-        current: fmtPctDisplay(opMargin),
-        forecast: "—",
-        forecastYears: ["", "", ""],
-        trend:
-          opMargin != null ? (opMargin > 18 ? "up" : opMargin < 8 ? "down" : "flat") : "flat",
-        unit: "%",
-      });
-      rows.push({
-        metric: "HEPS growth (3y CAGR)",
-        prior: "—",
-        current: cagrLabel(hepsGrowth),
-        forecast: "—",
-        forecastYears: ["", "", ""],
-        trend:
-          hepsGrowth != null ? (hepsGrowth > 8 ? "up" : hepsGrowth < 0 ? "down" : "flat") : "flat",
-        unit: "%",
-      });
-      rows.push({
-        metric: "ROE",
-        prior: "—",
-        current: fmtPctDisplay(roeRow),
-        forecast: "—",
-        forecastYears: ["", "", ""],
-        trend:
-          roeRow != null ? (roeRow > 18 ? "up" : roeRow < 8 ? "down" : "flat") : "flat",
-        unit: "%",
-      });
-      if (roic != null) {
-        rows.push({
-          metric: "ROIC",
-          prior: "—",
-          current: fmtPctDisplay(roic),
-          forecast: "—",
-          forecastYears: ["", "", ""],
-          trend: roic > 15 ? "up" : roic < 6 ? "down" : "flat",
-          unit: "%",
-        });
+      if (funds.length === 0) {
+        const rows: Fundamental[] = [];
+        const revGrowth = metricAsPercent(g, "Growth (CAGR)", "Rev 3Yr");
+        const opMargin = metricAsPercent(g, "Margins", "Operating");
+        const hepsGrowth = metricAsPercent(g, "Growth (CAGR)", "Dil EPS 3Yr");
+        const roeRow = metricAsPercent(g, "Returns", "ROE");
+        const ndEbitda = deriveNetDebtToEbitda(g);
+        const evCf = deriveEvToCashflow(g);
+        const roic = metricAsPercent(g, "Returns", "ROIC");
+
+        const pushPct = (metric: string, current: number | null) => {
+          const row: Fundamental = {
+            metric,
+            prior: "—",
+            current: fmtPctDisplay(current),
+            forecast: "—",
+            forecastYears: ["", "", ""],
+            unit: "%",
+          };
+          row.trend = deriveTrend(row).trend;
+          rows.push(row);
+        };
+
+        pushPct("Revenue growth (3y CAGR)", revGrowth);
+        pushPct("Operating margin", opMargin);
+        pushPct("HEPS growth (3y CAGR)", hepsGrowth);
+        pushPct("ROE", roeRow);
+        if (roic != null) pushPct("ROIC", roic);
+        if (ndEbitda != null) {
+          rows.push({
+            metric: "Net debt / EBITDA",
+            prior: "—",
+            current: `${ndEbitda.toFixed(2)}x`,
+            forecast: "—",
+            forecastYears: ["", "", ""],
+            unit: "x",
+            trend: ndEbitda < 1.5 ? "up" : ndEbitda > 3 ? "down" : "flat",
+          });
+        }
+        if (evCf != null) {
+          rows.push({
+            metric: "EV / Cashflow",
+            prior: "—",
+            current: `${evCf.toFixed(1)}x`,
+            forecast: "—",
+            forecastYears: ["", "", ""],
+            unit: "x",
+            trend: evCf < 12 ? "up" : evCf > 22 ? "down" : "flat",
+          });
+        }
+        if (rows.length > 0) setFunds(rows);
       }
-      if (ndEbitda != null) {
-        rows.push({
-          metric: "Net debt / EBITDA",
-          prior: "—",
-          current: `${ndEbitda.toFixed(2)}x`,
-          forecast: "—",
-          forecastYears: ["", "", ""],
-          trend: ndEbitda < 1.5 ? "up" : ndEbitda > 3 ? "down" : "flat",
-          unit: "x",
-        });
-      }
-      if (evCf != null) {
-        rows.push({
-          metric: "EV / Cashflow",
-          prior: "—",
-          current: `${evCf.toFixed(1)}x`,
-          forecast: "—",
-          forecastYears: ["", "", ""],
-          trend: evCf < 12 ? "up" : evCf > 22 ? "down" : "flat",
-          unit: "x",
-        });
-      }
-      if (rows.length > 0) setFunds(rows);
     }
 
-    // Peers — only fill if empty AND Yahoo returned something
-    if (peers.length === 0 && peerSymbols && peerSymbols.length > 0) {
-      const limited = peerSymbols.slice(0, 6).map((sym) => ({
-        name: sym.replace(/\.(JO|JSE)$/i, ""),
-        pe: 0,
-      }));
-      setPeers(limited);
+    // Peer hydration is independent of the one-shot valuation prefill — peer
+    // tickers often arrive a tick after analysis.
+    const peerKey = `${analysis.symbol}:${(peerSymbols ?? []).slice(0, 6).join(",")}`;
+    const hollow =
+      peers.length > 0 &&
+      peers.every(
+        (p) => (p.pe === 0 || p.pe == null) && p.roe == null && p.divYield == null && p.evEbitda == null,
+      );
+    const shouldHydrate =
+      peerSymbols &&
+      peerSymbols.length > 0 &&
+      peersHydratedFor.current !== peerKey &&
+      (peers.length === 0 || hollow);
+
+    if (shouldHydrate) {
+      peersHydratedFor.current = peerKey;
+      const symbols = peerSymbols!.slice(0, 6);
+      void (async () => {
+        const hydrated = await Promise.all(symbols.map((s) => fetchPeerMetrics(s)));
+        setPeers(hydrated);
+      })();
     }
   }, [
     analysis,
@@ -625,7 +765,7 @@ export function NoteEditor({
     divYieldPct,
     targetPrice,
     funds.length,
-    peers.length,
+    peers,
   ]);
 
   // navigation
@@ -671,10 +811,7 @@ export function NoteEditor({
       conviction: conviction.trim() || undefined,
       esg: esg || null,
       targetPrice: targetPrice ? Number(targetPrice) : undefined,
-      linkedStrategies: linkedStrategies
-        .split(",")
-        .map((x) => x.trim())
-        .filter(Boolean),
+      linkedStrategies: linkedStrategies.length > 0 ? linkedStrategies : undefined,
       bull: bull.trim() || undefined,
       bear: bear.trim() || undefined,
       catalysts: toList(catalysts),
@@ -779,14 +916,24 @@ export function NoteEditor({
             className={INPUT}
             value={companyName}
             onChange={(e) => setCompanyName(e.target.value)}
-            placeholder="Naspers"
+            placeholder="Company name"
           />
         </Field>
-        <Field label="Sector">
-          <input className={INPUT} value={sector} onChange={(e) => setSector(e.target.value)} placeholder="Media" />
+        <Field label="Sector" hint="auto from master · editable">
+          <input
+            className={INPUT}
+            value={sector}
+            onChange={(e) => setSector(e.target.value)}
+            placeholder="Sector"
+          />
         </Field>
-        <Field label="ISIN" hint="if known">
-          <input className={INPUT} value={isin} onChange={(e) => setIsin(e.target.value)} placeholder="ZAE000015889" />
+        <Field label="ISIN" hint="auto from master · editable">
+          <input
+            className={INPUT}
+            value={isin}
+            onChange={(e) => setIsin(e.target.value)}
+            placeholder="ISIN"
+          />
         </Field>
         <Field label="Time horizon">
           <input className={INPUT} value={horizon} onChange={(e) => setHorizon(e.target.value)} placeholder="12M" />
@@ -823,13 +970,36 @@ export function NoteEditor({
             inputMode="decimal"
           />
         </Field>
-        <Field label="Linked strategies" className="sm:col-span-3">
-          <input
-            className={INPUT}
-            value={linkedStrategies}
-            onChange={(e) => setLinkedStrategies(e.target.value)}
-            placeholder="MINT SA Equity Alpha, Income"
-          />
+        <Field
+          label="Linked strategies"
+          hint="auto from holdings · read-only"
+          className="sm:col-span-3"
+        >
+          <div
+            className={cn(
+              INPUT,
+              "flex min-h-[34px] flex-wrap items-center gap-1.5 py-1",
+              "cursor-default bg-[hsl(var(--foreground)/0.02)] text-muted-foreground",
+            )}
+            aria-live="polite"
+          >
+            {linkedStrategiesLoading ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px]">
+                <Loader2 className="h-3 w-3 animate-spin" /> Resolving holdings…
+              </span>
+            ) : linkedStrategies.length === 0 ? (
+              <span className="text-[11px]">No strategies currently hold this name</span>
+            ) : (
+              linkedStrategies.map((s) => (
+                <span
+                  key={s}
+                  className="rounded border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.04)] px-1.5 py-0.5 text-[10px] font-medium text-foreground"
+                >
+                  {s}
+                </span>
+              ))
+            )}
+          </div>
         </Field>
       </div>
     </div>
@@ -907,30 +1077,34 @@ export function NoteEditor({
             </PrefillCard>
 
             <PrefillCard title="Returns + Growth">
-              <PrefillRow label="ROE" value={fmtPctDisplay(pct100(metricValue(analysis.groups, "Returns", "ROE")))} mono />
+              <PrefillRow
+                label="ROE"
+                value={fmtPctDisplay(metricAsPercent(analysis.groups, "Returns", "ROE"))}
+                mono
+              />
               <PrefillRow
                 label="ROIC"
-                value={fmtPctDisplay(pct100(metricValue(analysis.groups, "Returns", "ROIC")))}
+                value={fmtPctDisplay(metricAsPercent(analysis.groups, "Returns", "ROIC"))}
                 mono
               />
               <PrefillRow
                 label="Op margin"
-                value={fmtPctDisplay(pct100(metricValue(analysis.groups, "Margins", "Operating")))}
+                value={fmtPctDisplay(metricAsPercent(analysis.groups, "Margins", "Operating"))}
                 mono
               />
               <PrefillRow
                 label="Rev growth 3y"
-                value={fmtPctDisplay(metricValue(analysis.groups, "Growth (CAGR)", "Rev 3Yr"))}
+                value={fmtPctDisplay(metricAsPercent(analysis.groups, "Growth (CAGR)", "Rev 3Yr"))}
                 mono
               />
               <PrefillRow
                 label="HEPS growth 3y"
-                value={fmtPctDisplay(metricValue(analysis.groups, "Growth (CAGR)", "Dil EPS 3Yr"))}
+                value={fmtPctDisplay(metricAsPercent(analysis.groups, "Growth (CAGR)", "Dil EPS 3Yr"))}
                 mono
               />
               <PrefillRow
                 label="Div yield"
-                value={fmtPctDisplay(pct100(metricValue(analysis.groups, "Dividends", "Yield")))}
+                value={fmtPctDisplay(metricAsPercent(analysis.groups, "Dividends", "Yield"))}
                 mono
               />
             </PrefillCard>
@@ -1048,13 +1222,21 @@ export function NoteEditor({
       {/* fundamentals table */}
       <div>
         <div className="flex items-center justify-between">
-          <p className={LABEL}>Fundamentals (Prior / Current / Y1 / Y2 / Y3 + trend)</p>
+          <p className={LABEL}>Fundamentals (Prior / Current / Y1 / Y2 / Y3 + Δ%)</p>
           <button
             type="button"
             onClick={() =>
               setFunds((p) => [
                 ...p,
-                { metric: "", prior: "", current: "", forecast: "", forecastYears: ["", "", ""], trend: "flat" },
+                {
+                  metric: "",
+                  prior: "",
+                  current: "",
+                  forecast: "",
+                  forecastYears: ["", "", ""],
+                  unit: "%",
+                  trend: "flat",
+                },
               ])
             }
             className="inline-flex items-center gap-1 rounded-md border border-[hsl(var(--glass-border))] px-2 py-1 text-[10px] hover:bg-[hsl(var(--foreground)/0.05)]"
@@ -1065,56 +1247,123 @@ export function NoteEditor({
         <div className="mt-2 space-y-1.5">
           {funds.map((f, i) => {
             const y = Array.isArray(f.forecastYears) ? f.forecastYears : ["", "", ""];
+            const isPct = (f.unit ?? "%") === "%";
             const setY = (idx: 0 | 1 | 2, v: string) => {
               const next = [...y];
               next[idx] = v;
-              setFunds((p) => p.map((x, k) => (k === i ? { ...x, forecastYears: next } : x)));
+              setFunds((p) =>
+                p.map((x, k) => {
+                  if (k !== i) return x;
+                  const updated = { ...x, forecastYears: next };
+                  const d = deriveTrend(updated);
+                  return { ...updated, trend: d.trend };
+                }),
+              );
             };
+            const patchCell = (patch: Partial<Fundamental>) => {
+              setFunds((p) =>
+                p.map((x, k) => {
+                  if (k !== i) return x;
+                  const updated = { ...x, ...patch };
+                  const d = deriveTrend(updated);
+                  return { ...updated, trend: d.trend };
+                }),
+              );
+            };
+            const derived = deriveTrend(f);
             return (
               <div key={i} className="flex items-center gap-1.5">
-                <div className="grid min-w-0 flex-1 grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr_70px] gap-1.5">
+                <div className="grid min-w-0 flex-1 grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr_88px] gap-1.5">
                   <input
                     className={INPUT}
                     value={String(f.metric)}
                     placeholder="Metric"
-                    onChange={(e) =>
-                      setFunds((p) => p.map((x, k) => (k === i ? { ...x, metric: e.target.value } : x)))
-                    }
+                    onChange={(e) => patchCell({ metric: e.target.value })}
                   />
-                  <input
-                    className={INPUT}
-                    value={String(f.prior)}
-                    placeholder="Prior"
-                    onChange={(e) =>
-                      setFunds((p) => p.map((x, k) => (k === i ? { ...x, prior: e.target.value } : x)))
-                    }
-                  />
-                  <input
-                    className={INPUT}
-                    value={String(f.current)}
-                    placeholder="Current"
-                    onChange={(e) =>
-                      setFunds((p) => p.map((x, k) => (k === i ? { ...x, current: e.target.value } : x)))
-                    }
-                  />
-                  <input className={INPUT} value={y[0] ?? ""} placeholder="Y1" onChange={(e) => setY(0, e.target.value)} />
-                  <input className={INPUT} value={y[1] ?? ""} placeholder="Y2" onChange={(e) => setY(1, e.target.value)} />
-                  <input className={INPUT} value={y[2] ?? ""} placeholder="Y3" onChange={(e) => setY(2, e.target.value)} />
-                  <select
-                    className={INPUT}
-                    value={f.trend ?? "flat"}
-                    onChange={(e) =>
-                      setFunds((p) =>
-                        p.map((x, k) =>
-                          k === i ? { ...x, trend: e.target.value as Fundamental["trend"] } : x,
-                        ),
-                      )
-                    }
+                  <div className="relative">
+                    <input
+                      className={cn(INPUT, isPct && "pr-5")}
+                      value={String(f.prior === "—" ? "" : f.prior).replace(/%/g, "")}
+                      placeholder="Prior"
+                      inputMode="decimal"
+                      onChange={(e) =>
+                        patchCell({
+                          prior: e.target.value.trim() === "" ? "" : e.target.value.replace(/%/g, ""),
+                        })
+                      }
+                      onBlur={() => {
+                        if (!isPct) return;
+                        const n = parsePctCell(f.prior);
+                        if (n != null) patchCell({ prior: withPctSuffix(n) });
+                      }}
+                    />
+                    {isPct && (
+                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">
+                        %
+                      </span>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <input
+                      className={cn(INPUT, isPct && "pr-5")}
+                      value={String(f.current === "—" ? "" : f.current).replace(/%/g, "")}
+                      placeholder="Current"
+                      inputMode="decimal"
+                      onChange={(e) =>
+                        patchCell({
+                          current: e.target.value.trim() === "" ? "" : e.target.value.replace(/%/g, ""),
+                        })
+                      }
+                      onBlur={() => {
+                        if (!isPct) return;
+                        const n = parsePctCell(f.current);
+                        if (n != null) patchCell({ current: withPctSuffix(n) });
+                      }}
+                    />
+                    {isPct && (
+                      <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">
+                        %
+                      </span>
+                    )}
+                  </div>
+                  {([0, 1, 2] as const).map((yi) => (
+                    <div key={yi} className="relative">
+                      <input
+                        className={cn(INPUT, isPct && "pr-5")}
+                        value={String(y[yi] ?? "").replace(/%/g, "")}
+                        placeholder={`Y${yi + 1}`}
+                        inputMode="decimal"
+                        onChange={(e) => setY(yi, e.target.value.replace(/%/g, ""))}
+                        onBlur={() => {
+                          if (!isPct) return;
+                          const n = parsePctCell(y[yi]);
+                          if (n != null) setY(yi, withPctSuffix(n));
+                        }}
+                      />
+                      {isPct && (
+                        <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">
+                          %
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                  {/* Auto Δ% — not a text dropdown */}
+                  <div
+                    className={cn(
+                      INPUT,
+                      "flex items-center justify-end gap-1 tabular-nums",
+                      derived.trend === "up" && "text-up",
+                      derived.trend === "down" && "text-down",
+                    )}
+                    title="Auto from Prior→Current (or Current→Y1)"
                   >
-                    <option value="up">up</option>
-                    <option value="flat">flat</option>
-                    <option value="down">down</option>
-                  </select>
+                    <TrendArrow trend={derived.trend} />
+                    <span className="font-mono text-[10px]">
+                      {derived.deltaPct == null
+                        ? "—"
+                        : `${derived.deltaPct >= 0 ? "+" : ""}${derived.deltaPct.toFixed(1)}%`}
+                    </span>
+                  </div>
                 </div>
                 <button
                   type="button"
@@ -1135,70 +1384,137 @@ export function NoteEditor({
       <div>
         <div className="flex items-center justify-between">
           <p className={LABEL}>Peer comp · valuation vs peers</p>
-          <button
-            type="button"
-            onClick={() => setPeers((p) => [...p, { name: "", pe: 0 }])}
-            className="inline-flex items-center gap-1 rounded-md border border-[hsl(var(--glass-border))] px-2 py-1 text-[10px] hover:bg-[hsl(var(--foreground)/0.05)]"
-          >
-            <Plus className="h-3 w-3" /> Add peer
-          </button>
+          <div className="flex items-center gap-1.5">
+            {peers.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  peersHydratedFor.current = null;
+                  const symbols = peers.map((p) => p.name).filter(Boolean);
+                  if (symbols.length === 0) return;
+                  void (async () => {
+                    const hydrated = await Promise.all(symbols.map((s) => fetchPeerMetrics(s)));
+                    setPeers(hydrated);
+                  })();
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-[hsl(var(--glass-border))] px-2 py-1 text-[10px] hover:bg-[hsl(var(--foreground)/0.05)]"
+              >
+                <Sparkles className="h-3 w-3" /> Refresh metrics
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setPeers((p) => [...p, { name: "", pe: 0 }])}
+              className="inline-flex items-center gap-1 rounded-md border border-[hsl(var(--glass-border))] px-2 py-1 text-[10px] hover:bg-[hsl(var(--foreground)/0.05)]"
+            >
+              <Plus className="h-3 w-3" /> Add peer
+            </button>
+          </div>
         </div>
         <div className="mt-2 space-y-1.5">
+          <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_28px] gap-1.5 px-0.5">
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground">Ticker</span>
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground">P/E</span>
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground">EV/EBITDA</span>
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground">ROE %</span>
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground">Div %</span>
+            <span />
+          </div>
           {peers.map((p, i) => (
             <div key={i} className="flex items-center gap-1.5">
               <div className="grid min-w-0 flex-1 grid-cols-[1.4fr_1fr_1fr_1fr_1fr] gap-1.5">
                 <input
                   className={INPUT}
                   value={p.name}
-                  placeholder="Peer ticker / name"
+                  placeholder="Ticker"
                   onChange={(e) =>
-                    setPeers((prev) => prev.map((x, idx) => (idx === i ? { ...x, name: e.target.value } : x)))
+                    setPeers((prev) =>
+                      prev.map((x, idx) => (idx === i ? { ...x, name: e.target.value.toUpperCase() } : x)),
+                    )
                   }
+                  onBlur={() => {
+                    const bare = p.name.replace(/\.(JO|JSE)$/i, "").trim().toUpperCase();
+                    if (!bare) return;
+                    void (async () => {
+                      const hydrated = await fetchPeerMetrics(bare);
+                      setPeers((prev) => prev.map((x, idx) => (idx === i ? hydrated : x)));
+                    })();
+                  }}
                 />
                 <input
                   className={INPUT}
-                  value={String(p.pe ?? "")}
-                  placeholder="P/E"
+                  value={p.pe != null && p.pe !== 0 ? String(p.pe) : ""}
+                  placeholder="—"
                   inputMode="decimal"
                   onChange={(e) =>
                     setPeers((prev) =>
-                      prev.map((x, idx) => (idx === i ? { ...x, pe: Number(e.target.value) } : x)),
+                      prev.map((x, idx) =>
+                        idx === i ? { ...x, pe: e.target.value === "" ? 0 : Number(e.target.value) } : x,
+                      ),
                     )
                   }
                 />
                 <input
                   className={INPUT}
-                  value={String(p.evEbitda ?? "")}
-                  placeholder="EV/EBITDA"
+                  value={p.evEbitda != null ? String(p.evEbitda) : ""}
+                  placeholder="—"
                   inputMode="decimal"
                   onChange={(e) =>
                     setPeers((prev) =>
-                      prev.map((x, idx) => (idx === i ? { ...x, evEbitda: Number(e.target.value) } : x)),
+                      prev.map((x, idx) =>
+                        idx === i
+                          ? {
+                              ...x,
+                              evEbitda: e.target.value === "" ? undefined : Number(e.target.value),
+                            }
+                          : x,
+                      ),
                     )
                   }
                 />
-                <input
-                  className={INPUT}
-                  value={String(p.roe ?? "")}
-                  placeholder="ROE %"
-                  inputMode="decimal"
-                  onChange={(e) =>
-                    setPeers((prev) =>
-                      prev.map((x, idx) => (idx === i ? { ...x, roe: Number(e.target.value) } : x)),
-                    )
-                  }
-                />
-                <input
-                  className={INPUT}
-                  value={String(p.divYield ?? "")}
-                  placeholder="Div %"
-                  inputMode="decimal"
-                  onChange={(e) =>
-                    setPeers((prev) =>
-                      prev.map((x, idx) => (idx === i ? { ...x, divYield: Number(e.target.value) } : x)),
-                    )
-                  }
-                />
+                <div className="relative">
+                  <input
+                    className={cn(INPUT, "pr-5")}
+                    value={p.roe != null ? String(p.roe) : ""}
+                    placeholder="—"
+                    inputMode="decimal"
+                    onChange={(e) =>
+                      setPeers((prev) =>
+                        prev.map((x, idx) =>
+                          idx === i
+                            ? { ...x, roe: e.target.value === "" ? undefined : Number(e.target.value) }
+                            : x,
+                        ),
+                      )
+                    }
+                  />
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">
+                    %
+                  </span>
+                </div>
+                <div className="relative">
+                  <input
+                    className={cn(INPUT, "pr-5")}
+                    value={p.divYield != null ? String(p.divYield) : ""}
+                    placeholder="—"
+                    inputMode="decimal"
+                    onChange={(e) =>
+                      setPeers((prev) =>
+                        prev.map((x, idx) =>
+                          idx === i
+                            ? {
+                                ...x,
+                                divYield: e.target.value === "" ? undefined : Number(e.target.value),
+                              }
+                            : x,
+                        ),
+                      )
+                    }
+                  />
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">
+                    %
+                  </span>
+                </div>
               </div>
               <button
                 type="button"
@@ -1210,7 +1526,11 @@ export function NoteEditor({
               </button>
             </div>
           ))}
-          {peers.length === 0 && <p className="text-caption">No peer comp yet.</p>}
+          {peers.length === 0 && (
+            <p className="text-caption">
+              No peers yet — complete Auto-fetch (step 2) or add tickers and blur to pull metrics.
+            </p>
+          )}
         </div>
       </div>
     </div>
@@ -1291,7 +1611,10 @@ export function NoteEditor({
             k="Valuation"
             v={`P/E ${peMultiple || "—"} · EV/EBITDA ${evEbitda || "—"} · ROE ${roePct || "—"}% · Div ${divYieldPct || "—"}%`}
           />
-          <ReviewRow k="Linked strategies" v={linkedStrategies || "—"} />
+          <ReviewRow
+            k="Linked strategies"
+            v={linkedStrategies.length > 0 ? linkedStrategies.join(", ") : "—"}
+          />
           <ReviewRow k="Fundamentals rows" v={String(funds.length)} />
           <ReviewRow k="Peers" v={String(peers.filter((p) => p.name.trim()).length)} />
           <ReviewRow k="Triggers" v={String(Object.values(triggers).filter((t) => t.price).length)} />
@@ -1307,6 +1630,7 @@ export function NoteEditor({
   return (
     <GlassSection
       title={editing ? `Edit note · ${note?.symbol}` : "New research note"}
+      dataSource="hybrid"
       subtitle="Structured workflow · auto-pulls fundamentals & newsflow from the IRESS/repo data layer"
       right={
         <div className="flex items-center gap-1.5">
