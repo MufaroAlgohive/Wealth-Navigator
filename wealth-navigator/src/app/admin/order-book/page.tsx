@@ -57,6 +57,7 @@ export default function OrderBookPage() {
   const [search, setSearch] = React.useState("");
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [uatRefresh, setUatRefresh] = React.useState(0);
+  const [execViewOpen, setExecViewOpen] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setRows(null);
@@ -145,8 +146,22 @@ export default function OrderBookPage() {
             <UatBanner />
             <UatOrderTicket onPlaced={() => setUatRefresh((n) => n + 1)} />
             <UatTestRunner />
-            <ExecutionView key={uatRefresh} bookId="UAT-ADHOC" />
             <UatBasketBook />
+            <div className="rounded-xl border border-border">
+              <button
+                type="button"
+                onClick={() => setExecViewOpen((v) => !v)}
+                className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:bg-accent/10"
+              >
+                <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", execViewOpen && "rotate-90")} />
+                Per-ISIN execution (legacy view)
+              </button>
+              {execViewOpen && (
+                <div className="border-t border-border p-0">
+                  <ExecutionView key={uatRefresh} bookId="UAT-ADHOC" />
+                </div>
+              )}
+            </div>
           </TabsContent>
         ) : (
         <TabsContent value={tab} className="mt-3">

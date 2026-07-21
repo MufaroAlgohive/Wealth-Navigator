@@ -83,8 +83,15 @@ function adhocRowToRow(r: AdhocExecRow): Row {
 export function UatBasketBook() {
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
 
-  const { data, loading } = usePolling<OrderbookApiResponse>("/api/admin/orderbook?status=active&scope=uat", {
+  // 2026-07-21: temporarily hiding real seeded test holdings (Test Runner
+  // scenarios, sourced from the RETAIL/CRM stock_holdings_c table) per
+  // explicit direction — only UAT-ADHOC should show for now. The fetch is
+  // disabled (not just filtered out) so it isn't hitting RETAIL every 30s
+  // for data nobody sees. Flip `SHOW_SEEDED_HOLDINGS` back on to restore it.
+  const SHOW_SEEDED_HOLDINGS = false;
+  const { data } = usePolling<OrderbookApiResponse>("/api/admin/orderbook?status=active&scope=uat", {
     interval: 30_000,
+    query: { enabled: SHOW_SEEDED_HOLDINGS },
   });
   const { data: adhocData } = usePolling<AdhocExecResponse>(
     `/api/admin/orderbook/execution?book_id=${ADHOC_BOOK_ID}`,
@@ -92,7 +99,7 @@ export function UatBasketBook() {
   );
 
   const groups = React.useMemo(() => {
-    const holdingsRows = data?.rows ?? [];
+    const holdingsRows = SHOW_SEEDED_HOLDINGS ? (data?.rows ?? []) : [];
     const adhocRows = (adhocData?.rows ?? []).map(adhocRowToRow);
     return groupRowsByStrategy([...holdingsRows, ...adhocRows]);
   }, [data, adhocData]);
@@ -136,13 +143,7 @@ export function UatBasketBook() {
             </tr>
           </thead>
           <tbody>
-            {loading && !data ? (
-              <tr>
-                <td colSpan={COLS} className="px-3 py-12 text-center text-sm text-muted-foreground">
-                  Loading…
-                </td>
-              </tr>
-            ) : groups.length === 0 ? (
+            {groups.length === 0 ? (
               <tr>
                 <td colSpan={COLS} className="px-3 py-12 text-center text-sm text-muted-foreground">
                   No UAT test holdings.

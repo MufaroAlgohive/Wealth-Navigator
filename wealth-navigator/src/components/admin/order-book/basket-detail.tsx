@@ -3,19 +3,26 @@
 import * as React from "react";
 
 import { usePolling } from "@/lib/hooks/use-polling";
-import { R, type StrategyGroup, pnlCls, th } from "./format";
+import { R, type StrategyGroup, pnlCls } from "./format";
 import { type InvestorAgg, InvestorFilterTable } from "./investor-filter-table";
-import { type ExecSlice, SecurityRow, buildSecurityGroups } from "./security-row";
+import { type ExecSlice, HOLDINGS_TABLE_COLS, SecurityRow, buildSecurityGroups, cth } from "./security-row";
+import { useOrderActions } from "./use-order-actions";
 
 interface ExecutionApiRow {
   id: string;
   holding_id: string | null;
+  order_id: string | null;
+  client_account: string | null;
+  broker_account: string | null;
+  ts: string | null;
   state: string;
   filled_pct: number;
   avg_fill_price: number | null;
   limit_price: number | null;
   slippage_cents: number | null;
   day1_pnl_cents: number | null;
+  tif: string | null;
+  order_type: "limit" | "market" | null;
 }
 interface ExecutionApiResponse {
   ok: boolean;
@@ -46,6 +53,7 @@ export function BasketDetail({
 }: { group: StrategyGroup; onDeferred: (label: string) => void }) {
   const [selectedInvestorKey, setSelectedInvestorKey] = React.useState<string | null>(null);
   const [expandedSecurities, setExpandedSecurities] = React.useState<Set<string>>(new Set());
+  const actions = useOrderActions();
 
   const { data: execData } = usePolling<ExecutionApiResponse>(
     `/api/admin/orderbook/execution?book_id=${encodeURIComponent(group.strategy)}`,
@@ -61,13 +69,20 @@ export function BasketDetail({
     const m = new Map<string, ExecSlice>();
     for (const r of execData?.rows ?? []) {
       const slice: ExecSlice = {
+        id: r.id,
         holding_id: r.holding_id,
+        order_id: r.order_id,
+        client_account: r.client_account,
+        broker_account: r.broker_account,
+        ts: r.ts,
         state: r.state,
         filled_pct: r.filled_pct,
         avg_fill_price: r.avg_fill_price,
         limit_price: r.limit_price,
         slippage_cents: r.slippage_cents,
         day1_pnl_cents: r.day1_pnl_cents,
+        tif: r.tif,
+        order_type: r.order_type,
       };
       if (r.holding_id) m.set(r.holding_id, slice);
       m.set(r.id, slice);
@@ -137,9 +152,11 @@ export function BasketDetail({
                 "Last",
                 "Slip / Day-1 P&L",
                 "Limit",
+                "Order",
                 "IRESS",
+                "Actions",
               ].map((c) => (
-                <th key={c} className={th}>
+                <th key={c} className={cth}>
                   {c}
                 </th>
               ))}
@@ -148,7 +165,10 @@ export function BasketDetail({
           <tbody>
             {securities.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-3 py-6 text-center text-sm text-muted-foreground">
+                <td
+                  colSpan={HOLDINGS_TABLE_COLS}
+                  className="px-3 py-6 text-center text-sm text-muted-foreground"
+                >
                   No holdings.
                 </td>
               </tr>
@@ -160,6 +180,7 @@ export function BasketDetail({
                   expanded={expandedSecurities.has(sec.key)}
                   onToggle={() => toggleSecurity(sec.key)}
                   onDeferred={onDeferred}
+                  actions={actions}
                 />
               ))
             )}
