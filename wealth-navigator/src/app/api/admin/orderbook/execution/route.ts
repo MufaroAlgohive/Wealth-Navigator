@@ -55,6 +55,11 @@ interface AuditRow {
 
 interface ExecutionRow {
   id: string;
+  // 2026-07-21: the `stock_holdings_c.id` this order came from (stamped by
+  // send-to-market/route.ts as `payload.holding_id`) — lets the UI join an
+  // execution row back to a specific investor's specific security position,
+  // not just to "the whole book". null for rows predating this stamp.
+  holding_id: string | null;
   order_id: string;
   // 2026-07-13: surface the IRESS AccountCode (from oems_order_audit.client_account)
   // so the UI's Cancel button can forward the correct account to the worker's
@@ -214,6 +219,7 @@ function mapRow(r: AuditRow): ExecutionRow {
 
   return {
     id: r.id,
+    holding_id: str(payload.holding_id),
     order_id: r.order_id,
     client_account: r.client_account,
     broker_account: str(payload.uatAccountCode),
