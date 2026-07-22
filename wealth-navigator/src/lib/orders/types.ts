@@ -27,6 +27,7 @@ export type OrderSource =
   | "BLOTTER_NEW_ORDER"
   | "RESEARCH_LAB_THESIS"
   | "PAPER_MODEL_REBALANCE"
+  | "MINT_CLIENT_ORDER"
   | "IRESS";
 
 /** What the worker preflight / limit guard decided. */
@@ -92,6 +93,14 @@ export interface PreflightResult {
 export interface SubmitInput extends PreflightInput {
   /** The trader's auth email — written to `client_account` for audit. */
   trader_email: string;
+  /**
+   * The exact `stock_holdings_c.id` this order came from (mint client
+   * orders, and eventually bulk/basket dispatch). Lets the order-book UI
+   * join a specific investor's specific security position to its live
+   * IRESS execution status. `null`/omitted for orders with no underlying
+   * holding row (e.g. the ad-hoc UAT ticket).
+   */
+  holding_id?: string | null;
 }
 
 export interface SubmitResult {

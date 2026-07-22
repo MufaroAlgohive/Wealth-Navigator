@@ -101,7 +101,7 @@ async function localPreflight(
   const posQty = pos != null ? Number((pos as { quantity: number }).quantity) || 0 : null;
 
   // 2. Audit mirror — derived held + open-sell reservation.
-  const UAT_SOURCES = ["UAT_ADHOC_ORDER", "OB_SEND_TO_MARKET_UAT"];
+  const UAT_SOURCES = ["UAT_ADHOC_ORDER", "OB_SEND_TO_MARKET_UAT", "MINT_CLIENT_ORDER"];
   const OPEN_SELL_STATES = [
     "working",
     "pending_ack",

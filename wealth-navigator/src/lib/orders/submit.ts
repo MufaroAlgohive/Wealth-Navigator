@@ -145,6 +145,7 @@ export async function submitOrder(
       strategy: opts.bookId ?? null,
       security_id: sec.id,
       isin: sec.isin ?? null,
+      holding_id: input.holding_id ?? null,
       limitPrice: input.price_cents != null ? Number(input.price_cents) / 100 : null,
       sent_by: input.trader_email,
       sent_at: nowIso,
