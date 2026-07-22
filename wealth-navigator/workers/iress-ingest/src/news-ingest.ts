@@ -163,9 +163,27 @@ async function loadUniverseSet(opts: {
 /**
  * True when `IressError.code` is one we should retry once on
  * `VendorCode="SENSD"` after a `SENS` failure (entitlement missing
- * or "no valid vendor specified").
+ * or "no valid vendor specified"). 25010 = entitlement; 25018 =
+ * missing required field. Some prod SOAP faults come back with code
+ * `-1` and a "No valid vendor specified" message string — the parser
+ * can't extract a numeric fault code so we treat that as a fallback
+ * trigger by inspecting the message.
  */
 const VENDOR_FALLBACK_CODES = new Set([25010, 25018]);
+const VENDOR_FALLBACK_MESSAGE_HINTS = [
+  "no valid vendor specified",
+  "invalid vendor",
+  "vendor not found",
+  "no entitlement for vendor",
+] as const;
+function shouldFallbackToSensd(code: number, message: string): boolean {
+  if (VENDOR_FALLBACK_CODES.has(code)) return true;
+  if (code === -1) {
+    const lower = message.toLowerCase();
+    return VENDOR_FALLBACK_MESSAGE_HINTS.some((hint) => lower.includes(hint));
+  }
+  return false;
+}
 
 /**
  * One-shot vendor catalog fetch. Called from `main-prod.ts` on
@@ -620,9 +638,13 @@ export async function syncNewsHeadlines(opts: {
       pages += 1;
       if (page.error) {
         firstError = page.error;
-        // If this is the first attempt and the code is one we retry on,
-        // flip to SENSD and try again. Otherwise surface the error.
-        if (attempt === 0 && VENDOR_FALLBACK_CODES.has(page.error.code)) {
+        // If this is the first attempt and the fault looks like an
+        // entitlement / invalid-vendor problem, flip to SENSD and try
+        // again. Otherwise surface the error.
+        if (
+          attempt === 0 &&
+          shouldFallbackToSensd(page.error.code, page.error.message)
+        ) {
           vendorCode = "SENSD";
           vendorFallback = true;
           pages = 0;
