@@ -24,6 +24,7 @@ interface AdhocExecRow {
   limit_price: number | null;
   avg_fill_price: number | null;
   state: string;
+  client_account: string | null;
 }
 interface AdhocExecResponse {
   ok: boolean;
@@ -31,26 +32,34 @@ interface AdhocExecResponse {
 }
 
 const ADHOC_BOOK_ID = "UAT-ADHOC";
+// Orders forwarded from a real client buy/sell in the mint app (see
+// client-order/route.ts) land under this separate book id — kept distinct
+// from UAT-ADHOC (the admin ad-hoc ticket) so the two provenances don't get
+// visually conflated, even though both are merged into this same panel.
+const CLIENT_BUY_BOOK_ID = "CLIENT-BUY";
 
 /**
- * The ad-hoc "UAT Order Ticket" writes straight to `oems_order_audit` — it
- * has no underlying `stock_holdings_c` row (no real investor, no cost
- * basis), so it can't be represented as a normal holdings Row the same way
- * the Test Runner's seeded scenarios can. To surface it in this panel
- * anyway, each ad-hoc audit row is turned into a synthetic Row with a
- * placeholder investor ("MINT UAT" — there's no real client behind an
- * ad-hoc test order) and P&L left at 0 (no cost basis to compare against).
- * `id` is set to the audit row's own id, which `BasketDetail`'s exec-join
- * falls back to matching on when there's no `holding_id` to key by.
+ * Ad-hoc/audit-only orders (the "UAT Order Ticket", and mint-forwarded
+ * client orders) write straight to `oems_order_audit` with no underlying
+ * `stock_holdings_c` row visible to this query — they can't be represented
+ * as a normal holdings Row the same way the Test Runner's seeded scenarios
+ * can. Each audit row is turned into a synthetic Row instead. `client`
+ * prefers the audit row's own `client_account` (the real client's email for
+ * a mint-forwarded order; the operator's email for an ad-hoc ticket order)
+ * over the generic "MINT UAT" placeholder. `id` is set to the audit row's
+ * own id, which `BasketDetail`'s exec-join falls back to matching on when
+ * there's no `holding_id` to key by. P&L is left at 0 — no cost basis to
+ * compare a bare execution row against.
  */
-function adhocRowToRow(r: AdhocExecRow): Row {
+function adhocRowToRow(r: AdhocExecRow, bookId: string): Row {
   const px = r.avg_fill_price ?? r.limit_price ?? 0;
+  const client = r.client_account && r.client_account.trim().length > 0 ? r.client_account : "MINT UAT";
   return {
     id: r.id,
     security_id: null,
     user_id: null,
-    email: "mint-uat@internal",
-    client: "MINT UAT",
+    email: client,
+    client,
     instrument: r.symbol,
     ticker: r.symbol,
     isin: r.isin ?? "",
@@ -60,7 +69,7 @@ function adhocRowToRow(r: AdhocExecRow): Row {
     expectedFill: r.limit_price ?? 0,
     livePrice: px,
     status: r.state,
-    strategy: ADHOC_BOOK_ID,
+    strategy: bookId,
     clientPnl: 0,
     mintPnl: 0,
     date: r.ts,
@@ -97,12 +106,17 @@ export function UatBasketBook() {
     `/api/admin/orderbook/execution?book_id=${ADHOC_BOOK_ID}`,
     { interval: 30_000 },
   );
+  const { data: clientBuyData } = usePolling<AdhocExecResponse>(
+    `/api/admin/orderbook/execution?book_id=${CLIENT_BUY_BOOK_ID}`,
+    { interval: 30_000 },
+  );
 
   const groups = React.useMemo(() => {
     const holdingsRows = SHOW_SEEDED_HOLDINGS ? (data?.rows ?? []) : [];
-    const adhocRows = (adhocData?.rows ?? []).map(adhocRowToRow);
-    return groupRowsByStrategy([...holdingsRows, ...adhocRows]);
-  }, [data, adhocData]);
+    const adhocRows = (adhocData?.rows ?? []).map((r) => adhocRowToRow(r, ADHOC_BOOK_ID));
+    const clientBuyRows = (clientBuyData?.rows ?? []).map((r) => adhocRowToRow(r, CLIENT_BUY_BOOK_ID));
+    return groupRowsByStrategy([...holdingsRows, ...adhocRows, ...clientBuyRows]);
+  }, [data, adhocData, clientBuyData]);
 
   const toggle = (s: string) =>
     setExpanded((prev) => {

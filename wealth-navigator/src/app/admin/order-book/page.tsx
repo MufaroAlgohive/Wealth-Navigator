@@ -146,7 +146,7 @@ export default function OrderBookPage() {
             <UatBanner />
             <UatOrderTicket onPlaced={() => setUatRefresh((n) => n + 1)} />
             <UatTestRunner />
-            <UatBasketBook key={uatRefresh} />
+            <UatBasketBook />
             <div className="rounded-xl border border-border">
               <button
                 type="button"
@@ -157,8 +157,9 @@ export default function OrderBookPage() {
                 Per-ISIN execution (legacy view)
               </button>
               {execViewOpen && (
-                <div className="border-t border-border p-0">
-                  <ExecutionView key={uatRefresh} bookId="UAT-ADHOC" />
+                <div className="border-t border-border p-0 space-y-3">
+                  <ExecutionView key={`adhoc-${uatRefresh}`} bookId="UAT-ADHOC" />
+                  <ExecutionView key={`client-buy-${uatRefresh}`} bookId="CLIENT-BUY" />
                 </div>
               )}
             </div>
