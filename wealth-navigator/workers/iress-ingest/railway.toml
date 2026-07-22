@@ -1,6 +1,5 @@
 [build]
 builder = "dockerfile"
-dockerfilePath = "workers/iress-ingest/Dockerfile"
 
 [deploy]
 restartPolicyType = "on_failure"
