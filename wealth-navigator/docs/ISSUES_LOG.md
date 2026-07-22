@@ -56,6 +56,46 @@ Added a second Railway service (`Iress-Worker-Prod`) that owns the **production*
 
 **Out of scope (explicit):** no change to Vercel `IRESS_MODE` (stays `mock`), no retail `securities_c`/`stock_intraday_c` writes on prod (separate decision), no change to UAT order pipeline, no change to `worker_session_metadata` write semantics. `/api/sens` legacy placeholder keeps its honest empty state until a follow-up BFF rewrite. The `/api/iress/news` CT/UAT `SENSD` default is preserved for backward compat on the existing UAT worker.
 
+### 0.5.3 Railway split audit + prod-side config fixes (2026-07-22)
+
+Audited both `Iress-Worker-UAT` (`a4fd8932-…`) and `Iress-Worker-PROD` (`665a2e8a-…`) on Railway project `dacf9008-a4e8-450c-b5f0-f8a749ec47b4` with the token `2a75771c-95f6-42c9-9877-9600bf1f6a13`. Five separate config / code defects were breaking the clean split and causing the prod service to log in with the UAT entrypoint and run its trading-session bring-up against the wrong endpoint. All five are now fixed.
+
+**Defects found and fixed:**
+
+1. **`Dockerfile.prod` and `main-prod.ts` were never pushed to `origin/main`.** Local `main` was 1 commit ahead (`c9ee71f SENS update`); `origin/main` was still at `3e6cc86 delete migration`. Both files existed locally but were invisible to Railway's GitHub-source build. Pushed (`git push origin main`).
+
+2. **`railway.toml` was silently overriding the per-service dockerfilePath.** Both `wealth-navigator/railway.toml` AND `wealth-navigator/workers/iress-ingest/railway.toml` hardcoded `dockerfilePath = "workers/iress-ingest/Dockerfile"`. The service-level UI setting (`Dockerfile.prod`) was therefore ignored and the prod service built with the UAT Dockerfile (running `main.ts`). Verified by listing the running container's `/app/workers/iress-ingest/` directory: BOTH Dockerfiles were present but the built image used `Dockerfile`'s CMD (`bun main.ts`). Fix: removed `dockerfilePath` from both `railway.toml` files so each Railway service picks its own Dockerfile.
+
+3. **`IRESS_MARKET_DATA_PROD` was not set on the prod service.** The previous env-var edit logged `IRESS_MARKET_DATA_PROD=0` even though the agent reported success — Railway's `accept-deploy` did not propagate the value into the running container because the change happened on the SAME commit as the Dockerfile fix and the worker restarted before Railway picked up the new env. Forced via `deployServiceTool` (deployment `b18f5536-dae6-4ba5-ac3a-ef3d4523c1d0`). After the redeploy, the prod market-data session came up against `https://webservices.iress.co.za/v4` and the vendor catalog returned 1 row.
+
+4. **Worker-wide gates were inheriting UAT opt-ins.** `SUPABASE_ALLOW_WRITES` was `1` (UAT allows writes) and `IRESS_WORKER_DRY_RUN` was `0` (UAT runs live) on the prod service via the `${{shared.*}}` Railway variables. Overridden on the prod service to `SUPABASE_ALLOW_WRITES=0` + `IRESS_WORKER_DRY_RUN=1` per the pilot-write gate. The per-loop `IRESS_NEWS_ALLOW_WRITES=0` stays closed (the opt-in flip is a separate, later decision).
+
+5. **`IRESS_BASE_URL` was `https://webservices-ct.iress.co.za/v4` on the prod service** (UAT endpoint). Set to `https://webservices.iress.co.za/v4` (prod endpoint).
+
+**Worker-state revelations from the live prod session (12:31–12:38 UTC):**
+
+- `NewsVendorGet` against `webservices.iress.co.za/v4` (using the shared `DFM@Mint` creds) returns **1 row: `SENSD` (SENS NEWS DELAYED)**. The prod entitlement does NOT cover `SENS` real-time.
+- `NewsHeadlineGet(VendorCode=SENS)` on prod returns `soap:Receiver — No valid vendor specified` with `ErrorNumber=-1` (not the documented `25010` / `25018`). The previous fallback logic only recognised numeric codes so it errored out instead of retrying with `SENSD`.
+- After fix #6 (below) the prod worker correctly fires `news_vendor_fallback` and retries with `SENSD`. The next news loop tick (interval 21 600 s) will pull the day's SENS-delayed announcements.
+
+6. **`shouldFallbackToSensd()` helper added to `news-ingest.ts`** (commit `607946f`) to recognise the prod-side `-1` + "No valid vendor specified" fault as a valid SENS→SENSD fallback trigger. Vendor fallback message hints: `no valid vendor specified` / `invalid vendor` / `vendor not found` / `no entitlement for vendor`.
+
+**Operational state right now (2026-07-22 12:38 UTC):**
+- `Iress-Worker-UAT` deployment `3773e073-…` (SUCCESS, 12:36:21 UTC) — running `main.ts`, 21 orders updated per cycle, 12-symbol watchlist quote sync (dry-run by default for writes), `worker_id: iress-ingest-1` (untouched).
+- `Iress-Worker-PROD` deployment `c7838311-…` (SUCCESS, 12:36:20 UTC) — running `main-prod.ts`, prod market-data session live at `webservices.iress.co.za/v4` (applicationId `Mint-OEMS-MarketData-iress-ingest-prod-1`), news loop in shadow (dryRun + allowWrites both closed), vendor catalog fetched (1 row SENSD), SENS→SENSD fallback fires on the first call as expected, `worker_id: iress-ingest-prod-1`.
+
+**Remaining manual actions (Charles / operator — do these next):**
+
+1. **Ask Charles to upgrade `DFM@Mint` prod entitlement to `SENS`** (real-time, not just `SENSD` delayed). The current creds authenticate against prod but the entitlement matrix only contains `SENSD`. Reply-toned on the existing thread.
+2. **If Charles supplies a separate prod login** (distinct user from `DFM@Mint`), paste the new `IRESS_USERNAME` / `IRESS_PASSWORD` / `IRESS_COMPANY_NAME` into the prod service via Railway Variables UI. The worker will pick them up on next restart. Until then the prod worker authenticates as `DFM@Mint` and inherits the SENSD-only entitlement.
+3. **Paste the prod creds as service-level variables** (not `${{shared.*}}`) — the prod seat MUST NOT share identity with UAT.
+4. **Trigger `NOTIFY pgrst, 'reload schema';` in the institutional MyMint SQL editor** so PostgREST picks up `oems_instrument_universe_c` (and any other recently-pasted tables). The news loop currently logs `universe read (institutional) failed: Could not find the table 'public.oems_instrument_universe_c' in the schema cache`; this is a Supabase schema-cache issue, not a worker issue, and is independent of any entitlement gap. The schema reload closes it.
+5. **(Optional) Auth the `user-supabase - MyMint` MCP** so future audits of the institutional DB can run via `execute_sql` / `list_tables` without manual SQL paste.
+6. **Vercel env parity**: set `IRESS_WORKER_URL=https://iress-worker-prod-production.up.railway.app` (the public Railway domain for the prod service; the existing `iress-worker-production.up.railway.app` URL maps to the UAT service and will be deprecated when UAT folds into prod). The freshly-generated `WORKER_HTTP_TOKEN=d4aba4a1487149eb2dcb6f559463060dbb615dcf` must also be set on Vercel (`WORKER_HTTP_TOKEN` + `WORKER_REQUIRE_HTTP_TOKEN=1` pair) once the prod BFF passthrough is needed.
+
+**Generation step (opt-in go-live sequence — DO NOT FLIP until 1-5 are green AND Charles confirms the SENS entitlement upgrade):**
+- `IRESS_NEWS_DRY_RUN=0` + `IRESS_NEWS_ALLOW_WRITES=1` on `Iress-Worker-PROD` only. Worker-wide `IRESS_WORKER_DRY_RUN=1` + `SUPABASE_ALLOW_WRITES=0` stay closed.
+
 **Risk register (must surface to Charles before the per-loop flip):**
 - Prod seat entitlement gap: if the prod seat doesn't carry `NewsHeadlineGet` for `SENS`, fallback to `SENSD` (delayed) keeps the wire live but loses real-time.
 - Single-seat contention: if a Railway redeploy of the UAT worker happens while the prod worker is mid-boot, both could race for the UAT seat. Mitigated by the existing first-boot `IRESS_FORCE_KICK_ALL=1` auto-kick in `session.ts` (`WorkerSessionManager.startSession()`).
