@@ -392,6 +392,7 @@ async function probeNewsVendor(
   pageSize: number,
   timeout: number,
   includeBody: boolean,
+  securityCode = "",
 ): Promise<NewsProbeResult> {
   const started = Date.now();
   try {
@@ -402,6 +403,11 @@ async function probeNewsVendor(
     const md = await getMarketDataSession();
     void marketDataProdEnabled(); // kept for symmetry / future diagnostics
     const client = md ? md.client : getIressClient("live");
+    // The IRESS `NewsHeadlineGet` request shape includes an optional
+    // `SecurityCode` parameter that some prod builds accept for
+    // per-symbol scoping (Andre's WSDL browser capture 2026-07-22).
+    // Forward it through when supplied; if the build ignores it, the
+    // vendor-broadcast result lands unchanged.
     const res = await client.newsHeadlineGet({
       Header: {
         SessionKey: md ? md.sessionKey : session.iressSessionKey,
@@ -417,6 +423,7 @@ async function probeNewsVendor(
       DateTimeStart: dateTimeStart,
       DateTimeEnd: dateTimeEnd,
       Count: pageSize,
+      ...(securityCode ? { SecurityCode: securityCode } : {}),
     });
     const headlines: NewsProbeRow[] = res.DataRows.slice(0, 10).map((s) => ({
       storyId: s.StoryId,
@@ -2043,11 +2050,12 @@ export async function handleRequest(
    * probe).
    *
    * Query params (all optional):
-   *   - `vendor`       default `"SENSD"` ("SENS NEWS DELAYED" — the
-   *                    vendor code the CT build returns from
-   *                    `NewsVendorGet` and accepts on `NewsHeadlineGet`
-   *                    for JSE SENS announcements on the prod
-   *                    market-data session).
+   *   - `vendor`       default `"SENSD"` (the CT/UAT vendor code). The
+   *                    prod-side BFF default is `"SENS"` (real-time);
+   *                    when the prod worker is online, the BFF forwards
+   *                    `SENS` and the worker auto-falls-back to
+   *                    `"SENSD"` (delayed) on 25010 / 25018 entitlement
+   *                    faults.
    *   - `dateFrom`     ISO-naive `YYYY-MM-DDTHH:MM:SS` (no `Z`).
    *                    Default: today 00:00:00 UTC.
    *   - `dateTo`       ISO-naive `YYYY-MM-DDTHH:MM:SS`. Default:
@@ -2055,8 +2063,18 @@ export async function handleRequest(
    *   - `pageSize`     default 50, capped at 1000 (CT max)
    *   - `timeout`      default 25, capped at 25 (CT ceiling)
    *   - `includeBody`  "1" to include a 200-char preview of each story body
-   *                    (default off — the body may be large; keep responses
-   *                    bounded)
+   *   - `symbol`       optional per-symbol filter (`SecurityCode`).
+   *                    Forwarded to `NewsHeadlineGet.SecurityCode` so the
+   *                    BFF / UI can target a single instrument. Andre's
+   *                    WSDL browser (2026-07-22) shows the prod build
+   *                    exposes a `SecurityCode` column on the row grid;
+   *                    if the prod build doesn't honour the param, the
+   *                    worker falls back to vendor-broadcast (today's
+   *                    effective behaviour) and surfaces the ignored
+   *                    param in the response metadata.
+   *   - `vendorCatalog` "1" to also surface the entitled vendor catalog
+   *                    persisted by the prod worker (per the 2026-07-22
+   *                    `news_vendor_catalog` plan).
    *
    * Rate-limit: the per-process `newsProbeThrottleOrError()` enforces a
    * minimum 10s gap between probes (env-overridable via
@@ -2105,8 +2123,57 @@ export async function handleRequest(
     const timeoutRaw = Number(url.searchParams.get("timeout") ?? "25");
     const timeout = Number.isFinite(timeoutRaw) ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw))) : 25;
     const includeBody = url.searchParams.get("includeBody") === "1";
-    const result = await probeNewsVendor(deps, vendor, dateTimeStart, dateTimeEnd, pageSize, timeout, includeBody);
-    send(res, 200, result);
+    const symbol = url.searchParams.get("symbol")?.trim() ?? "";
+    const includeCatalog = url.searchParams.get("vendorCatalog") === "1";
+    const result = await probeNewsVendor(
+      deps,
+      vendor,
+      dateTimeStart,
+      dateTimeEnd,
+      pageSize,
+      timeout,
+      includeBody,
+      symbol,
+    );
+    // When `?vendorCatalog=1`, attach the most recent persisted catalog
+    // marker row so the UI can render the entitled-vendor dropdown
+    // without a second round-trip. Read from `news_item_c` directly —
+    // no Supabase realtime subscription needed.
+    let vendorCatalog: Array<{ vendorCode: string; vendorDescription: string }> | null = null;
+    if (includeCatalog && deps.supabase) {
+      try {
+        const { data } = await deps.supabase
+          .from("news_item_c")
+          .select("payload")
+          .eq("source", "__catalog__")
+          .order("ingested_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const cat = (data?.payload as { scope?: { vendor_catalog?: unknown } } | null)
+          ?.scope?.vendor_catalog;
+        if (Array.isArray(cat)) {
+          vendorCatalog = cat
+            .filter(
+              (r): r is { vendorCode: string; vendorDescription: string } =>
+                typeof r === "object" &&
+                r !== null &&
+                typeof (r as { vendorCode?: unknown }).vendorCode === "string" &&
+                typeof (r as { vendorDescription?: unknown }).vendorDescription === "string",
+            )
+            .map((r) => ({
+              vendorCode: r.vendorCode,
+              vendorDescription: r.vendorDescription,
+            }));
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+    send(res, 200, {
+      ...result,
+      ...(symbol ? { symbolFilterRequested: symbol } : {}),
+      ...(vendorCatalog !== null ? { vendorCatalog } : {}),
+    });
     return;
   }
 

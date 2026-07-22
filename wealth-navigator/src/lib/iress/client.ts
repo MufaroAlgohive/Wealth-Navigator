@@ -206,6 +206,20 @@ export interface NewsHeadlineGetRequest {
    * market-data session). Operational upper bound is 500.
    */
   Count?: number;
+  /**
+   * Optional per-symbol filter (`SecurityCode`). The CT build exposes
+   * a `SecurityCode` column on the `NewsHeadlineGet` row grid
+   * (Andre's WSDL browser, 2026-07-22), suggesting the verb accepts a
+   * per-symbol scoping param. If the prod build honours it the
+   * response is filtered to that single instrument; if not, the
+   * vendor-broadcast (today's effective behaviour) is returned
+   * unchanged — the caller sees the row count without filtering and
+   * can decide. NOT propagated through the typed client today;
+   * forwarded as an extra parameter by the BFF probe only.
+   */
+  SecurityCode?: string;
+  /** Optional exchange scoping — `JSE` for SA equities. */
+  Exchange?: string;
 }
 
 /**
@@ -403,6 +417,35 @@ export interface IressClient {
    * (captured envelope from the 2026-07-20 working probe).
    */
   newsHeadlineGet(req: NewsHeadlineGetRequest): Promise<IressResponse<NewsStory>>;
+  /**
+   * `NewsVendorGet` — vendor-catalog verb on the IRESS Pro News service.
+   *
+   * Returns the catalog of news vendors the active session is entitled
+   * to (e.g. `ASXH`, `BRR`, `CCN`, `EDMN`, `ETMA`, `IRDN`, `IRE`,
+   * `JSEN`, `LWM`, `MSSAN`, `NAMN`, `NENS`, `NSX`, `SARSS`, `SENS`,
+   * `SENSD`, …). One row per entitled vendor on this session.
+   *
+   * Use case (2026-07-22 plan): the prod worker calls this on startup
+   * and persists the entitled list into `news_item_c.payload.scope
+   * .vendor_catalog` so the UI can show "your entitled news sources"
+   * without re-hitting the IRESS seat on every render.
+   *
+   * Distinguished from `newsHeadlineGet` (which returns the actual
+   * stories for a single vendor) by shape:
+   *   - `NewsVendorGet`  → vendor catalog only
+   *   - `NewsHeadlineGet` → stories filtered by vendor / date window
+   */
+  newsVendorGet(req: {
+    Header: IressHeader;
+    /** Optional vendor filter — returns the catalog row matching this code. */
+    Vendor?: string;
+  }): Promise<IressResponse<{
+    /** Vendor code (e.g. "SENS", "SENSD", "JSEN"). */
+    VendorCode: string;
+    /** Human-readable description (e.g. "SENS NEWS"). */
+    VendorDescription: string;
+    [k: string]: unknown;
+  }>>;
 
   // ── trading (IOS+) ──────────────────────────────────────────────
   orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response>;

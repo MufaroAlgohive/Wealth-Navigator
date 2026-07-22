@@ -41,8 +41,8 @@ Last updated: 2026-06-26. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_
 
 | Surface | Vendor / system | Notes |
 |---------|-----------------|-------|
-| SENS announcements | IRESS Pro `NewsVendorGet` (vendor=SENS override) | **Adapter wired 2026-06-25**; BFF passthrough + worker probe (`/debug/news-vendor-probe`). Default `Vendor` is `IRESS` (broker-sourced general market news); pass `?vendor=SENS` to target SENS announcements. Still T5 vendor content — passthrough-only, nothing persisted to `news_item_c` until vendor contract. Entitlement / headline-vs-body shape TBD pending live probe |
-| News flow | IRESS Pro `NewsVendorGet` (vendor=IRESS default; Reuters/Bloomberg/Moneyweb/Dow Jones/Business Day also valid) | Same adapter; vendor parameter picks the feed. Default vendor is now `IRESS` (was `SENS`) — switched 2026-06-25 because the `DFM@Mint` IRESS Pro entitlement is for the broker feed. Currently no UI surface consuming it; BFF ready |
+| SENS announcements | IRESS Pro `NewsHeadlineGet` (vendor=SENS) on the **prod seat** via `main-prod.ts` | **Prod worker wired 2026-07-22** — separate Railway service (`Dockerfile.prod` + `src/main-prod.ts`) opens its own IRESS production seat via `IRESS_MARKET_DATA_PROD=1` + `IRESS_MARKETDATA_BASE_URL=https://webservices.iress.co.za/v4`. Vendor-broadcast paginates `NewsHeadlineGet` (5-page cap, `PagingBookmark`, `Count` floored at 500, default 2000); auto-falls-back from `SENS` → `SENSD` on 25010/25018 with `payload.scope.vendor_fallback=true`. Each row is universe-tagged against `env.watchlistEntries` + `securities_c` + `oems_instrument_universe_c`. Per-loop pilot-write gate (`IRESS_NEWS_DRY_RUN=1` + `IRESS_NEWS_ALLOW_WRITES=0` default; opt-in `0/1` flips `news_item_c` writes — worker-wide gate stays dry-run). **No write to Supabase until the operator explicitly flips the per-loop gate.** UAT/CT worker (`main.ts`) untouched; both seats stay strictly isolated per `AGENTS.md` |
+| News flow | IRESS Pro `NewsHeadlineGet` / `NewsVendorGet` on the prod seat | Default vendor is `SENS` (real-time) with `SENSD` (delayed) fallback; one-shot vendor catalog persisted to `news_item_c` as a synthetic `source="__catalog__"` marker row (`payload.scope.vendor_catalog`). BFF `/api/iress/news` accepts `?symbol=NPN` (per-symbol filter forwarded to `NewsHeadlineGet.SecurityCode`) and `?vendorCatalog=1` (returns entitled vendor list). Probe path (`/debug/news-vendor-probe`) widened in lockstep. UAT/CT worker's `SENSD` default unchanged for backward compat |
 | Macro pulse (CPI, PMI, etc.) | Macro data vendor | Not in IRESS mock surface |
 | Platform AUM / Day P&L | Portfolio / accounting system | Strategies are seed-only |
 | PCA curve decomposition | Derived from live curve | Blocked on curve feed |
@@ -58,7 +58,7 @@ Last updated: 2026-06-26. Production policy: `USE_SUPABASE_QUOTES=true` + `NEXT_
 | **Week 1** | Orders in audit, worker health visible | Done (UI); worker writes need `SUPABASE_ALLOW_WRITES=1` | Account code from Charles |
 | **Week 2** | Index + FX + JIBAR on worker watchlist | 2–3 days eng | IRESS symbol entitlement |
 | **Week 3** | Sector indices + ALSI intraday | 3–5 days eng | `TimeSeriesGet2` entitlement |
-| **Week 4+** | SENS, news, macro | Vendor selection + contract | External feed budget |
+| **Week 4+** | SENS, news, macro | Vendor selection + contract | External feed budget — SENS is now wired on the prod worker (2026-07-22); vendor catalog + universe tagging in place; per-loop pilot-write gate ready for opt-in flip |
 | **Week 6+** | AUM/P&L, personas, fundamentals | Portfolio system integration | Business systems |
 
 **100% real across every panel**: unlikely before **8–12 weeks** without parallel vendor onboarding; **quotes + orders + worker health** can be production-honest within **1–2 weeks** once Railway worker runs LIVE writes and Charles confirms BHG/sector entitlements.

@@ -14,6 +14,7 @@
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "worker:iress": "bun workers/iress-ingest/src/main.ts",
+    "worker:iress:prod": "bun workers/iress-ingest/src/main-prod.ts",
     "iress:logout": "bun scripts/iress-logout.ts",
     "iress:probe-frequency": "bun scripts/probe-frequency.ts"
   },

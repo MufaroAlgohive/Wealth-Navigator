@@ -260,6 +260,21 @@ export const mockIressClient: IressClient = {
     };
   },
 
+  // T5 vendor-content policy: the mock NEVER fabricates a vendor catalog.
+  // The real entitlement list is what we ship — empty here makes that
+  // distinction honest at every level. Callers must handle an empty
+  // catalog without falling back to seed.
+  async newsVendorGet() {
+    return {
+      Header: {
+        StatusCode: 2,
+        ErrorNumber: 0,
+        ErrorDescription: "mock news vendor catalog — empty (T5 vendor content, seed-until-contracted)",
+      },
+      DataRows: [] as Array<{ VendorCode: string; VendorDescription: string }>,
+    };
+  },
+
   // ── trading ────────────────────────────────────────────────────
   async orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response> {
     // Idempotency: if a live order with the same OrderTag already exists, return it

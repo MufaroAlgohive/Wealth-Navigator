@@ -76,6 +76,43 @@ export interface WorkerEnv {
    * the canonical value.
    */
   ipsServer: string;
+  /**
+   * Per-loop pilot-write gate for the SENS / news ingest loop. Defaults to
+   * `dryRun=true / allowWrites=false` so the worker-wide posture
+   * (`IRESS_WORKER_DRY_RUN=1` + `SUPABASE_ALLOW_WRITES=0` for production)
+   * is the resting state — only an explicit `IRESS_NEWS_DRY_RUN=0`
+   * + `IRESS_NEWS_ALLOW_WRITES=1` on the prod worker unlocks
+   * `news_item_c` writes, with the rest of the worker (quotes / orders /
+   * IPS / retail) staying dry-run exactly as `AGENTS.md` requires.
+   *
+   * The base URL for the NEWS loop reuses the existing
+   * `IRESS_MARKET_DATA_PROD=1` + `IRESS_MARKETDATA_BASE_URL` switch
+   * (`market-data.ts::marketDataBaseUrl()`), so flipping the prod worker
+   * onto `webservices.iress.co.za` is the same knob that flips the
+   * existing prod market-data session — no new endpoint plumbing.
+   */
+  newsDryRun: boolean;
+  /** Per-loop opt-in for writes to `news_item_c`. Default `false`. */
+  newsAllowWrites: boolean;
+  /**
+   * Vendor code passed to `NewsHeadlineGet`. Defaults to `"SENS"`
+   * (real-time) which is what the prod catalog carries in
+   * `NewsVendorGet` per Andre's WSDL browser capture (2026-07-22). The
+   * loop auto-falls-back to `"SENSD"` (delayed) on 25010 / 25018 with
+   * `payload.scope.vendor_fallback=true`. Override per deployment with
+   * `IRESS_NEWS_VENDOR` if a non-SENS vendor is the target (e.g.
+   * `IRDN`, `JSEN`).
+   */
+  newsVendorCode: string;
+  /**
+   * Per-loop maximum rows. The CT build returned 894 in a single
+   * `NewsHeadlineGet` trading-day window with `Count=1000` (Andre
+   * capture 2026-07-22), so 500 is below real load. `2000` floors at
+   * 500 so a typo can't under-size the loop. The paging loop in
+   * `news-ingest.ts` handles the >pageSize case via `PagingBookmark`
+   * up to a 5-page cap.
+   */
+  newsMaxRows: number;
 }
 
 function parseBool(value: string | undefined, defaultValue: boolean): boolean {
@@ -226,5 +263,19 @@ export function loadWorkerEnv(): WorkerEnv {
     fxExchange: fxExchange || "FX",
     moneyMarketExchange: mmExchange || "MM",
     ipsServer: (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI",
+    // Per-loop pilot-write gate for news — defaults match the worker-wide
+    // posture (dry-run / no writes) so a missed flip stays safe. Flipping
+    // BOTH to (0, 1) on the prod worker is the explicit prod go-live step
+    // (NEWS pilot opt-in per the 2026-07-22 plan).
+    newsDryRun: parseBool(process.env.IRESS_NEWS_DRY_RUN, true),
+    newsAllowWrites: parseBool(process.env.IRESS_NEWS_ALLOW_WRITES, false),
+    // "SENS" = real-time (the prod catalog row per Andre's WSDL browser
+    // 2026-07-22). The sync loop retries once with "SENSD" (delayed) on
+    // 25010 / 25018 — see news-ingest.ts vendor_fallback.
+    newsVendorCode: (process.env.IRESS_NEWS_VENDOR ?? "SENS").trim().toUpperCase() || "SENS",
+    // 2000 floor at 500: the CT build returned 894 rows in one trading
+    // day's window with Count=1000, so the legacy 500 cap silently
+    // truncated. Paging kicks in above the per-page size.
+    newsMaxRows: Math.max(500, Number(process.env.IRESS_NEWS_MAX_ROWS ?? "2000") || 2000),
   };
 }
