@@ -46,6 +46,30 @@ export const th =
 export const td = "px-3 py-2 text-[12px] text-foreground whitespace-nowrap";
 
 /**
+ * Order-action eligibility by lifecycle state — single source of truth,
+ * shared by ExecutionView's per-order rows. Previously duplicated between
+ * execution-view.tsx and the now-retired use-order-actions.ts.
+ *
+ * A row is "cancellable" when it's in flight at the broker — i.e. not
+ * already FILLED / CANCELLED / REJECTED / EXPIRED / FAILED. PENDING_ACK is
+ * excluded: per Hermes rules, once an order leaves our session it's owned by
+ * the destination until acked, so we can't cancel/amend it from here yet
+ * (Andre + Juan, 2026-07-15 transcript 06:35-07:46).
+ */
+export const isCancellable = (state: string): boolean =>
+  state === "WORKING" ||
+  state === "PARTIAL" ||
+  state === "ACKNOWLEDGED" ||
+  state === "created" ||
+  state === "amended";
+
+/** Same set as cancel, minus AMEND_PENDING (never race two broker instructions on one OrderNumber). */
+export const isAmendable = (state: string): boolean => isCancellable(state) && state !== "AMEND_PENDING";
+
+/** PENDING_ACK rows are read-only until the broker acks — actions column shows a hint instead. */
+export const isAwaitingBrokerAck = (state: string): boolean => state === "PENDING_ACK";
+
+/**
  * Group a flat holdings Row[] into per-strategy StrategyGroup[] — same
  * grouping key (strategy_name_snapshot) and sort (rows newest-first, groups
  * by latest date) as the original page.tsx grouping this was lifted from.

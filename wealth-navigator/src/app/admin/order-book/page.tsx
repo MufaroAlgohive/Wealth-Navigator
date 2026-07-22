@@ -14,7 +14,6 @@ import { UatBanner } from "@/components/admin/order-book/uat-banner";
 import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
 import { UatTestRunner } from "@/components/admin/order-book/uat-test-runner";
 import { ExecutionView } from "@/components/admin/order-book/execution-view";
-import { UatBasketBook } from "@/components/admin/order-book/uat-basket-book";
 
 interface Row {
   id: string; email: string; client: string; instrument: string; ticker: string; isin: string;
@@ -57,7 +56,6 @@ export default function OrderBookPage() {
   const [search, setSearch] = React.useState("");
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [uatRefresh, setUatRefresh] = React.useState(0);
-  const [execViewOpen, setExecViewOpen] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setRows(null);
@@ -146,23 +144,7 @@ export default function OrderBookPage() {
             <UatBanner />
             <UatOrderTicket onPlaced={() => setUatRefresh((n) => n + 1)} />
             <UatTestRunner />
-            <UatBasketBook />
-            <div className="rounded-xl border border-border">
-              <button
-                type="button"
-                onClick={() => setExecViewOpen((v) => !v)}
-                className="flex w-full items-center gap-1.5 px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground hover:bg-accent/10"
-              >
-                <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", execViewOpen && "rotate-90")} />
-                Per-ISIN execution (legacy view)
-              </button>
-              {execViewOpen && (
-                <div className="border-t border-border p-0 space-y-3">
-                  <ExecutionView key={`adhoc-${uatRefresh}`} bookId="UAT-ADHOC" />
-                  <ExecutionView key={`client-buy-${uatRefresh}`} bookId="CLIENT-BUY" />
-                </div>
-              )}
-            </div>
+            <ExecutionView key={`orderbook-${uatRefresh}`} bookIds={["UAT-ADHOC", "CLIENT-BUY"]} />
           </TabsContent>
         ) : (
         <TabsContent value={tab} className="mt-3">
