@@ -101,6 +101,103 @@ Audited both `Iress-Worker-UAT` (`a4fd8932-…`) and `Iress-Worker-PROD` (`665a2
 - Single-seat contention: if a Railway redeploy of the UAT worker happens while the prod worker is mid-boot, both could race for the UAT seat. Mitigated by the existing first-boot `IRESS_FORCE_KICK_ALL=1` auto-kick in `session.ts` (`WorkerSessionManager.startSession()`).
 - Paging stuck-cursor: 5-page cap is the floor; revisit after the first prod cadence. CT has the known stuck-bookmark bug.
 
+### 0.5.4 Open items summary — not "everything else perfect" (2026-07-22 15:32 UTC)
+
+User asked "besides SENS, is everything else perfect?" — short answer: **no.** The UAT/PROD split and the worker boot paths are solid, but the system still has 11 manual actions + 5 entitlement asks + 4 un-pasted migrations that block real-data flows. This is the unfiltered open-items list, ranked by what actually blocks the UAT→prod move that the user flagged as likely tomorrow.
+
+#### 0.5.4.a Verified-green today (no action)
+
+| Item | Evidence |
+|------|----------|
+| `Iress-Worker-UAT` service up | Railway status `SUCCESS`, deployment `be179bbe`, `main.ts` running, `worker_id=iress-ingest-1`, ~14 min uptime at 12:47 UTC |
+| `Iress-Worker-PROD` service up | Railway status `SUCCESS`, deployment `12d88323`, `main-prod.ts` running, `worker_id=iress-ingest-prod-1`, prod market-data session live at `webservices.iress.co.za/v4` |
+| UAT ↔ PROD isolation | Separate `ApplicationID`s (`Mint-OEMS-...-iress-ingest-1` vs `Mint-OEMS-MarketData-iress-ingest-prod-1`), separate `worker_session_metadata` rows, separate `--shared.IRESS_BASE_URL` (CT vs prod endpoint) |
+| Worker-wide dry-run gates on PROD | `SUPABASE_ALLOW_WRITES=0`, `IRESS_WORKER_DRY_RUN=1` confirmed in startup logs |
+| `Dockerfile.prod` + `main-prod.ts` deployed | `getDeploymentInfoTool` confirms `dockerfilePath=/wealth-navigator/workers/iress-ingest/Dockerfile.prod` for the PROD service, image built from commit `018edd53` |
+| `WORKER_HTTP_TOKEN` generated | `d4aba4a1487149eb2dcb6f559463060dbb615dcf` — needs to be pasted on Vercel (see 0.5.4.b) |
+| Per-loop SENS→SENSD fallback wired | Live log: `event: news_vendor_fallback, msg: NewsHeadlineGet(SENS) fault -1; retrying with SENSD` |
+| Vendor catalog marker row schema | `news_item_c.payload.scope.vendor_catalog` populated in dry-run |
+| BFF `/api/iress/news` widened | Accepts `?symbol=` + `?vendorCatalog=1`, default vendor = `SENS` |
+
+#### 0.5.4.b Manual actions required (no infra change, just paste / push / flip env)
+
+| # | Action | File / Location | Blast radius | Estimated time |
+|---|--------|------------------|---------------|-----------------|
+| 1 | Push 5 unpushed commits (`56e29bf → bb2df5b`) to `origin/main` | local `main` branch | None — local-only | 2 min (need user approval per AGENTS.md rule) |
+| 2 | Paste `20260613000004_oems_instrument_universe.sql` in MyMint SQL editor | `wealth-navigator/supabase/migrations/` | Schema-only, idempotent | 2 min |
+| 3 | Paste `20260613000003_oems_curve_metric_c.sql` | same | Schema-only | 1 min |
+| 4 | Paste `20260613000002_oems_strategy_c.sql` | same | Schema-only | 1 min |
+| 5 | Paste `20260613000001_oems_ips_portfolio.sql` | same | Schema-only | 1 min |
+| 6 | Paste `20260720000001_oems_order_audit_broker_account.sql` | same | Schema-only (typed column + partial index) | 1 min |
+| 7 | `NOTIFY pgrst, 'reload schema';` in MyMint SQL editor | MyMint | PostgREST cache refresh | 10 s |
+| 8 | Set `WORKER_HTTP_TOKEN=d4aba4a1487149eb2dcb6f559463060dbb615dcf` on Vercel | Vercel env | Enables Path B BFF auth | 30 s |
+| 9 | Set `WORKER_REQUIRE_HTTP_TOKEN=1` on Vercel (pair with #8) | Vercel env | Same | 30 s |
+| 10 | When UAT moves to prod: flip Vercel `IRESS_WORKER_URL` from `iress-worker-production.up.railway.app` (UAT) to `iress-worker-prod-production.up.railway.app` (PROD) | Vercel env | Reroutes all `/api/orders/live`, `/api/worker-health`, `/api/iress/news` | 30 s |
+| 11 | Auth `user-supabase - MyMint` MCP for future DB audits | Cursor MCP config | None — read-only enable | 1 min |
+
+#### 0.5.4.c Entitlement asks to Charles (reply-toned on existing thread)
+
+| # | Entitlement | Surfaces blocked | Live evidence |
+|---|-------------|------------------|---------------|
+| 1 | `NewsHeadlineGet(SENS)` real-time on `DFM@Mint` prod | `/oems/news` real-time, cockpit SENS panel | Live fault: `soap:Receiver — No valid vendor specified`, vendor catalog returns `SENSD` only |
+| 2 | `TimeSeriesGet2` on J203 / R-codes / sector indices / ZAR NSS codes | `/oems` ALSI, sector heatmap, ZAR govi / NSS / real / breakeven curves | Empirically blocked — 56 Long + 13 string `Interval` candidates all rejected ("Invalid Parameter Value") |
+| 3 | `OrderPadGetByAccount` polling account code | `oems_order_audit` working-pad fill, blotter reconciliation | `IRESS_ACCOUNT_CODE` not yet on Railway |
+| 4 | BHG `Board` / `QuotationBasisCode` clarification | BHG JSE watchlist row (currently hollow — worker correctly skips the write) | CT returns `LastPrice=PreviousClosePrice=2445`, zero OHLC |
+| 5 | Sector index code list for the JSE heatmap | `/oems` + `/oems/equities` sector heatmap | Worker code-gap; needs code list before loops can be built |
+
+#### 0.5.4.d Opt-in flips (deliberately closed — user must explicitly approve)
+
+| # | Env var | Service | Why closed |
+|---|---------|---------|------------|
+| 1 | `IRESS_NEWS_DRY_RUN=0` | `Iress-Worker-PROD` | Per-loop gate, news writes |
+| 2 | `IRESS_NEWS_ALLOW_WRITES=1` | `Iress-Worker-PROD` | Per-loop gate, news writes |
+| 3 | `SUPABASE_ALLOW_WRITES=1` | `Iress-Worker-PROD` (only when UAT folds into prod) | Worker-wide writes |
+| 4 | `IRESS_WORKER_DRY_RUN=0` | `Iress-Worker-PROD` (only when UAT folds into prod) | Worker-wide dry-run |
+
+The standing rule is `IRESS_WORKER_DRY_RUN=1` and `SUPABASE_ALLOW_WRITES=0` everywhere by default — production must opt in explicitly.
+
+#### 0.5.4.e Code gaps (no infra or entitlement dependency)
+
+| # | Panel | Current state | What's missing |
+|---|-------|---------------|----------------|
+| 1 | Fixed Income KRD breakdown | DV01 + convexity only; KRD vector is code-gap | Add `krd_per_tenor` JSONB column to `bonds_c` |
+| 2 | Money Market JIBAR NSS fit | 1M / 3M / 6M / 12M KPIs only | Worker NSS fit on `jibar_fixing_c` |
+| 3 | News sentiment | Category + severity only | Vendor sentiment score → `news_item_c.payload.sentiment` |
+| 4 | 5 persona pages (`/strategist`, `/wm`, `/admin`, `/business`, `/fc`) | Empty placeholders | CRM / ops integration (deferred per architecture doc) |
+| 5 | `/oems/security` depth + T&S + fundamentals | L2 + tape are synthetic (`DepthLadder` / `TimeAndSales` use `seedLastFor`); fundamentals are hardcoded | Vendor feed (DirectEdge / ITG / FlexTrade for L2; Refinitiv / Bloomberg for fundamentals — IRESS V4 has no L2 method) |
+| 6 | `/oems/equities` mandate KPIs | "Platform AUM / mandate KPIs require portfolio system integration" empty state | Worker writes `oems_strategy_c` from `oems_position_c` aggregation |
+| 7 | `/api/quotes` SSE upgrade | Polls every 15 s | Switch to `supabase_realtime` `INSERT` on `stock_intraday_c` → drops lag to ~1 s |
+
+#### 0.5.4.f Tuning knobs (safe to flip any time)
+
+| # | Env var | Service | Current | Range |
+|---|---------|---------|---------|-------|
+| 1 | `IRESS_NEWS_INGEST_INTERVAL_SEC` | `Iress-Worker-PROD` | 21600 (6 h) | Floor 300 (5 min); tighten to 900–1800 for active market hours |
+| 2 | `IRESS_WORKER_QUOTE_INTERVAL_SEC` | UAT | 15 s | Drop to 5 s if cockpit movers feel laggy; verify Vercel cost |
+
+#### 0.5.4.g UAT → prod migration sequencing (for tomorrow)
+
+When Charles confirms the prod account code + the SENS entitlement + the `TimeSeriesGet2` entitlement, the order of operations is:
+
+1. Paste migrations 2–6 in MyMint (items 2–6 in 0.5.4.b).
+2. `NOTIFY pgrst, 'reload schema';` (item 7).
+3. Set `IRESS_ACCOUNT_CODE=<from Charles>` on `Iress-Worker-PROD` Railway service (NOT shared — prod seat only).
+4. Set `SUPABASE_ALLOW_WRITES=1` + `IRESS_WORKER_DRY_RUN=0` on PROD (opt-in flips 3 + 4).
+5. Flip Vercel `IRESS_WORKER_URL` to `iress-worker-prod-production.up.railway.app` (item 10).
+6. Set Vercel `WORKER_HTTP_TOKEN` + `WORKER_REQUIRE_HTTP_TOKEN=1` (items 8 + 9).
+7. **Stop the UAT service** in Railway (release the CT license seat) so PROD owns the prod seat exclusively. This is the riskiest step — see 0.5.4.h.
+8. Run the opt-in go-live sequence for news (items 1 + 2 in 0.5.4.d) after #1–#7 of `0.5.2`'s sequence are green.
+9. Decommission `Iress-Worker-UAT` once trading is verified live on PROD.
+
+#### 0.5.4.h Risk register for the UAT→prod move
+
+- **Single-seat contention during the transition**: stopping UAT while PROD boots could race if Charles has anyone else authenticated on the prod seat. `IRESS_FORCE_KICK_ALL=1` in `session.ts::WorkerSessionManager.startSession()` handles first-boot recovery.
+- **News catalog stale-cache**: if PROD was running with `IRESS_NEWS_VENDOR=SENS` and SENSD-only entitlement, the persisted `__catalog__` marker row reflects SENSD. After Charles flips the entitlement, the next news loop tick will refresh it; no manual cleanup needed.
+- **Vercel routing lag**: setting `IRESS_WORKER_URL` mid-session means in-flight BFF calls may hit UAT, subsequent calls hit PROD. `/api/orders/live` is the only stateful one — the blotter is idempotent on cancel, so a partial cancel race is recoverable.
+- **Paging stuck-cursor on prod**: the 5-page cap is a floor; CT has the known stuck-bookmark bug, which may also affect prod on the first trading day. Mitigated by `MAX_LEGACY_IPS_PAGES` model in `syncNewsHeadlines`.
+
+---
+
 ## 0. UI-honesty pass — completed (2026-06-13)
 
 All 7 RED findings (#1–#7) and 25 YELLOW findings (#8–#32, plus #33–#37) from the

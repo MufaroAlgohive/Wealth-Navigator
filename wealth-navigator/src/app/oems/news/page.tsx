@@ -39,6 +39,55 @@ interface NewsResponse {
 const TAB_TRIGGER =
   "h-7 rounded-lg px-3 text-[11px] font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-[0_2px_12px_hsl(var(--primary)/0.35)]";
 
+/**
+ * Headlines that match this pattern are IRESS CT/prod-side fixture content,
+ * not real regulatory announcements. IRESS publishes "Test Announcement N"
+ * rows on the SENSD feed during integration testing; the prod seat picked
+ * some up on 2026-07-22. Filter at the UI layer so the operator never sees
+ * them — see `wealth-navigator/docs/ISSUES_LOG.md` §0.5.4 for context.
+ */
+const IRESS_FIXTURE_HEADLINE = /^Test Announcement(\s|$|[:\-–—])/i;
+
+/**
+ * Decode the small set of HTML entities IRESS returns inside `HeadlineText`
+ * (e.g. `&#x2013;` for en-dash, `&#x2014;` for em-dash, `&amp;`, `&lt;`,
+ * `&gt;`, `&quot;`, `&#39;`). Done at the UI layer so the source-of-truth
+ * parser still stores the raw text — the entity stripping is a display
+ * concern only. Mirrors what the alliance wire feed does server-side.
+ */
+function decodeIressHeadlineEntities(raw: string): string {
+  if (!raw) return raw;
+  return raw
+    .replace(/&#x2013;|&#8211;/g, "–")
+    .replace(/&#x2014;|&#8212;/g, "—")
+    .replace(/&#x2018;|&#8216;/g, "\u2018")
+    .replace(/&#x2019;|&#8217;/g, "\u2019")
+    .replace(/&#x201C;|&#8220;/g, "\u201C")
+    .replace(/&#x201D;|&#8221;/g, "\u201D")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
+}
+
+/**
+ * Pick the primary ticker for the row header. The IRESS `SecurityCodeList`
+ * can contain 50+ bond codes (JSE bonds are prefixed `ZA…`) for a single
+ * announcement; rendering all of them collapses the row. Prefer the first
+ * equity-class code (no `ZA` prefix); fall back to the first code if every
+ * code is a bond code. Returns `null` when the announcement has no codes.
+ */
+const MAX_VISIBLE_TICKERS = 5;
+function pickPrimaryTicker(tickers: string[]): string | null {
+  if (!tickers || tickers.length === 0) return null;
+  const equity = tickers.find((t) => !/^ZA\d/i.test(t));
+  if (equity !== undefined) return equity;
+  const first = tickers[0];
+  return first !== undefined ? first : null;
+}
+
 export default function NewsPage() {
   const realDataOnly = isRealDataOnlyClient();
   const newsQ = useQuery<NewsResponse>({
@@ -158,7 +207,13 @@ export default function NewsPage() {
   const wire = items.filter((n) => n.category.toUpperCase() !== "SENS");
 
   const all = items;
-  const filtered = (tab === "all" ? all : tab === "sens" ? sens : wire).filter(
+  // Strip IRESS-side fixture/test announcements BEFORE tab counts so the
+  // badge reflects what's actually visible (e.g. "Test Announcement N"
+  // rows on the SENSD feed during integration testing).
+  const allClean = all.filter((a) => !IRESS_FIXTURE_HEADLINE.test(a.headline));
+  const sensClean = sens.filter((a) => !IRESS_FIXTURE_HEADLINE.test(a.headline));
+  const wireClean = wire.filter((a) => !IRESS_FIXTURE_HEADLINE.test(a.headline));
+  const filtered = (tab === "all" ? allClean : tab === "sens" ? sensClean : wireClean).filter(
     (a) =>
       !q ||
       a.headline.toLowerCase().includes(q.toLowerCase()) ||
@@ -176,9 +231,9 @@ export default function NewsPage() {
         <div className="flex items-center gap-2">
           <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
             <TabsList className="glass-inset h-auto gap-0.5 p-1">
-              <TabsTrigger value="all" className={TAB_TRIGGER}>All · {all.length}</TabsTrigger>
-              <TabsTrigger value="sens" className={TAB_TRIGGER}>SENS · {sens.length}</TabsTrigger>
-              <TabsTrigger value="wire" className={TAB_TRIGGER}>Wires · {wire.length}</TabsTrigger>
+              <TabsTrigger value="all" className={TAB_TRIGGER}>All · {allClean.length}</TabsTrigger>
+              <TabsTrigger value="sens" className={TAB_TRIGGER}>SENS · {sensClean.length}</TabsTrigger>
+              <TabsTrigger value="wire" className={TAB_TRIGGER}>Wires · {wireClean.length}</TabsTrigger>
             </TabsList>
           </Tabs>
           <div className="relative w-72">
@@ -201,7 +256,7 @@ export default function NewsPage() {
         // we label the source `iress`; when the entitlement is off or the
         // window has no rows we label `blocked-vendor` so the operator
         // sees the honest empty state.
-        dataSource={tab === "sens" ? (sens.length > 0 ? "iress" : "blocked-vendor") : "external"}
+        dataSource={tab === "sens" ? (sensClean.length > 0 ? "iress" : "blocked-vendor") : "external"}
         endpoint={tab === "sens" ? "GET /api/iress/news" : "GET /api/news"}
         noPadding
         className="flex h-[calc(100vh-220px)] min-h-0 flex-col"
@@ -228,15 +283,23 @@ export default function NewsPage() {
                 // session (`NewsHeadlineGet` vendor `SENSD`); the Wires tab
                 // requires Alliance / Reuters / Bloomberg contracts.
                 tab === "sens"
-                  ? "SENS reads live from `GET /api/iress/news` (worker `NewsHeadlineGet`, vendor `SENSD`). Empty usually means no announcements in the window — try a wider `dateFrom`/`dateTo`."
+                  ? sens.length > sensClean.length
+                    ? `IRESS returned ${sens.length - sensClean.length} test/fixture announcement(s) today — all filtered out. The SENSD vendor on prod currently publishes "Test Announcement N" rows during integration. No real SENS announcements in the visible window.`
+                    : "SENS reads live from `GET /api/iress/news` (worker `NewsHeadlineGet`, vendor `SENSD`). Empty usually means no announcements in the window — try a wider `dateFrom`/`dateTo`."
                   : "Wires require Reuters / Bloomberg / Moneyweb contracts."
               }
-              badgeLabel={tab === "sens" ? "unconfigured" : "blocked-vendor"}
+              badgeLabel={tab === "sens" ? (sens.length > sensClean.length ? "mock" : "unconfigured") : "blocked-vendor"}
             />
           ) : (
             <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))] overflow-hidden">
               {filtered.map((a) => {
                 const isSens = a.category.toUpperCase() === "SENS";
+                // Pick the primary ticker for the row header; the IRESS
+                // SecurityCodeList can carry 50+ bond codes (ZA-prefix) per
+                // announcement, which collapses the row when rendered.
+                const primaryTicker = pickPrimaryTicker(a.tickers);
+                const overflowCount = Math.max(0, a.tickers.length - MAX_VISIBLE_TICKERS);
+                const headlineText = decodeIressHeadlineEntities(a.headline);
                 return (
                   <li key={a.id} className="px-4 py-3 transition-colors hover:bg-[hsl(var(--primary)/0.06)]">
                   <div className="flex flex-wrap items-center gap-1.5">
@@ -248,11 +311,19 @@ export default function NewsPage() {
                         {a.category}
                       </Pill>
                     ) : null}
-                    {a.tickers.map((t) => (
-                      <span key={t} className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground">
-                        {t}
+                    {primaryTicker ? (
+                      <span className="rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[9.5px] font-semibold text-foreground">
+                        {primaryTicker}
                       </span>
-                    ))}
+                    ) : null}
+                    {overflowCount > 0 ? (
+                      <span
+                        className="rounded bg-muted/40 px-1.5 py-0.5 font-mono text-[9.5px] text-muted-foreground"
+                        title={a.tickers.slice(MAX_VISIBLE_TICKERS).join(", ")}
+                      >
+                        +{overflowCount} more
+                      </span>
+                    ) : null}
                     <span className="ml-auto font-mono text-[10px] text-muted-foreground">{formatTime(a.ts)}</span>
                   </div>
                   {(() => {
@@ -269,7 +340,7 @@ export default function NewsPage() {
                           rel="noopener noreferrer"
                           className={cn(headlineClass, "block hover:text-primary hover:underline")}
                         >
-                          {a.headline} <span className="text-[10px] text-muted-foreground">↗</span>
+                          {headlineText} <span className="text-[10px] text-muted-foreground">↗</span>
                         </a>
                       );
                     }
@@ -284,18 +355,18 @@ export default function NewsPage() {
                             className={cn(headlineClass, "block w-full text-left hover:text-primary")}
                             aria-expanded={isOpen}
                           >
-                            {a.headline}{" "}
+                            {headlineText}{" "}
                             <span className="text-[10px] font-normal text-muted-foreground">{isOpen ? "▲ less" : "▾ read"}</span>
                           </button>
                           {isOpen ? (
                             <p className="mt-1.5 whitespace-pre-line text-[11.5px] leading-relaxed text-muted-foreground">
-                              {a.body}
+                              {decodeIressHeadlineEntities(a.body ?? "")}
                             </p>
                           ) : null}
                         </>
                       );
                     }
-                    return <p className={headlineClass}>{a.headline}</p>;
+                    return <p className={headlineClass}>{headlineText}</p>;
                   })()}
                 </li>
               );
