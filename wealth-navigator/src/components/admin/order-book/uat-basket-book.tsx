@@ -102,13 +102,16 @@ export function UatBasketBook() {
     interval: 30_000,
     query: { enabled: SHOW_SEEDED_HOLDINGS },
   });
+  // 2s, matching ExecutionView's own poll cadence (execution-view.tsx) — this
+  // panel has no SSE stream of its own, so a fast poll is what gets it close
+  // to the "real time" feel the two SSE-backed legacy panels already have.
   const { data: adhocData } = usePolling<AdhocExecResponse>(
     `/api/admin/orderbook/execution?book_id=${ADHOC_BOOK_ID}`,
-    { interval: 30_000 },
+    { interval: 2_000 },
   );
   const { data: clientBuyData } = usePolling<AdhocExecResponse>(
     `/api/admin/orderbook/execution?book_id=${CLIENT_BUY_BOOK_ID}`,
-    { interval: 30_000 },
+    { interval: 2_000 },
   );
 
   const groups = React.useMemo(() => {

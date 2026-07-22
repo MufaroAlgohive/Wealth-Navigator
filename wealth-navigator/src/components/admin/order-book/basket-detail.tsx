@@ -55,9 +55,12 @@ export function BasketDetail({
   const [expandedSecurities, setExpandedSecurities] = React.useState<Set<string>>(new Set());
   const actions = useOrderActions();
 
+  // 2s, matching ExecutionView's own poll cadence — this only runs while a
+  // basket is expanded (component only mounts then), so the tighter interval
+  // doesn't add background load for collapsed baskets.
   const { data: execData } = usePolling<ExecutionApiResponse>(
     `/api/admin/orderbook/execution?book_id=${encodeURIComponent(group.strategy)}`,
-    { interval: 30_000 },
+    { interval: 2_000 },
   );
 
   // Keyed by BOTH holding_id (real client holdings) and the execution row's
