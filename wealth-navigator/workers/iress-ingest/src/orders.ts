@@ -86,8 +86,33 @@ interface OrderAuditRow {
   updated_at: string;
 }
 
-function toAuditRow(order: Order): OrderAuditRow {
+/** Whatever this order_id's existing oems_order_audit row already carries, if any. */
+interface ExistingAuditRow {
+  source: string;
+  payload: Record<string, unknown>;
+  result_payload: Record<string, unknown>;
+}
+
+/**
+ * 2026-07-22: this poller mirrors the ENTIRE broker OrderPad by deleting and
+ * re-inserting every order_id it sees each cycle (see the delete-then-insert
+ * note below) — a full-book sweep has no notion of "this order started life
+ * as a BFF-seeded MINT_CLIENT_ORDER / ad-hoc ticket / bulk dispatch row."
+ * Left unguarded, that blind re-insert wiped `source` back to "IRESS" and
+ * dropped `payload.book_id` / `holding_id` / `trader` / `result_payload.preflight`
+ * on every row this poller ever touched — the order-book UI's book-scoped
+ * views (which filter on `payload->>book_id`) lost the order entirely, even
+ * though the row itself (by order_id) still existed with the right fill/
+ * status data. Fix: merge forward — BFF-seeded identity/provenance fields
+ * (book_id, holding_id, strategy, broker, order_type, security_id, uat_test,
+ * limitPrice, sent_by/sent_at, trader, and result_payload.preflight) survive
+ * from `existing`; only the fields IRESS itself observes (fill state, broker
+ * lifecycle detail, error codes) are refreshed from this poll — same split
+ * order-poller.ts already uses for its own by-id updates.
+ */
+function toAuditRow(order: Order, existing?: ExistingAuditRow): OrderAuditRow {
   const limit = order.limit ?? null;
+  const prevPayload = existing?.payload ?? {};
   return {
     // Key on the broker OrderNumber (always unique). OrderTag is NOT a reliable
     // key for pad-read orders — on the live CT book every order carries the
@@ -101,8 +126,12 @@ function toAuditRow(order: Order): OrderAuditRow {
     quantity: order.qty,
     price_cents: limit !== null ? Math.round(limit * 100) : null,
     status: mapStateToDb(order.state),
-    source: "IRESS",
+    // A BFF-seeded row keeps its own source (MINT_CLIENT_ORDER, UAT_ADHOC_ORDER,
+    // OB_SEND_TO_MARKET_UAT, ...); a row this poller has never seen before is a
+    // pure broker-side order with no BFF provenance, so it's tagged "IRESS".
+    source: existing && existing.source !== "IRESS" ? existing.source : "IRESS",
     payload: {
+      ...prevPayload,
       orderTag: order.orderTag,
       type: order.type,
       tif: order.tif,
@@ -111,7 +140,6 @@ function toAuditRow(order: Order): OrderAuditRow {
       avgPx: order.avgPx,
       vwap: order.vwap,
       filled: order.filled,
-      trader: order.trader,
       ts: order.ts,
       // IRESS Hermes lifecycle detail (Andre, 2026-07-13). Preserved on every
       // poll cycle so the desk can see exactly where the order sits on the
@@ -137,10 +165,17 @@ function toAuditRow(order: Order): OrderAuditRow {
       // like actionStatus, not a UI-computed metric.
       iressErrorNumber: order.iressErrorNumber ?? null,
       iressErrorDescription: order.iressErrorDescription ?? null,
+      // Preserve the BFF's own trader attribution (a client's email for a
+      // mint order, or the operator's email for an ad-hoc ticket) when this
+      // row already has one — IRESS's own `order.trader` is a different,
+      // broker-side concept and would otherwise clobber that attribution on
+      // every poll cycle.
+      trader: prevPayload.trader ?? order.trader,
       // Backwards-compat: keep the JSON key for any consumer still reading it.
       broker_account_code: order.account,
     },
     result_payload: {
+      ...(existing?.result_payload ?? {}),
       rejectReason: order.rejectReason,
       slippageBps: order.slippageBps,
       arrivalMid: order.arrivalMid,
@@ -282,9 +317,40 @@ export async function pollAccountsForOrders(
     return { polled: accounts.length, upserted: 0, accounts };
   }
 
+  // Fetch whatever's already in oems_order_audit for these order_ids BEFORE the
+  // delete-then-insert below, so toAuditRow() can merge BFF-seeded provenance
+  // (source, book_id, holding_id, trader, preflight, ...) forward instead of
+  // this full-book mirror silently wiping it every cycle (see toAuditRow doc).
+  const rawOrderIds = orders.map((o) => o.id || o.orderTag);
+  const existingByOrderId = new Map<string, ExistingAuditRow>();
+  if (opts.supabase && !opts.env.dryRun && opts.env.allowWrites && rawOrderIds.length > 0) {
+    const { data: existingRows, error: existingErr } = await opts.supabase
+      .from("oems_order_audit")
+      .select("order_id, source, payload, result_payload")
+      .in("order_id", rawOrderIds);
+    if (existingErr) {
+      console.warn(`[iress-ingest] oems_order_audit existing-row lookup failed: ${existingErr.message}`);
+    } else {
+      for (const r of (existingRows ?? []) as Array<{
+        order_id: string;
+        source: string;
+        payload: Record<string, unknown> | null;
+        result_payload: Record<string, unknown> | null;
+      }>) {
+        existingByOrderId.set(r.order_id, {
+          source: r.source,
+          payload: r.payload ?? {},
+          result_payload: r.result_payload ?? {},
+        });
+      }
+    }
+  }
+
   // The audit table CHECKs quantity > 0; skip any zero-qty rows so one bad row
   // can't fail the whole batch insert.
-  const rows = orders.map(toAuditRow).filter((r) => r.quantity > 0);
+  const rows = orders
+    .map((o) => toAuditRow(o, existingByOrderId.get(o.id || o.orderTag)))
+    .filter((r) => r.quantity > 0);
   if (opts.env.dryRun || !opts.env.allowWrites || !opts.supabase) {
     console.info(
       JSON.stringify({

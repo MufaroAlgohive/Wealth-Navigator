@@ -30,7 +30,15 @@ interface MutationCall {
   rows?: unknown;
 }
 
-function makeSupabaseRecorder(upsertImpl?: (table: string, rows: unknown) => Promise<{ error: { message: string } | null }>): {
+function makeSupabaseRecorder(
+  upsertImpl?: (table: string, rows: unknown) => Promise<{ error: { message: string } | null }>,
+  existingAuditRows: Array<{
+    order_id: string;
+    source: string;
+    payload: Record<string, unknown>;
+    result_payload: Record<string, unknown>;
+  }> = [],
+): {
   client: SupabaseClient;
   upsertCalls: UpsertCall[];
   mutationCalls: MutationCall[];
@@ -63,7 +71,15 @@ function makeSupabaseRecorder(upsertImpl?: (table: string, rows: unknown) => Pro
         if (upsertImpl) return upsertImpl(table, rows);
         return { error: null };
       },
-      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }),
+      select: () => ({
+        eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+        // Existing-row provenance lookup in pollAccountsForOrders (merge-on-write
+        // for the full-book poller) — returns whatever fixture rows the test seeded.
+        in: async (_col: string, ids: string[]) => ({
+          data: existingAuditRows.filter((r) => ids.includes(r.order_id)),
+          error: null,
+        }),
+      }),
     }),
   } as unknown as SupabaseClient;
   return { client, upsertCalls, mutationCalls };
@@ -192,6 +208,101 @@ describe("worker orders stub", () => {
     expect(upsertCalls.some((c) => c.table === "oems_position_c")).toBe(true);
     const positionMutations = mutationCalls.filter((m) => m.table === "oems_position_c");
     expect(positionMutations.some((m) => m.op === "delete")).toBe(true);
+  });
+
+  it("live-writes: preserves BFF provenance (source/book_id/holding_id/trader/preflight) across the full-book delete-then-insert cycle", async () => {
+    // 2026-07-22: the full-book poller used to blindly rebuild every row from
+    // the IRESS Order object alone, wiping source back to "IRESS" and dropping
+    // payload.book_id/holding_id/trader + result_payload.preflight for ANY row
+    // it had never seen before (ad-hoc ticket, bulk dispatch, or a mint
+    // client-order) — the order-book UI's book-scoped views lost the order
+    // entirely even though the row (by order_id) still existed. This proves
+    // the merge-forward fix: BFF-seeded fields survive, only IRESS-observed
+    // fields (status/fills/broker lifecycle detail) refresh.
+    process.env.IRESS_WORKER_DRY_RUN = "0";
+    process.env.SUPABASE_ALLOW_WRITES = "1";
+    vi.resetModules();
+
+    const { client, mutationCalls } = makeSupabaseRecorder(undefined, [
+      {
+        order_id: "ORD-44218", // NPN, MINT-LIVE-001, mock state PARTIAL/filled 8400 — see seed.ts
+        source: "MINT_CLIENT_ORDER",
+        payload: {
+          book_id: "CLIENT-BUY",
+          holding_id: "hold-abc-123",
+          strategy: "CLIENT-BUY",
+          trader: "client@example.com",
+          sent_by: "client@example.com",
+          uat_test: true,
+        },
+        result_payload: {
+          preflight: { ok: true, verdict: "pass", code: "pass", message: "Skipped (caller ran a bulk preflight)." },
+        },
+      },
+    ]);
+    const env = makeWorkerEnv({ dryRun: false, allowWrites: true, iressMode: "mock" });
+    const sessions = {} as never;
+
+    const { pollAccountsForOrders } = await import("../../workers/iress-ingest/src/orders");
+    await pollAccountsForOrders({
+      env,
+      sessions,
+      supabase: client,
+      accounts: ["MINT-LIVE-001"],
+    });
+
+    const insertCall = mutationCalls.find((m) => m.table === "oems_order_audit" && m.op === "insert");
+    expect(insertCall).toBeDefined();
+    const rows = insertCall!.rows as Array<{
+      order_id: string;
+      source: string;
+      status: string;
+      payload: Record<string, unknown>;
+      result_payload: Record<string, unknown>;
+    }>;
+    const row = rows.find((r) => r.order_id === "ORD-44218");
+    expect(row).toBeDefined();
+
+    // Provenance survives the full-book rewrite.
+    expect(row!.source).toBe("MINT_CLIENT_ORDER");
+    expect(row!.payload.book_id).toBe("CLIENT-BUY");
+    expect(row!.payload.holding_id).toBe("hold-abc-123");
+    expect(row!.payload.trader).toBe("client@example.com");
+    expect(row!.result_payload.preflight).toEqual({
+      ok: true,
+      verdict: "pass",
+      code: "pass",
+      message: "Skipped (caller ran a bulk preflight).",
+    });
+
+    // Broker-observed fields still refresh from THIS poll, not the stale fixture.
+    expect(row!.status).toBe("partial");
+    expect(row!.payload.filled).toBe(8_400);
+    expect(row!.payload.avgPx).toBeCloseTo(4179.2);
+  });
+
+  it("live-writes: a row this poller has never seen before is tagged plain IRESS with no provenance", async () => {
+    process.env.IRESS_WORKER_DRY_RUN = "0";
+    process.env.SUPABASE_ALLOW_WRITES = "1";
+    vi.resetModules();
+
+    const { client, mutationCalls } = makeSupabaseRecorder(); // no existing rows seeded
+    const env = makeWorkerEnv({ dryRun: false, allowWrites: true, iressMode: "mock" });
+    const sessions = {} as never;
+
+    const { pollAccountsForOrders } = await import("../../workers/iress-ingest/src/orders");
+    await pollAccountsForOrders({
+      env,
+      sessions,
+      supabase: client,
+      accounts: ["MINT-LIVE-001"],
+    });
+
+    const insertCall = mutationCalls.find((m) => m.table === "oems_order_audit" && m.op === "insert");
+    const rows = insertCall!.rows as Array<{ order_id: string; source: string; payload: Record<string, unknown> }>;
+    const row = rows.find((r) => r.order_id === "ORD-44218");
+    expect(row!.source).toBe("IRESS");
+    expect(row!.payload.book_id).toBeUndefined();
   });
 
   it("empty account list is a no-op", async () => {
