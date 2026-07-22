@@ -4,10 +4,10 @@
  * Server-to-server entry point for the MINT retail app: when a client buys
  * (Phase 1) or sells (later) a single security, mint calls this route so
  * the SAME order — same ticker, qty, price — that already gets written to
- * `stock_holdings_c` also gets forwarded through the exact worker pipeline
- * the admin UAT tools use. Thin wrapper around `submitOrder()`/`preflight()`
- * from `@/lib/orders`, same core the ad-hoc UAT ticket
- * (`uat-order/route.ts`) uses — not a parallel implementation.
+ * `stock_holdings_c` also lands in the OEM order book. This route PARKS the
+ * order (`parkOrder()` from `@/lib/orders`) — zero worker/IRESS contact —
+ * until an admin releases it via `POST /api/admin/orderbook/release-to-market`,
+ * which runs preflight + the worker fan-out this route used to run inline.
  *
  * Body: {
  *   holding_id:    string,           // stock_holdings_c.id this order came from
@@ -18,7 +18,7 @@
  *   client_email?: string,
  *   source_ref?:   string,           // mint's transaction id, for cross-system log tracing
  * }
- * Returns: { ok, orderAuditId, orderId, bookId, mode, iressOrderNumber?, status?, preflight?, error?, alreadyForwarded? }
+ * Returns: { ok, orderAuditId, orderId, bookId, mode, status, notice?, error?, alreadyForwarded? }
  *
  * Auth: `Authorization: Bearer ${MINT_CLIENT_ORDER_SECRET}` (mint has no
  * admin browser session to present), OR an admin session as a fallback for
@@ -41,9 +41,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
-import { isIressWorkerConfigured } from "@/lib/data-policy";
-import { openSupabaseClients, preflight, submitOrder } from "@/lib/orders";
-import type { SubmitResult } from "@/lib/orders";
+import { openSupabaseClients, parkOrder } from "@/lib/orders";
 
 export const dynamic = "force-dynamic";
 
@@ -115,7 +113,7 @@ export async function POST(req: Request) {
       orderAuditId: existing.id,
       orderId: existing.order_id,
       bookId: BOOK_ID,
-      mode: "uat",
+      mode: existing.status === "parked" ? "parked" : "uat",
       status: existing.status,
     });
   }
@@ -148,34 +146,10 @@ export async function POST(req: Request) {
     );
   }
 
-  // Preflight explicitly first so a blocked verdict returns the same shape
-  // the ad-hoc ticket does (no audit row written; UI can render force-
-  // correction if mint ever surfaces this directly).
-  const pre = await preflight({
-    account_code: ACCOUNT_CODE,
-    symbol: rawSymbol,
-    side,
-    qty,
-    price_cents: priceCents,
-    source: "MINT_CLIENT_ORDER",
-    book_id: BOOK_ID,
-  });
-  if (!pre.ok) {
-    return NextResponse.json(
-      {
-        ok: false,
-        bookId: BOOK_ID,
-        mode: "uat",
-        status: "blocked",
-        code: pre.code,
-        error: pre.message,
-        preflight: pre,
-      },
-      { status: 422 },
-    );
-  }
-
-  const result: SubmitResult = await submitOrder(
+  // No preflight here — this order PARKS with zero worker/IRESS contact.
+  // Preflight is deferred to release time (see submit.ts::parkOrder /
+  // releaseOrder), when the cash/naked-short snapshot is actually current.
+  const result = await parkOrder(
     supabase,
     {
       account_code: ACCOUNT_CODE,
@@ -191,44 +165,11 @@ export async function POST(req: Request) {
     { bookId: BOOK_ID, broker: BROKER, uatTest: true },
   );
 
-  if (!result.ok && !result.order_audit_id) {
-    return NextResponse.json(
-      {
-        ok: false,
-        bookId: BOOK_ID,
-        mode: "uat",
-        status: "blocked",
-        code: result.preflight.code,
-        error: result.preflight.message,
-        preflight: result.preflight,
-      },
-      { status: 422 },
-    );
-  }
-
-  if (result.ok && !result.iress_order_number && !isIressWorkerConfigured()) {
-    return NextResponse.json({
-      ok: true,
-      orderAuditId: result.order_audit_id,
-      orderId: result.order_id,
-      bookId: BOOK_ID,
-      mode: "audit-only",
-      notice: "IRESS_WORKER_URL not configured on Vercel; order recorded, not sent to IRESS.",
-    });
-  }
-
   if (!result.ok) {
-    return NextResponse.json({
-      ok: false,
-      orderAuditId: result.order_audit_id,
-      orderId: result.order_id,
-      bookId: BOOK_ID,
-      mode: "uat",
-      status: "rejected",
-      error: result.error ?? "unknown worker error",
-      code: result.worker_code,
-      preflight: result.preflight,
-    });
+    return NextResponse.json(
+      { ok: false, bookId: BOOK_ID, error: result.error ?? "failed to park order" },
+      { status: 500 },
+    );
   }
 
   return NextResponse.json({
@@ -236,9 +177,8 @@ export async function POST(req: Request) {
     orderAuditId: result.order_audit_id,
     orderId: result.order_id,
     bookId: BOOK_ID,
-    mode: "uat",
-    iressOrderNumber: result.iress_order_number ?? null,
-    status: result.status ?? "working",
-    preflight: result.preflight,
+    mode: "parked",
+    status: "parked",
+    notice: "Order parked in the order book — awaiting Send to Market release.",
   });
 }

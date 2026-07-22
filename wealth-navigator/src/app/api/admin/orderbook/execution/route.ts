@@ -162,6 +162,8 @@ function str(v: unknown): string | null {
  */
 function stateUppercaseFromAudit(status: string): string {
   switch (status) {
+    case "parked":
+      return "PARKED";
     case "pending_ack":
       return "PENDING_ACK";
     case "acknowledged":

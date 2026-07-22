@@ -24,5 +24,7 @@ export { preflight } from "@/lib/orders/preflight";
 export {
   openSupabaseClients,
   submitOrder,
+  parkOrder,
+  releaseOrder,
   type SubmitOrderOptions,
 } from "@/lib/orders/submit";

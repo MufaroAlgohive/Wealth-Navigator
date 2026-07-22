@@ -1,9 +1,10 @@
 "use client";
 
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, SendHorizontal } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
 import { BasketDetail } from "./basket-detail";
@@ -91,6 +92,7 @@ function adhocRowToRow(r: AdhocExecRow, bookId: string): Row {
  */
 export function UatBasketBook() {
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+  const [releasing, setReleasing] = React.useState(false);
 
   // 2026-07-21: temporarily hiding real seeded test holdings (Test Runner
   // scenarios, sourced from the RETAIL/CRM stock_holdings_c table) per
@@ -121,6 +123,40 @@ export function UatBasketBook() {
     return groupRowsByStrategy([...holdingsRows, ...adhocRows, ...clientBuyRows]);
   }, [data, adhocData, clientBuyData]);
 
+  // Live count of parked (not-yet-sent) mint client orders, derived from
+  // the CLIENT-BUY execution data already being polled every 2s — no extra
+  // fetch. Undercounts any parked row outside CLIENT-BUY, which is fine:
+  // parking is scoped exclusively to the mint client-order path today.
+  const parkedCount = React.useMemo(
+    () => (clientBuyData?.rows ?? []).filter((r) => r.state === "PARKED").length,
+    [clientBuyData],
+  );
+
+  const handleRelease = async () => {
+    setReleasing(true);
+    try {
+      const res = await fetch("/api/admin/orderbook/release-to-market", { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body?.error ?? "Send to Market failed.");
+        return;
+      }
+      if (body.released > 0 && body.failed === 0) {
+        toast.success(`Sent ${body.released} order${body.released !== 1 ? "s" : ""} to market.`);
+      } else if (body.released > 0 && body.failed > 0) {
+        toast.message(`Sent ${body.released}, ${body.failed} still parked (blocked by guard — will retry next click).`);
+      } else if (body.failed > 0) {
+        toast.error(`${body.failed} order${body.failed !== 1 ? "s" : ""} blocked — still parked.`);
+      } else {
+        toast.message(body.notice ?? "No parked orders to release.");
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Send to Market failed.");
+    } finally {
+      setReleasing(false);
+    }
+  };
+
   const toggle = (s: string) =>
     setExpanded((prev) => {
       const n = new Set(prev);
@@ -135,8 +171,20 @@ export function UatBasketBook() {
 
   return (
     <div className="space-y-2">
-      <div className="px-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        UAT Order Book — test baskets only
+      <div className="flex items-center gap-2 px-1">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          UAT Order Book — test baskets only
+        </div>
+        <div className="flex-1" />
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={parkedCount === 0 || releasing}
+          onClick={handleRelease}
+        >
+          <SendHorizontal className="h-3.5 w-3.5" />
+          {releasing ? "Sending..." : `Send to Market (${parkedCount})`}
+        </Button>
       </div>
       <div className="overflow-x-auto rounded-xl border border-border">
         <table className="w-full border-collapse">

@@ -18,6 +18,7 @@ const STATE_VARIANT: Record<
 > = {
   NOT_SENT: "outline",
   MIXED: "outline",
+  PARKED: "outline",
   PENDING_ACK: "outline",
   ACKNOWLEDGED: "outline",
   CANCEL_PENDING: "outline",
@@ -34,6 +35,7 @@ const STATE_VARIANT: Record<
 const STATE_LABEL: Record<string, string> = {
   NOT_SENT: "Not sent",
   MIXED: "Mixed",
+  PARKED: "Parked",
   PENDING_ACK: "Pending ack",
   ACKNOWLEDGED: "Acknowledged",
   CANCEL_PENDING: "Cancel pending",
