@@ -432,6 +432,44 @@ export function filterOutPromotedBooks(rows: GroupedRow[], books: OrderBookSumma
   return rows.filter((g) => g.parent.order_book_seq == null || !fullyFilledSeqs.has(g.parent.order_book_seq));
 }
 
+/**
+ * 2026-07-23: only a REAL multi-security strategy (a future basket buy,
+ * where `strategy` is a genuine name distinct from any of this panel's own
+ * `bookIds`) gets the full "Strategy row -> Holdings tree + Investors
+ * list" two-axis drill-down. A book like UAT-ADHOC/CLIENT-BUY isn't a
+ * basket — `payload.strategy` on those rows is just stamped with the
+ * originating book id (see parkOrder/submitOrder) — so wrapping 22
+ * unrelated single-security orders behind one "UAT-ADHOC · 22 orders"
+ * summary row hid real per-order data the desk needs to see without an
+ * extra click. For these, skip the wrapper AND the security/investor
+ * bucketing entirely: render each order directly as its own top-level
+ * row, interleaved with any real strategy rows by most-recent activity —
+ * matching how CRM's own outer ledger shows a plain (non-basket) order
+ * directly, reserving the "Strategy" aggregate treatment for baskets.
+ */
+export type OrderBookDisplayItem =
+  | { type: "order"; group: GroupedRow; ts: number }
+  | { type: "strategy"; block: StrategyBlock; ts: number };
+
+export function buildOrderBookDisplayItems(
+  strategyBlocks: StrategyBlock[],
+  rawBookIds: string[],
+): OrderBookDisplayItem[] {
+  const rawSet = new Set(rawBookIds);
+  const items: OrderBookDisplayItem[] = [];
+  for (const block of strategyBlocks) {
+    if (rawSet.has(block.strategy) || block.strategy === "Unassigned") {
+      for (const g of block.groups) {
+        items.push({ type: "order", group: g, ts: Date.parse(g.parent.ts || "") || 0 });
+      }
+    } else {
+      const ts = block.groups.reduce((max, g) => Math.max(max, Date.parse(g.parent.ts || "") || 0), 0);
+      items.push({ type: "strategy", block, ts });
+    }
+  }
+  return items.sort((a, b) => b.ts - a.ts);
+}
+
 interface SecurityBlock {
   key: string;
   symbol: string;
@@ -493,7 +531,7 @@ function buildInvestorAgg(groups: GroupedRow[], lookupLast: (symbol: string) => 
   return [...m.values()].sort((a, b) => b.marketValue - a.marketValue);
 }
 
-const COLS = 15;
+const COLS = 16;
 
 /** Shared Cancel/Amend action surface, threaded from ExecutionView down into GroupRow. */
 interface OrderActions {
@@ -599,6 +637,7 @@ function GroupRow({
           <Badge variant={r.side === "SELL" ? "destructive" : "success"}>{r.side}</Badge>
         </td>
         <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap">{r.symbol}</td>
+        <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">{r.client_account || "—"}</td>
         <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(r.qty)}</td>
         <td className="px-3 py-1.5 text-[12px] font-medium text-foreground whitespace-nowrap">
           {(() => {
@@ -1229,6 +1268,10 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
   const liveGroupedRows = React.useMemo(() => filterOutPromotedBooks(groupedRows, books), [groupedRows, books]);
   const strategyBlocks = React.useMemo(() => groupOrdersByStrategy(liveGroupedRows), [liveGroupedRows]);
   const liveBookSequence = React.useMemo(() => computeLiveBookSequence(books), [books]);
+  const displayItems = React.useMemo(
+    () => buildOrderBookDisplayItems(strategyBlocks, bookIds),
+    [strategyBlocks, bookIds],
+  );
 
   const [expandedStrategy, setExpandedStrategy] = React.useState<Record<string, boolean>>({});
   const [expandedSecurity, setExpandedSecurity] = React.useState<Record<string, boolean>>({});
@@ -1564,6 +1607,7 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
                 "Timestamp",
                 "Side",
                 "Symbol",
+                "Client",
                 "Qty",
                 "Order Value",
                 "% Filled",
@@ -1591,14 +1635,27 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
                   Loading executions…
                 </td>
               </tr>
-            ) : strategyBlocks.length === 0 ? (
+            ) : displayItems.length === 0 ? (
               <tr>
                 <td colSpan={COLS} className="px-3 py-10 text-center text-[12px] text-muted-foreground">
                   No execution rows for this book yet — click <em>Send to Market</em> to dispatch.
                 </td>
               </tr>
             ) : (
-              strategyBlocks.map((block) => {
+              displayItems.map((item) => {
+                if (item.type === "order") {
+                  return (
+                    <GroupRow
+                      key={item.group.parent.id}
+                      g={item.group}
+                      lookupLast={lookupLast}
+                      expanded={expanded}
+                      toggleExpanded={toggleGroupExpanded}
+                      actions={orderActions}
+                    />
+                  );
+                }
+                const block = item.block;
                 const strategyKey = block.strategy;
                 const isStrategyOpen = !!expandedStrategy[strategyKey];
                 const totalOrders = block.groups.length;
@@ -1636,7 +1693,7 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
                           )}
                         />
                       </td>
-                      <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap" colSpan={2}>
+                      <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap" colSpan={3}>
                         <span className="inline-flex items-center gap-1.5">
                           {strategyKey}
                           <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
@@ -1648,6 +1705,7 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
                       <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
                         {latestTs ? fmtTs(new Date(latestTs).toISOString()) : "—"}
                       </td>
+                      <td className="px-3 py-1.5" />
                       <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(totalQty)}</td>
                       <td className="px-3 py-1.5 text-[12px] font-medium text-foreground whitespace-nowrap">
                         {fmtMoney(totalValue)}
@@ -1693,6 +1751,7 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
                                 <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap">
                                   {sec.symbol}
                                 </td>
+                                <td className="px-3 py-1.5" />
                                 <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(sec.qty)}</td>
                                 <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap" colSpan={2}>
                                   {sec.avgFillWeighted != null ? fmtMoney(sec.avgFillWeighted) : "—"}
@@ -1700,7 +1759,7 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
                                 <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
                                   {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
                                 </td>
-                                <td className="px-3 py-1.5" colSpan={4} />
+                                <td className="px-3 py-1.5" colSpan={6} />
                               </tr>
                               {isSecOpen &&
                                 sec.groups.map((g) => (
