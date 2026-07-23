@@ -504,6 +504,37 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     refetchInterval: 60_000,
     ...queryOpts("reference"),
   });
+  // Persisted SENS rows from `news_item_c` (worker `NewsHeadlineGet(SENSD)`
+  // writes here every 6h on the prod worker). This is the durable
+  // backbone of the SENS panel — the IRESS passthrough above is the
+  // live, ephemeral mirror; both are merged into `realSens` so the
+  // cockpit keeps showing data even when the Railway public proxy
+  // 502s the BFF passthrough.
+  const sensDbQ = useQuery<{
+    items: Array<{
+      id: string;
+      headline: string;
+      ts: number;
+      source: string;
+      category: string;
+      tickers: string[];
+      url: string | null;
+      body?: string | null;
+      publishedAt?: string;
+    }>;
+    count: number;
+    source: string;
+  }>({
+    queryKey: ["bff-news-sens-db-cockpit"],
+    queryFn: async () => {
+      const r = await fetch("/api/news?category=SENS&limit=12", { cache: "no-store" });
+      if (!r.ok) return { items: [], count: 0, source: "unconfigured" };
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
+    ...queryOpts("reference"),
+  });
   // Real USD/ZAR from the FX BFF (Frankfurter / ECB) — IRESS has no FX feed.
   const fxQ = useQuery<{ pair: string; rate: number | null; change: number | null; changePct: number | null; source: string; sourceLabel?: string }>({
     queryKey: ["bff-fx-usdzar"],
@@ -730,7 +761,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // a single `ticker`, and `category` is a raw code like `"105000000"`
   // or `"SENS"`.
   const realSens = useMemo<Array<{ id: string; ts: number; ticker: string; issuer: string; category: string; severity: string; headline: string }>>(() => {
-    return (sensBffQ.data?.headlines ?? []).map((n) => {
+    const fromIress = (sensBffQ.data?.headlines ?? []).map((n) => {
       const code = (n.relatedCodes?.[0] ?? "").toString();
       const rawCat = (n.category ?? "SENS").toString();
       const upCat = rawCat.toUpperCase();
@@ -744,7 +775,30 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         headline: n.headline,
       };
     });
-  }, [sensBffQ.data]);
+    // Persisted rows from `news_item_c` (worker write target).
+    // The BFF `/api/news?category=SENS` returns `category: "SENS"`
+    // with `tickers: string[]` (from payload.scope.tickers) and
+    // `ticker` as the first code. Merge AFTER the IRESS passthrough
+    // rows and dedupe by id so the live wire takes priority on the
+    // same story.
+    const seen = new Set(fromIress.map((r) => r.id));
+    const fromDb = (sensDbQ.data?.items ?? [])
+      .filter((n) => n.category.toUpperCase() === "SENS")
+      .map((n) => {
+        const code = (n.tickers?.[0] ?? "").toString();
+        return {
+          id: n.id,
+          ts: typeof n.ts === "number" ? n.ts : Date.parse(n.publishedAt ?? ""),
+          ticker: code,
+          issuer: n.source,
+          category: "SENS",
+          severity: "regulatory" as const,
+          headline: n.headline,
+        };
+      })
+      .filter((r) => (r.id ? !seen.has(r.id) : true));
+    return [...fromIress, ...fromDb];
+  }, [sensBffQ.data, sensDbQ.data]);
 
   // Portfolio Accounts (mock investor snippet) — each strategy stands in for an
   // "account" with its holdings value (AUM) and a performance figure for the
@@ -1647,13 +1701,13 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         )}
 
         {realDataOnly ? (
-          sensBffQ.isLoading ? (
+          sensBffQ.isLoading && sensDbQ.isLoading ? (
             <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-4" />
           ) : realSens.length > 0 ? (
             <GlassSection
               title="SENS · Live"
-              endpoint="GET /api/iress/news (vendor SENSD)"
-              db="retail"
+              endpoint={`GET /api/iress/news (vendor SENSD) + GET /api/news?category=SENS`}
+              db="institutional"
               dataSource="iress"
               noPadding
               className="col-span-12 lg:col-span-4 flex h-[320px] flex-col min-h-0"
@@ -1693,7 +1747,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                       ? "Set USE_SUPABASE_QUOTES=true on Vercel so the BFF forwards requests to the worker."
                       : sensBffQ.data?.error?.code === "T5_NOT_PERSISTED"
                         ? "IRESS_MODE is still 'mock' on Vercel — flip it to 'live' so the BFF can call the worker."
-                        : "Worker returned zero rows for today. Try a wider window in /oems/news, or wait for the next trading pulse."
+                        : "Worker returned zero rows for today AND no persisted `news_item_c` rows yet. Try a wider window in /oems/news, or wait for the next worker tick (default 6h)."
                 }
                 badgeLabel="unconfigured"
               />
