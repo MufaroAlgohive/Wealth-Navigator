@@ -34,21 +34,14 @@
  * `IRESS_BASE_URL` + `IRESS_IOS_SERVER`; this route only tags the audit
  * row's `uatTest` flag accordingly (true on UAT, false on production).
  *
- * CLIENT-DATA GUARD: real clients' orders must still be allowlisted.
- * mint is expected to check this itself before calling, but this route
- * independently re-verifies (fail-closed) that the holding's owning user is
- * a test account (`profiles.is_test` OR `wallets.status='test'`), mirroring
- * the same "CLIENT-DATA GUARD" pattern already used in
- * `send-to-market/route.ts` for the exact same risk.
- *
- * 2026-07-23: `MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS` (comma-separated
- * `stock_holdings_c.user_id` values) lets a small, explicit set of REAL
- * (non-test) users also pass this guard, for post-prod-switch acceptance
- * testing by named staff — NOT a general relaxation. Deliberately a
- * narrow allowlist rather than flipping `is_test`/wallet status on these
- * real accounts, since that flag is read elsewhere in the app (CRM's
- * UAT/live toggle, possibly fees) and flipping it would have side effects
- * well beyond this one guard.
+ * 2026-07-23: the CLIENT-DATA GUARD (test-account/allowlist-only check)
+ * that used to sit here has been removed — it was silently refusing real
+ * clients' orders before they ever reached the order book, even though
+ * this route has zero broker contact either way (see PARKS above). The
+ * real safety boundary is release-to-market/route.ts's RBAC-gated "Send
+ * to Market" click; a wrong or unwanted parked order can still be killed
+ * before that click via cancel-parked/route.ts. Every mint client order —
+ * real or test — now parks and shows on the order book immediately.
  *
  * Idempotency: keyed on `payload->>holding_id` — a retried mint request for
  * the same holding is a no-op success (`alreadyForwarded: true`), not a
@@ -160,11 +153,12 @@ export async function POST(req: Request) {
     });
   }
 
-  // ── CLIENT-DATA GUARD: refuse fail-closed unless the holding's owner is a ──
-  // ── test/UAT account. Real clients must never reach IRESS through this. ──
+  // Confirm the holding actually exists — a data-integrity check, not a
+  // gate on who may order. Every client's order (real or test) parks here;
+  // the broker-facing gate lives at release time (see route doc comment).
   const { data: holding, error: holdingErr } = await supabase.retail
     .from("stock_holdings_c")
-    .select("id, user_id")
+    .select("id")
     .eq("id", holdingId)
     .maybeSingle();
   if (holdingErr || !holding) {
@@ -172,30 +166,6 @@ export async function POST(req: Request) {
       { ok: false, error: `Could not resolve holding '${holdingId}': ${holdingErr?.message ?? "not found"}` },
       { status: 404 },
     );
-  }
-  const allowlistedUserIds = new Set(
-    (process.env.MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-  const isAllowlisted = allowlistedUserIds.has(holding.user_id);
-
-  if (!isAllowlisted) {
-    const [{ data: testProfile }, { data: testWallet }] = await Promise.all([
-      supabase.retail.from("profiles").select("id").eq("id", holding.user_id).eq("is_test", true).maybeSingle(),
-      supabase.retail.from("wallets").select("user_id").eq("user_id", holding.user_id).eq("status", "test").maybeSingle(),
-    ]);
-    if (!testProfile && !testWallet) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error:
-            "Refused: this holding belongs to a real (non-test) client. MINT_CLIENT_ORDER forwarding is UAT-only for now — only is_test=true / wallet status='test' accounts, or an explicitly allowlisted user_id, may forward to IRESS.",
-        },
-        { status: 422 },
-      );
-    }
   }
 
   // No preflight here — this order PARKS with zero worker/IRESS contact.
