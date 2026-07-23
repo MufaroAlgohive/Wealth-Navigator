@@ -73,6 +73,8 @@ export async function GET(req: Request) {
     const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) : expectedRands;
     return {
       id: h.id,
+      security_id: (h.security_id as string) ?? null,
+      user_id: (h.user_id as string) ?? null,
       email: prof?.email ?? "—",
       client: `${prof?.first_name || ""} ${prof?.last_name || ""}`.trim() || prof?.email || "—",
       instrument: sec?.name ?? sec?.symbol ?? "—",

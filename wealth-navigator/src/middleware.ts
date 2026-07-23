@@ -24,6 +24,11 @@ const PUBLIC_PREFIXES = [
   // not by a Supabase session. isPublic matches exact path, so only this route
   // opens — /api/admin/eft (admin actions) stays session-gated.
   "/api/admin/eft/ozone-callback",
+  // Mint client-order forwarding: session-less server-to-server POST from the
+  // mint retail app (no Supabase session to present), authenticated by its own
+  // Bearer MINT_CLIENT_ORDER_SECRET check inside the route, not by a Supabase
+  // session. Exact path only, same pattern as the Ozone callback above.
+  "/api/admin/orderbook/client-order",
 ];
 
 function isPublic(pathname: string): boolean {

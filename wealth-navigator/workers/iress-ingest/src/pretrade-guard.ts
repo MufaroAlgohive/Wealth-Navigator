@@ -33,7 +33,7 @@ export interface SellAvailability {
 }
 
 /** UAT dispatch sources — all route to the desk UAT account. */
-const UAT_SOURCES = ["UAT_ADHOC_ORDER", "OB_SEND_TO_MARKET_UAT"];
+const UAT_SOURCES = ["UAT_ADHOC_ORDER", "OB_SEND_TO_MARKET_UAT", "MINT_CLIENT_ORDER"];
 /**
  * Order states where a SELL still has unfilled quantity working at the broker.
  *

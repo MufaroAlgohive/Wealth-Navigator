@@ -48,6 +48,12 @@ interface Investor {
   ytdPct: number | null; inceptionPct: number | null;
   nav: { date: string; v: number }[]; holdings: HoldingView[]; txns: Txn[];
 }
+interface InvestorGroup extends Investor {
+  ownerKey: string;
+  selectedKey: string;
+  strategies: Investor[];
+  groupCount: number;
+}
 
 function computeRisk(nav: { v: number }[]) {
   const series = nav.map((p) => p.v).filter((v) => v > 0);
@@ -87,6 +93,35 @@ function classifyTxn(t: Txn): string {
   if (n.includes("refund") || n.includes("reversal")) return "Refund";
   if (n.includes("invest") || n.includes("purchas") || (Number(t.amount) || 0) > 0) return "Investment";
   return "Deposit";
+}
+const ownerKeyOf = (i: Pick<Investor, "userId" | "familyMemberId">) => `${i.userId}:${i.familyMemberId || ""}`;
+
+function groupStrategyInvestors(rows: Investor[], selectedKey: string | null): InvestorGroup[] {
+  const groups = new Map<string, Investor[]>();
+  for (const row of rows) {
+    const key = ownerKeyOf(row);
+    groups.set(key, [...(groups.get(key) || []), row]);
+  }
+  return [...groups.entries()].map(([ownerKey, strategies]) => {
+    const ordered = [...strategies].sort((a, b) => b.valueCents - a.valueCents);
+    const selected = ordered.find((item) => item.key === selectedKey) ?? ordered[0];
+    if (!selected) return null;
+    const valueCents = ordered.reduce((sum, item) => sum + item.valueCents, 0);
+    const investedCents = ordered.reduce((sum, item) => sum + item.investedCents, 0);
+    const pnlCents = ordered.reduce((sum, item) => sum + item.pnlCents, 0);
+    return {
+      ...selected,
+      key: ownerKey,
+      ownerKey,
+      selectedKey: selected.key,
+      strategies: ordered,
+      groupCount: ordered.length,
+      valueCents,
+      investedCents,
+      pnlCents,
+      retPct: investedCents > 0 ? (pnlCents / investedCents) * 100 : 0,
+    };
+  }).filter((group): group is InvestorGroup => group !== null).sort((a, b) => b.valueCents - a.valueCents);
 }
 
 export default function InvestorsPage() {
@@ -168,7 +203,9 @@ export default function InvestorsPage() {
   }, [investors]);
 
   const filtered = investors.filter((i) => (bookType === "strategies" ? !!i.strategyId : !i.strategyId) && (!search.trim() || `${i.name} ${i.parentName || ""} ${i.email} ${i.strategy || ""}`.toLowerCase().includes(search.toLowerCase())));
+  const listRows = bookType === "strategies" ? groupStrategyInvestors(filtered, selId) : filtered.map((i) => ({ ...i, ownerKey: ownerKeyOf(i), selectedKey: i.key, strategies: [i], groupCount: 1 }));
   const sel = investors.find((i) => i.key === selId) || null;
+  const siblingStrategies = sel && bookType === "strategies" ? investors.filter((i) => !!i.strategyId && ownerKeyOf(i) === ownerKeyOf(sel)).sort((a, b) => b.valueCents - a.valueCents) : [];
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
@@ -193,26 +230,32 @@ export default function InvestorsPage() {
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search investors…" className="mb-3 h-8" />
           <div className="max-h-[65vh] space-y-1 overflow-y-auto">
             {data === null ? <p className="py-6 text-center text-xs text-muted-foreground">Loading…</p>
-              : filtered.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">No investors.</p>
-              : filtered.map((i) => (
-                <button key={i.key} onClick={() => setSelId(i.key)} className={cn("flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left", selId === i.key ? "bg-primary/10" : "hover:bg-accent/50")}>
-                  <div className="min-w-0"><div className="truncate text-sm font-medium text-foreground">{i.name}</div>{i.parentName&&<div className="truncate text-[9px] text-muted-foreground">Managed by {i.parentName}</div>}<div className="truncate text-[10px] text-muted-foreground">{i.strategy || "Single securities"}</div><div className="text-[11px] text-muted-foreground">{R(i.valueCents)}</div></div>
+              : listRows.length === 0 ? <p className="py-6 text-center text-xs text-muted-foreground">No investors.</p>
+              : listRows.map((i) => (
+                <div key={i.key} role="button" tabIndex={0} onClick={() => setSelId(i.selectedKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelId(i.selectedKey); }} className={cn("flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left", selId === i.selectedKey || (sel && i.ownerKey === ownerKeyOf(sel)) ? "bg-primary/10" : "hover:bg-accent/50")}>
+                  <div className="min-w-0"><div className="truncate text-sm font-medium text-foreground">{i.name}</div>{i.parentName&&<div className="truncate text-[9px] text-muted-foreground">Managed by {i.parentName}</div>}
+                    {i.groupCount > 1 ? (
+                      <select value={i.selectedKey} onClick={(event) => event.stopPropagation()} onChange={(event) => setSelId(event.target.value)} className="mt-1 max-w-[190px] rounded-md border border-primary/20 bg-background px-1.5 py-1 text-[10px] font-semibold text-primary outline-none">
+                        {i.strategies.map((strategy) => <option key={strategy.key} value={strategy.key}>{strategy.strategy || "Strategy"} - {R(strategy.valueCents)}</option>)}
+                      </select>
+                    ) : <div className="truncate text-[10px] text-muted-foreground">{i.strategy || "Single securities"}</div>}
+                    <div className="text-[11px] text-muted-foreground">{R(i.valueCents)}</div></div>
                   <span className={cn("text-xs font-semibold", pctCls(i.retPct))}>{pctStr(i.retPct)}</span>
-                </button>
+                </div>
               ))}
           </div>
         </div>
 
         {/* Detail */}
         <div className="rounded-2xl border border-border bg-card p-5">
-          {!sel ? <div className="flex h-full min-h-[300px] items-center justify-center text-sm text-muted-foreground">Select an investor.</div> : <InvestorDetail inv={sel} tab={tab} setTab={setTab} />}
+          {!sel ? <div className="flex h-full min-h-[300px] items-center justify-center text-sm text-muted-foreground">Select an investor.</div> : <InvestorDetail inv={sel} siblingStrategies={siblingStrategies} onSelectInvestor={setSelId} tab={tab} setTab={setTab} />}
         </div>
       </div>
     </div>
   );
 }
 
-function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setTab: (v: string) => void }) {
+function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab }: { inv: Investor; siblingStrategies: Investor[]; onSelectInvestor: (key: string) => void; tab: string; setTab: (v: string) => void }) {
   const risk = React.useMemo(() => computeRisk(inv.nav), [inv]);
   const calendar = React.useMemo(() => computeCalendar(inv.nav), [inv]);
   const years = Object.keys(calendar).sort().reverse();
@@ -233,7 +276,11 @@ function InvestorDetail({ inv, tab, setTab }: { inv: Investor; tab: string; setT
         <div>
           <div className="text-lg font-bold text-foreground">{inv.name}</div>
           {inv.parentName&&<div className="text-[10px] text-muted-foreground">Managed by {inv.parentName}</div>}
-          <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-primary">{inv.strategy || "Single securities"}</div>
+          {siblingStrategies.length > 1 ? (
+            <select value={inv.key} onChange={(event) => onSelectInvestor(event.target.value)} className="mt-2 max-w-full rounded-lg border border-primary/20 bg-background px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-primary outline-none">
+              {siblingStrategies.map((strategy) => <option key={strategy.key} value={strategy.key}>{strategy.strategy || "Strategy"} - {R(strategy.valueCents)} - {pctStr(strategy.retPct)}</option>)}
+            </select>
+          ) : <div className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-primary">{inv.strategy || "Single securities"}</div>}
           <div className="text-xs text-muted-foreground">{inv.email}{inv.mintNumber ? ` · ${inv.mintNumber}` : ""}</div>
         </div>
         <div className="text-right">

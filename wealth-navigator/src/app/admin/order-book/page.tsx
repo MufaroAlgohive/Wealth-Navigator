@@ -14,6 +14,7 @@ import { UatBanner } from "@/components/admin/order-book/uat-banner";
 import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
 import { UatTestRunner } from "@/components/admin/order-book/uat-test-runner";
 import { ExecutionView } from "@/components/admin/order-book/execution-view";
+import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-books";
 
 interface Row {
   id: string; email: string; client: string; instrument: string; ticker: string; isin: string;
@@ -144,7 +145,8 @@ export default function OrderBookPage() {
             <UatBanner />
             <UatOrderTicket onPlaced={() => setUatRefresh((n) => n + 1)} />
             <UatTestRunner />
-            <ExecutionView key={uatRefresh} bookId="UAT-ADHOC" />
+            <ExecutionView key={`orderbook-${uatRefresh}`} sources={["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"]} />
+            <ActiveOrderBooks />
           </TabsContent>
         ) : (
         <TabsContent value={tab} className="mt-3">

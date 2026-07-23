@@ -114,37 +114,164 @@ async function loadRetailStrategies(
     market.sort((a, b) => a.symbol.localeCompare(b.symbol));
   }
 
-  // Aggregate AUM / day-PnL / YTD-PnL / investors per strategy at the latest date.
-  const agg = new Map<string, { aum: number; day: number; ytd: number; users: Set<string> }>();
-  const { data: latestRows } = await retail
-    .from("client_strategy_returns_c")
-    .select("as_of_date")
-    .order("as_of_date", { ascending: false })
-    .limit(1);
-  const asOf = (latestRows?.[0]?.as_of_date as string | undefined) ?? null;
-  if (asOf) {
-    const { data: rows } = await retail
-      .from("client_strategy_returns_c")
-      .select('strategy_id,user_id,basket_value,"1d_pnl","ytd_pnl"')
-      .eq("as_of_date", asOf);
-    for (const r of (rows ?? []) as Array<Record<string, unknown>>) {
+  // Test/UAT exclusion (both classifiers — same dual check just added to
+  // api/investors/data.js): a single is_test-only check let internal team
+  // test-wallets leak real AUM into finances.html/investors.html.
+  const [testProfileRows, testWalletRows] = await Promise.all([
+    retail.from("profiles").select("id").eq("is_test", true),
+    retail.from("wallets").select("user_id").eq("status", "test"),
+  ]);
+  const testUserIds = new Set<string>([
+    ...((testProfileRows.data ?? []) as Array<{ id: string }>).map((r) => r.id),
+    ...((testWalletRows.data ?? []) as Array<{ user_id: string }>).map((r) => r.user_id),
+  ]);
+
+  // AUM/investor count come from LIVE holdings, matching finances.html's
+  // trusted investorValue methodology exactly: live holdings market value +
+  // rebalance residual + held 8% execution buffer, per (user, family,
+  // strategy) position. This replaced summing the return-publication views'
+  // basket_value_cents, which leaked a UAT test wallet's fake balance into
+  // the total (confirmed: ~R45k of an apparent ~R65k was one test account).
+  const { data: clientHoldings } = await retail
+    .from("stock_holdings_c")
+    .select("user_id,family_member_id,strategy_id,security_id,quantity,avg_fill,transaction_id")
+    .eq("is_active", true)
+    .eq("trade_side", "BUY");
+  const realHoldings = ((clientHoldings ?? []) as Array<Record<string, unknown>>).filter(
+    (h) => h.user_id && h.strategy_id && !testUserIds.has(String(h.user_id)),
+  );
+
+  const holdingSecurityIds = Array.from(
+    new Set(realHoldings.map((h) => String(h.security_id ?? "")).filter(Boolean)),
+  );
+  const livePriceCentsBySecId = new Map<string, number>();
+  if (holdingSecurityIds.length) {
+    const { data: liveRows } = await retail
+      .from("stock_intraday_c")
+      .select("security_id,current_price,timestamp")
+      .in("security_id", holdingSecurityIds)
+      .order("timestamp", { ascending: false })
+      .limit(5000);
+    for (const row of (liveRows ?? []) as Array<Record<string, unknown>>) {
+      const id = String(row.security_id ?? "");
+      if (id && !livePriceCentsBySecId.has(id) && row.current_price != null) {
+        livePriceCentsBySecId.set(id, Number(row.current_price));
+      }
+    }
+  }
+
+  const { data: residualRows } = await retail
+    .from("strategy_rebalance_residuals")
+    .select("user_id,family_member_id,strategy_id,balance_cents");
+  const residualByPos = new Map<string, number>();
+  for (const r of (residualRows ?? []) as Array<Record<string, unknown>>) {
+    const k = `${r.user_id}|${r.family_member_id ?? ""}|${r.strategy_id}`;
+    residualByPos.set(k, (residualByPos.get(k) ?? 0) + toNumber(r.balance_cents as number));
+  }
+
+  const holdingTxIds = Array.from(
+    new Set(realHoldings.map((h) => String(h.transaction_id ?? "")).filter(Boolean)),
+  );
+  const bufferByTxId = new Map<string, number>();
+  if (holdingTxIds.length) {
+    const { data: txnRows } = await retail
+      .from("transactions")
+      .select("id,buffer_cents,buffer_consumed_cents")
+      .in("id", holdingTxIds);
+    for (const t of (txnRows ?? []) as Array<Record<string, unknown>>) {
+      bufferByTxId.set(
+        String(t.id),
+        toNumber(t.buffer_cents as number) - toNumber(t.buffer_consumed_cents as number),
+      );
+    }
+  }
+
+  // Group into positions first (mirrors aumFeeEngine.buildPositions), then
+  // aggregate per strategy — a position's buffer/residual must only count
+  // once even though it may span several holding rows.
+  const positions = new Map<
+    string,
+    { strategyId: string; userId: string; positionsCents: number; txIds: Set<string> }
+  >();
+  for (const h of realHoldings) {
+    const strategyId = String(h.strategy_id ?? "");
+    const userId = String(h.user_id ?? "");
+    if (!strategyId || !userId) continue;
+    const famKey = h.family_member_id ? String(h.family_member_id) : "";
+    const posKey = `${userId}|${famKey}|${strategyId}`;
+    const qty = Math.abs(toNumber(h.quantity as number));
+    const secId = String(h.security_id ?? "");
+    const priceCents = livePriceCentsBySecId.get(secId);
+    const avgFillCents = toNumber(h.avg_fill as number);
+    const mvCents =
+      priceCents != null && priceCents > 0 ? Math.round(priceCents * qty) : Math.round(avgFillCents * qty);
+    const pos = positions.get(posKey) ?? { strategyId, userId, positionsCents: 0, txIds: new Set<string>() };
+    pos.positionsCents += mvCents;
+    const txId = h.transaction_id ? String(h.transaction_id) : "";
+    if (txId) pos.txIds.add(txId);
+    positions.set(posKey, pos);
+  }
+
+  // `cash` tracks ONLY the rebalance residual — the cash asset class left
+  // over when a holding was liquidated (sold down/out) and hasn't been
+  // redeployed into a new security yet. A basket is its securities PLUS
+  // whatever cash it's currently holding from the last rebalance, so this
+  // is the "cash asset class the basket holds after liquidation" figure,
+  // not the pre-trade execution buffer (which is reserved, not liquidated
+  // cash sitting in the basket) — deliberately excluded here.
+  const agg = new Map<string, { aum: number; cash: number; users: Set<string> }>();
+  for (const [, pos] of positions) {
+    let bufferCents = 0;
+    pos.txIds.forEach((txId) => {
+      bufferCents += bufferByTxId.get(txId) ?? 0;
+    });
+    const a = agg.get(pos.strategyId) ?? { aum: 0, cash: 0, users: new Set<string>() };
+    a.aum += pos.positionsCents + bufferCents;
+    a.users.add(pos.userId);
+    agg.set(pos.strategyId, a);
+  }
+  // Second pass adds residual cash once per position (positions map de-dupes
+  // by user+family+strategy already, so this is safe to add directly here).
+  for (const [posKey, pos] of positions) {
+    const residualCents = residualByPos.get(posKey) ?? 0;
+    if (!residualCents) continue;
+    const a = agg.get(pos.strategyId);
+    if (a) {
+      a.aum += residualCents;
+      a.cash += residualCents;
+    }
+  }
+  // Strategy-level YTD and Day P&L% are the model's own chain-preserved
+  // return (from the guarded daily publisher) — NOT derived from an
+  // aggregate client cost basis. A rebalance never resets YTD; it is the
+  // same number the CRM and the retail app show for the strategy. Day P&L
+  // (Rand) below = corrected AUM × the strategy's own daily chain 1d_pct.
+  const ytdByStrategy = new Map<string, number>();
+  const day1PctByStrategy = new Map<string, number>();
+  const { data: strategyReturnRows, error: strategyReturnErr } = await retail
+    .from("strategy_returns_effective_latest_c")
+    .select('strategy_id,ytd_pct,"1d_pct"');
+  if (!strategyReturnErr) {
+    for (const r of (strategyReturnRows ?? []) as Array<Record<string, unknown>>) {
       const k = String(r["strategy_id"] ?? "");
       if (!k) continue;
-      const a = agg.get(k) ?? { aum: 0, day: 0, ytd: 0, users: new Set<string>() };
-      a.aum += toNumber(r["basket_value"] as number);
-      a.day += toNumber(r["1d_pnl"] as number);
-      a.ytd += toNumber(r["ytd_pnl"] as number);
-      if (r["user_id"]) a.users.add(String(r["user_id"]));
-      agg.set(k, a);
+      const y = r["ytd_pct"];
+      if (y != null) ytdByStrategy.set(k, toNumber(y as number));
+      const d1 = r["1d_pct"];
+      if (d1 != null) day1PctByStrategy.set(k, toNumber(d1 as number));
     }
   }
 
   const view = strategies.map((s) => {
-    const a = agg.get(s.id) ?? { aum: 0, day: 0, ytd: 0, users: new Set<string>() };
+    const a = agg.get(s.id) ?? { aum: 0, cash: 0, users: new Set<string>() };
     // basket_value / pnl are integer CENTS in retail (see /api/client-book).
     const aumR = a.aum / 100;
-    const ytdR = a.ytd / 100;
-    const cost = aumR - ytdR;
+    // Cash as a % of AUM, not a summed Rand total — the point is "how much
+    // of this basket is currently cash", a ratio that doesn't grow just
+    // because more investors hold the strategy.
+    const cashPct = a.aum > 0 ? (a.cash / a.aum) * 100 : null;
+    const day1Pct = day1PctByStrategy.get(s.id) ?? null;
+    const dayPnlR = day1Pct != null ? aumR * (day1Pct / 100) : 0;
     const sector = String(s.sector ?? "").toLowerCase();
     const kind = sector.includes("money")
       ? "money_market"
@@ -183,14 +310,19 @@ async function loadRetailStrategies(
       manager: s.provider_name ?? "—",
       benchmark: s.benchmark_name ?? s.benchmark_symbol ?? "—",
       aum: aumR,
-      dayPnl: a.day / 100,
-      // MTD P&L + cash weight aren't computed from the retail aggregation —
-      // return null so the UI renders "—" rather than a fake R0.00 / 0.0%.
+      dayPnl: dayPnlR,
+      // MTD P&L isn't computed from the retail aggregation — return null so
+      // the UI renders "—" rather than a fake R0.00.
       pnlMtd: null,
-      // YTD needs a cost basis; with no subscribed capital there's nothing to
-      // annualise, so null → "—" instead of an implied-flat 0.00%.
-      ytd: cost > 0 ? (ytdR / cost) * 100 : null,
-      cashWeight: null,
+      // The strategy's own chain-preserved YTD (guarded daily publisher) —
+      // independent of which clients are currently invested, and never reset
+      // by a rebalance. null only if the strategy has never published.
+      ytd: ytdByStrategy.has(s.id) ? (ytdByStrategy.get(s.id) as number) : null,
+      // Rebalance residual as a % of AUM — the cash asset class left in the
+      // basket after a liquidation, not yet redeployed. null when there's no
+      // AUM to divide by; 0 (not null) when there's AUM but no residual, so
+      // "0.0%" reads as "confirmed none", same convention as everywhere else.
+      cashWeight: cashPct,
       nav: aumR,
       investorCount: a.users.size,
       holdingsCount: Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0,
@@ -211,7 +343,9 @@ async function loadRetailStrategies(
     market,
     source: "supabase",
     count: view.length,
-    lastUpdatedAt: asOf ? new Date(asOf).toISOString() : null,
+    // AUM is now computed live (holdings × live price + sleeve), not from a
+    // per-owner publication date — "now" is the honest freshness marker.
+    lastUpdatedAt: view.length > 0 ? new Date().toISOString() : null,
   };
 }
 

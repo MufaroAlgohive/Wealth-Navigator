@@ -5,9 +5,18 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * Factsheets (read-only). Gallery + single-strategy detail over strategies_c,
- * strategies_returns_c, securities_c, client_strategy_returns_c (RETAIL).
- * Daily returns are derived from the basket_value series (the per-period pct
- * columns are digit-prefixed and awkward in PostgREST).
+ * strategy_returns_effective_c, securities_c, client_strategy_returns_effective_latest_c
+ * (RETAIL). Daily returns are derived from the basket_value series (the
+ * per-period pct columns are digit-prefixed and awkward in PostgREST).
+ *
+ * 2026-07-21: was reading the raw legacy strategies_returns_c /
+ * client_strategy_returns_c tables directly — pre-repair, pre-guarded-
+ * publication data. Confirmed live for Yield Basket: legacy YTD was
+ * -12.57% on the same date the canonical effective view (shadow-table
+ * repair + guarded daily publisher, same single read contract the CRM and
+ * /api/strategies already use) shows +12.55% — opposite sign. Switched to
+ * the effective views; also added the dual test-exclusion (profiles.is_test
+ * OR wallets.status='test') the investor list never had.
  */
 
 export const dynamic = "force-dynamic";
@@ -43,25 +52,60 @@ export async function GET(req: Request) {
     return out;
   };
 
+  // Dual test-exclusion (profiles.is_test OR wallets.status='test') — a
+  // single is_test-only check has previously let internal team test-wallets
+  // leak real-looking data into client-facing figures.
+  const testUserIds = async (): Promise<Set<string>> => {
+    const [{ data: testProfiles }, { data: testWallets }] = await Promise.all([
+      db!.from("profiles").select("id").eq("is_test", true),
+      db!.from("wallets").select("user_id").eq("status", "test"),
+    ]);
+    return new Set<string>([
+      ...((testProfiles ?? []) as Array<{ id: string }>).map((r) => r.id),
+      ...((testWallets ?? []) as Array<{ user_id: string }>).map((r) => r.user_id),
+    ]);
+  };
+
   if (action === "detail") {
     const id = url.searchParams.get("id") || "";
     if (!id) return NextResponse.json({ ok: false, error: "id required" }, { status: 400 });
     const { data: strategy } = await db.from("strategies_c").select("*").eq("id", id).maybeSingle();
     if (!strategy) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
     const { data: returns } = await db
-      .from("strategies_returns_c")
+      .from("strategy_returns_effective_c")
       .select("strategy_id, as_of_date, ytd_pct, all_pct, basket_value")
       .eq("strategy_id", id)
       .order("as_of_date", { ascending: true })
       .limit(800);
     const securities = await securitiesFor([strategy]);
-    const { data: clientRows } = await db.from("client_strategy_returns_c").select("user_id,basket_value,ytd_pnl,as_of_date").eq("strategy_id", id).order("as_of_date", { ascending: false }).limit(2000);
-    const latestClients = new Map<string, Record<string, unknown>>();
-    for (const row of (clientRows ?? []) as Array<Record<string, unknown>>) { const userId=String(row.user_id || ""); if(userId&&!latestClients.has(userId)) latestClients.set(userId,row); }
-    const userIds=[...latestClients.keys()];
-    const { data: profiles }=userIds.length?await db.from("profiles").select("id,first_name,last_name,email").in("id",userIds):{data:[]};
-    const profileMap=new Map((profiles??[]).map((profile)=>([String(profile.id),profile])));
-    const investors=[...latestClients.entries()].map(([userId,row])=>{const profile=profileMap.get(userId);const value=Number(row.basket_value||0)/100;const pnl=Number(row.ytd_pnl||0)/100;const cost=value-pnl;return {userId,name:[profile?.first_name,profile?.last_name].filter(Boolean).join(" ")||profile?.email||userId,value,ytd:cost>0?(pnl/cost)*100:null,asOf:row.as_of_date};});
+    const testIds = await testUserIds();
+    const { data: clientRows } = await db
+      .from("client_strategy_returns_effective_latest_c")
+      .select("user_id,basket_value_cents,ytd_pct,as_of_date")
+      .eq("strategy_id", id)
+      .limit(2000);
+    const realRows = ((clientRows ?? []) as Array<Record<string, unknown>>).filter(
+      (row) => row.user_id && !testIds.has(String(row.user_id)),
+    );
+    const userIds = realRows.map((row) => String(row.user_id));
+    const { data: profiles } = userIds.length
+      ? await db.from("profiles").select("id,first_name,last_name,email").in("id", userIds)
+      : { data: [] };
+    const profileMap = new Map((profiles ?? []).map((profile) => [String(profile.id), profile]));
+    const investors = realRows.map((row) => {
+      const userId = String(row.user_id);
+      const profile = profileMap.get(userId);
+      return {
+        userId,
+        name: [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || profile?.email || userId,
+        value: Number(row.basket_value_cents || 0) / 100,
+        // The view's own chain-preserved YTD — not re-derived from
+        // value-minus-pnl (that math broke the moment a rebalance changed
+        // the basket's composition mid-period).
+        ytd: row.ytd_pct == null ? null : Number(row.ytd_pct),
+        asOf: row.as_of_date,
+      };
+    });
     return NextResponse.json({ ok: true, strategy, returns: returns ?? [], securities, investors });
   }
 
@@ -72,7 +116,7 @@ export async function GET(req: Request) {
 
     // Recent returns series grouped by strategy (newest-first fetch → ascending series).
     const { data: ret } = await db
-      .from("strategies_returns_c")
+      .from("strategy_returns_effective_c")
       .select("strategy_id, as_of_date, ytd_pct, all_pct, basket_value")
       .order("as_of_date", { ascending: false })
       .limit(4000);
@@ -84,15 +128,15 @@ export async function GET(req: Request) {
     }
     for (const g of Object.values(returns)) g.series.reverse(); // → ascending
 
-    // Investor counts (distinct users per strategy, capped).
+    // Investor counts (distinct real users per strategy) — the "latest"
+    // view is already one row per user per strategy, so no manual dedup
+    // needed, only the test-exclusion the raw table never had.
+    const testIds = await testUserIds();
     const investors: Record<string, number> = {};
-    const { data: csr } = await db.from("client_strategy_returns_c").select("strategy_id, user_id").limit(5000);
-    const seen = new Set<string>();
-    for (const c of csr ?? []) {
-      const key = `${c.strategy_id}|${c.user_id}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      investors[c.strategy_id as string] = (investors[c.strategy_id as string] || 0) + 1;
+    const { data: csr } = await db.from("client_strategy_returns_effective_latest_c").select("strategy_id, user_id").limit(5000);
+    for (const c of (csr ?? []) as Array<{ strategy_id: string; user_id: string }>) {
+      if (!c.user_id || testIds.has(c.user_id)) continue;
+      investors[c.strategy_id] = (investors[c.strategy_id] || 0) + 1;
     }
 
     const securities = await securitiesFor(rows);
