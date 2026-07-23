@@ -17,6 +17,9 @@
  *   price_cents?:  number | null,    // omit/null = market order
  *   client_email?: string,
  *   source_ref?:   string,           // mint's transaction id, for cross-system log tracing
+ *   book_id?:      string,           // strategy display name for a basket buy (one call per
+ *                                    // constituent holding); omitted = single-security buy,
+ *                                    // falls back to the fixed "CLIENT-BUY" grouping label
  * }
  * Returns: { ok, orderAuditId, orderId, bookId, mode, status, notice?, error?, alreadyForwarded? }
  *
@@ -45,11 +48,12 @@ import { openSupabaseClients, parkOrder } from "@/lib/orders";
 
 export const dynamic = "force-dynamic";
 
-// Fixed grouping label for every Phase-1 single-security client order — a UI
-// label only (see `groupRowsByStrategy()`), not the real join key. The real
-// join between a specific investor's specific position and its IRESS status
-// is `payload.holding_id`. Superseded by the real strategy name once basket
-// buys/sells reuse this route.
+// Fallback grouping label for single-security client orders — a UI label
+// only (see `groupRowsByStrategy()`), not the real join key. The real join
+// between a specific investor's specific position and its IRESS status is
+// `payload.holding_id`. A basket buy overrides this via the optional
+// `book_id` request field (the strategy's display name), one call per
+// constituent holding — see wealthNavigatorClient.js on mint's side.
 const BOOK_ID = "CLIENT-BUY";
 const BROKER = process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE";
 const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "56378";
@@ -78,6 +82,7 @@ export async function POST(req: Request) {
   const priceCentsRaw = body.price_cents == null ? null : Number(body.price_cents);
   const priceCents = priceCentsRaw != null && Number.isFinite(priceCentsRaw) && priceCentsRaw > 0 ? Math.round(priceCentsRaw) : null;
   const clientEmail = typeof body.client_email === "string" ? body.client_email : "mint-client@system";
+  const bodyBookId = typeof body.book_id === "string" && body.book_id.trim() ? body.book_id.trim() : BOOK_ID;
 
   if (!holdingId) return NextResponse.json({ ok: false, error: "holding_id is required" }, { status: 400 });
   if (!rawSymbol) return NextResponse.json({ ok: false, error: "symbol is required" }, { status: 400 });
@@ -112,7 +117,7 @@ export async function POST(req: Request) {
       alreadyForwarded: true,
       orderAuditId: existing.id,
       orderId: existing.order_id,
-      bookId: BOOK_ID,
+      bookId: bodyBookId,
       mode: existing.status === "parked" ? "parked" : "uat",
       status: existing.status,
     });
@@ -158,16 +163,16 @@ export async function POST(req: Request) {
       qty,
       price_cents: priceCents,
       source: "MINT_CLIENT_ORDER",
-      book_id: BOOK_ID,
+      book_id: bodyBookId,
       trader_email: clientEmail,
       holding_id: holdingId,
     },
-    { bookId: BOOK_ID, broker: BROKER, uatTest: true },
+    { bookId: bodyBookId, broker: BROKER, uatTest: true },
   );
 
   if (!result.ok) {
     return NextResponse.json(
-      { ok: false, bookId: BOOK_ID, error: result.error ?? "failed to park order" },
+      { ok: false, bookId: bodyBookId, error: result.error ?? "failed to park order" },
       { status: 500 },
     );
   }
@@ -176,7 +181,7 @@ export async function POST(req: Request) {
     ok: true,
     orderAuditId: result.order_audit_id,
     orderId: result.order_id,
-    bookId: BOOK_ID,
+    bookId: bodyBookId,
     mode: "parked",
     status: "parked",
     notice: "Order parked in the order book — awaiting Send to Market release.",
