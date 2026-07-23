@@ -407,7 +407,14 @@ function toNewsItemRow(
   return {
     item_id: storyId,
     source,
-    category: null, // pinned by categoryFromId when the enum lands; literal id lives in payload
+    // SENS / SENSD rows are regulatory announcements — the literal
+    // category column needs to be `"SENS"` so the BFF read filter
+    // (`?category=SENS` in /api/news, plus the UI tab bucket that
+    // matches on `category.toUpperCase() === "SENS"`) finds them.
+    // The numeric IRESS category id is still preserved on
+    // `payload.category_id` for downstream enum mapping when the
+    // editorial taxonomy lands.
+    category: "SENS",
     severity,
     ticker,
     issuer: null,
@@ -729,6 +736,7 @@ export async function syncNewsHeadlines(opts: {
   // observability; the matched-codes set is what the UI surfaces.
   let matchedCount = 0;
   const records: Array<ReturnType<typeof toNewsItemRow>> = [];
+  let firstDroppedKey: string | null = null;
   for (const r of allRows) {
     const tickers = ((r["SecurityCodeList"] as string | undefined) ?? "")
       .split(/[\s,;]+/)
@@ -745,11 +753,40 @@ export async function syncNewsHeadlines(opts: {
                 // simple boolean + matched_codes preserves everything the
                 // UI surfaces (badges, scope badges, vendor chip).
     };
-    records.push(toNewsItemRow(r, vendorCode, scope));
+    const mapped = toNewsItemRow(r, vendorCode, scope);
+    if (mapped === null && firstDroppedKey === null) {
+      // Capture WHY the row dropped (toNewsItemRow returns null when
+      // HeadlineID or HeadlineText is missing/empty). The first example
+      // gives us everything we need to fix the row mapper if a prod
+      // build returns a different shape.
+      firstDroppedKey = JSON.stringify({
+        keys: Object.keys(r),
+        headlineID_type: typeof r.HeadlineID,
+        headlineID_value: r.HeadlineID,
+        headlineText_type: typeof r.HeadlineText,
+        headlineText_len:
+          typeof r.HeadlineText === "string" ? r.HeadlineText.length : null,
+        category: r.CategoryIDList ?? r.CategoryID ?? null,
+      });
+    }
+    records.push(mapped);
   }
   const validRecords = records.filter(
     (r): r is NonNullable<typeof r> => r !== null,
   );
+  if (allRows.length > 0 && validRecords.length === 0) {
+    recordWorkerEvent({
+      level: "warn",
+      event: "news_rows_dropped",
+      msg: `All ${allRows.length} raw ${vendorCode} rows dropped during toNewsItemRow — first row keys: ${firstDroppedKey}`,
+      data: {
+        vendorCode,
+        rawRows: allRows.length,
+        validRows: validRecords.length,
+        firstDroppedKey,
+      },
+    });
+  }
 
   let upserted = 0;
   if (validRecords.length > 0 && !dryRun) {
