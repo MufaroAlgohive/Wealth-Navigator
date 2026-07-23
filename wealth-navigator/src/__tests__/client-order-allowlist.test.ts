@@ -2,13 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
- * 2026-07-23: POST /api/admin/orderbook/client-order's CLIENT-DATA GUARD —
- * a real (non-test) client's order must still be refused by default, but
- * an explicitly allowlisted user_id (MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS)
- * must pass even though their profile/wallet are NOT flagged test — this
- * is the narrow bypass built for named staff acceptance-testing through
- * the real (production) mint app post-prod-switch, deliberately NOT
- * implemented by flipping is_test/wallet status on their real accounts.
+ * 2026-07-23: POST /api/admin/orderbook/client-order no longer gates
+ * parking on IRESS_UAT_MODE or a test/UAT-account check (the "CLIENT-DATA
+ * GUARD" + allowlist this file used to test) — those checks were silently
+ * dropping real clients' orders before they ever reached the order book.
+ * The route now parks every client order (real or test) with zero broker
+ * contact; the real safety boundary moved to release-to-market/route.ts's
+ * RBAC-gated "Send to Market" click. These tests confirm parking now
+ * succeeds unconditionally, regardless of the holding owner's test status.
  */
 
 vi.mock("@/lib/admin/rbac", () => ({
@@ -17,11 +18,7 @@ vi.mock("@/lib/admin/rbac", () => ({
 
 const ORIGINAL_ENV = { ...process.env };
 
-function makeMockSupabase(opts: {
-  holdingUserId: string;
-  isTestProfile: boolean;
-  isTestWallet: boolean;
-}) {
+function makeMockSupabase(opts: { holdingUserId: string }) {
   const client = {
     from: (table: string) => {
       const obj: Record<string, unknown> = {};
@@ -36,22 +33,7 @@ function makeMockSupabase(opts: {
       if (table === "stock_holdings_c") {
         obj.select = () => obj;
         obj.eq = () => obj;
-        obj.maybeSingle = async () => ({ data: { id: "holding-1", user_id: opts.holdingUserId }, error: null });
-        return obj;
-      }
-      if (table === "profiles") {
-        obj.select = () => obj;
-        obj.eq = () => obj;
-        obj.maybeSingle = async () => ({ data: opts.isTestProfile ? { id: opts.holdingUserId } : null, error: null });
-        return obj;
-      }
-      if (table === "wallets") {
-        obj.select = () => obj;
-        obj.eq = () => obj;
-        obj.maybeSingle = async () => ({
-          data: opts.isTestWallet ? { user_id: opts.holdingUserId } : null,
-          error: null,
-        });
+        obj.maybeSingle = async () => ({ data: { id: "holding-1" }, error: null });
         return obj;
       }
       throw new Error(`unexpected table ${table}`);
@@ -62,7 +44,6 @@ function makeMockSupabase(opts: {
 
 beforeEach(() => {
   vi.resetModules();
-  process.env.IRESS_UAT_MODE = "true";
 });
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
@@ -83,27 +64,11 @@ async function postClientOrder() {
   );
 }
 
-describe("client-order CLIENT-DATA GUARD allowlist", () => {
-  it("refuses a real (non-test, non-allowlisted) client's order — unchanged default behavior", async () => {
+describe("client-order parking — no CLIENT-DATA GUARD / IRESS_UAT_MODE gate", () => {
+  it("parks a real (non-test) client's order", async () => {
     process.env.MINT_CLIENT_ORDER_SECRET = "test-secret";
-    delete process.env.MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS;
-    const client = makeMockSupabase({ holdingUserId: REAL_USER_ID, isTestProfile: false, isTestWallet: false });
-    vi.doMock("@/lib/orders", () => ({
-      openSupabaseClients: async () => ({ retail: client, institutional: client }),
-      parkOrder: async () => ({ ok: true, order_audit_id: "audit-1", order_id: "ORD-1" }),
-    }));
-
-    const res = await postClientOrder();
-    expect(res.status).toBe(422);
-    const body = (await res.json()) as { ok: boolean; error: string };
-    expect(body.ok).toBe(false);
-    expect(body.error).toMatch(/real \(non-test\) client/);
-  });
-
-  it("allows a real client's order through when their user_id is in MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS", async () => {
-    process.env.MINT_CLIENT_ORDER_SECRET = "test-secret";
-    process.env.MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS = ` fc3a74f1-eaa6-43b6-b825-2bff1487e2a4 ,${REAL_USER_ID}, 7fdd6738-19dc-4bb7-a976-7b2a8dd83aa5`;
-    const client = makeMockSupabase({ holdingUserId: REAL_USER_ID, isTestProfile: false, isTestWallet: false });
+    delete process.env.IRESS_UAT_MODE;
+    const client = makeMockSupabase({ holdingUserId: REAL_USER_ID });
     vi.doMock("@/lib/orders", () => ({
       openSupabaseClients: async () => ({ retail: client, institutional: client }),
       parkOrder: async () => ({ ok: true, order_audit_id: "audit-1", order_id: "ORD-1" }),
@@ -116,23 +81,10 @@ describe("client-order CLIENT-DATA GUARD allowlist", () => {
     expect(body.status).toBe("parked");
   });
 
-  it("still refuses a real user NOT on the allowlist even when the allowlist is non-empty", async () => {
+  it("still parks a genuine test-account holding (unchanged)", async () => {
     process.env.MINT_CLIENT_ORDER_SECRET = "test-secret";
-    process.env.MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS = "fc3a74f1-eaa6-43b6-b825-2bff1487e2a4";
-    const client = makeMockSupabase({ holdingUserId: REAL_USER_ID, isTestProfile: false, isTestWallet: false });
-    vi.doMock("@/lib/orders", () => ({
-      openSupabaseClients: async () => ({ retail: client, institutional: client }),
-      parkOrder: async () => ({ ok: true, order_audit_id: "audit-1", order_id: "ORD-1" }),
-    }));
-
-    const res = await postClientOrder();
-    expect(res.status).toBe(422);
-  });
-
-  it("still passes a genuine test-account holding regardless of the allowlist (unchanged existing path)", async () => {
-    process.env.MINT_CLIENT_ORDER_SECRET = "test-secret";
-    delete process.env.MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS;
-    const client = makeMockSupabase({ holdingUserId: "test-user-1", isTestProfile: true, isTestWallet: false });
+    process.env.IRESS_UAT_MODE = "true";
+    const client = makeMockSupabase({ holdingUserId: "test-user-1" });
     vi.doMock("@/lib/orders", () => ({
       openSupabaseClients: async () => ({ retail: client, institutional: client }),
       parkOrder: async () => ({ ok: true, order_audit_id: "audit-1", order_id: "ORD-1" }),
@@ -140,5 +92,17 @@ describe("client-order CLIENT-DATA GUARD allowlist", () => {
 
     const res = await postClientOrder();
     expect(res.status).toBe(200);
+  });
+
+  it("still requires the shared secret (or an admin session) regardless of guard removal", async () => {
+    delete process.env.MINT_CLIENT_ORDER_SECRET;
+    const client = makeMockSupabase({ holdingUserId: REAL_USER_ID });
+    vi.doMock("@/lib/orders", () => ({
+      openSupabaseClients: async () => ({ retail: client, institutional: client }),
+      parkOrder: async () => ({ ok: true, order_audit_id: "audit-1", order_id: "ORD-1" }),
+    }));
+
+    const res = await postClientOrder();
+    expect(res.status).toBe(403);
   });
 });
