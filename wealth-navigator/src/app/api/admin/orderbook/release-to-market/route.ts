@@ -35,6 +35,7 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { openSupabaseClients, releaseOrder } from "@/lib/orders";
+import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,9 @@ export async function POST(req: Request) {
   }
   if (auth.status !== "ok" || !can(auth.ctx, "orderbook", "send_to_market")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  if (SEND_TO_MARKET_LOCKED) {
+    return NextResponse.json({ ok: false, error: SEND_TO_MARKET_LOCKED_MESSAGE }, { status: 423 });
   }
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;

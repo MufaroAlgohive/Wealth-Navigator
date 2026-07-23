@@ -43,6 +43,7 @@ import { Input } from "@/components/ui/input";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
+import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 import { isAmendable, isAwaitingBrokerAck, isCancellable } from "./format";
 import { InvestorFilterTable, type InvestorAgg } from "./investor-filter-table";
 
@@ -1518,6 +1519,10 @@ export function ExecutionView({ sources }: { sources: string[] }) {
   const parkedCount = React.useMemo(() => rows.filter((r) => r.state === "PARKED").length, [rows]);
   const [releasing, setReleasing] = React.useState(false);
   const handleRelease = async () => {
+    if (SEND_TO_MARKET_LOCKED) {
+      toast.error(SEND_TO_MARKET_LOCKED_MESSAGE);
+      return;
+    }
     setReleasing(true);
     try {
       const res = await fetch("/api/admin/orderbook/release-to-market", { method: "POST" });
@@ -1612,12 +1617,12 @@ export function ExecutionView({ sources }: { sources: string[] }) {
           <Button
             variant="secondary"
             size="sm"
-            disabled={parkedCount === 0 || releasing}
+            disabled={SEND_TO_MARKET_LOCKED || parkedCount === 0 || releasing}
             onClick={() => void handleRelease()}
-            title="Release every parked mint client-order to the worker/IRESS."
+            title={SEND_TO_MARKET_LOCKED ? SEND_TO_MARKET_LOCKED_MESSAGE : "Release every parked mint client-order to the worker/IRESS."}
           >
             <SendHorizontal className="h-3.5 w-3.5" />
-            {releasing ? "Sending..." : `Send to Market (${parkedCount})`}
+            {releasing ? "Sending..." : SEND_TO_MARKET_LOCKED ? "Send to Market (locked)" : `Send to Market (${parkedCount})`}
           </Button>
           <Button variant="ghost" size="sm" onClick={refreshAll}>
             Refresh
