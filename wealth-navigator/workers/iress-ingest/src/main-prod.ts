@@ -284,23 +284,26 @@ void newsIngestLoop();
 
 if (process.env.IRESS_NEWS_INGEST === "1") {
   // Trigger prod market-data bring-up early so the startup log shows
-  // seat status / endpoint. Silent no-op when IRESS_MARKET_DATA_PROD=0.
+  // seat status / endpoint. Wait for the session BEFORE running the
+  // vendor catalog fetch — they're not allowed to race, otherwise
+  // `syncNewsVendorCatalog()` opens its own login and evicts the
+  // market-data session (single-seat license).
   void getMarketDataSession()
-    .then((md) => {
+    .then(async (md) => {
       if (!md) {
         console.warn(
           "[iress-prod] CONFIG: market-data session unavailable at startup (IRESS_MARKET_DATA_PROD=0 or session bring-up failed) — news loop will fall back to the UAT session.",
         );
-      } else {
-        console.info(
-          `[iress-prod] prod market-data session ready endpoint=${process.env.IRESS_MARKETDATA_BASE_URL ?? "https://webservices.iress.co.za/v4"}`,
-        );
+        return;
       }
+      console.info(
+        `[iress-prod] prod market-data session ready endpoint=${process.env.IRESS_MARKETDATA_BASE_URL ?? "https://webservices.iress.co.za/v4"}`,
+      );
+      await oneShotVendorCatalog();
     })
     .catch((err) => {
       console.warn(`[iress-prod] prod market-data bring-up threw: ${err instanceof Error ? err.message : String(err)}`);
     });
-  void oneShotVendorCatalog();
 }
 
 /**
@@ -312,12 +315,27 @@ if (process.env.IRESS_NEWS_INGEST === "1") {
  * external HTTP call to the worker (the Railway public proxy 502s
  * intermittently — see `ISSUES_LOG.md`).
  *
- * This is the operator's pre-cutover gate: the worker logs `ok: true`
- * for IOSPlus → orders loop can move to prod. Anything else → do NOT
- * stop the CT worker.
+ * IMPORTANT (prod worker): the probe opens its OWN IRESSSession
+ * (`probeClient.iressSessionStart`) on the prod seat, which the
+ * server treats as a second concurrent login and ends the
+ * market-data session that the news loop needs. Disable the boot
+ * probe on the prod worker by leaving `IRESS_DEBUG_ORDERS_PROBE=1`
+ * UNSET there. The probe stays reachable via the HTTP debug
+ * endpoint (`/debug/orders-entitlement-probe`) for one-off checks;
+ * that path runs the probe on demand without breaking news ingest.
  */
 async function oneShotOrdersEntitlementProbe(): Promise<void> {
   if (process.env.IRESS_DEBUG_ORDERS_PROBE !== "1") return;
+  // Don't auto-run on the prod worker — the boot probe evicts the
+  // market-data session the news loop needs (single-seat license).
+  // Reach for the HTTP `/debug/orders-entitlement-probe` endpoint
+  // for an on-demand probe that won't break news ingest.
+  if (process.env.IRESS_NEWS_INGEST === "1" && process.env.IRESS_MARKET_DATA_PROD === "1") {
+    console.warn(
+      "[iress-prod] SKIPPING boot orders-entitlement probe on the prod worker — opening a second IRESSSession evicts the prod market-data session that news ingest needs (single-seat license). Use the HTTP /debug/orders-entitlement-probe endpoint for on-demand probing.",
+    );
+    return;
+  }
   if (env.iressMode !== "live" && env.iressMode !== "wsdl-stub") return;
   try {
     const result = await runOrdersEntitlementProbe({
