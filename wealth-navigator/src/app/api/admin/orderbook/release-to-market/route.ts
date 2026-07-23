@@ -19,6 +19,16 @@
  * Auth: admin session + `orderbook.send_to_market` — the same permission
  * every other send-to-broker action already requires (`uat-order`,
  * `send-to-market`, `amend`, `cancel`).
+ *
+ * CRM-style order-book numbering (2026-07-23): everything released
+ * together in ONE call of this route is "one order book" — after the
+ * release loop, a new `oems_order_book` row is assigned the next
+ * sequence number and every successfully-released row is stamped with
+ * `payload.order_book_seq` (merge-write, mirrors the existing
+ * `payload.book_id` convention — see `oems_order_book`'s own comment).
+ * Book-row creation is strictly best-effort AFTER the releases: a
+ * numbering failure must never roll back or hide a real send to the
+ * worker, so any failure here only sets `book_warning` on the response.
  */
 
 import { NextResponse } from "next/server";
@@ -54,7 +64,7 @@ export async function POST(req: Request) {
 
   let query = supabase.institutional
     .from("oems_order_audit")
-    .select("id, order_id")
+    .select("id, order_id, payload")
     .eq("status", "parked");
   if (bookId) query = query.eq("payload->>book_id", bookId);
 
@@ -90,10 +100,67 @@ export async function POST(req: Request) {
     });
   }
 
+  // ── CRM-style order-book numbering ──────────────────────────────────
+  // Best-effort, strictly AFTER the releases above. A numbering failure
+  // must never affect the response's released/failed accounting.
+  const releasedRows = parkedRows.filter((row) => results.find((r) => r.id === row.id)?.ok);
+  let orderBookSeq: number | null = null;
+  let bookWarning: string | undefined;
+  if (releasedRows.length > 0) {
+    const assignSequence = async (): Promise<number | null> => {
+      const { data: last } = await supabase.institutional
+        .from("oems_order_book")
+        .select("sequence")
+        .order("sequence", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const nextSeq = ((last as { sequence?: number } | null)?.sequence ?? 0) + 1;
+      const { error: insErr } = await supabase.institutional.from("oems_order_book").insert({
+        sequence: nextSeq,
+        released_by: auth.ctx.email ?? null,
+        member_count: releasedRows.length,
+      });
+      if (!insErr) return nextSeq;
+      // Postgres unique_violation — another release raced us for this
+      // sequence number. Re-read max and retry exactly once.
+      if ((insErr as { code?: string }).code === "23505") {
+        const { data: last2 } = await supabase.institutional
+          .from("oems_order_book")
+          .select("sequence")
+          .order("sequence", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const retrySeq = ((last2 as { sequence?: number } | null)?.sequence ?? 0) + 1;
+        const { error: retryErr } = await supabase.institutional.from("oems_order_book").insert({
+          sequence: retrySeq,
+          released_by: auth.ctx.email ?? null,
+          member_count: releasedRows.length,
+        });
+        if (!retryErr) return retrySeq;
+      }
+      return null;
+    };
+
+    orderBookSeq = await assignSequence();
+    if (orderBookSeq == null) {
+      bookWarning = "Orders were released successfully, but this batch could not be numbered as an order book this round.";
+    } else {
+      for (const row of releasedRows) {
+        const prevPayload = (row as { payload?: Record<string, unknown> | null }).payload ?? {};
+        await supabase.institutional
+          .from("oems_order_audit")
+          .update({ payload: { ...prevPayload, order_book_seq: orderBookSeq } })
+          .eq("id", row.id as string);
+      }
+    }
+  }
+
   return NextResponse.json({
     ok: results.every((r) => r.ok),
     released: results.filter((r) => r.ok).length,
     failed: results.filter((r) => !r.ok).length,
     results,
+    order_book_seq: orderBookSeq,
+    ...(bookWarning ? { book_warning: bookWarning } : {}),
   });
 }

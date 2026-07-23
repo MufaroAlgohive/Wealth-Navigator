@@ -48,6 +48,10 @@ import { InvestorFilterTable, type InvestorAgg } from "./investor-filter-table";
 
 export interface ExecutionRow {
   id: string;
+  // 2026-07-23: CRM-style order-book number (see release-to-market/route.ts,
+  // which stamps this onto every row released together in one "Send to
+  // Market" click) — null until the row has been released at least once.
+  order_book_seq: number | null;
   order_id: string;
   // 2026-07-13: OEMS client identifier (profile email or user_id). The Cancel
   // button uses broker_account (the IRESS AccountCode) when forwarding to
@@ -156,6 +160,12 @@ interface ExecutionPayload {
 
 interface QuotesPayload {
   quotes?: Array<{ symbol: string; last_price: number | null; source?: string }>;
+}
+
+interface OrderBooksPayload {
+  ok: boolean;
+  books?: OrderBookSummary[];
+  notice?: string;
 }
 
 interface UatStatus {
@@ -382,6 +392,44 @@ export function groupOrdersByStrategy(groupedRows: GroupedRow[]): StrategyBlock[
         blk.reduce((max, g) => Math.max(max, Date.parse(g.parent.ts || "") || 0), 0);
       return latest(b.groups) - latest(a.groups);
     });
+}
+
+export interface OrderBookSummary {
+  sequence: number;
+  released_at: string;
+  released_by: string | null;
+  total_count: number;
+  filled_count: number;
+  fully_filled: boolean;
+}
+
+/**
+ * The "Orderbook :NN" badge number — mirrors CRM's own
+ * `getNextFilledOrderbookSequence()` semantics. If any book is still in
+ * progress (not fully filled), that's the live/current book — show its own
+ * number. Otherwise every known book has been fully filled (or none exist
+ * yet), so the live number is one past the highest fully-filled sequence.
+ */
+export function computeLiveBookSequence(books: OrderBookSummary[]): number {
+  const inProgress = books.filter((b) => !b.fully_filled);
+  if (inProgress.length > 0) {
+    return inProgress.reduce((max, b) => Math.max(max, b.sequence), 0);
+  }
+  const maxFilled = books.reduce((max, b) => Math.max(max, b.sequence), 0);
+  return maxFilled + 1;
+}
+
+/**
+ * Once a book is fully filled, its member orders are promoted into
+ * "Active Order Books" (active-order-books.tsx) and drop out of the live
+ * strategy-grouped table — matching the CRM screenshot's "0 records" live
+ * ledger once nothing is in flight. Rows with no order_book_seq yet (still
+ * parked, never released) always pass through untouched.
+ */
+export function filterOutPromotedBooks(rows: GroupedRow[], books: OrderBookSummary[]): GroupedRow[] {
+  const fullyFilledSeqs = new Set(books.filter((b) => b.fully_filled).map((b) => b.sequence));
+  if (fullyFilledSeqs.size === 0) return rows;
+  return rows.filter((g) => g.parent.order_book_seq == null || !fullyFilledSeqs.has(g.parent.order_book_seq));
 }
 
 interface SecurityBlock {
@@ -920,6 +968,11 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
     { interval: 2_000, deps: [bookIdB], query: { enabled: !!bookIdB } },
   );
 
+  // CRM-style order-book numbering (2026-07-23). Books change far less
+  // often than fills, so this polls lighter than the 2s execution poll.
+  const orderBooks = usePolling<OrderBooksPayload>("/api/admin/orderbook/order-books", { interval: 5_000 });
+  const books = orderBooks.data?.books ?? [];
+
   // Local override layer so SSE deltas update instantly without waiting for
   // the next poll cycle. Keyed by audit row id.
   const [liveOverrides, setLiveOverrides] = React.useState<Record<string, ExecutionRow>>({});
@@ -977,6 +1030,7 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
         const auditId = d.order_audit_id as string;
         const newRow: ExecutionRow = {
           id: auditId,
+          order_book_seq: existing?.order_book_seq ?? null,
           order_id: d.iress_order_number || existing?.order_id || auditId,
           client_account: existing?.client_account ?? "",
           broker_account: existing?.broker_account ?? null,
@@ -1172,7 +1226,9 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
   // a pure view over the already-reconciled groupedRows. Never re-runs
   // SSE/poll reconciliation per group; strategy grouping happens strictly
   // AFTER groupedRows is computed above.
-  const strategyBlocks = React.useMemo(() => groupOrdersByStrategy(groupedRows), [groupedRows]);
+  const liveGroupedRows = React.useMemo(() => filterOutPromotedBooks(groupedRows, books), [groupedRows, books]);
+  const strategyBlocks = React.useMemo(() => groupOrdersByStrategy(liveGroupedRows), [liveGroupedRows]);
+  const liveBookSequence = React.useMemo(() => computeLiveBookSequence(books), [books]);
 
   const [expandedStrategy, setExpandedStrategy] = React.useState<Record<string, boolean>>({});
   const [expandedSecurity, setExpandedSecurity] = React.useState<Record<string, boolean>>({});
@@ -1212,7 +1268,10 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
     prevLiveCountRef.current = currentCount;
   }, [liveOverrides]);
 
-  const totalEvents = React.useMemo(() => groupedRows.reduce((s, g) => s + 1 + g.children.length, 0), [groupedRows]);
+  const totalEvents = React.useMemo(
+    () => liveGroupedRows.reduce((s, g) => s + 1 + g.children.length, 0),
+    [liveGroupedRows],
+  );
 
   // Per-row cancel state. When the desk clicks Cancel on a row, we POST
   // /api/admin/orderbook/cancel which forwards to the worker's
@@ -1405,12 +1464,13 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
     }
   };
 
-  const showLoading = (executionsA.loading || executionsB.loading) && groupedRows.length === 0;
+  const showLoading = (executionsA.loading || executionsB.loading) && liveGroupedRows.length === 0;
   const hasNotice = !!(executionsA.data?.notice ?? executionsB.data?.notice);
   const anyLoading = executionsA.loading || executionsB.loading;
   const refreshAll = () => {
     void executionsA.refresh();
     if (bookIdB) void executionsB.refresh();
+    void orderBooks.refresh();
   };
 
   return (
@@ -1420,19 +1480,27 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
           <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Per-ISIN execution
           </span>
-          {/* 2026-07-22: CRM-style "Orderbook :NN" sequence — a static
-              placeholder for now. CRM's own version increments per
-              archived/closed book; wealth-navigator has no close/archive
-              action for this table yet, so wiring a real counter is
-              deferred to the Closed-Books-from-OEM phase rather than
-              inventing a fake mechanism now. */}
-          <Badge variant="outline" className="font-mono" title="Placeholder — real sequencing lands with Closed Books">
-            Orderbook :01
+          {/* 2026-07-23: CRM-style "Orderbook :NN" sequence — real number now.
+              One book = everything released together in one "Send to
+              Market" click (release-to-market/route.ts stamps
+              payload.order_book_seq on each released row and inserts one
+              oems_order_book row per batch). "Fully filled" (every member
+              order status='filled') is computed at read time in
+              /api/admin/orderbook/order-books — once true, that book's
+              orders are filtered out of this live view (see
+              filterOutPromotedBooks below) and instead show up in the
+              separate ActiveOrderBooks list. */}
+          <Badge
+            variant="outline"
+            className="font-mono"
+            title="CRM-style order-book number — advances once the current book is fully filled and moves to Active Order Books."
+          >
+            Orderbook :{String(liveBookSequence).padStart(2, "0")}
           </Badge>
           <Badge variant="outline" className="font-mono">
-            {groupedRows.length}
+            {liveGroupedRows.length}
           </Badge>
-          {totalEvents !== groupedRows.length ? (
+          {totalEvents !== liveGroupedRows.length ? (
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">({totalEvents} events)</span>
           ) : null}
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">

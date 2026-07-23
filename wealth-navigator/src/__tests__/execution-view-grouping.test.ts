@@ -15,6 +15,7 @@ import { groupOrdersByStrategy, type ExecutionRow } from "@/components/admin/ord
 function row(overrides: Partial<ExecutionRow> = {}): ExecutionRow {
   return {
     id: overrides.id ?? "row-1",
+    order_book_seq: overrides.order_book_seq ?? null,
     order_id: overrides.order_id ?? "ORD-1",
     client_account: "client@example.com",
     broker_account: null,

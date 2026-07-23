@@ -60,6 +60,10 @@ interface ExecutionRow {
   // execution row back to a specific investor's specific security position,
   // not just to "the whole book". null for rows predating this stamp.
   holding_id: string | null;
+  // 2026-07-23: CRM-style order-book number (see release-to-market/route.ts,
+  // which stamps this onto every row released together in one "Send to
+  // Market" click) — null until the row has been released at least once.
+  order_book_seq: number | null;
   order_id: string;
   // 2026-07-13: surface the IRESS AccountCode (from oems_order_audit.client_account)
   // so the UI's Cancel button can forward the correct account to the worker's
@@ -222,6 +226,12 @@ function mapRow(r: AuditRow): ExecutionRow {
   return {
     id: r.id,
     holding_id: str(payload.holding_id),
+    order_book_seq:
+      typeof payload.order_book_seq === "number"
+        ? payload.order_book_seq
+        : payload.order_book_seq != null && Number.isFinite(Number(payload.order_book_seq))
+          ? Number(payload.order_book_seq)
+          : null,
     order_id: r.order_id,
     client_account: r.client_account,
     broker_account: str(payload.uatAccountCode),
