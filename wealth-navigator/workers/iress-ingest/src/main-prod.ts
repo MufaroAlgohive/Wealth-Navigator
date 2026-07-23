@@ -53,7 +53,7 @@
 
 import { loadWorkerEnv } from "./env";
 import { gracefulStop, runHealthLoop } from "./health";
-import { startHttpApi, type HttpApiHandle } from "./http-api";
+import { runOrdersEntitlementProbe, startHttpApi, type HttpApiHandle } from "./http-api";
 import {
   syncNewsHeadlines,
   syncNewsVendorCatalog,
@@ -301,6 +301,75 @@ if (process.env.IRESS_NEWS_INGEST === "1") {
       console.warn(`[iress-prod] prod market-data bring-up threw: ${err instanceof Error ? err.message : String(err)}`);
     });
   void oneShotVendorCatalog();
+}
+
+/**
+ * One-shot orders-entitlement probe on startup. Enabled with
+ * `IRESS_DEBUG_ORDERS_PROBE=1` so it's a deliberate operator action,
+ * not a default. The result lands in the structured log + the
+ * heartbeat's `recent_events`, so we can read the prod seat's
+ * orders entitlement (IOSPlus / IPS / FIXPlus) without needing an
+ * external HTTP call to the worker (the Railway public proxy 502s
+ * intermittently — see `ISSUES_LOG.md`).
+ *
+ * This is the operator's pre-cutover gate: the worker logs `ok: true`
+ * for IOSPlus → orders loop can move to prod. Anything else → do NOT
+ * stop the CT worker.
+ */
+async function oneShotOrdersEntitlementProbe(): Promise<void> {
+  if (process.env.IRESS_DEBUG_ORDERS_PROBE !== "1") return;
+  if (env.iressMode !== "live" && env.iressMode !== "wsdl-stub") return;
+  try {
+    const result = await runOrdersEntitlementProbe({
+      deps: {
+        env,
+        sessions,
+        supabase,
+      },
+      probePad: false,
+    });
+    const summary = result.body.probeSummary as
+      | {
+          iosplusEntitled?: boolean;
+          ipsEntitled?: boolean;
+          fixplusEntitled?: boolean;
+          allOrdersEntitled?: boolean;
+        }
+      | undefined;
+    const ok = result.body.ok === true;
+    recordWorkerEvent({
+      level: ok ? "info" : "warn",
+      event: "orders_entitlement_probe",
+      msg: ok
+        ? `Orders entitlement probe OK — IOSPlus=${summary?.iosplusEntitled} IPS=${summary?.ipsEntitled} FIX+=${summary?.fixplusEntitled}`
+        : `Orders entitlement probe FAILED: ${(result.body.error as { message?: string } | undefined)?.message ?? "unknown"}`,
+      data: result.body as Record<string, unknown>,
+    });
+    console.info(
+      JSON.stringify({
+        level: ok ? "info" : "warn",
+        event: "orders_entitlement_probe",
+        build: result.body.build,
+        probedAt: result.body.probedAt,
+        elapsedMs: result.body.elapsedMs,
+        probeSummary: result.body.probeSummary,
+        services: result.body.services,
+        error: result.body.error ?? null,
+      }),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    recordWorkerEvent({
+      level: "warn",
+      event: "orders_entitlement_probe_threw",
+      msg: `orders entitlement probe threw: ${msg}`,
+      data: { error: msg },
+    });
+  }
+}
+
+if (process.env.IRESS_DEBUG_ORDERS_PROBE === "1") {
+  void oneShotOrdersEntitlementProbe();
 }
 
 if (process.env.WORKER_HTTP_DISABLED !== "1") {

@@ -1416,6 +1416,227 @@ export interface HttpApiHandle {
 }
 
 /**
+ * Run the orders-entitlement probe against the prod endpoint without
+ * requiring an HTTP round-trip. Exported so the prod worker can also
+ * run it on startup (`IRESS_DEBUG_ORDERS_PROBE=1`), which is the only
+ * reliable way to see the result when the Railway public proxy 502s.
+ *
+ * Returns `{ status, body }` where `status` is the HTTP-shaped status
+ * code the public probe would have used; `body` is the JSON envelope.
+ */
+export async function runOrdersEntitlementProbe(opts: {
+  deps: HttpApiDeps;
+  probePad: boolean;
+  accountOverride?: string | null;
+}): Promise<{ status: number; body: Record<string, unknown> }> {
+  const { deps, probePad, accountOverride } = opts;
+  const startedAt = Date.now();
+  const prodEndpoint = marketDataBaseUrl();
+  const iosServer = (process.env.IRESS_IOS_SERVER ?? "MINT_CT").trim() || "MINT_CT";
+  const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
+  const fixServer = (process.env.IRESS_FIX_SERVER ?? "FIXPLUSAPI").trim() || "FIXPLUSAPI";
+
+  const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+  if (!isLive) {
+    return {
+      status: 503,
+      body: {
+        ok: false,
+        status: 503,
+        code: "iress_mode_not_live",
+        error: `Cannot probe in iressMode=${deps.env.iressMode}; switch the worker to live`,
+        iressMode: deps.env.iressMode,
+      },
+    };
+  }
+
+  let probeClient: ReturnType<typeof createLiveIressClient> | null = null;
+  let probeSessionKey: string | null = null;
+  const results: Record<
+    string,
+    {
+      ok: boolean;
+      errorNumber: number | null;
+      errorDescription: string | null;
+      serviceSessionKeyPrefix: string | null;
+      elapsedMs: number;
+    }
+  > = {};
+
+  try {
+    const creds = getIressProdCredentialsFromEnv() ?? getIressCredentialsFromEnv();
+    if (!creds.userName || !creds.password) {
+      return {
+        status: 503,
+        body: {
+          ok: false,
+          status: 503,
+          code: "iress_credentials_unconfigured",
+          error: "IRESS_USERNAME / IRESS_PASSWORD not configured on this worker",
+          endpoint: prodEndpoint,
+        },
+      };
+    }
+    probeClient = createLiveIressClient({ baseUrl: prodEndpoint });
+    const applicationId = `Mint-OEMS-OrdersProbe-${deps.env.workerId}-${Date.now()}`;
+    const sess = await probeClient.iressSessionStart({
+      Locale: "en-ZA",
+      ApplicationID: applicationId,
+      ApplicationLabel: `Mint-OEMS-OrdersProbe`,
+      UserName: creds.userName,
+      CompanyName: creds.company ?? creds.userName.split("@").pop() ?? "",
+      Password: creds.password,
+    });
+    if (!sess.IRESSSessionKey) {
+      return {
+        status: 502,
+        body: {
+          ok: false,
+          status: 502,
+          code: "session_start_failed",
+          error: "IRESSSessionStart returned no session key on the prod endpoint",
+          endpoint: prodEndpoint,
+          applicationId,
+        },
+      };
+    }
+    probeSessionKey = sess.IRESSSessionKey;
+
+    for (const target of [
+      { Service: "IOSPlus" as IressService, Server: iosServer },
+      { Service: "IPS" as IressService, Server: ipsServer },
+      { Service: "FIXPlus" as IressService, Server: fixServer },
+    ]) {
+      const t0 = Date.now();
+      try {
+        const r = await probeClient.serviceSessionStart({
+          IRESSSessionKey: probeSessionKey,
+          Service: target.Service,
+          Server: target.Server,
+        });
+        results[target.Service] = {
+          ok: !!r.ServiceSessionKey,
+          errorNumber: null,
+          errorDescription: r.ServiceSessionKey ? null : "no ServiceSessionKey returned",
+          serviceSessionKeyPrefix: r.ServiceSessionKey ? r.ServiceSessionKey.slice(0, 8) : null,
+          elapsedMs: Date.now() - t0,
+        };
+        if (r.ServiceSessionKey) {
+          try {
+            await probeClient.serviceSessionEnd({
+              ServiceSessionKey: r.ServiceSessionKey,
+            });
+          } catch {
+            /* best-effort teardown */
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const code = err instanceof IressError ? err.code : null;
+        results[target.Service] = {
+          ok: false,
+          errorNumber: code,
+          errorDescription: msg,
+          serviceSessionKeyPrefix: null,
+          elapsedMs: Date.now() - t0,
+        };
+      }
+    }
+
+    let padProbe: {
+      attempted: boolean;
+      ok: boolean;
+      accountCode: string | null;
+      rowCount: number | null;
+      errorNumber: number | null;
+      errorDescription: string | null;
+      elapsedMs: number | null;
+    } = {
+      attempted: false,
+      ok: false,
+      accountCode: null,
+      rowCount: null,
+      errorNumber: null,
+      errorDescription: null,
+      elapsedMs: null,
+    };
+    if (probePad) {
+      const accountCode =
+        accountOverride?.trim() ||
+        deps.env.iressAccountCode.split(",")[0]?.trim() ||
+        "";
+      if (!accountCode) {
+        padProbe = {
+          ...padProbe,
+          attempted: true,
+          errorDescription:
+            "no account code supplied (set IRESS_ACCOUNT_CODE or pass ?account=…)",
+        };
+      } else {
+        padProbe = {
+          attempted: true,
+          ok: false,
+          accountCode,
+          rowCount: null,
+          errorNumber: null,
+          errorDescription:
+            "OrderPadGetByAccount needs a live IOSPlus ServiceSessionKey (the probe releases each key after confirming entitlement); re-run with the orders loop active to verify the account-level probe path.",
+          elapsedMs: null,
+        };
+      }
+    }
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        endpoint: prodEndpoint,
+        workerId: deps.env.workerId,
+        applicationId,
+        sessionKeyPrefix: probeSessionKey.slice(0, 8),
+        services: results,
+        padProbe,
+        probeSummary: {
+          iosplusEntitled: results.IOSPlus?.ok === true,
+          ipsEntitled: results.IPS?.ok === true,
+          fixplusEntitled: results.FIXPlus?.ok === true,
+          allOrdersEntitled: results.IOSPlus?.ok === true,
+        },
+        elapsedMs: Date.now() - startedAt,
+        probedAt: new Date().toISOString(),
+        build: PROBE_BUILD,
+        note:
+          "ServiceSessionStart is entitlement-only — it does NOT place or amend orders. Each service key is released before this probe returns. Safe to call against the prod seat.",
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = err instanceof IressError ? err.code : null;
+    return {
+      status: 200,
+      body: {
+        ok: false,
+        endpoint: prodEndpoint,
+        workerId: deps.env.workerId,
+        services: results,
+        error: { code, message: msg },
+        elapsedMs: Date.now() - startedAt,
+        probedAt: new Date().toISOString(),
+        build: PROBE_BUILD,
+      },
+    };
+  } finally {
+    if (probeSessionKey && probeClient) {
+      try {
+        await probeClient.iressSessionEnd({ IRESSSessionKey: probeSessionKey });
+      } catch {
+        /* best-effort teardown */
+      }
+    }
+  }
+}
+
+/**
  * Internal request dispatcher — exported for unit tests. The production
  * `startHttpApi()` wraps this in a `node:http` server; tests can call
  * it directly with a fake req/res pair to assert handler behavior
@@ -2199,198 +2420,12 @@ export async function handleRequest(
   //                  verify a real prod account before cutover.
   // -----------------------------------------------------------------------
   if (req.method === "GET" && path === "/debug/orders-entitlement-probe") {
-    const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
-    if (!isLive) {
-      sendError(
-        res,
-        503,
-        "iress_mode_not_live",
-        `Cannot probe in iressMode=${deps.env.iressMode}; switch the worker to live`,
-        { iressMode: deps.env.iressMode },
-      );
-      return;
-    }
-
-    const probePad = url.searchParams.get("probePad") === "1";
-    const prodEndpoint = marketDataBaseUrl();
-    const iosServer = (process.env.IRESS_IOS_SERVER ?? "MINT_CT").trim() || "MINT_CT";
-    const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
-    const fixServer = (process.env.IRESS_FIX_SERVER ?? "FIXPLUSAPI").trim() || "FIXPLUSAPI";
-
-    // Build a dedicated client + wire session for the probe so we never
-    // collide with the prod market-data session or the news loop.
-    let probeClient: ReturnType<typeof createLiveIressClient> | null = null;
-    let probeSessionKey: string | null = null;
-    const startedAt = Date.now();
-    const results: Record<
-      string,
-      { ok: boolean; errorNumber: number | null; errorDescription: string | null; serviceSessionKeyPrefix: string | null; elapsedMs: number }
-    > = {};
-
-    try {
-      const creds = getIressProdCredentialsFromEnv() ?? getIressCredentialsFromEnv();
-      if (!creds.userName || !creds.password) {
-        sendError(
-          res,
-          503,
-          "iress_credentials_unconfigured",
-          "IRESS_USERNAME / IRESS_PASSWORD not configured on this worker",
-          { endpoint: prodEndpoint },
-        );
-        return;
-      }
-      probeClient = createLiveIressClient({ baseUrl: prodEndpoint });
-      const applicationId = `Mint-OEMS-OrdersProbe-${deps.env.workerId}-${Date.now()}`;
-      const sess = await probeClient.iressSessionStart({
-        Locale: "en-ZA",
-        ApplicationID: applicationId,
-        ApplicationLabel: `Mint-OEMS-OrdersProbe`,
-        UserName: creds.userName,
-        CompanyName: creds.company ?? creds.userName.split("@").pop() ?? "",
-        Password: creds.password,
-      });
-      if (!sess.IRESSSessionKey) {
-        sendError(res, 502, "session_start_failed", "IRESSSessionStart returned no session key on the prod endpoint", {
-          endpoint: prodEndpoint,
-          applicationId,
-        });
-        return;
-      }
-      probeSessionKey = sess.IRESSSessionKey;
-
-      // Probe each service session in turn. Each is independent — a
-      // failure on IOSPlus does NOT prevent us from testing IPS / FIX+.
-      for (const target of [
-        { Service: "IOSPlus" as IressService, Server: iosServer },
-        { Service: "IPS" as IressService, Server: ipsServer },
-        { Service: "FIXPlus" as IressService, Server: fixServer },
-      ]) {
-        const t0 = Date.now();
-        try {
-          const r = await probeClient.serviceSessionStart({
-            IRESSSessionKey: probeSessionKey,
-            Service: target.Service,
-            Server: target.Server,
-          });
-          results[target.Service] = {
-            ok: !!r.ServiceSessionKey,
-            errorNumber: null,
-            errorDescription: r.ServiceSessionKey ? null : "no ServiceSessionKey returned",
-            serviceSessionKeyPrefix: r.ServiceSessionKey ? r.ServiceSessionKey.slice(0, 8) : null,
-            elapsedMs: Date.now() - t0,
-          };
-          // Release immediately — we never use the key, we just want to
-          // confirm the entitlement.
-          if (r.ServiceSessionKey) {
-            try {
-              await probeClient.serviceSessionEnd({
-                ServiceSessionKey: r.ServiceSessionKey,
-              });
-            } catch {
-              /* best-effort teardown */
-            }
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const code = err instanceof IressError ? err.code : null;
-          results[target.Service] = {
-            ok: false,
-            errorNumber: code,
-            errorDescription: msg,
-            serviceSessionKeyPrefix: null,
-            elapsedMs: Date.now() - t0,
-          };
-        }
-      }
-
-      // Optional: also probe `OrderPadGetByAccount` if requested AND an
-      // account code is configured. This is the strongest possible
-      // signal that orders work on the prod seat.
-      let padProbe: {
-        attempted: boolean;
-        ok: boolean;
-        accountCode: string | null;
-        rowCount: number | null;
-        errorNumber: number | null;
-        errorDescription: string | null;
-        elapsedMs: number | null;
-      } = { attempted: false, ok: false, accountCode: null, rowCount: null, errorNumber: null, errorDescription: null, elapsedMs: null };
-      if (probePad) {
-        const accountCode =
-          url.searchParams.get("account")?.trim() ||
-          deps.env.iressAccountCode.split(",")[0]?.trim() ||
-          "";
-        if (!accountCode) {
-          padProbe = {
-            ...padProbe,
-            attempted: true,
-            errorDescription: "no account code supplied (set IRESS_ACCOUNT_CODE or pass ?account=…)",
-          };
-        } else {
-          const iosKey = results.IOSPlus?.serviceSessionKeyPrefix
-            ? // we already released the key above — OrderPadGetByAccount needs
-              // a live one. Re-issue IOSPlus to get a fresh key.
-              null
-            : null;
-          void iosKey;
-          padProbe = {
-            attempted: true,
-            ok: false,
-            accountCode,
-            rowCount: null,
-            errorNumber: null,
-            errorDescription:
-              "OrderPadGetByAccount needs a live IOSPlus ServiceSessionKey (the probe releases each key after confirming entitlement); re-run with the orders loop active to verify the account-level probe path.",
-            elapsedMs: null,
-          };
-        }
-      }
-
-      send(res, 200, {
-        ok: true,
-        endpoint: prodEndpoint,
-        workerId: deps.env.workerId,
-        applicationId,
-        sessionKeyPrefix: probeSessionKey.slice(0, 8),
-        services: results,
-        padProbe,
-        probeSummary: {
-          iosplusEntitled: results.IOSPlus?.ok === true,
-          ipsEntitled: results.IPS?.ok === true,
-          fixplusEntitled: results.FIXPlus?.ok === true,
-          allOrdersEntitled:
-            results.IOSPlus?.ok === true /* IPS + FIX+ parked per index.ts */,
-        },
-        elapsedMs: Date.now() - startedAt,
-        probedAt: new Date().toISOString(),
-        build: PROBE_BUILD,
-        note:
-          "ServiceSessionStart is entitlement-only — it does NOT place or amend orders. Each service key is released before this probe returns. Safe to call against the prod seat.",
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const code = err instanceof IressError ? err.code : null;
-      send(res, 200, {
-        ok: false,
-        endpoint: prodEndpoint,
-        workerId: deps.env.workerId,
-        services: results,
-        error: { code, message: msg },
-        elapsedMs: Date.now() - startedAt,
-        probedAt: new Date().toISOString(),
-        build: PROBE_BUILD,
-      });
-    } finally {
-      // Always end the wire session + close the transport so we don't
-      // leak a prod seat across multiple probe calls.
-      if (probeSessionKey && probeClient) {
-        try {
-          await probeClient.iressSessionEnd({ IRESSSessionKey: probeSessionKey });
-        } catch {
-          /* best-effort teardown */
-        }
-      }
-    }
+    const result = await runOrdersEntitlementProbe({
+      deps,
+      probePad: url.searchParams.get("probePad") === "1",
+      accountOverride: url.searchParams.get("account") ?? null,
+    });
+    send(res, result.status ?? 200, result.body);
     return;
   }
 
