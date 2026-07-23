@@ -20,6 +20,15 @@ vi.mock("@/lib/admin/rbac", () => ({
   can: () => true,
 }));
 
+// This suite tests the order-book NUMBERING logic specifically, not the
+// Send to Market lock (a separate, deliberately-toggled kill-switch — see
+// send-to-market-lock.ts). Force it unlocked here so these tests exercise
+// release behavior regardless of the lock's current real-world value.
+vi.mock("@/lib/orders/send-to-market-lock", () => ({
+  SEND_TO_MARKET_LOCKED: false,
+  SEND_TO_MARKET_LOCKED_MESSAGE: "locked (mocked off for this test)",
+}));
+
 interface MockRow {
   id: string;
   order_id: string;
