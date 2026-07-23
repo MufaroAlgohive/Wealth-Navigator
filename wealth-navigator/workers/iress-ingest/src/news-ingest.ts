@@ -370,10 +370,19 @@ function toNewsItemRow(
   published_at: string;
   payload: Record<string, unknown>;
 } | null {
-  const storyId = row["HeadlineID"];
-  if (typeof storyId !== "string" || !storyId) return null;
-  const headline = row["HeadlineText"];
-  if (typeof headline !== "string" || !headline) return null;
+  const storyIdRaw = row["HeadlineID"];
+  // IRESS sometimes returns HeadlineID as a number (e.g. 2485034001);
+  // coerce to string so the upsert key (`item_id`) is stable.
+  const storyId =
+    typeof storyIdRaw === "string"
+      ? storyIdRaw
+      : storyIdRaw != null
+        ? String(storyIdRaw)
+        : "";
+  if (!storyId) return null;
+  const headlineRaw = row["HeadlineText"];
+  const headline = typeof headlineRaw === "string" ? headlineRaw : "";
+  if (!headline) return null;
   const codes = (row["SecurityCodeList"] as string | undefined) ?? "";
   const tickers = codes
     .split(/[\s,;]+/)
@@ -537,8 +546,56 @@ async function fetchNewsPage(opts: {
       rawRows: (res.DataRows ?? []).length,
     },
   });
-  const rows: Array<Record<string, unknown>> = (res.DataRows ?? [])
-    .filter((r) => r && typeof (r as Record<string, unknown>)["HeadlineID"] === "string")
+  const rawAll = (res.DataRows ?? []) as Array<Record<string, unknown>>;
+  // IRESS NewsHeadlineGet returns rows that look like:
+  //   { HeadlineID: 2485034001, HeadlineText: "...", SecurityCodeList: "...", HeadlineDateTime: "..." }
+  // — i.e. `HeadlineID` is often a NUMBER, not a string. The previous
+  // strict `typeof === "string"` filter dropped every row before we
+  // could map them, which is why the UI showed no SENS data despite
+  // `rawRows=18` being logged.
+  const filteredOut = rawAll.filter(
+    (r) => !(r && (r as Record<string, unknown>)["HeadlineID"] != null && (r as Record<string, unknown>)["HeadlineID"] !== ""),
+  );
+  if (filteredOut.length > 0 && opts.pageIndex === 0) {
+    // DIAGNOSTIC: surface the shape of rows the page-filter is dropping.
+    recordWorkerEvent({
+      level: "warn",
+      event: "news_page_filtered_rows",
+      msg: `NewsHeadlineGet page ${opts.pageIndex} filter dropped ${filteredOut.length}/${rawAll.length} rows — sample raw[0]=${JSON.stringify(
+        {
+          keys: Object.keys(rawAll[0] ?? {}),
+          headlineID_type: typeof (rawAll[0] ?? {})["HeadlineID"],
+          headlineID_value: (rawAll[0] ?? {})["HeadlineID"],
+          headlineText_type: typeof (rawAll[0] ?? {})["HeadlineText"],
+          headlineText_value: typeof (rawAll[0] ?? {})["HeadlineText"] === "string"
+            ? ((rawAll[0] ?? {})["HeadlineText"] as string).slice(0, 60)
+            : null,
+        },
+      )}`,
+      data: {
+        vendorCode: opts.vendorCode,
+        pageIndex: opts.pageIndex,
+        rawRowCount: rawAll.length,
+        filteredOutCount: filteredOut.length,
+        sample: filteredOut[0]
+          ? {
+              keys: Object.keys(filteredOut[0]),
+              headlineID_type: typeof filteredOut[0]["HeadlineID"],
+              headlineID_value: filteredOut[0]["HeadlineID"],
+            }
+          : null,
+      },
+    });
+  }
+  // Accept any non-null/non-empty HeadlineID; coerce to string in
+  // toNewsItemRow so we get a stable item_id even when the wire type
+  // is `number`.
+  const rows: Array<Record<string, unknown>> = rawAll
+    .filter((r) => {
+      if (!r) return false;
+      const id = (r as Record<string, unknown>)["HeadlineID"];
+      return id != null && id !== "";
+    })
     .map((r) => r as Record<string, unknown>);
   // The paging-bookmark header row carries {PagingBookmark:{HeadlineID:…}}
   // not HeadlineID-as-scalar — already filtered above. Read the response
