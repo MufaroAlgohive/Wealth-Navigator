@@ -36,6 +36,19 @@
  * the same "CLIENT-DATA GUARD" pattern already used in
  * `send-to-market/route.ts` for the exact same risk.
  *
+ * 2026-07-23: `MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS` (comma-separated
+ * `stock_holdings_c.user_id` values) lets a small, explicit set of REAL
+ * (non-test) users also pass this guard, for post-prod-switch acceptance
+ * testing by named staff — NOT a general relaxation. Deliberately a
+ * narrow allowlist rather than flipping `is_test`/wallet status on these
+ * real accounts, since that flag is read elsewhere in the app (CRM's
+ * UAT/live toggle, possibly fees) and flipping it would have side effects
+ * well beyond this one guard. Orders from an allowlisted real user still
+ * land in the exact same UAT-scoped IRESS sandbox (IRESS_UAT_ACCOUNT_CODE
+ * via LONGMARK CARE) every other order through this route uses — this
+ * only changes whether their own buys get parked at all, never where a
+ * parked order is ultimately sent.
+ *
  * Idempotency: keyed on `payload->>holding_id` — a retried mint request for
  * the same holding is a no-op success (`alreadyForwarded: true`), not a
  * second order.
@@ -136,19 +149,29 @@ export async function POST(req: Request) {
       { status: 404 },
     );
   }
-  const [{ data: testProfile }, { data: testWallet }] = await Promise.all([
-    supabase.retail.from("profiles").select("id").eq("id", holding.user_id).eq("is_test", true).maybeSingle(),
-    supabase.retail.from("wallets").select("user_id").eq("user_id", holding.user_id).eq("status", "test").maybeSingle(),
-  ]);
-  if (!testProfile && !testWallet) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          "Refused: this holding belongs to a real (non-test) client. MINT_CLIENT_ORDER forwarding is UAT-only for now — only is_test=true / wallet status='test' accounts may forward to IRESS.",
-      },
-      { status: 422 },
-    );
+  const allowlistedUserIds = new Set(
+    (process.env.MINT_CLIENT_ORDER_ALLOWLIST_USER_IDS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  const isAllowlisted = allowlistedUserIds.has(holding.user_id);
+
+  if (!isAllowlisted) {
+    const [{ data: testProfile }, { data: testWallet }] = await Promise.all([
+      supabase.retail.from("profiles").select("id").eq("id", holding.user_id).eq("is_test", true).maybeSingle(),
+      supabase.retail.from("wallets").select("user_id").eq("user_id", holding.user_id).eq("status", "test").maybeSingle(),
+    ]);
+    if (!testProfile && !testWallet) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Refused: this holding belongs to a real (non-test) client. MINT_CLIENT_ORDER forwarding is UAT-only for now — only is_test=true / wallet status='test' accounts, or an explicitly allowlisted user_id, may forward to IRESS.",
+        },
+        { status: 422 },
+      );
+    }
   }
 
   // No preflight here — this order PARKS with zero worker/IRESS contact.
