@@ -121,6 +121,10 @@ function makeWorkerEnv(overrides: Partial<{
     applicationLabel: "Mint-OEMS-Test",
     defaultExchange: "JSE",
     ipsServer: "IPSAPI",
+    newsDryRun: true,
+    newsAllowWrites: false,
+    newsVendorCode: "SENS",
+    newsMaxRows: 2000,
   };
 }
 

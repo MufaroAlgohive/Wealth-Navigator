@@ -184,12 +184,26 @@ export type NewsVendorCode = "SENSD" | "SENS" | "IRESS" | (string & {});
 export interface NewsHeadlineGetRequest {
   Header: IressHeader;
   /**
-   * Vendor code — must be `"SENSD"` for JSE SENS announcements on this
-   * CT build (confirmed 2026-07-20 via the working probe). The CT
-   * server returns the fault `"No valid vendor specified"` for any
-   * other value until the real-time `SENS` entitlement is flipped on.
+   * Single vendor code. Prefer `VendorCodes` (array form) — that matches
+   * the working envelope Andre shared from the IRESS dev console
+   * (2026-07-23, prod market-data session):
+   *
+   *   <VendorCodeArray>
+   *     <VendorCode>SENSD</VendorCode>
+   *   </VendorCodeArray>
+   *
+   * If only `VendorCode` is supplied we emit it inside the same
+   * `VendorCodeArray` shape so the on-the-wire request matches the
+   * dev-confirmed example exactly. The CT build also accepts the bare
+   * `<VendorCode>` form for backward compat, but the array form is
+   * the canonical one we should send on prod.
    */
-  VendorCode: NewsVendorCode;
+  VendorCode?: NewsVendorCode;
+  /**
+   * Array form. When set, takes precedence over `VendorCode` and is
+   * emitted as `<VendorCodeArray><VendorCode>X</VendorCode>…</VendorCodeArray>`.
+   */
+  VendorCodes?: NewsVendorCode[];
   /**
    * Inclusive lower bound, ISO-naive date `YYYY-MM-DDTHH:MM:SS`
    * (the CT server rejects the trailing `Z`). One trading day is the
@@ -206,6 +220,24 @@ export interface NewsHeadlineGetRequest {
    * market-data session). Operational upper bound is 500.
    */
   Count?: number;
+  /**
+   * Optional per-symbol filter (`SecurityCode`). The CT build exposes
+   * a `SecurityCode` column on the `NewsHeadlineGet` row grid
+   * (Andre's WSDL browser, 2026-07-22), suggesting the verb accepts a
+   * per-symbol scoping param. If the prod build honours it the
+   * response is filtered to that single instrument; if not, the
+   * vendor-broadcast (today's effective behaviour) is returned
+   * unchanged — the caller sees the row count without filtering and
+   * can decide. NOT propagated through the typed client today;
+   * forwarded as an extra parameter by the BFF probe only.
+   */
+  SecurityCode?: string;
+  /** Optional array-form security filter (sent as `SecurityCodeArray`). */
+  SecurityCodes?: string[];
+  /** Optional exchange scoping — `JSE` for SA equities. */
+  Exchange?: string;
+  /** Optional array-form exchange filter (sent as `ExchangeArray`). */
+  Exchanges?: string[];
 }
 
 /**
@@ -403,6 +435,35 @@ export interface IressClient {
    * (captured envelope from the 2026-07-20 working probe).
    */
   newsHeadlineGet(req: NewsHeadlineGetRequest): Promise<IressResponse<NewsStory>>;
+  /**
+   * `NewsVendorGet` — vendor-catalog verb on the IRESS Pro News service.
+   *
+   * Returns the catalog of news vendors the active session is entitled
+   * to (e.g. `ASXH`, `BRR`, `CCN`, `EDMN`, `ETMA`, `IRDN`, `IRE`,
+   * `JSEN`, `LWM`, `MSSAN`, `NAMN`, `NENS`, `NSX`, `SARSS`, `SENS`,
+   * `SENSD`, …). One row per entitled vendor on this session.
+   *
+   * Use case (2026-07-22 plan): the prod worker calls this on startup
+   * and persists the entitled list into `news_item_c.payload.scope
+   * .vendor_catalog` so the UI can show "your entitled news sources"
+   * without re-hitting the IRESS seat on every render.
+   *
+   * Distinguished from `newsHeadlineGet` (which returns the actual
+   * stories for a single vendor) by shape:
+   *   - `NewsVendorGet`  → vendor catalog only
+   *   - `NewsHeadlineGet` → stories filtered by vendor / date window
+   */
+  newsVendorGet(req: {
+    Header: IressHeader;
+    /** Optional vendor filter — returns the catalog row matching this code. */
+    Vendor?: string;
+  }): Promise<IressResponse<{
+    /** Vendor code (e.g. "SENS", "SENSD", "JSEN"). */
+    VendorCode: string;
+    /** Human-readable description (e.g. "SENS NEWS"). */
+    VendorDescription: string;
+    [k: string]: unknown;
+  }>>;
 
   // ── trading (IOS+) ──────────────────────────────────────────────
   orderCreate3(req: OrderCreate3Request): Promise<OrderCreate3Response>;

@@ -20,6 +20,62 @@ If your team can come to the session with the spec already marked up — green f
 
 Appreciate your help getting this in front of the right people early.
 
-Any low hanging  fruits we left behind, please flag. 
+Any low hanging  fruits we left behind, please flag.
 
 Best,
+
+================================================================================
+2026-07-22 14:00 — REPLY / FOLLOW-UP (juan)
+================================================================================
+
+Hi Charles,
+
+Quick follow-up on SENS — we now have a clean read on what your prod license
+is currently giving us, and it doesn't line up with what you said, so I want
+to flag it before we move further.
+
+== What we're seeing live (right now) ==
+
+We have a dedicated IRESS worker running against the production endpoint
+(https://webservices.iress.co.za/v4) using the same DFM@Mint credentials as
+on CT. The session authenticates cleanly. We then call NewsVendorGet with no
+Vendor filter to ask IRESS what news vendors this license is entitled to.
+IRESS returns exactly one row:
+
+  VendorCode: SENSD
+  VendorDescription: "SENS NEWS DELAYED"
+
+When we then call NewsHeadlineGet with VendorCode=SENS, IRESS responds with:
+
+  ErrorNumber: -1
+  Message: "soap:Receiver — No valid vendor specified"
+
+So on the prod seat that DFM@Mint is currently provisioned for, real-time
+SENS is NOT entitled. Only SENSD (delayed) is.
+
+== What we need from your side ==
+
+Two possibilities — please pick one:
+
+  (a) The real-time SENS entitlement was supposed to be turned on for
+      DFM@Mint on the prod seat and it isn't yet. In which case please ask
+      the IRESS ops team to enable it for our company on production, then
+      reply with a confirmation timestamp / ticket ref and we'll re-probe.
+
+  (b) The real-time SENS entitlement for DFM@Mint is intentionally not
+      available on this seat (cost, contract, or vendor policy) and we
+      should plan around SENSD only. In which case, please confirm
+      explicitly so we can lock the data-source label and move on.
+
+Either is fine — we just need to know which one is true so we can flip the
+pilot-write gate on the prod news worker (IRESS_NEWS_DRY_RUN=0 +
+IRESS_NEWS_ALLOW_WRITES=1) without ambiguity. With SENSD only, we can still
+ship the news feed on the prod seat today; with real-time SENS enabled, we'd
+prefer to wait for that so we ingest the higher-quality stream from day one.
+
+For reference — what we're calling (one-liner):
+
+  POST webservices.iress.co.za/v4 → NewsHeadlineGet with Header.SessionKey
+  and VendorCode=SENS, DateTimeStart, DateTimeEnd, Count.
+
+Thanks,

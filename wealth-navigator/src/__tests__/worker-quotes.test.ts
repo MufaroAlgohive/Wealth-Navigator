@@ -38,6 +38,10 @@ function makeEnv(overrides: Partial<WorkerEnv> = {}): WorkerEnv {
     fxExchange: "FX",
     moneyMarketExchange: "MM",
     ipsServer: "IPSAPI",
+    newsDryRun: true,
+    newsAllowWrites: false,
+    newsVendorCode: "SENS",
+    newsMaxRows: 2000,
     ...overrides,
   };
 }

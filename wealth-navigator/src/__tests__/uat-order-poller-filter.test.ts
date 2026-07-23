@@ -151,6 +151,10 @@ function makeWorkerEnv(overrides: Partial<{ uatMode: boolean; uatAccountCode: st
     applicationLabel: "Mint-OEMS-Worker-Test",
     defaultExchange: "JSE",
     ipsServer: "IPSAPI",
+    newsDryRun: true,
+    newsAllowWrites: false,
+    newsVendorCode: "SENS",
+    newsMaxRows: 2000,
   };
 }
 

@@ -1342,14 +1342,45 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
      */
     async newsHeadlineGet(req: NewsHeadlineGetRequest): Promise<IressResponse<NewsStory>> {
       requireSessionKey(req.Header, "NewsHeadlineGet");
-      require(req.VendorCode, "VendorCode", "NewsHeadlineGet");
+      const vendorCodes =
+        req.VendorCodes && req.VendorCodes.length > 0
+          ? req.VendorCodes
+          : req.VendorCode
+            ? [req.VendorCode]
+            : null;
+      if (!vendorCodes || vendorCodes.length === 0) {
+        throw new IressError(-1, "NewsHeadlineGet", "VendorCode (or VendorCodes) required");
+      }
       require(req.DateTimeStart, "DateTimeStart", "NewsHeadlineGet");
       require(req.DateTimeEnd, "DateTimeEnd", "NewsHeadlineGet");
+
+      // Both envelope shapes are valid on IRESS Pro:
+      //
+      //   Bare form (CT build, 2026-07-20):
+      //     <VendorCode>SENSD</VendorCode>
+      //
+      //   Array form (Andre's working envelope, 2026-07-23, prod
+      //   market-data session):
+      //     <VendorCodeArray>
+      //       <VendorCode>SENSD</VendorCode>
+      //     </VendorCodeArray>
+      //
+      // We emit BOTH so whichever shape the active server prefers
+      // wins; the duplicate VendorCode entry is harmless — IRESS
+      // reads the first matching element. (Safer than picking one
+      // and being wrong.)
       const parameters: Record<string, unknown> = {
-        VendorCode: req.VendorCode,
+        VendorCode: vendorCodes[0],
+        VendorCodeArray: { VendorCode: vendorCodes },
         DateTimeStart: req.DateTimeStart,
         DateTimeEnd: req.DateTimeEnd,
         ...(req.Count != null ? { Count: req.Count } : {}),
+        ...(req.SecurityCodes && req.SecurityCodes.length > 0
+          ? { SecurityCodeArray: { SecurityCode: req.SecurityCodes } }
+          : {}),
+        ...(req.Exchanges && req.Exchanges.length > 0
+          ? { ExchangeArray: { Exchange: req.Exchanges } }
+          : {}),
       };
       const result = await transport.call({
         method: "NewsHeadlineGet",
@@ -1382,6 +1413,55 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           "NewsHeadlineGet",
           mapped.Header.ErrorDescription ??
             `NewsHeadlineGet error ${mapped.Header.ErrorNumber}`,
+        );
+      }
+      return mapped;
+    },
+
+    /**
+     * `NewsVendorGet` — vendor-catalog verb. Returns the list of news
+     * vendors the active session is entitled to (e.g. the 20-vendor
+     * CAT-shaped response Andre captured in his WSDL browser on
+     * 2026-07-22: ASXH, BRR, CCN, EDMN, ETMA, ETMMR, ETMN, FNN, G,
+     * GNW, IRDN, IRE, JSEN, LWM, MSSAN, NAMN, NENS, NSX, SARSS,
+     * SENS).
+     *
+     * Entitlement gate: same as `newsHeadlineGet`. Runs on the prod
+     * market-data session.
+     */
+    async newsVendorGet(req: {
+      Header: IressHeader;
+      Vendor?: string;
+    }): Promise<IressResponse<{ VendorCode: string; VendorDescription: string; [k: string]: unknown }>> {
+      requireSessionKey(req.Header, "NewsVendorGet");
+      const parameters: Record<string, unknown> = {};
+      if (req.Vendor && req.Vendor.trim() !== "") {
+        parameters["Vendor"] = req.Vendor.trim();
+      }
+      const result = await transport.call({
+        method: "NewsVendorGet",
+        header: makeHeader({
+          sessionKey: req.Header.SessionKey,
+          requestID: req.Header.RequestID,
+          updates: false,
+          timeout: req.Header.Timeout ?? 25,
+          pageSize: req.Header.PageSize ?? 1000,
+          pagingBookmark: req.Header.PagingBookmark ?? "",
+          pagingDirection: req.Header.PagingDirection ?? 0,
+          waitForResponse: req.Header.WaitForResponse ?? true,
+        }),
+        parameters,
+      });
+      const mapped = mapResponse<{ VendorCode: string; VendorDescription: string; [k: string]: unknown }>({
+        header: result.header,
+        dataRows: result.dataRows,
+      });
+      if (mapped.Header.ErrorNumber !== 0) {
+        throw new IressError(
+          mapped.Header.ErrorNumber,
+          "NewsVendorGet",
+          mapped.Header.ErrorDescription ??
+            `NewsVendorGet error ${mapped.Header.ErrorNumber}`,
         );
       }
       return mapped;

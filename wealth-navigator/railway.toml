@@ -1,8 +1,14 @@
 # Railway must use Root Directory = wealth-navigator (this folder).
 # Build context is wealth-navigator/ so Dockerfile COPY paths resolve correctly.
+#
+# dockerfilePath is intentionally NOT set here. Each Railway service sets
+# its own dockerfilePath so the same source tree can be deployed twice —
+# once as `Dockerfile` (UAT/CT entrypoint: main.ts) and once as
+# `Dockerfile.prod` (PROD entrypoint: main-prod.ts). Hardcoding the
+# Dockerfile here would force every service in the project to use the same
+# Dockerfile, breaking the IRESS seat isolation.
 [build]
 builder = "dockerfile"
-dockerfilePath = "workers/iress-ingest/Dockerfile"
 
 [deploy]
 restartPolicyType = "on_failure"

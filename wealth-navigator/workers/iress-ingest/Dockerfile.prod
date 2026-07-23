@@ -1,0 +1,19 @@
+# Build context: wealth-navigator/ (repo app root)
+# Identical to Dockerfile except for the CMD — `main-prod.ts` owns the
+# PROD IRESS license seat; `main.ts` (the default) owns the UAT seat.
+# Both images are built from the same source tree; deploy one Railway
+# service per Dockerfile. Per `AGENTS.md`: UAT and production IRESS
+# seats MUST stay strictly isolated, no real client money.
+FROM oven/bun:1.1 AS base
+WORKDIR /app
+
+COPY package.json ./
+RUN bun install
+
+COPY tsconfig.json ./
+COPY src ./src
+COPY workers/iress-ingest ./workers/iress-ingest
+
+ENV NODE_ENV=production
+WORKDIR /app
+CMD ["bun", "workers/iress-ingest/src/main-prod.ts"]

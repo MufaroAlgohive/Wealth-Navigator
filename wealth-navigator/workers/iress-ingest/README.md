@@ -140,6 +140,91 @@ Set `IRESS_UAT_MODE=0` on Railway and redeploy. The endpoints go 403, the loop i
 | `securities_c` | Read `id` by `symbol`; `last_price` update on each tick; optional instrument upsert when `IRESS_WORKER_INSTRUMENT_SYNC=1` | `quotes.ts` |
 | `stock_intraday_c` | Insert intraday snapshot (`current_price` in **cents**) | `quotes.ts` |
 | `oems_order_audit` | Upsert observed order rows from `OrderPadGetByAccount` | `orders.ts` |
+| `news_item_c` (prod worker only) | Upsert SENS headlines + vendor catalog marker row | `news-ingest.ts` |
+
+## Prod worker (Railway `Iress-Worker-Prod`)
+
+A second Railway service, **distinct from the UAT worker above**, that owns the IRESS **production** license seat. Wired 2026-07-22 to feed `news_item_c` from the prod `NewsHeadlineGet` (SENS / SENSD).
+
+**Rule of thumb:** the UAT worker (this README, `main.ts`) NEVER holds the prod seat; the prod worker (`main-prod.ts`) NEVER holds the UAT seat. Each `WORKER_ID` row in `worker_session_metadata` carries its own sticky `ApplicationID` so the IRESS server reconnects each seat to the right prior session.
+
+### Enable
+
+Set on Railway (separate service from the UAT worker):
+
+```
+IRESS_MODE=live
+IRESS_MARKET_DATA_PROD=1
+IRESS_MARKETDATA_BASE_URL=https://webservices.iress.co.za/v4
+IRESS_USERNAME=…         # prod credential — distinct from the DFM@Mint CT creds
+IRESS_PASSWORD=…
+IRESS_COMPANY_NAME=…     # prod company — distinct from "Mint"
+WORKER_ID=iress-ingest-prod-1
+WORKER_HTTP_TOKEN=<new, separate from UAT>
+WORKER_REQUIRE_HTTP_TOKEN=1
+
+SUPABASE_URL=https://nnwzhxfjpjbzujevwzlh.supabase.co   # institutional
+SUPABASE_SERVICE_ROLE_KEY=…
+
+IRESS_NEWS_INGEST=1
+IRESS_NEWS_DRY_RUN=1          # default — shadow run; FLIP only after the dry-run probes pass
+IRESS_NEWS_ALLOW_WRITES=0     # default — no writes to news_item_c
+IRESS_NEWS_VENDOR=SENS        # real-time; falls back to SENSD on 25010 / 25018
+IRESS_NEWS_MAX_ROWS=2000      # paging loop cap; floor 500
+
+# Worker-wide gates STAY dry-run on this service:
+IRESS_WORKER_DRY_RUN=1
+SUPABASE_ALLOW_WRITES=0
+```
+
+The Dockerfile path on Railway is **`workers/iress-ingest/Dockerfile.prod`** (not `Dockerfile`). Root directory is still `wealth-navigator`.
+
+### What runs vs. what doesn't
+
+| Loop | Started |
+|---|---|
+| `newsIngestLoop` | ✅ |
+| One-shot vendor catalog fetch | ✅ (startup) |
+| `runHealthLoop` | ✅ |
+| HTTP API (`/debug/news-vendor-probe`, `/health`, …) | ✅ |
+| Quote poll (watchlist PricingQuoteGet) | ❌ |
+| Order poll (`OrderPadGetByAccount`) | ❌ |
+| UAT order pad (`/uat/send-to-market`, `/uat/execution-stream`) | ❌ |
+| Time-series panel feeds (ALSI / sector / curves) | ❌ |
+| IPS / FIX+ analytics | ❌ |
+| Retail ingest (`securities_c` / `stock_intraday_c`) | ❌ |
+
+### Pilot-write gate
+
+Worker-wide gates (`IRESS_WORKER_DRY_RUN=1` + `SUPABASE_ALLOW_WRITES=0`) stay ON. The news loop has its OWN gate in `env.ts`:
+
+- `newsDryRun` (`IRESS_NEWS_DRY_RUN`, default `true`)
+- `newsAllowWrites` (`IRESS_NEWS_ALLOW_WRITES`, default `false`)
+
+The news loop writes to `news_item_c` ONLY when **both** are flipped to dry-run-off (`0`) and writes-on (`1`). Every other loop keeps the worker-wide dry-run posture intact — exactly what `AGENTS.md` requires.
+
+### Prod entrypoint details
+
+- `workers/iress-ingest/src/main-prod.ts` — news-only entrypoint. Fails fast if `IRESS_MARKET_DATA_PROD` is unset, or if `IRESS_MARKETDATA_BASE_URL` still points at `webservices-ct`. Refuses to start with `IRESS_MODE=live` and any of `IRESS_USERNAME` / `IRESS_PASSWORD` / `IRESS_COMPANY_NAME` missing.
+- `workers/iress-ingest/Dockerfile.prod` — identical to `Dockerfile` except `CMD ["bun","workers/iress-ingest/src/main-prod.ts"]`.
+- `workers/iress-ingest/src/news-ingest.ts`:
+  - **Vendor catalog** — `syncNewsVendorCatalog()` calls `client.newsVendorGet()` once per restart, persists the entitled catalog as a synthetic `source="__catalog__"` marker row in `news_item_c.payload.scope.vendor_catalog`. Read by the BFF when `?vendorCatalog=1`.
+  - **Paging** — `syncNewsHeadlines()` paginates `NewsHeadlineGet` via `PagingBookmark` with a 5-page cap (the CT build has a known stuck-bookmark bug; the `MAX_LEGACY_IPS_PAGES` pattern in `live.ts:864` is the existing model). Default `Count=2000`, floor 500.
+  - **Vendor fallback** — `SENS` real-time; on 25010 / 25018 retry once with `SENSD` and stamp `payload.scope.vendor_fallback=true`.
+  - **Parsing** — `parseHeadlineDateTime()` accepts both `YYYY/MM/DD HH:MM:SS` (the CT wire form, slashes + space) and the ISO-with-T form. `SecurityCode` / `Exchange` / `MarketSensitive` / `MarketSensitiveList` are persisted into `payload`.
+  - **Universe tag** — every row's `SecurityCodeList` is intersected with `env.watchlistEntries[].symbol` ∪ `securities_c.symbol` (retail) ∪ `oems_instrument_universe_c.code` (institutional). Cached per loop. `payload.scope.matched` + `payload.scope.matched_codes` surface "matches your universe" badges in the UI.
+  - **Pilot-write gate** — `dryRun = env.newsDryRun || !env.newsAllowWrites || !isLive || !supabase`. Worker-wide gate is NOT consulted by this loop.
+
+### Dry-run go-live sequence
+
+Do NOT flip the per-loop gate until ALL of the following are green:
+
+1. Worker boots in dry-run. Tail logs; expect `news_vendor_catalog` event with the entitled vendor catalog (Andre's WSDL browser capture shows ASXH/BRR/CCN/…/SARSS/SENS for the prod seat) and `news_ingest_dry_run` events on each cadence tick. Zero Supabase writes.
+2. `curl https://iress-worker-prod.up.railway.app/debug/news-vendor-probe?vendor=SENS` returns non-empty `DataRows` + 0 errors. Paging-bookmark header row present.
+3. `curl '…/debug/news-vendor-probe?vendor=SENS&symbol=NPN'` returns non-empty filtered result — confirms per-symbol filter works on the prod build.
+4. `curl /api/iress/news?vendor=SENS&vendorCatalog=1` from the Vercel BFF returns the same payload + `vendor_catalog` array.
+5. `/api/worker-health` shows the prod worker as `live`, distinct `WORKER_ID=iress-ingest-prod-1`, separate `lastNewsSyncAt`.
+6. (Opt-in) Flip `IRESS_NEWS_DRY_RUN=0` + `IRESS_NEWS_ALLOW_WRITES=1` and redeploy. Rollback is a single env flip.
 
 ## npm script
 

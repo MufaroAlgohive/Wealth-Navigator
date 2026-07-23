@@ -392,6 +392,7 @@ async function probeNewsVendor(
   pageSize: number,
   timeout: number,
   includeBody: boolean,
+  securityCode = "",
 ): Promise<NewsProbeResult> {
   const started = Date.now();
   try {
@@ -402,6 +403,11 @@ async function probeNewsVendor(
     const md = await getMarketDataSession();
     void marketDataProdEnabled(); // kept for symmetry / future diagnostics
     const client = md ? md.client : getIressClient("live");
+    // The IRESS `NewsHeadlineGet` request shape includes an optional
+    // `SecurityCode` parameter that some prod builds accept for
+    // per-symbol scoping (Andre's WSDL browser capture 2026-07-22).
+    // Forward it through when supplied; if the build ignores it, the
+    // vendor-broadcast result lands unchanged.
     const res = await client.newsHeadlineGet({
       Header: {
         SessionKey: md ? md.sessionKey : session.iressSessionKey,
@@ -417,6 +423,7 @@ async function probeNewsVendor(
       DateTimeStart: dateTimeStart,
       DateTimeEnd: dateTimeEnd,
       Count: pageSize,
+      ...(securityCode ? { SecurityCode: securityCode } : {}),
     });
     const headlines: NewsProbeRow[] = res.DataRows.slice(0, 10).map((s) => ({
       storyId: s.StoryId,
@@ -1409,6 +1416,227 @@ export interface HttpApiHandle {
 }
 
 /**
+ * Run the orders-entitlement probe against the prod endpoint without
+ * requiring an HTTP round-trip. Exported so the prod worker can also
+ * run it on startup (`IRESS_DEBUG_ORDERS_PROBE=1`), which is the only
+ * reliable way to see the result when the Railway public proxy 502s.
+ *
+ * Returns `{ status, body }` where `status` is the HTTP-shaped status
+ * code the public probe would have used; `body` is the JSON envelope.
+ */
+export async function runOrdersEntitlementProbe(opts: {
+  deps: HttpApiDeps;
+  probePad: boolean;
+  accountOverride?: string | null;
+}): Promise<{ status: number; body: Record<string, unknown> }> {
+  const { deps, probePad, accountOverride } = opts;
+  const startedAt = Date.now();
+  const prodEndpoint = marketDataBaseUrl();
+  const iosServer = (process.env.IRESS_IOS_SERVER ?? "MINT_CT").trim() || "MINT_CT";
+  const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
+  const fixServer = (process.env.IRESS_FIX_SERVER ?? "FIXPLUSAPI").trim() || "FIXPLUSAPI";
+
+  const isLive = deps.env.iressMode === "live" || deps.env.iressMode === "wsdl-stub";
+  if (!isLive) {
+    return {
+      status: 503,
+      body: {
+        ok: false,
+        status: 503,
+        code: "iress_mode_not_live",
+        error: `Cannot probe in iressMode=${deps.env.iressMode}; switch the worker to live`,
+        iressMode: deps.env.iressMode,
+      },
+    };
+  }
+
+  let probeClient: ReturnType<typeof createLiveIressClient> | null = null;
+  let probeSessionKey: string | null = null;
+  const results: Record<
+    string,
+    {
+      ok: boolean;
+      errorNumber: number | null;
+      errorDescription: string | null;
+      serviceSessionKeyPrefix: string | null;
+      elapsedMs: number;
+    }
+  > = {};
+
+  try {
+    const creds = getIressProdCredentialsFromEnv() ?? getIressCredentialsFromEnv();
+    if (!creds.userName || !creds.password) {
+      return {
+        status: 503,
+        body: {
+          ok: false,
+          status: 503,
+          code: "iress_credentials_unconfigured",
+          error: "IRESS_USERNAME / IRESS_PASSWORD not configured on this worker",
+          endpoint: prodEndpoint,
+        },
+      };
+    }
+    probeClient = createLiveIressClient({ baseUrl: prodEndpoint });
+    const applicationId = `Mint-OEMS-OrdersProbe-${deps.env.workerId}-${Date.now()}`;
+    const sess = await probeClient.iressSessionStart({
+      Locale: "en-ZA",
+      ApplicationID: applicationId,
+      ApplicationLabel: `Mint-OEMS-OrdersProbe`,
+      UserName: creds.userName,
+      CompanyName: creds.company ?? creds.userName.split("@").pop() ?? "",
+      Password: creds.password,
+    });
+    if (!sess.IRESSSessionKey) {
+      return {
+        status: 502,
+        body: {
+          ok: false,
+          status: 502,
+          code: "session_start_failed",
+          error: "IRESSSessionStart returned no session key on the prod endpoint",
+          endpoint: prodEndpoint,
+          applicationId,
+        },
+      };
+    }
+    probeSessionKey = sess.IRESSSessionKey;
+
+    for (const target of [
+      { Service: "IOSPlus" as IressService, Server: iosServer },
+      { Service: "IPS" as IressService, Server: ipsServer },
+      { Service: "FIXPlus" as IressService, Server: fixServer },
+    ]) {
+      const t0 = Date.now();
+      try {
+        const r = await probeClient.serviceSessionStart({
+          IRESSSessionKey: probeSessionKey,
+          Service: target.Service,
+          Server: target.Server,
+        });
+        results[target.Service] = {
+          ok: !!r.ServiceSessionKey,
+          errorNumber: null,
+          errorDescription: r.ServiceSessionKey ? null : "no ServiceSessionKey returned",
+          serviceSessionKeyPrefix: r.ServiceSessionKey ? r.ServiceSessionKey.slice(0, 8) : null,
+          elapsedMs: Date.now() - t0,
+        };
+        if (r.ServiceSessionKey) {
+          try {
+            await probeClient.serviceSessionEnd({
+              ServiceSessionKey: r.ServiceSessionKey,
+            });
+          } catch {
+            /* best-effort teardown */
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const code = err instanceof IressError ? err.code : null;
+        results[target.Service] = {
+          ok: false,
+          errorNumber: code,
+          errorDescription: msg,
+          serviceSessionKeyPrefix: null,
+          elapsedMs: Date.now() - t0,
+        };
+      }
+    }
+
+    let padProbe: {
+      attempted: boolean;
+      ok: boolean;
+      accountCode: string | null;
+      rowCount: number | null;
+      errorNumber: number | null;
+      errorDescription: string | null;
+      elapsedMs: number | null;
+    } = {
+      attempted: false,
+      ok: false,
+      accountCode: null,
+      rowCount: null,
+      errorNumber: null,
+      errorDescription: null,
+      elapsedMs: null,
+    };
+    if (probePad) {
+      const accountCode =
+        accountOverride?.trim() ||
+        deps.env.iressAccountCode.split(",")[0]?.trim() ||
+        "";
+      if (!accountCode) {
+        padProbe = {
+          ...padProbe,
+          attempted: true,
+          errorDescription:
+            "no account code supplied (set IRESS_ACCOUNT_CODE or pass ?account=…)",
+        };
+      } else {
+        padProbe = {
+          attempted: true,
+          ok: false,
+          accountCode,
+          rowCount: null,
+          errorNumber: null,
+          errorDescription:
+            "OrderPadGetByAccount needs a live IOSPlus ServiceSessionKey (the probe releases each key after confirming entitlement); re-run with the orders loop active to verify the account-level probe path.",
+          elapsedMs: null,
+        };
+      }
+    }
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        endpoint: prodEndpoint,
+        workerId: deps.env.workerId,
+        applicationId,
+        sessionKeyPrefix: probeSessionKey.slice(0, 8),
+        services: results,
+        padProbe,
+        probeSummary: {
+          iosplusEntitled: results.IOSPlus?.ok === true,
+          ipsEntitled: results.IPS?.ok === true,
+          fixplusEntitled: results.FIXPlus?.ok === true,
+          allOrdersEntitled: results.IOSPlus?.ok === true,
+        },
+        elapsedMs: Date.now() - startedAt,
+        probedAt: new Date().toISOString(),
+        build: PROBE_BUILD,
+        note:
+          "ServiceSessionStart is entitlement-only — it does NOT place or amend orders. Each service key is released before this probe returns. Safe to call against the prod seat.",
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = err instanceof IressError ? err.code : null;
+    return {
+      status: 200,
+      body: {
+        ok: false,
+        endpoint: prodEndpoint,
+        workerId: deps.env.workerId,
+        services: results,
+        error: { code, message: msg },
+        elapsedMs: Date.now() - startedAt,
+        probedAt: new Date().toISOString(),
+        build: PROBE_BUILD,
+      },
+    };
+  } finally {
+    if (probeSessionKey && probeClient) {
+      try {
+        await probeClient.iressSessionEnd({ IRESSSessionKey: probeSessionKey });
+      } catch {
+        /* best-effort teardown */
+      }
+    }
+  }
+}
+
+/**
  * Internal request dispatcher — exported for unit tests. The production
  * `startHttpApi()` wraps this in a `node:http` server; tests can call
  * it directly with a fake req/res pair to assert handler behavior
@@ -2043,11 +2271,12 @@ export async function handleRequest(
    * probe).
    *
    * Query params (all optional):
-   *   - `vendor`       default `"SENSD"` ("SENS NEWS DELAYED" — the
-   *                    vendor code the CT build returns from
-   *                    `NewsVendorGet` and accepts on `NewsHeadlineGet`
-   *                    for JSE SENS announcements on the prod
-   *                    market-data session).
+   *   - `vendor`       default `"SENSD"` (the CT/UAT vendor code). The
+   *                    prod-side BFF default is `"SENS"` (real-time);
+   *                    when the prod worker is online, the BFF forwards
+   *                    `SENS` and the worker auto-falls-back to
+   *                    `"SENSD"` (delayed) on 25010 / 25018 entitlement
+   *                    faults.
    *   - `dateFrom`     ISO-naive `YYYY-MM-DDTHH:MM:SS` (no `Z`).
    *                    Default: today 00:00:00 UTC.
    *   - `dateTo`       ISO-naive `YYYY-MM-DDTHH:MM:SS`. Default:
@@ -2055,8 +2284,18 @@ export async function handleRequest(
    *   - `pageSize`     default 50, capped at 1000 (CT max)
    *   - `timeout`      default 25, capped at 25 (CT ceiling)
    *   - `includeBody`  "1" to include a 200-char preview of each story body
-   *                    (default off — the body may be large; keep responses
-   *                    bounded)
+   *   - `symbol`       optional per-symbol filter (`SecurityCode`).
+   *                    Forwarded to `NewsHeadlineGet.SecurityCode` so the
+   *                    BFF / UI can target a single instrument. Andre's
+   *                    WSDL browser (2026-07-22) shows the prod build
+   *                    exposes a `SecurityCode` column on the row grid;
+   *                    if the prod build doesn't honour the param, the
+   *                    worker falls back to vendor-broadcast (today's
+   *                    effective behaviour) and surfaces the ignored
+   *                    param in the response metadata.
+   *   - `vendorCatalog` "1" to also surface the entitled vendor catalog
+   *                    persisted by the prod worker (per the 2026-07-22
+   *                    `news_vendor_catalog` plan).
    *
    * Rate-limit: the per-process `newsProbeThrottleOrError()` enforces a
    * minimum 10s gap between probes (env-overridable via
@@ -2105,8 +2344,88 @@ export async function handleRequest(
     const timeoutRaw = Number(url.searchParams.get("timeout") ?? "25");
     const timeout = Number.isFinite(timeoutRaw) ? Math.min(25, Math.max(1, Math.trunc(timeoutRaw))) : 25;
     const includeBody = url.searchParams.get("includeBody") === "1";
-    const result = await probeNewsVendor(deps, vendor, dateTimeStart, dateTimeEnd, pageSize, timeout, includeBody);
-    send(res, 200, result);
+    const symbol = url.searchParams.get("symbol")?.trim() ?? "";
+    const includeCatalog = url.searchParams.get("vendorCatalog") === "1";
+    const result = await probeNewsVendor(
+      deps,
+      vendor,
+      dateTimeStart,
+      dateTimeEnd,
+      pageSize,
+      timeout,
+      includeBody,
+      symbol,
+    );
+    // When `?vendorCatalog=1`, attach the most recent persisted catalog
+    // marker row so the UI can render the entitled-vendor dropdown
+    // without a second round-trip. Read from `news_item_c` directly —
+    // no Supabase realtime subscription needed.
+    let vendorCatalog: Array<{ vendorCode: string; vendorDescription: string }> | null = null;
+    if (includeCatalog && deps.supabase) {
+      try {
+        const { data } = await deps.supabase
+          .from("news_item_c")
+          .select("payload")
+          .eq("source", "__catalog__")
+          .order("ingested_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const cat = (data?.payload as { scope?: { vendor_catalog?: unknown } } | null)
+          ?.scope?.vendor_catalog;
+        if (Array.isArray(cat)) {
+          vendorCatalog = cat
+            .filter(
+              (r): r is { vendorCode: string; vendorDescription: string } =>
+                typeof r === "object" &&
+                r !== null &&
+                typeof (r as { vendorCode?: unknown }).vendorCode === "string" &&
+                typeof (r as { vendorDescription?: unknown }).vendorDescription === "string",
+            )
+            .map((r) => ({
+              vendorCode: r.vendorCode,
+              vendorDescription: r.vendorDescription,
+            }));
+        }
+      } catch {
+        /* best-effort */
+      }
+    }
+    send(res, 200, {
+      ...result,
+      ...(symbol ? { symbolFilterRequested: symbol } : {}),
+      ...(vendorCatalog !== null ? { vendorCatalog } : {}),
+    });
+    return;
+  }
+
+  // -----------------------------------------------------------------------
+  // /debug/orders-entitlement-probe — operator diagnostic for the
+  // prod→CT cutover. Read-only + non-ordering: opens a fresh IRESS wire
+  // session against the prod endpoint (no shared state with the prod
+  // market-data session), attempts `ServiceSessionStart` for IOSPlus /
+  // IPS / FIXPlus, optionally calls `OrderPadGetByAccount` when
+  // `IRESS_ACCOUNT_CODE` is set, and tears everything down before
+  // returning. NEVER places or amends an order.
+  //
+  // Purpose: confirm the prod seat actually carries the orders
+  // entitlement (CT-seat entitlement does not auto-provision on prod).
+  // Without this probe, the UAT→prod cutover would silently break the
+  // blotter / new-order dialog the moment we stop the CT worker.
+  //
+  // Query params:
+  //   ?probePad=1   additionally call OrderPadGetByAccount against the
+  //                  account code in `IRESS_ACCOUNT_CODE` (the comma-split
+  //                  first value, mirroring the /orders handler). Off by
+  //                  default — only enabled when an operator wants to
+  //                  verify a real prod account before cutover.
+  // -----------------------------------------------------------------------
+  if (req.method === "GET" && path === "/debug/orders-entitlement-probe") {
+    const result = await runOrdersEntitlementProbe({
+      deps,
+      probePad: url.searchParams.get("probePad") === "1",
+      accountOverride: url.searchParams.get("account") ?? null,
+    });
+    send(res, result.status ?? 200, result.body);
     return;
   }
 
