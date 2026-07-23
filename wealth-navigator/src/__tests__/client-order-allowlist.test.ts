@@ -62,7 +62,14 @@ function makeMockSupabase(opts: {
 
 beforeEach(() => {
   vi.resetModules();
-  process.env.IRESS_UAT_MODE = "true";
+  // Production-defaults test setup: IRESS_UAT_MODE is intentionally NOT set
+  // (matches the post-2026-07-23 production posture). The route uses
+  // isUatEnv() which returns false → uatTest=false on the audit row.
+  delete process.env.IRESS_UAT_MODE;
+  delete process.env.IRESS_BASE_URL;
+  // The 503 guard requires IRESS_ACCOUNT_CODE — set a fake one for the
+  // test so the guard doesn't fire before the allowlist logic.
+  process.env.IRESS_ACCOUNT_CODE = "56378";
 });
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
