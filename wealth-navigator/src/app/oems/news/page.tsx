@@ -103,6 +103,24 @@ export default function NewsPage() {
   });
   const items = newsQ.data?.items ?? [];
 
+  // Persisted SENS rows from `news_item_c`. The worker writes here on
+  // every loop tick (default 6h), so this is the durable source. The
+  // IRESS prod passthrough (`/api/iress/news` below) is the live,
+  // ephemeral mirror that always reflects "what's on the wire right
+  // now"; both are merged into the SENS bucket so the UI stays
+  // populated even when the Railway public proxy 502s.
+  const sensDbQ = useQuery<NewsResponse>({
+    queryKey: ["bff-news-sens-db"],
+    queryFn: async () => {
+      const r = await fetch("/api/news?category=SENS&limit=100", { cache: "no-store" });
+      if (!r.ok) return { items: [], count: 0, source: "unconfigured" } as NewsResponse;
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
+    ...queryOpts("reference"),
+  });
+
   // JSE SENS announcements from the IRESS PROD feed (`NewsHeadlineGet`
   // passthrough, captured envelope 2026-07-20 — see
   // `wealth-navigator/docs/SENS_NEWSHEADLINE_WIRE.md`).
@@ -203,7 +221,17 @@ export default function NewsPage() {
     priority: "high",
     tickers: h.relatedCodes ?? [],
   }));
-  const sens = [...sensFromIress, ...items.filter((n) => n.category.toUpperCase() === "SENS")];
+  // Persisted SENS rows from `news_item_c`. These flow through the BFF
+  // `/api/news?category=SENS` and are tagged `category="SENS"` by the
+  // worker. They survive worker restarts and proxy outages, so they're
+  // the durable backbone of the SENS tab. Live IRESS passthrough rows
+  // (above) take priority on dedupe by id.
+  const sensFromDb: NewsItem[] = (sensDbQ.data?.items ?? []).filter((n) => n.category.toUpperCase() === "SENS");
+  const sens = [
+    ...sensFromIress,
+    ...items.filter((n) => n.category.toUpperCase() === "SENS"),
+    ...sensFromDb,
+  ];
   const wire = items.filter((n) => n.category.toUpperCase() !== "SENS");
 
   const all = items;
