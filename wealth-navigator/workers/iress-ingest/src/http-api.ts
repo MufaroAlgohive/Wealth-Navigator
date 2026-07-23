@@ -3706,8 +3706,16 @@ async function uatSendToMarket(
     return { ok: false, status: 400, code: "invalid_symbol", message: "Audit row has no symbol" };
   }
   const side = (audit.side ?? "buy").toLowerCase() === "sell" ? 2 : 1; // 1=BUY, 2=SELL
-  const orderType = audit.price_cents != null ? "LMT" : "MKT";
-  const priceRands = audit.price_cents != null ? Number(audit.price_cents) / 100 : undefined;
+  // 2026-07-23: market orders only, for now — audit.price_cents used to
+  // silently make EVERY order a LMT at that price (mint always supplies a
+  // reference price, so a true MKT order never actually happened). Force
+  // MKT and omit Price from the IRESS order entirely; price_cents is still
+  // stored on the audit row for display/reference (expected-fill, arrival
+  // mid), it's just no longer sent to IRESS as a limit price. Revert this
+  // one line to restore LMT support once an explicit order_type choice is
+  // wired through from the caller.
+  const orderType = "MKT" as const;
+  const priceRands = undefined;
   const exchange = "JSE";
   const tif = "DAY";
 

@@ -154,7 +154,14 @@ async function insertAuditRow(
     payload: {
       book_id: opts.bookId ?? null,
       broker: opts.broker ?? null,
-      order_type: input.price_cents != null ? "limit" : "market",
+      // 2026-07-23: market orders only, for now — the worker
+      // (http-api.ts) forces MKT and omits Price regardless of
+      // price_cents, so this label must say "market" too rather than
+      // implying a limit order was actually sent. `limitPrice` (key kept
+      // for existing readers — execution/fills/send-to-market routes) is
+      // now a reference/expected price only, never an actual submitted
+      // limit.
+      order_type: "market",
       strategy: opts.bookId ?? null,
       security_id: sec.id,
       isin: sec.isin ?? null,
