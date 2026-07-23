@@ -370,7 +370,25 @@ function toNewsItemRow(
   published_at: string;
   payload: Record<string, unknown>;
 } | null {
-  const storyIdRaw = row["HeadlineID"];
+  // IRESS `NewsHeadlineGet` returns rows with EITHER the CT
+  // documentation keyset (HeadlineID / HeadlineText /
+  // SecurityCodeList / HeadlineDateTime / VendorCode /
+  // CategoryIDList / NewsSummary / StoryURL / MarketSensitive /
+  // MarketSensitiveList / HasTextStory / HasHTMLTextStory /
+  // SecurityCode / Exchange / ExchangeList) OR the prod SENSD
+  // wire shape (StoryId / Headline / Source / Timestamp / Story /
+  // RelatedCodes / Category / MarketSensitive / ts). The CT
+  // build used the first set; the live prod SENSD response we
+  // observed on 2026-07-23 used the second. Accept BOTH so the
+  // same mapper works for CT fixtures and prod live data.
+  const pick = (...keys: string[]): unknown => {
+    for (const k of keys) {
+      const v = row[k];
+      if (v != null && v !== "") return v;
+    }
+    return undefined;
+  };
+  const storyIdRaw = pick("StoryId", "HeadlineID");
   // IRESS sometimes returns HeadlineID as a number (e.g. 2485034001);
   // coerce to string so the upsert key (`item_id`) is stable.
   const storyId =
@@ -380,28 +398,40 @@ function toNewsItemRow(
         ? String(storyIdRaw)
         : "";
   if (!storyId) return null;
-  const headlineRaw = row["HeadlineText"];
+  const headlineRaw = pick("Headline", "HeadlineText");
   const headline = typeof headlineRaw === "string" ? headlineRaw : "";
   if (!headline) return null;
-  const codes = (row["SecurityCodeList"] as string | undefined) ?? "";
+  const codesRaw = pick("RelatedCodes", "SecurityCodeList");
+  const codes = typeof codesRaw === "string" ? codesRaw : "";
   const tickers = codes
     .split(/[\s,;]+/)
     .map((s) => s.trim())
     .filter(Boolean);
   const ticker = tickers[0] ?? null;
-  const headlineDateTimeRaw =
-    typeof row["HeadlineDateTime"] === "string" ? row["HeadlineDateTime"] : "";
+  const headlineDateTimeRaw = (() => {
+    const v = pick("Timestamp", "HeadlineDateTime");
+    return typeof v === "string" ? v : "";
+  })();
   const publishedDate = parseHeadlineDateTime(headlineDateTimeRaw);
   const published_at =
     publishedDate.getTime() > 0 ? publishedDate.toISOString() : new Date().toISOString();
-  const body = (row["NewsSummary"] as string | undefined) ?? null;
-  const url = ((row["StoryURL"] as string | undefined) ?? "") || null;
-  const source = (row["VendorCode"] as string | undefined) ?? vendorCode;
-  const categoryId = ((row["CategoryIDList"] as string | undefined) ?? "") || null;
+  const bodyRaw = pick("Story", "NewsSummary", "NewsHTMLSummary");
+  const body = typeof bodyRaw === "string" ? bodyRaw : null;
+  const urlRaw = pick("StoryURL", "URL", "Link");
+  const url = typeof urlRaw === "string" && urlRaw ? urlRaw : null;
+  const source = (() => {
+    const v = pick("Source", "VendorCode");
+    return typeof v === "string" && v ? v : vendorCode;
+  })();
+  const categoryIdRaw = pick("Category", "CategoryIDList", "CategoryID");
+  const categoryId = typeof categoryIdRaw === "string" || typeof categoryIdRaw === "number"
+    ? String(categoryIdRaw)
+    : null;
   // Severity: top-level MarketSensitive wins; per-symbol '*' list mirror; otherwise
   // a story-with-body ranks medium; otherwise low.
   let severity: string;
-  if (row["MarketSensitive"] === true || row["MarketSensitive"] === "true") {
+  const marketSensitiveRaw = row["MarketSensitive"];
+  if (marketSensitiveRaw === true || marketSensitiveRaw === "true") {
     severity = "high";
   } else {
     const market = (row["MarketSensitiveList"] as string | undefined) ?? "";
@@ -434,14 +464,23 @@ function toNewsItemRow(
     payload: {
       category_id: categoryId,
       tickers,
-      exchanges: ((row["ExchangeList"] as string | undefined) ?? "")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
+      exchanges: (() => {
+        const v = pick("ExchangeList", "Exchanges");
+        if (Array.isArray(v)) return v.filter((s): s is string => typeof s === "string");
+        return typeof v === "string"
+          ? v.split(",").map((s) => s.trim()).filter(Boolean)
+          : [];
+      })(),
       // Per-row wire fields we want preserved even if normalised above
       // (category_id / market_sensitive / has_text_story):
-      security_code: (row["SecurityCode"] as string | undefined) ?? null,
-      exchange: (row["Exchange"] as string | undefined) ?? null,
+      security_code: (() => {
+        const v = pick("SecurityCode", "RelatedSecurityCode");
+        return typeof v === "string" ? v : null;
+      })(),
+      exchange: (() => {
+        const v = pick("Exchange", "PrimaryExchange");
+        return typeof v === "string" ? v : null;
+      })(),
       market_sensitive: row["MarketSensitive"] ?? null,
       market_sensitive_list: row["MarketSensitiveList"] ?? null,
       has_text_story: row["HasTextStory"] ?? null,
@@ -547,15 +586,28 @@ async function fetchNewsPage(opts: {
     },
   });
   const rawAll = (res.DataRows ?? []) as Array<Record<string, unknown>>;
-  // IRESS NewsHeadlineGet returns rows that look like:
-  //   { HeadlineID: 2485034001, HeadlineText: "...", SecurityCodeList: "...", HeadlineDateTime: "..." }
-  // — i.e. `HeadlineID` is often a NUMBER, not a string. The previous
-  // strict `typeof === "string"` filter dropped every row before we
-  // could map them, which is why the UI showed no SENS data despite
-  // `rawRows=18` being logged.
-  const filteredOut = rawAll.filter(
-    (r) => !(r && (r as Record<string, unknown>)["HeadlineID"] != null && (r as Record<string, unknown>)["HeadlineID"] !== ""),
-  );
+  // IRESS NewsHeadlineGet returns rows in EITHER shape:
+  //   CT doc shape:  { HeadlineID, HeadlineText, SecurityCodeList, HeadlineDateTime, ... }
+  //   Prod SENSD shape (observed 2026-07-23 on
+  //   https://webservices.iress.co.za/v4): { StoryId, Headline,
+  //   Source, Timestamp, ts, Story, RelatedCodes, Category,
+  //   MarketSensitive }
+  //
+  // The original filter required `HeadlineID` to be a string and
+  // dropped every row when prod SENSD used `StoryId` instead — see
+  // `news_page_filtered_rows` diagnostic events.
+  const pickId = (r: Record<string, unknown>): unknown => {
+    for (const k of ["StoryId", "HeadlineID"]) {
+      const v = r[k];
+      if (v != null && v !== "") return v;
+    }
+    return undefined;
+  };
+  const filteredOut = rawAll.filter((r) => {
+    if (!r) return true;
+    const id = pickId(r as Record<string, unknown>);
+    return id == null || id === "";
+  });
   if (filteredOut.length > 0 && opts.pageIndex === 0) {
     // DIAGNOSTIC: surface the shape of rows the page-filter is dropping.
     recordWorkerEvent({
@@ -564,11 +616,12 @@ async function fetchNewsPage(opts: {
       msg: `NewsHeadlineGet page ${opts.pageIndex} filter dropped ${filteredOut.length}/${rawAll.length} rows — sample raw[0]=${JSON.stringify(
         {
           keys: Object.keys(rawAll[0] ?? {}),
+          storyId_type: typeof (rawAll[0] ?? {})["StoryId"],
+          storyId_value: (rawAll[0] ?? {})["StoryId"],
           headlineID_type: typeof (rawAll[0] ?? {})["HeadlineID"],
-          headlineID_value: (rawAll[0] ?? {})["HeadlineID"],
           headlineText_type: typeof (rawAll[0] ?? {})["HeadlineText"],
-          headlineText_value: typeof (rawAll[0] ?? {})["HeadlineText"] === "string"
-            ? ((rawAll[0] ?? {})["HeadlineText"] as string).slice(0, 60)
+          headline_value: typeof (rawAll[0] ?? {})["Headline"] === "string"
+            ? ((rawAll[0] ?? {})["Headline"] as string).slice(0, 60)
             : null,
         },
       )}`,
@@ -580,20 +633,21 @@ async function fetchNewsPage(opts: {
         sample: filteredOut[0]
           ? {
               keys: Object.keys(filteredOut[0]),
+              storyId_type: typeof filteredOut[0]["StoryId"],
+              storyId_value: filteredOut[0]["StoryId"],
               headlineID_type: typeof filteredOut[0]["HeadlineID"],
-              headlineID_value: filteredOut[0]["HeadlineID"],
             }
           : null,
       },
     });
   }
-  // Accept any non-null/non-empty HeadlineID; coerce to string in
-  // toNewsItemRow so we get a stable item_id even when the wire type
-  // is `number`.
+  // Accept any non-null/non-empty StoryId OR HeadlineID; coerce to
+  // string in toNewsItemRow so we get a stable item_id even when the
+  // wire type is `number`.
   const rows: Array<Record<string, unknown>> = rawAll
     .filter((r) => {
       if (!r) return false;
-      const id = (r as Record<string, unknown>)["HeadlineID"];
+      const id = pickId(r as Record<string, unknown>);
       return id != null && id !== "";
     })
     .map((r) => r as Record<string, unknown>);
@@ -795,7 +849,10 @@ export async function syncNewsHeadlines(opts: {
   const records: Array<ReturnType<typeof toNewsItemRow>> = [];
   let firstDroppedKey: string | null = null;
   for (const r of allRows) {
-    const tickers = ((r["SecurityCodeList"] as string | undefined) ?? "")
+    // Accept both IRESS wire shapes — prod SENSD uses
+    // `RelatedCodes`; CT documentation uses `SecurityCodeList`.
+    const codesRaw = r["RelatedCodes"] ?? r["SecurityCodeList"] ?? "";
+    const tickers = (typeof codesRaw === "string" ? codesRaw : "")
       .split(/[\s,;]+/)
       .map((s) => s.trim())
       .filter(Boolean);
@@ -818,12 +875,16 @@ export async function syncNewsHeadlines(opts: {
       // build returns a different shape.
       firstDroppedKey = JSON.stringify({
         keys: Object.keys(r),
+        storyId_type: typeof r.StoryId,
+        storyId_value: r.StoryId,
         headlineID_type: typeof r.HeadlineID,
         headlineID_value: r.HeadlineID,
+        headline_type: typeof r.Headline,
+        headline_len: typeof r.Headline === "string" ? r.Headline.length : null,
         headlineText_type: typeof r.HeadlineText,
         headlineText_len:
           typeof r.HeadlineText === "string" ? r.HeadlineText.length : null,
-        category: r.CategoryIDList ?? r.CategoryID ?? null,
+        category: r.Category ?? r.CategoryIDList ?? r.CategoryID ?? null,
       });
     }
     records.push(mapped);
