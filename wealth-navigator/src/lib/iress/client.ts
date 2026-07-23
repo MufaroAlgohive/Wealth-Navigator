@@ -184,12 +184,26 @@ export type NewsVendorCode = "SENSD" | "SENS" | "IRESS" | (string & {});
 export interface NewsHeadlineGetRequest {
   Header: IressHeader;
   /**
-   * Vendor code — must be `"SENSD"` for JSE SENS announcements on this
-   * CT build (confirmed 2026-07-20 via the working probe). The CT
-   * server returns the fault `"No valid vendor specified"` for any
-   * other value until the real-time `SENS` entitlement is flipped on.
+   * Single vendor code. Prefer `VendorCodes` (array form) — that matches
+   * the working envelope Andre shared from the IRESS dev console
+   * (2026-07-23, prod market-data session):
+   *
+   *   <VendorCodeArray>
+   *     <VendorCode>SENSD</VendorCode>
+   *   </VendorCodeArray>
+   *
+   * If only `VendorCode` is supplied we emit it inside the same
+   * `VendorCodeArray` shape so the on-the-wire request matches the
+   * dev-confirmed example exactly. The CT build also accepts the bare
+   * `<VendorCode>` form for backward compat, but the array form is
+   * the canonical one we should send on prod.
    */
-  VendorCode: NewsVendorCode;
+  VendorCode?: NewsVendorCode;
+  /**
+   * Array form. When set, takes precedence over `VendorCode` and is
+   * emitted as `<VendorCodeArray><VendorCode>X</VendorCode>…</VendorCodeArray>`.
+   */
+  VendorCodes?: NewsVendorCode[];
   /**
    * Inclusive lower bound, ISO-naive date `YYYY-MM-DDTHH:MM:SS`
    * (the CT server rejects the trailing `Z`). One trading day is the
@@ -218,8 +232,12 @@ export interface NewsHeadlineGetRequest {
    * forwarded as an extra parameter by the BFF probe only.
    */
   SecurityCode?: string;
+  /** Optional array-form security filter (sent as `SecurityCodeArray`). */
+  SecurityCodes?: string[];
   /** Optional exchange scoping — `JSE` for SA equities. */
   Exchange?: string;
+  /** Optional array-form exchange filter (sent as `ExchangeArray`). */
+  Exchanges?: string[];
 }
 
 /**

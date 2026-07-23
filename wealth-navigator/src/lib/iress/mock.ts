@@ -240,8 +240,19 @@ export const mockIressClient: IressClient = {
   // hit a 25018 in production for a shape mismatch they could have caught
   // in dev.
   async newsHeadlineGet(req: NewsHeadlineGetRequest): Promise<IressResponse<NewsStory>> {
-    if (!req.VendorCode || typeof req.VendorCode !== "string") {
-      throw new IressError(25018, "NewsHeadlineGet", "NewsHeadlineGet: missing required field `VendorCode`");
+    // Accept both scalar (`VendorCode`) and array (`VendorCodes`) request
+    // shapes so callers using Andre's working envelope
+    // (`<VendorCodeArray><VendorCode>SENSD</VendorCode></VendorCodeArray>`)
+    // get the same mock contract as the legacy single-code form.
+    const hasVendor =
+      (typeof req.VendorCode === "string" && req.VendorCode.trim() !== "") ||
+      (Array.isArray(req.VendorCodes) && req.VendorCodes.length > 0);
+    if (!hasVendor) {
+      throw new IressError(
+        25018,
+        "NewsHeadlineGet",
+        "NewsHeadlineGet: missing required field `VendorCode` (or `VendorCodes[]`)",
+      );
     }
     if (!req.DateTimeStart || !req.DateTimeEnd) {
       throw new IressError(

@@ -494,7 +494,10 @@ async function fetchNewsPage(opts: {
         PageSize: opts.pageSize,
         Timeout: 25,
       },
-      VendorCode: opts.vendorCode,
+      // Match Andre's working envelope (2026-07-23, prod market-data,
+      // vendor SENSD): <VendorCodeArray><VendorCode>X</VendorCode>…
+      // The live client emits the array shape when this is set.
+      VendorCodes: [opts.vendorCode],
       DateTimeStart: opts.windowStart,
       DateTimeEnd: opts.windowEnd,
       Count: opts.pageSize,

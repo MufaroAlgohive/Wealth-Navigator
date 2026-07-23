@@ -1342,14 +1342,41 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
      */
     async newsHeadlineGet(req: NewsHeadlineGetRequest): Promise<IressResponse<NewsStory>> {
       requireSessionKey(req.Header, "NewsHeadlineGet");
-      require(req.VendorCode, "VendorCode", "NewsHeadlineGet");
+      const vendorCodes =
+        req.VendorCodes && req.VendorCodes.length > 0
+          ? req.VendorCodes
+          : req.VendorCode
+            ? [req.VendorCode]
+            : null;
+      if (!vendorCodes || vendorCodes.length === 0) {
+        throw new IressError(-1, "NewsHeadlineGet", "VendorCode (or VendorCodes) required");
+      }
       require(req.DateTimeStart, "DateTimeStart", "NewsHeadlineGet");
       require(req.DateTimeEnd, "DateTimeEnd", "NewsHeadlineGet");
+
+      // Andre's working envelope (2026-07-23, prod market-data session,
+      // vendor SENSD) wraps the vendor inside <VendorCodeArray>:
+      //
+      //   <VendorCodeArray>
+      //     <VendorCode>SENSD</VendorCode>
+      //   </VendorCodeArray>
+      //
+      // We match that shape exactly so the prod server returns the full
+      // page instead of faulting on the bare-form fallback.
       const parameters: Record<string, unknown> = {
-        VendorCode: req.VendorCode,
+        VendorCodeArray: { VendorCode: vendorCodes },
         DateTimeStart: req.DateTimeStart,
         DateTimeEnd: req.DateTimeEnd,
         ...(req.Count != null ? { Count: req.Count } : {}),
+        // Optional filters that mirror the dev's envelope; left as
+        // xsi:nil="true" when not set so the server treats them as
+        // "no filter" (vendor-broadcast).
+        ...(req.SecurityCodes && req.SecurityCodes.length > 0
+          ? { SecurityCodeArray: { SecurityCode: req.SecurityCodes } }
+          : {}),
+        ...(req.Exchanges && req.Exchanges.length > 0
+          ? { ExchangeArray: { Exchange: req.Exchanges } }
+          : {}),
       };
       const result = await transport.call({
         method: "NewsHeadlineGet",
