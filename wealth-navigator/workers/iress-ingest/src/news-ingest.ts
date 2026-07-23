@@ -496,7 +496,8 @@ async function fetchNewsPage(opts: {
       },
       // Match Andre's working envelope (2026-07-23, prod market-data,
       // vendor SENSD): <VendorCodeArray><VendorCode>X</VendorCode>…
-      // The live client emits the array shape when this is set.
+      // The live client emits both bare and array VendorCode shapes so
+      // whichever form the active server prefers wins.
       VendorCodes: [opts.vendorCode],
       DateTimeStart: opts.windowStart,
       DateTimeEnd: opts.windowEnd,
@@ -505,8 +506,30 @@ async function fetchNewsPage(opts: {
   } catch (err) {
     const code = err instanceof IressError ? err.code : 25018;
     const msg = err instanceof Error ? err.message : String(err);
+    recordWorkerEvent({
+      level: "warn",
+      event: "news_page_failed",
+      msg: `NewsHeadlineGet(${opts.vendorCode}) page ${opts.pageIndex} failed`,
+      data: {
+        vendorCode: opts.vendorCode,
+        pageIndex: opts.pageIndex,
+        pageSize: opts.pageSize,
+        errorCode: code,
+        errorMessage: msg,
+      },
+    });
     return { rows: [], nextBookmark: "", error: { code, message: msg } };
   }
+  recordWorkerEvent({
+    level: "info",
+    event: "news_page_ok",
+    msg: `NewsHeadlineGet(${opts.vendorCode}) page ${opts.pageIndex} OK`,
+    data: {
+      vendorCode: opts.vendorCode,
+      pageIndex: opts.pageIndex,
+      rawRows: (res.DataRows ?? []).length,
+    },
+  });
   const rows: Array<Record<string, unknown>> = (res.DataRows ?? [])
     .filter((r) => r && typeof (r as Record<string, unknown>)["HeadlineID"] === "string")
     .map((r) => r as Record<string, unknown>);

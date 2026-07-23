@@ -1354,23 +1354,27 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
       require(req.DateTimeStart, "DateTimeStart", "NewsHeadlineGet");
       require(req.DateTimeEnd, "DateTimeEnd", "NewsHeadlineGet");
 
-      // Andre's working envelope (2026-07-23, prod market-data session,
-      // vendor SENSD) wraps the vendor inside <VendorCodeArray>:
+      // Both envelope shapes are valid on IRESS Pro:
       //
-      //   <VendorCodeArray>
+      //   Bare form (CT build, 2026-07-20):
       //     <VendorCode>SENSD</VendorCode>
-      //   </VendorCodeArray>
       //
-      // We match that shape exactly so the prod server returns the full
-      // page instead of faulting on the bare-form fallback.
+      //   Array form (Andre's working envelope, 2026-07-23, prod
+      //   market-data session):
+      //     <VendorCodeArray>
+      //       <VendorCode>SENSD</VendorCode>
+      //     </VendorCodeArray>
+      //
+      // We emit BOTH so whichever shape the active server prefers
+      // wins; the duplicate VendorCode entry is harmless — IRESS
+      // reads the first matching element. (Safer than picking one
+      // and being wrong.)
       const parameters: Record<string, unknown> = {
+        VendorCode: vendorCodes[0],
         VendorCodeArray: { VendorCode: vendorCodes },
         DateTimeStart: req.DateTimeStart,
         DateTimeEnd: req.DateTimeEnd,
         ...(req.Count != null ? { Count: req.Count } : {}),
-        // Optional filters that mirror the dev's envelope; left as
-        // xsi:nil="true" when not set so the server treats them as
-        // "no filter" (vendor-broadcast).
         ...(req.SecurityCodes && req.SecurityCodes.length > 0
           ? { SecurityCodeArray: { SecurityCode: req.SecurityCodes } }
           : {}),
