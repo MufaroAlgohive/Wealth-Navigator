@@ -101,6 +101,31 @@ Audited both `Iress-Worker-UAT` (`a4fd8932-…`) and `Iress-Worker-PROD` (`665a2
 - Single-seat contention: if a Railway redeploy of the UAT worker happens while the prod worker is mid-boot, both could race for the UAT seat. Mitigated by the existing first-boot `IRESS_FORCE_KICK_ALL=1` auto-kick in `session.ts` (`WorkerSessionManager.startSession()`).
 - Paging stuck-cursor: 5-page cap is the floor; revisit after the first prod cadence. CT has the known stuck-bookmark bug.
 
+### 0.5.5 SENS wire-shape + session-eviction fix (2026-07-23)
+
+After the 0.5.3 audit, three blockers remained on the prod worker that prevented `news_item_c` from ever being populated for SENS:
+
+**Defect 1 — prod SENSD wire shape differs from CT documentation.** The page filter required `HeadlineID` to be a string and `HeadlineText` to exist; the prod SENSD response used a different keyset (`StoryId` / `Headline` / `Source` / `Timestamp` / `Story` / `RelatedCodes` / `Category`). The diagnostic `news_page_filtered_rows` event surfaced 21/21 rows being dropped. Fixed by:
+- `toNewsItemRow` now reads either keyset (`pick()` helper tries the CT key first then the prod SENSD key). Headlines, body, dates, tickers, sources, categories all dual-keyed.
+- Page-row filter accepts either `StoryId` or `HeadlineID` (any non-null/non-empty value).
+- Universe-tagging reads `RelatedCodes` first then falls back to `SecurityCodeList`.
+
+**Defect 2 — boot probe evicted the prod market-data session.** The orders-entitlement probe opened its own IRESSSession at startup, which the prod license server treated as a second concurrent login and ended the market-data session the news loop needed. Result: every news call failed with `25031: soap:Receiver — Request 'NewsHeadlineGet' has been terminated while waiting for data due to the active session ending`. Fixed by:
+- Skipping the boot orders-entitlement probe when `IRESS_NEWS_INGEST=1` AND `IRESS_MARKET_DATA_PROD=1` (this is the prod worker). Probe remains reachable via HTTP `/debug/orders-entitlement-probe` for on-demand checks that won't break news ingest.
+- Sequencing `oneShotVendorCatalog()` AFTER `getMarketDataSession()` resolves, so the catalog fetch reuses the market-data session instead of racing to open its own login.
+
+**Defect 3 — UI SENS tab was empty even with worker writes succeeding.** The OEMS news page only fetched from `/api/news` (RSS + Alliance wire only) and `/api/iress/news` (Railway public proxy has been 502ing). `/api/news?category=SENS` (reads directly from `news_item_c` via the institutional Supabase client) has been working the whole time. Fixed by adding a third query in `src/app/oems/news/page.tsx` for `?category=SENS` and merging those rows into the SENS bucket. Dedup falls out naturally — each SENS row has a stable `item_id` (IRESS StoryId).
+
+**Operational state right now (2026-07-23 10:05 UTC):**
+- `Iress-Worker-PROD` deployment `57ebe159-…` (SUCCESS, 10:02:32 UTC) — running `main-prod.ts`, prod market-data session live at `webservices.iress.co.za/v4`, news loop writes 21/21 SENSD rows per tick to `news_item_c` with `category="SENS"`. Interval restored to 21 600 s. `IRESS_DEBUG_ORDERS_PROBE` unset on the prod service (no longer evicts market-data).
+- Vercel `d16b3fd` deploys the UI fix that reads `news_item_c` directly.
+
+**Commits:**
+- `c34d7c1` — Coerce HeadlineID to string + add filter diagnostic
+- `dbb74e0` — Don't evict market-data session at boot
+- `77a741c` — Accept prod SENSD wire shape (StoryId/Headline/...)
+- `d16b3fd` — UI: include persisted SENS rows from news_item_c
+
 ### 0.5.4 Open items summary — not "everything else perfect" (2026-07-22 15:32 UTC)
 
 User asked "besides SENS, is everything else perfect?" — short answer: **no.** The UAT/PROD split and the worker boot paths are solid, but the system still has 11 manual actions + 5 entitlement asks + 4 un-pasted migrations that block real-data flows. This is the unfiltered open-items list, ranked by what actually blocks the UAT→prod move that the user flagged as likely tomorrow.
