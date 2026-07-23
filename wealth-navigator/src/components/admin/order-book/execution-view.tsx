@@ -736,7 +736,11 @@ function GroupRow({
                   disabled={!!cancelInFlight[r.id]}
                   onClick={() => void handleCancel(r)}
                   className="h-7 px-2 text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10"
-                  title={`Cancel order ${r.order_id} on IRESS (OrderDelete via worker).`}
+                  title={
+                    r.state === "PARKED"
+                      ? "Cancel this parked order — never left our system, so this just marks it cancelled locally. No broker contact."
+                      : `Cancel order ${r.order_id} on IRESS (OrderDelete via worker).`
+                  }
                 >
                   {cancelInFlight[r.id] ? (
                     <>
@@ -1322,12 +1326,45 @@ export function ExecutionView({ sources }: { sources: string[] }) {
   const [cancelInFlight, setCancelInFlight] = React.useState<Record<string, boolean>>({});
   const [cancelError, setCancelError] = React.useState<Record<string, string>>({});
   const handleCancel = React.useCallback(async (row: ExecutionRow) => {
+    const auditId = row.id;
+
+    // A PARKED row has never left our system — zero broker/worker contact —
+    // so "cancel" here is a pure local status flip (cancel-parked/route.ts),
+    // not a real OrderDelete. Kills a wrong order before "Send to Market"
+    // ever sends it anywhere; important now that real (allowlisted)
+    // production accounts can park orders too, not just test accounts.
+    if (row.state === "PARKED") {
+      setCancelInFlight((p) => ({ ...p, [auditId]: true }));
+      setCancelError((p) => ({ ...p, [auditId]: "" }));
+      overrideAppliedAtRef.current[auditId] = Date.now();
+      setLiveOverrides((p) => ({
+        ...p,
+        [auditId]: { ...(p[auditId] ?? row), state: "CANCELLED" },
+      }));
+      try {
+        const res = await fetch("/api/admin/orderbook/cancel-parked", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ order_audit_id: auditId }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!res.ok || body.ok === false) {
+          setCancelError((p) => ({ ...p, [auditId]: body.error ?? `Cancel returned ${res.status}` }));
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setCancelError((p) => ({ ...p, [auditId]: msg }));
+      } finally {
+        setCancelInFlight((p) => ({ ...p, [auditId]: false }));
+      }
+      return;
+    }
+
     const accountGuess =
       (typeof row.broker_account === "string" && row.broker_account.length > 0 ? row.broker_account : null) ??
       (typeof row.client_account === "string" && row.client_account.length > 0 ? row.client_account : "56378");
     const iressOrderNumber = row.order_id;
     if (!iressOrderNumber) return;
-    const auditId = row.id;
     setCancelInFlight((p) => ({ ...p, [auditId]: true }));
     setCancelError((p) => ({ ...p, [auditId]: "" }));
     overrideAppliedAtRef.current[auditId] = Date.now();

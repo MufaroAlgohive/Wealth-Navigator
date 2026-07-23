@@ -55,16 +55,25 @@ export const td = "px-3 py-2 text-[12px] text-foreground whitespace-nowrap";
  * excluded: per Hermes rules, once an order leaves our session it's owned by
  * the destination until acked, so we can't cancel/amend it from here yet
  * (Andre + Juan, 2026-07-15 transcript 06:35-07:46).
+ *
+ * PARKED (2026-07-23) is also cancellable — a mint client order sitting
+ * parked has never left our system at all (zero broker contact), so
+ * cancelling it is a pure local DB update (see cancel-parked/route.ts),
+ * not a real OrderDelete. Important now that real (allowlisted) accounts
+ * can park orders in production: a wrong order needs to be killable
+ * before "Send to Market" ever sends it anywhere.
  */
 export const isCancellable = (state: string): boolean =>
+  state === "PARKED" ||
   state === "WORKING" ||
   state === "PARTIAL" ||
   state === "ACKNOWLEDGED" ||
   state === "created" ||
   state === "amended";
 
-/** Same set as cancel, minus AMEND_PENDING (never race two broker instructions on one OrderNumber). */
-export const isAmendable = (state: string): boolean => isCancellable(state) && state !== "AMEND_PENDING";
+/** Same set as cancel, minus AMEND_PENDING (never race two broker instructions on one OrderNumber) and PARKED (no broker order exists yet to amend). */
+export const isAmendable = (state: string): boolean =>
+  isCancellable(state) && state !== "AMEND_PENDING" && state !== "PARKED";
 
 /** PENDING_ACK rows are read-only until the broker acks — actions column shows a hint instead. */
 export const isAwaitingBrokerAck = (state: string): boolean => state === "PENDING_ACK";
