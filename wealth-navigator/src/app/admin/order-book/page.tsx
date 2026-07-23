@@ -145,7 +145,7 @@ export default function OrderBookPage() {
             <UatBanner />
             <UatOrderTicket onPlaced={() => setUatRefresh((n) => n + 1)} />
             <UatTestRunner />
-            <ExecutionView key={`orderbook-${uatRefresh}`} bookIds={["UAT-ADHOC", "CLIENT-BUY"]} />
+            <ExecutionView key={`orderbook-${uatRefresh}`} sources={["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"]} />
             <ActiveOrderBooks />
           </TabsContent>
         ) : (

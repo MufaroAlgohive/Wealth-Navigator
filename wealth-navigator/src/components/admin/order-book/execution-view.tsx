@@ -29,8 +29,8 @@
  * limit (positive slippage for a buy). Updates automatically as quotes tick.
  *
  * When `uatMode=true` (Vercel + worker both), subscribes to
- * `/api/admin/orderbook/stream` for live fill deltas, scoped to whichever
- * `bookIds` this instance was given. Stops polling while the tab is hidden.
+ * `/api/admin/orderbook/stream` for live fill deltas. Stops polling while
+ * the tab is hidden.
  */
 
 import { ChevronRight, Loader2, Radio, SendHorizontal } from "lucide-react";
@@ -433,9 +433,9 @@ export function filterOutPromotedBooks(rows: GroupedRow[], books: OrderBookSumma
 }
 
 /**
- * 2026-07-23: only a REAL multi-security strategy (a future basket buy,
- * where `strategy` is a genuine name distinct from any of this panel's own
- * `bookIds`) gets the full "Strategy row -> Holdings tree + Investors
+ * 2026-07-23: only a REAL multi-security strategy (a basket buy, where
+ * `strategy` is a genuine name distinct from the fixed `RAW_BOOK_IDS`
+ * sentinels) gets the full "Strategy row -> Holdings tree + Investors
  * list" two-axis drill-down. A book like UAT-ADHOC/CLIENT-BUY isn't a
  * basket — `payload.strategy` on those rows is just stamped with the
  * originating book id (see parkOrder/submitOrder) — so wrapping 22
@@ -989,22 +989,24 @@ function GroupRow({
   );
 }
 
-export function ExecutionView({ bookIds }: { bookIds: string[] }) {
-  // Fixed two-slot fetch (this panel is UAT-only today: UAT-ADHOC + CLIENT-BUY).
-  // React hooks can't be called a variable number of times, so rather than a
-  // dynamic loop over `bookIds`, this supports exactly the shape the UAT tab
-  // needs — one or two book ids — via two explicit usePolling calls, the
-  // second disabled when only one book id is passed.
-  const bookIdA = bookIds[0];
-  const bookIdB = bookIds[1];
+// Book/strategy labels that are NOT a real multi-security strategy — see
+// `buildOrderBookDisplayItems`'s doc comment. Independent of `sources`
+// (which controls what gets FETCHED, not how a fetched row is DISPLAYED):
+// a basket buy can mint any strategy display name, so that side must stay
+// open-ended, but these two sentinel labels are fixed regardless.
+const RAW_BOOK_IDS = ["UAT-ADHOC", "CLIENT-BUY"];
 
-  const executionsA = usePolling<ExecutionPayload>(
-    `/api/admin/orderbook/execution?book_id=${encodeURIComponent(bookIdA ?? "")}`,
-    { interval: 2_000, deps: [bookIdA], query: { enabled: !!bookIdA } },
-  );
-  const executionsB = usePolling<ExecutionPayload>(
-    `/api/admin/orderbook/execution?book_id=${encodeURIComponent(bookIdB ?? "")}`,
-    { interval: 2_000, deps: [bookIdB], query: { enabled: !!bookIdB } },
+export function ExecutionView({ sources }: { sources: string[] }) {
+  // 2026-07-23: fetch by SOURCE, not book_id — book_id/strategy is open-
+  // ended (any basket's display name), so a fixed list of book ids to poll
+  // can never cover a new strategy. `source` is a small, stable dimension
+  // (UAT_ADHOC_ORDER, MINT_CLIENT_ORDER, ...); filtering by it returns
+  // every current AND future strategy's orders in ONE query with zero code
+  // change when a new basket is bought. See execution/route.ts.
+  const sourceParam = sources.join(",");
+  const executions = usePolling<ExecutionPayload>(
+    `/api/admin/orderbook/execution?source=${encodeURIComponent(sourceParam)}`,
+    { interval: 2_000, deps: [sourceParam] },
   );
 
   // CRM-style order-book numbering (2026-07-23). Books change far less
@@ -1043,11 +1045,10 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
 
   const applyDelta = React.useCallback(
     (d: UatDelta) => {
-      // Scope to THESE books: the SSE stream is global (carries deltas for
-      // every book), so ignore deltas for other books — otherwise they leak
-      // into this view as phantom rows. Deltas with no book_id (older
-      // payloads) still apply.
-      if (d.book_id && !bookIds.includes(d.book_id)) return;
+      // 2026-07-23: no book_id filter here anymore — this is the ONE panel
+      // showing every UAT-relevant book/strategy now (see the `sources`
+      // fetch above), so there's no sibling instance for a delta to "leak"
+      // into. Every delta the SSE stream publishes is relevant here.
       setLastEventAt(new Date().toISOString());
       if (!d.order_audit_id) return;
       overrideAppliedAtRef.current[d.order_audit_id] = Date.now();
@@ -1114,15 +1115,12 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
         return { ...prev, [d.order_audit_id as string]: newRow };
       });
     },
-    [bookIds],
+    [],
   );
 
   const stream = useUatStream(uatEnabled, applyDelta);
 
-  const polledRows = React.useMemo(
-    () => [...(executionsA.data?.rows ?? []), ...(bookIdB ? executionsB.data?.rows ?? [] : [])],
-    [executionsA.data, executionsB.data, bookIdB],
-  );
+  const polledRows = executions.data?.rows ?? [];
 
   // Reconcile optimistic overrides against the poll (SSE-independent, so it works
   // in production where SSE is off). Drop an override when the matched poll row
@@ -1269,8 +1267,8 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
   const strategyBlocks = React.useMemo(() => groupOrdersByStrategy(liveGroupedRows), [liveGroupedRows]);
   const liveBookSequence = React.useMemo(() => computeLiveBookSequence(books), [books]);
   const displayItems = React.useMemo(
-    () => buildOrderBookDisplayItems(strategyBlocks, bookIds),
-    [strategyBlocks, bookIds],
+    () => buildOrderBookDisplayItems(strategyBlocks, RAW_BOOK_IDS),
+    [strategyBlocks],
   );
 
   const [expandedStrategy, setExpandedStrategy] = React.useState<Record<string, boolean>>({});
@@ -1507,12 +1505,11 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
     }
   };
 
-  const showLoading = (executionsA.loading || executionsB.loading) && liveGroupedRows.length === 0;
-  const hasNotice = !!(executionsA.data?.notice ?? executionsB.data?.notice);
-  const anyLoading = executionsA.loading || executionsB.loading;
+  const showLoading = executions.loading && liveGroupedRows.length === 0;
+  const hasNotice = !!executions.data?.notice;
+  const anyLoading = executions.loading;
   const refreshAll = () => {
-    void executionsA.refresh();
-    if (bookIdB) void executionsB.refresh();
+    void executions.refresh();
     void orderBooks.refresh();
   };
 
@@ -1547,7 +1544,7 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
             <span className="text-[10px] uppercase tracking-wider text-muted-foreground">({totalEvents} events)</span>
           ) : null}
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-            book{bookIds.length > 1 ? "s" : ""} {bookIds.join(", ")}
+            source{sources.length > 1 ? "s" : ""} {sources.join(", ")}
           </span>
           <DataSourceBadge source="hybrid" db="institutional" />
           {uatEnabled ? (
@@ -1593,7 +1590,7 @@ export function ExecutionView({ bookIds }: { bookIds: string[] }) {
 
       {hasNotice && (
         <div className="border-b border-warning/30 bg-warning/5 px-4 py-2 text-[11px] text-warning">
-          {executionsA.data?.notice ?? executionsB.data?.notice}
+          {executions.data?.notice}
         </div>
       )}
 

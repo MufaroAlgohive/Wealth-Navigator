@@ -6,11 +6,19 @@ import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
- * GET /api/admin/orderbook/execution?book_id=...
+ * GET /api/admin/orderbook/execution?book_id=...  OR  ?source=A,B
  *
  * Mint OEM Phase B3 — per-ISIN execution view. Reads `oems_order_audit` rows
  * tied to a book (the `payload.book_id` or `payload.strategy` column) and
  * normalises them into the columns the execution view expects:
+ *
+ * `source` (2026-07-23) is the preferred filter for the unified OEM panel:
+ * `book_id`/`strategy` is open-ended (a basket buy stamps the real strategy
+ * display name, an unbounded set), while `source` is a small, stable
+ * dimension (UAT_ADHOC_ORDER, MINT_CLIENT_ORDER, ...) — filtering by it
+ * returns every current AND future strategy name with zero code change.
+ * `book_id` is still supported for a caller that genuinely wants one
+ * specific book/strategy.
  *
  *   order_id, ts, strategy, side, symbol, qty, filled, qty_pct,
  *   limit_price, avg_fill_price, slippage_cents, venue, tif, sent_by, state.
@@ -336,6 +344,16 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const bookId = (url.searchParams.get("book_id") ?? "").trim();
+  // 2026-07-23: `book_id`/`strategy` is an open-ended value now (a basket
+  // buy stamps the real strategy display name, not one of a small known
+  // set), so a caller that wants "everything this panel cares about" can't
+  // enumerate every book_id up front. `source` is the stable, small
+  // dimension instead (UAT_ADHOC_ORDER, MINT_CLIENT_ORDER, ...) — filter by
+  // that when given, so a new strategy name shows up with zero code change.
+  const sourceParam = (url.searchParams.get("source") ?? "").trim();
+  const sources = sourceParam
+    ? sourceParam.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
 
   const db = openInstitutional();
   if (!db) {
@@ -358,7 +376,9 @@ export async function GET(req: Request) {
     .select(
       "id, order_id, client_account, symbol, side, quantity, price_cents, status, source, payload, result_payload, created_at, updated_at",
     );
-  if (bookId) {
+  if (sources.length > 0) {
+    sel = sel.in("source", sources);
+  } else if (bookId) {
     const v = bookId.replace(/[\\"]/g, ""); // neutralise PostgREST filter metachars
     sel = sel.or(`payload->>book_id.eq."${v}",payload->>strategy.eq."${v}"`);
   }
@@ -375,15 +395,18 @@ export async function GET(req: Request) {
   }
 
   const all = (data ?? []) as AuditRow[];
-  const filtered = bookId
-    ? all.filter((r) => {
-        const p = r.payload ?? {};
-        return (
-          (typeof p.book_id === "string" && p.book_id === bookId) ||
-          (typeof p.strategy === "string" && p.strategy === bookId)
-        );
-      })
-    : all;
+  const filtered =
+    sources.length > 0
+      ? all // already precise via .in("source", sources) above
+      : bookId
+        ? all.filter((r) => {
+            const p = r.payload ?? {};
+            return (
+              (typeof p.book_id === "string" && p.book_id === bookId) ||
+              (typeof p.strategy === "string" && p.strategy === bookId)
+            );
+          })
+        : all;
 
   const rows = filtered.map(mapRow);
   return NextResponse.json({ ok: true, rows, count: rows.length });
