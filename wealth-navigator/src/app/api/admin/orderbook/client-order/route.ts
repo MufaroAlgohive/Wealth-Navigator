@@ -25,11 +25,16 @@
  *
  * Auth: `Authorization: Bearer ${MINT_CLIENT_ORDER_SECRET}` (mint has no
  * admin browser session to present), OR an admin session as a fallback for
- * manual testing from the admin UI. Gated by `IRESS_UAT_MODE=true` like
- * every sibling UAT route — never touches the production account.
+ * manual testing from the admin UI.
  *
- * UAT-only client guard: this is explicitly scoped to test/UAT accounts for
- * now — real clients' orders must never reach IRESS through this route.
+ * Production-aware (2026-07-23): the previous `IRESS_UAT_MODE=true` gate
+ * has been removed — the route now follows the same env-driven
+ * UAT-vs-prod detection as the rest of the app (`isUatEnv()`). The actual
+ * IRESS seat the order reaches is decided by the worker's
+ * `IRESS_BASE_URL` + `IRESS_IOS_SERVER`; this route only tags the audit
+ * row's `uatTest` flag accordingly (true on UAT, false on production).
+ *
+ * CLIENT-DATA GUARD: real clients' orders must still be allowlisted.
  * mint is expected to check this itself before calling, but this route
  * independently re-verifies (fail-closed) that the holding's owning user is
  * a test account (`profiles.is_test` OR `wallets.status='test'`), mirroring
@@ -43,11 +48,7 @@
  * narrow allowlist rather than flipping `is_test`/wallet status on these
  * real accounts, since that flag is read elsewhere in the app (CRM's
  * UAT/live toggle, possibly fees) and flipping it would have side effects
- * well beyond this one guard. Orders from an allowlisted real user still
- * land in the exact same UAT-scoped IRESS sandbox (IRESS_UAT_ACCOUNT_CODE
- * via LONGMARK CARE) every other order through this route uses — this
- * only changes whether their own buys get parked at all, never where a
- * parked order is ultimately sent.
+ * well beyond this one guard.
  *
  * Idempotency: keyed on `payload->>holding_id` — a retried mint request for
  * the same holding is a no-op success (`alreadyForwarded: true`), not a
@@ -58,6 +59,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { openSupabaseClients, parkOrder } from "@/lib/orders";
+import { isUatEnv } from "@/lib/oems/uat-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -68,8 +70,18 @@ export const dynamic = "force-dynamic";
 // `book_id` request field (the strategy's display name), one call per
 // constituent holding — see wealthNavigatorClient.js on mint's side.
 const BOOK_ID = "CLIENT-BUY";
-const BROKER = process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE";
-const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "56378";
+// Broker destination label for the audit payload. Production uses the
+// production destination (env `IRESS_DESTINATION`); the UAT lane keeps
+// `IRESS_UAT_DESTINATION` (default `LONGMARK CARE`). The label is cosmetic —
+// the actual IRESS seat the order reaches is decided by the worker's
+// `IRESS_BASE_URL` + `IRESS_IOS_SERVER`, not by this string.
+const BROKER = (() => {
+  if (isUatEnv()) {
+    return process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE";
+  }
+  return process.env.IRESS_DESTINATION?.trim() || "LONGMARK CARE";
+})();
+const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
 
 async function authorized(req: Request): Promise<boolean> {
   const secret = process.env.MINT_CLIENT_ORDER_SECRET;
@@ -83,9 +95,11 @@ export async function POST(req: Request) {
   if (!(await authorized(req))) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (process.env.IRESS_UAT_MODE !== "true") {
-    return NextResponse.json({ ok: false, error: "IRESS_UAT_MODE is not enabled." }, { status: 403 });
-  }
+  // No `IRESS_UAT_MODE` gate: the route follows the same env-driven
+  // UAT-vs-prod detection as the rest of the app (`isUatEnv()` — see
+  // lib/oems/uat-scope.ts). The lane the order lands on is decided by the
+  // worker's `IRESS_BASE_URL` + `IRESS_IOS_SERVER`; this route just tags
+  // the audit row accordingly via `uatTest` (see parkOrder below).
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   const holdingId = typeof body.holding_id === "string" ? body.holding_id.trim() : "";
@@ -101,6 +115,16 @@ export async function POST(req: Request) {
   if (!rawSymbol) return NextResponse.json({ ok: false, error: "symbol is required" }, { status: 400 });
   if (!Number.isFinite(qty) || qty <= 0) {
     return NextResponse.json({ ok: false, error: "qty must be a positive integer" }, { status: 400 });
+  }
+  if (!ACCOUNT_CODE) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "IRESS_ACCOUNT_CODE is not set. Production must set IRESS_ACCOUNT_CODE explicitly (no UAT fallback); set it in Vercel + Railway env.",
+      },
+      { status: 503 },
+    );
   }
 
   let supabase;
@@ -131,7 +155,7 @@ export async function POST(req: Request) {
       orderAuditId: existing.id,
       orderId: existing.order_id,
       bookId: bodyBookId,
-      mode: existing.status === "parked" ? "parked" : "uat",
+      mode: isUatEnv() ? "uat" : "production",
       status: existing.status,
     });
   }
@@ -177,6 +201,9 @@ export async function POST(req: Request) {
   // No preflight here — this order PARKS with zero worker/IRESS contact.
   // Preflight is deferred to release time (see submit.ts::parkOrder /
   // releaseOrder), when the cash/naked-short snapshot is actually current.
+  // `uatTest` is derived from the deployment lane (`isUatEnv()`) so the
+  // audit row accurately tags production orders vs UAT test orders.
+  const uatTest = isUatEnv();
   const result = await parkOrder(
     supabase,
     {
@@ -190,7 +217,7 @@ export async function POST(req: Request) {
       trader_email: clientEmail,
       holding_id: holdingId,
     },
-    { bookId: bodyBookId, broker: BROKER, uatTest: true },
+    { bookId: bodyBookId, broker: BROKER, uatTest },
   );
 
   if (!result.ok) {
@@ -205,8 +232,10 @@ export async function POST(req: Request) {
     orderAuditId: result.order_audit_id,
     orderId: result.order_id,
     bookId: bodyBookId,
-    mode: "parked",
+    mode: uatTest ? "uat" : "production",
     status: "parked",
-    notice: "Order parked in the order book — awaiting Send to Market release.",
+    notice: uatTest
+      ? "UAT order parked in the order book — awaiting Send to Market release."
+      : "Production order parked in the order book — awaiting Send to Market release.",
   });
 }
