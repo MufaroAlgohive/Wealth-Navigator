@@ -71,7 +71,11 @@ const fixMethods = (process.env.IRESS_FIX_METHODS ?? "").split(",").filter(Boole
 
 export const iressConfig: IressConfig = {
   mode,
-  baseUrl: process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4",
+  // PRODUCTION default. Per AGENTS.md the only sanctioned lane is IRESS
+  // production (`webservices.iress.co.za/v4`). Override with `IRESS_BASE_URL`
+  // for the UAT/CT lane (e.g. during UAT cutover validation). An unset env
+  // must NOT silently route traffic to the CT sandbox.
+  baseUrl: process.env.IRESS_BASE_URL ?? "https://webservices.iress.co.za/v4",
   prodUrl: process.env.IRESS_PROD_URL ?? "https://webservices.iress.co.za/v4",
   applicationLabel: "Mint-OEMS-Production",
   region: process.env.IRESS_REGION ?? "ZA",
@@ -220,14 +224,13 @@ export async function bringUpMintSession(
   console.info(
     `[mint-iress] IRESSSessionStart ok applicationId=${applicationId} sessionKey=${redactSessionKeyForLog(iressSession.IRESSSessionKey)} timeoutMin=${iressSession.SessionTimeout ?? 120}`,
   );
-  // The `Server` is the IOS instance for this account. CONFIRMED live (2026-06-16):
-  // `MINT_CT` works and the generic doc value `IOSPLUSAPI` returns 25012 "Invalid
-  // server name" for DFM@Mint. (The doc warns the name "may differ — confirm with
-  // IRESS"; Andre's `mint_ct` is correct here.) Env-driven so prod can use its own
-  // instance; default + Railway value is `MINT_CT`. NB: ServiceSessionStart only
-  // succeeds with the IRESSSessionKey in <Parameters> (see live.ts) — the Server
-  // value alone is not enough.
-  const iosServer = (process.env.IRESS_IOS_SERVER ?? "MINT_CT").trim() || "MINT_CT";
+  // The `Server` is the IOS instance for this account. Env-driven so prod can
+  // use its own instance (set `IRESS_IOS_SERVER` on Vercel + Railway). The
+  // default is the IRESS PRODUCTION instance name `MINT` (Charles-confirmed
+  // 2026-07-23). For the UAT/CT lane override with `IRESS_IOS_SERVER=MINT_CT`.
+  // ServiceSessionStart only succeeds with the IRESSSessionKey in
+  // <Parameters> (see live.ts) — the Server value alone is not enough.
+  const iosServer = (process.env.IRESS_IOS_SERVER ?? "MINT").trim() || "MINT";
   const ipsServer = (process.env.IRESS_IPS_SERVER ?? "IPSAPI").trim() || "IPSAPI";
   const fixServer = (process.env.IRESS_FIX_SERVER ?? "FIXPLUSAPI").trim() || "FIXPLUSAPI";
   // Current IRESS scope is market data + IOS+ only (IPS / FIX+ are parked).

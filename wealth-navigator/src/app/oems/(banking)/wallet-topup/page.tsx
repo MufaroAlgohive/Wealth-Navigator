@@ -138,6 +138,13 @@ export default function WalletTopupPage() {
   };
 
   const isUnconfigured = providerMode === null || providerMode === "unconfigured";
+  /**
+   * Display the provider mode without leaking the literal "MOCK" into the chrome.
+   * The runtime state still uses "mock" internally (the API reports it that way),
+   * but the user-facing label shows "DEMO" until the real Ozone contract lands,
+   * at which point the value flips to "LIVE".
+   */
+  const providerLabel = (providerMode ?? "checking").toUpperCase() === "MOCK" ? "DEMO" : (providerMode ?? "checking").toUpperCase();
 
   return (
     <PageCanvas>
@@ -161,7 +168,7 @@ export default function WalletTopupPage() {
               <code className="font-mono text-[11px]"> topup_method='ozone'</code>; on callback (mock: ~5 s)
               it flips to <code className="font-mono text-[11px]">completed</code> and the EFT approval
               surface picks it up. Provider status:{" "}
-              <strong className="font-mono uppercase tracking-wider">{providerMode ?? "CHECKING…"}</strong>.
+              <strong className="font-mono uppercase tracking-wider">{providerLabel}</strong>.
             </span>
           </div>
 
@@ -265,7 +272,7 @@ export default function WalletTopupPage() {
           <div className="grid gap-3 md:grid-cols-3">
             <GlassKpi
               label="Provider"
-              value={(providerMode ?? "checking").toUpperCase()}
+              value={providerLabel}
               sub={
                 isUnconfigured
                   ? "Real Ozone contract pending — Tsie"

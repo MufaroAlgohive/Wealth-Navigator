@@ -176,7 +176,7 @@ export default function IntegrationPage() {
         <IntegrationKpi
           icon={<Cable className="h-3.5 w-3.5" />}
           label="Adapter mode"
-          value={(effectiveMode ?? "mock").toUpperCase()}
+          value={(effectiveMode ?? "live").toUpperCase()}
           sub={workerAlive ? `via Railway ${primaryWorker?.worker_id ?? ""}` : iressConfig.baseUrl}
           accent={effectiveMode === "live" ? "positive" : "default"}
         />
@@ -307,7 +307,7 @@ export default function IntegrationPage() {
             subtitle="Endpoint health · last 30 min"
             db="institutional"
             endpoint="GET /api/worker-health"
-            dataSource="mock"
+            dataSource="supabase"
             className="col-span-12 flex h-[420px] flex-col lg:col-span-8"
             noPadding
           >
@@ -357,7 +357,7 @@ export default function IntegrationPage() {
           title="Latency · IRESS calls"
           db="institutional"
           endpoint="GET /api/worker-health"
-          dataSource={realDataOnly ? "worker" : "mock"}
+          dataSource={realDataOnly ? "worker" : "supabase"}
           className="col-span-12 h-[420px] lg:col-span-4"
         >
           <div className="glass-inset h-[calc(100%-0.5rem)] p-2">

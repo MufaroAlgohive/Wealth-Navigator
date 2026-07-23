@@ -587,12 +587,23 @@ export async function POST(req: Request) {
   //
   // Per-investor enforcement is post-OEMS v1 (mint_number ↔ AccountCode
   // bridge). For now the guard runs against the aggregate strategy
-  // book against the desk's IRESS AccountCode (env
-  // IRESS_ACCOUNT_CODE, default "56378" for UAT).
+  // book against the desk's IRESS AccountCode. `IRESS_ACCOUNT_CODE`
+  // MUST be set on production; absence below is a configuration error
+  // and the guard call will throw with a clear message.
   const deskAccountCode =
-    (typeof process.env.IRESS_ACCOUNT_CODE === "string" && process.env.IRESS_ACCOUNT_CODE.trim().length > 0
+    typeof process.env.IRESS_ACCOUNT_CODE === "string" && process.env.IRESS_ACCOUNT_CODE.trim().length > 0
       ? process.env.IRESS_ACCOUNT_CODE.trim()
-      : "56378");
+      : undefined;
+  if (!deskAccountCode) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "IRESS_ACCOUNT_CODE is not set. Production must set IRESS_ACCOUNT_CODE explicitly (no UAT fallback); set it in Vercel + Railway env.",
+      },
+      { status: 503 },
+    );
+  }
   const guard = await runLimitGuard(institutional, deskAccountCode, holdings, secMap, orderType);
   // 2026-07-15: stamp the timestamp at the top so we can echo it on
   // every audit row AND on the 422 response when the guard blocks.

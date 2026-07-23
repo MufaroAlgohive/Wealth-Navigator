@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Standalone Analysis price chart — Yahoo close history for ANY ticker
+ * Standalone Analysis price chart — close history for ANY ticker
  * (MSFT, AAPL, CPI.JO, …) with a range selector and period return + CAGR.
  * A richer take on fiscal.ai's 5y price chart. Real closes or honest empty.
  */
@@ -70,7 +70,7 @@ export function CompanyPriceChart({ sym }: { sym: string }) {
   // IRESS-PROD first for JSE daily/monthly ranges; Yahoo for intraday / non-JSE
   // / fallback. Badge the source the route actually served (route sets `source`).
   const chartSource = d?.source === "iress" ? "iress" : "yahoo";
-  const chartSourceLabel = chartSource === "iress" ? "IRESS·PROD" : "Yahoo Finance";
+  const chartSourceLabel = chartSource === "iress" ? "IRESS·PROD" : "Market data";
 
   const rangeBtns = (
     <div className="glass-inset inline-flex gap-0.5 p-1">
@@ -138,8 +138,8 @@ export function CompanyPriceChart({ sym }: { sym: string }) {
             <EmptyDataState
               reason="empty"
               message={`No price history for ${sym}.`}
-              hint={d?.error ?? "Yahoo returned no closes for this symbol/range."}
-              badgeLabel="yahoo"
+              hint={d?.error ?? "The market data source returned no closes for this symbol/range."}
+              badgeLabel="unconfigured"
             />
           ) : (
             <ResponsiveContainer width="100%" height={320}>

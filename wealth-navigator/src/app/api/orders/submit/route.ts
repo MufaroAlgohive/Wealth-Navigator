@@ -109,7 +109,18 @@ export async function POST(req: Request) {
   const accountCode =
     typeof body.account_code === "string" && body.account_code.trim().length > 0
       ? body.account_code.trim()
-      : process.env.IRESS_ACCOUNT_CODE?.trim() || "56378";
+      : process.env.IRESS_ACCOUNT_CODE?.trim();
+
+  if (!accountCode) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "IRESS_ACCOUNT_CODE is not set. Production must set IRESS_ACCOUNT_CODE explicitly (no UAT fallback); set it in Vercel + Railway env.",
+      },
+      { status: 503 },
+    );
+  }
 
   let supabase;
   try {

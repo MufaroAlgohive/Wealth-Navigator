@@ -2,7 +2,7 @@
 
 /**
  * Ticker typeahead for the Analysis tab. Debounced search across the SA/JSE
- * universe (our IRESS-backed securities_c) and US/global (Yahoo), with a
+ * universe (our IRESS-backed securities_c) and US/global, with a
  * keyboard-navigable dropdown. Selecting a row (or pressing Enter on an exact
  * ticker) loads that company. Real symbols only.
  */
@@ -151,7 +151,7 @@ export function TickerSearch({ current, onSelect }: { current: string; onSelect:
                         </Pill>
                       ) : null}
                       <Pill tone={hit.source === "iress" ? "success" : "info"} size="xs">
-                        {hit.source === "iress" ? "JSE" : hit.exchange || "Yahoo"}
+                        {hit.source === "iress" ? "JSE" : hit.exchange || "Global"}
                       </Pill>
                     </span>
                   </button>
@@ -161,7 +161,7 @@ export function TickerSearch({ current, onSelect }: { current: string; onSelect:
           )}
           {results.length > 0 ? (
             <p className="px-3 py-1.5 font-mono text-[9.5px] text-muted-foreground/70">
-              {q.data?.saCount ?? 0} SA (IRESS) · {q.data?.yahooCount ?? 0} global (Yahoo) · current: {current}
+              {q.data?.saCount ?? 0} SA · {q.data?.yahooCount ?? 0} global · current: {current}
             </p>
           ) : null}
         </div>

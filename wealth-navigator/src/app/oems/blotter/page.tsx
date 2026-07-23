@@ -77,7 +77,7 @@ export default function BlotterPage() {
     onError: () => toast.error("Cancel-all failed"),
   });
 
-  const dataSourceLabel = realDataOnly ? "order record" : "mock · demo orders";
+  const dataSourceLabel = realDataOnly ? "order record" : "demo orders";
 
   return (
     <div className="space-y-4">
@@ -126,7 +126,7 @@ export default function BlotterPage() {
             )}
             <GlassBadge tone={realDataOnly ? "success" : "neutral"}>
               <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />
-              {realDataOnly ? "IRESS·UAT audit" : "Mock book"}
+              {realDataOnly ? "IRESS order tape" : "Demo orders"}
             </GlassBadge>
           </div>
         </div>
@@ -176,7 +176,7 @@ export default function BlotterPage() {
         title={`Orders · ${filtered.length}`}
         db="institutional"
         endpoint="GET /api/orders"
-        dataSource="uat"
+        dataSource="supabase"
         noPadding
         className="flex min-h-0 flex-col h-[calc(100vh-380px)]"
       >
@@ -199,7 +199,7 @@ export default function BlotterPage() {
           <div className="p-3.5">
             <EmptyDataState
               title="No orders"
-              message={realDataOnly ? "Order history is syncing. Check back shortly." : "No orders in mock book."}
+              message={realDataOnly ? "Order history is syncing. Check back shortly." : "No demo orders yet."}
             />
           </div>
         ) : (

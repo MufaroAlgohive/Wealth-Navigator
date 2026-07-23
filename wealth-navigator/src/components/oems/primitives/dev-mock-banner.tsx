@@ -25,7 +25,7 @@ export function DevMockBanner() {
       Demo mode
       <span className="ml-2 normal-case text-warning/80">
         Live market quotes are switched off in this environment, so price panels show seed values.
-        Company analysis and fundamentals (Yahoo) are live.
+        Company analysis and fundamentals are live.
       </span>
     </div>
   );

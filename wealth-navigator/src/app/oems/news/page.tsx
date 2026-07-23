@@ -190,11 +190,11 @@ export default function NewsPage() {
           <h1 className="text-lg font-semibold tracking-tight">News & SENS</h1>
           <p className="text-xs text-muted-foreground">Reuters · Bloomberg · Moneyweb · Dow Jones · SENS regulatory tape</p>
         </header>
-        <GlassSection title="News tape" db="retail" dataSource="mock" endpoint="GET /api/news">
+        <GlassSection title="News tape" db="retail" dataSource="supabase" endpoint="GET /api/news">
           <EmptyDataState
-            message="Mock mode disables the news module."
-            hint="Switch to real-data mode and ensure the worker has written news_item_c rows."
-            badgeLabel="mock"
+            message="News ingest is offline. Try again once the worker is online."
+            hint="Switch to live data via the IRESS worker (Railway) once online."
+            badgeLabel="unconfigured"
           />
         </GlassSection>
       </PageCanvas>
@@ -312,11 +312,11 @@ export default function NewsPage() {
                 // requires Alliance / Reuters / Bloomberg contracts.
                 tab === "sens"
                   ? sens.length > sensClean.length
-                    ? `IRESS returned ${sens.length - sensClean.length} test/fixture announcement(s) today — all filtered out. The SENSD vendor on prod currently publishes "Test Announcement N" rows during integration. No real SENS announcements in the visible window.`
+                    ? `IRESS returned ${sens.length - sensClean.length} test/fixture announcement(s) today — all filtered out. The SENSD vendor currently publishes "Test Announcement N" rows during integration. Headlines will populate when real announcements publish on the connected vendor.`
                     : "SENS reads live from `GET /api/iress/news` (worker `NewsHeadlineGet`, vendor `SENSD`). Empty usually means no announcements in the window — try a wider `dateFrom`/`dateTo`."
                   : "Wires require Reuters / Bloomberg / Moneyweb contracts."
               }
-              badgeLabel={tab === "sens" ? (sens.length > sensClean.length ? "mock" : "unconfigured") : "blocked-vendor"}
+              badgeLabel={tab === "sens" ? "unconfigured" : "blocked-vendor"}
             />
           ) : (
             <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))] overflow-hidden">

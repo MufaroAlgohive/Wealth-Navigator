@@ -269,10 +269,13 @@ export function loadWorkerEnv(): WorkerEnv {
     // (NEWS pilot opt-in per the 2026-07-22 plan).
     newsDryRun: parseBool(process.env.IRESS_NEWS_DRY_RUN, true),
     newsAllowWrites: parseBool(process.env.IRESS_NEWS_ALLOW_WRITES, false),
-    // "SENS" = real-time (the prod catalog row per Andre's WSDL browser
-    // 2026-07-22). The sync loop retries once with "SENSD" (delayed) on
-    // 25010 / 25018 — see news-ingest.ts vendor_fallback.
-    newsVendorCode: (process.env.IRESS_NEWS_VENDOR ?? "SENS").trim().toUpperCase() || "SENS",
+    // Prod default = "SENSD" (SENS NEWS DELAYED) — the only vendor the IRESS
+    // production market-data seat carries (Charles-confirmed 2026-07-23;
+    // `NewsVendorGet` returns a single row on the prod session). Override
+    // with `IRESS_NEWS_VENDOR=SENS` for the rare seat where real-time is
+    // entitled. The sync loop still retries once with the alternate vendor
+    // on 25010/25018 entitlement faults — see news-ingest.ts vendor_fallback.
+    newsVendorCode: (process.env.IRESS_NEWS_VENDOR ?? "SENSD").trim().toUpperCase() || "SENSD",
     // 2000 floor at 500: the CT build returned 894 rows in one trading
     // day's window with Count=1000, so the legacy 500 cap silently
     // truncated. Paging kicks in above the per-page size.

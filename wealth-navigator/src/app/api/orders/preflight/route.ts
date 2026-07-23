@@ -91,10 +91,25 @@ export async function POST(req: Request) {
   // Default to the desk IRESS account — the public blotter orders all
   // route to the shared omnibus account today. Future per-client routing
   // (IRESS_PER_CLIENT_GUARD on) will derive this from the auth session.
+  // Production must set `IRESS_ACCOUNT_CODE`; absence is a configuration
+  // error and we refuse to submit against a UAT fallback.
   const accountCode =
     typeof body.account_code === "string" && body.account_code.trim().length > 0
       ? body.account_code.trim()
-      : process.env.IRESS_ACCOUNT_CODE?.trim() || "56378";
+      : process.env.IRESS_ACCOUNT_CODE?.trim();
+
+  if (!accountCode) {
+    return NextResponse.json(
+      {
+        ok: false,
+        verdict: "blocked_unverifiable",
+        code: "iress_account_unconfigured",
+        message:
+          "IRESS_ACCOUNT_CODE is not set. Production must set IRESS_ACCOUNT_CODE explicitly (no UAT fallback); set it in Vercel + Railway env.",
+      },
+      { status: 503 },
+    );
+  }
 
   // Even when the worker is offline we want to honour the local fallback
   // (mirrors the worker's `availableToSell` / `availableToBuy`).

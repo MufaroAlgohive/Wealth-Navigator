@@ -442,7 +442,7 @@ function SecurityStatsGrid({ sym }: { sym: string }) {
         Prev Close / Open / Bid / Ask / Day&apos;s Range / Volume: <span className="text-muted-foreground">IRESS PricingQuoteGet</span>
         {s == null ? " (data pending)" : ""}. 52-Week Range / Avg. Volume:
         IRESS daily history (worker fill pending). Market Cap / Beta / PE / EPS / Dividend:{" "}
-        <span className="text-muted-foreground">Yahoo Finance</span>. Earnings Date / Ex-Dividend / 1y Target
+        <span className="text-muted-foreground">Market data</span>. Earnings Date / Ex-Dividend / 1y Target
         Est: pending a fundamentals vendor.
       </p>
     </div>

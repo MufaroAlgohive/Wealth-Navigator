@@ -3,8 +3,8 @@
 /**
  * Create / edit a research note via a 6-step wizard:
  *
- *   1. Identify         — ticker typeahead (searches JSE IRESS universe + Yahoo
- *                         global), pre-fills company / sector / ISIN from
+ *   1. Identify         — ticker typeahead (searches JSE IRESS universe + global
+ *                         listings), pre-fills company / sector / ISIN from
  *                         securities_c; linked strategies from strategies_c
  *                         holdings (read-only).
  *   2. Auto-fetch       — fires /api/company-analysis/[sym] + /peers and offers
@@ -84,7 +84,7 @@ function Field({
 // ── wizard steps ────────────────────────────────────────────────────────────
 const STEPS: { id: number; title: string; subtitle: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 1, title: "Identify", subtitle: "Pick a ticker or company", icon: Search },
-  { id: 2, title: "Auto-fetch", subtitle: "Pull IRESS + Yahoo data", icon: Sparkles },
+  { id: 2, title: "Auto-fetch", subtitle: "Pull market data", icon: Sparkles },
   { id: 3, title: "Thesis", subtitle: "Bull, bear, catalysts, risks", icon: Sparkles },
   { id: 4, title: "Fundamentals", subtitle: "Multi-year table + peers", icon: Sparkles },
   { id: 5, title: "Management & Triggers", subtitle: "Triggers and people view", icon: Sparkles },
@@ -405,7 +405,7 @@ function TickerTypeahead({
                       <span className="truncate text-[11px] text-muted-foreground">{hit.name}</span>
                     </span>
                     <span className="shrink-0 rounded border border-[hsl(var(--glass-border))] px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-muted-foreground">
-                      {hit.source === "iress" ? "JSE · IRESS" : hit.exchange || "Yahoo"}
+                      {hit.source === "iress" ? "JSE · IRESS" : hit.exchange || "Global"}
                     </span>
                   </button>
                 </li>
@@ -1013,7 +1013,7 @@ export function NoteEditor({
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wide text-foreground">
-                {fetchSymbol || "—"} · Auto-fetch from IRESS + Yahoo
+                {fetchSymbol || "—"} · Auto-fetch from the market data feed
               </p>
               <p className="text-[10px] text-muted-foreground">
                 Pulls company overview, 3y CAGRs, margins, returns, valuation, financial
@@ -1042,7 +1042,7 @@ export function NoteEditor({
               <PrefillRow label="Live price" value={analysis.price.last != null ? `R${analysis.price.last.toFixed(2)}` : "—"} mono />
               <PrefillRow
                 label="Price source"
-                value={analysis.price.priceSource === "iress" ? "IRESS (live)" : "Yahoo"}
+                value={analysis.price.priceSource === "iress" ? "IRESS (live)" : "Stored"}
                 mono
               />
             </PrefillCard>
@@ -1114,7 +1114,7 @@ export function NoteEditor({
         {analysisOk && peerSymbols && peerSymbols.length > 0 && (
           <div className="rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-3 py-2.5">
             <p className={cn(LABEL, "mb-1.5")}>
-              Peer comp · Yahoo recommendations
+              Peer comp · analyst recommendations
               <span className="ml-1 text-[9px] font-normal text-muted-foreground/70">
                 ({peerSymbols.length} ticker{peerSymbols.length === 1 ? "" : "s"} — first 6 will be pre-filled in step 4)
               </span>

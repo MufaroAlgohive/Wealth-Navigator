@@ -938,7 +938,10 @@ export interface LiveClientOptions {
 
 export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient {
   const transport = opts.transport ?? createSoapTransport({
-    baseUrl: opts.baseUrl ?? process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4",
+    // PRODUCTION default. `IRESS_BASE_URL` is the UAT/CT override; the
+    // canonical prod endpoint is `webservices.iress.co.za/v4`. An unset env
+    // must NOT silently route live SOAP traffic to the CT sandbox.
+    baseUrl: opts.baseUrl ?? process.env.IRESS_BASE_URL ?? "https://webservices.iress.co.za/v4",
   });
 
   return {

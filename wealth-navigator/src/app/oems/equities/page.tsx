@@ -171,6 +171,12 @@ export default function EquitiesPage() {
     if (marked.length === 0) return { value: null, marked: 0 };
     return { value: marked.reduce((acc, p) => acc + Number(p.open_pl), 0), marked: marked.length };
   }, [portfolioQ.data]);
+  // Developer hint: when the BFF returns Supabase positions but none carry a mark yet,
+  // the recent IRESS session didn't include a price for the open legs. Log once so the
+  // operator can see why the "Open P&L" tile is showing "—" before they blame the page.
+  if (typeof window !== "undefined" && portfolioQ.data?.source === "supabase" && realEquityPnl.value == null && realEquityPnl.marked === 0) {
+    console.warn("[equities] no marks yet — recent IRESS session did not include a price for any open position.");
+  }
   const realInvestors = (portfolioQ.data?.accounts ?? []).length;
 
   // Securities-universe search (Lonwabo: "all the securities here… you can just
@@ -213,13 +219,13 @@ export default function EquitiesPage() {
                 sub={
                   realEquityPnl.value != null
                     ? `MTM on ${realEquityPnl.marked} positions`
-                    : "Marks unavailable (CT test data)"
+                    : "Marks unavailable — recent IRESS session did not include a price."
                 }
                 accent={realEquityPnl.value == null ? "default" : realEquityPnl.value >= 0 ? "positive" : "negative"}
               />
               <GlassKpi
                 label="Investors"
-                dataSource="uat"
+                dataSource="supabase"
                 db="institutional"
                 value={realInvestors.toString()}
                 sub={`${(portfolioQ.data.accounts ?? []).length} accounts`}
@@ -227,7 +233,7 @@ export default function EquitiesPage() {
               <GlassKpi label="Pre-trade checks" value="On submit" sub="IRESS halt / borrow / non-tradeable at order time" accent="primary" />
             </>
           ) : (
-            <GlassSection title="Equity KPIs" endpoint="GET /api/portfolio" db="institutional" dataSource="uat" className="col-span-2 lg:col-span-4">
+            <GlassSection title="Equity KPIs" endpoint="GET /api/portfolio" db="institutional" dataSource="supabase" className="col-span-2 lg:col-span-4">
               <EmptyDataState
                 reason={portfolioQ.data?.reason ?? "supabase_query_failed"}
                 migration={portfolioQ.data?.migration}
@@ -316,7 +322,7 @@ export default function EquitiesPage() {
             </div>
           </GlassSection>
         ) : (
-          <GlassSection title="Top Movers · JSE" endpoint="GET /api/equities" db="retail" dataSource="unavailable" className="h-[260px]">
+          <GlassSection title="Top Movers · JSE" endpoint="GET /api/equities" db="retail" dataSource="supabase" className="h-[260px]">
             <EmptyDataState message="Equities board unavailable — retail securities feed returned no rows." />
           </GlassSection>
         )
@@ -589,7 +595,7 @@ function RealEquitiesTable({
       <p className="mb-2 text-[10.5px] text-muted-foreground">
         <span className="font-mono font-semibold text-up">{iressCount}</span> of{" "}
         <span className="font-mono">{rows.length}</span> priced live from IRESS (last + day change);
-        the rest fall back to Yahoo. Fundamentals / market cap / sector are Yahoo (no IRESS source).
+        the rest show the latest stored price. Fundamentals / market cap / sector come from the stored reference data.
       </p>
       <GlassInsetTable>
         <table className="w-full font-mono text-xs">
@@ -633,8 +639,8 @@ function RealEquitiesTable({
                   <td className="px-3 py-2 text-right tabular-nums"><PeriodReturn v={e.return_1m} /></td>
                   <td className="px-3 py-2 text-right tabular-nums"><PeriodReturn v={e.return_6m} /></td>
                   <td className="px-3 py-2 text-center">
-                    <Pill tone={onIress ? "success" : "neutral"} size="xs" title={onIress ? "Live IRESS last + change" : "Yahoo fallback (no IRESS snapshot for this name yet)"}>
-                      {onIress ? "IRESS" : "Yahoo"}
+                    <Pill tone={onIress ? "success" : "neutral"} size="xs" title={onIress ? "Live IRESS last + change" : "Latest stored price (no live IRESS snapshot for this name yet)"}>
+                      {onIress ? "IRESS" : "Stored"}
                     </Pill>
                   </td>
                   <td className="px-3 py-2 text-right">

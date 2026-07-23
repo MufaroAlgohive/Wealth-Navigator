@@ -93,12 +93,12 @@ function DeepGate({
   if (q.isLoading) return <PanelSkeleton rows={6} height="h-[360px]" />;
   if (!q.data || !q.data.ok) {
     return (
-      <GlassSection title={title} subtitle={subtitle} dataSource="yahoo">
+      <GlassSection title={title} subtitle={subtitle} dataSource="supabase">
         <EmptyDataState
           reason="empty"
           message={`No data returned for ${sym}.`}
-          hint={q.data?.error ?? "Yahoo did not return this dataset for the symbol."}
-          badgeLabel="yahoo"
+          hint={q.data?.error ?? "The market data source did not return this dataset for the symbol."}
+          badgeLabel="unconfigured"
         />
       </GlassSection>
     );
@@ -127,7 +127,7 @@ const BOLD_ROWS = new Set([
 function StatementView({ table, ccy, mode, reverse, baseKey }: { table: TStmt; ccy: string; mode: "value" | "pctchg" | "common"; reverse: boolean; baseKey: string }) {
   if (!table.periods.length || !table.rows.length) {
     return (
-      <EmptyDataState reason="empty" message="No statement data for this period type." hint="Yahoo did not return these statements for this symbol." badgeLabel="yahoo" />
+      <EmptyDataState reason="empty" message="No statement data for this period type." hint="The market data source did not return these statements for this symbol." badgeLabel="unconfigured" />
     );
   }
   const order = table.periods.map((_, i) => i);
@@ -195,7 +195,7 @@ export function FinancialsTab({ sym }: { sym: string }) {
   const toggleCls = (on: boolean) =>
     cn("h-6 rounded-md border px-2 text-[10.5px] transition-colors", on ? "border-primary/40 bg-primary/10 text-primary" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground");
   return (
-    <DeepGate sym={sym} title="Financials" subtitle="Yahoo Finance income, balance sheet and cash flow">
+    <DeepGate sym={sym} title="Financials" subtitle="Latest filings, estimates, ownership and dividend history.">
       {(d) => (
         <GlassSection
           title="Financial statements"
@@ -245,12 +245,12 @@ function Seg({ value, onChange, options }: { value: string; onChange: (v: string
 
 export function EstimatesTab({ sym }: { sym: string }) {
   return (
-    <DeepGate sym={sym} title="Estimates" subtitle="Yahoo Finance analyst estimates">
+    <DeepGate sym={sym} title="Estimates" subtitle="Latest filings, estimates, ownership and dividend history.">
       {(d) => (
         <div className="space-y-4">
           <EstimateTable title="Revenue estimates" rows={d.estimates.revenue} ccy={d.currency} kind="money" />
           <EstimateTable title="EPS estimates" rows={d.estimates.earnings} ccy={d.currency} kind="price" />
-          <GlassSection title="Long-term growth" subtitle="Consensus 5-year estimate" dataSource="yahoo">
+          <GlassSection title="Long-term growth" subtitle="Consensus 5-year estimate" dataSource="supabase">
             <p className="font-mono text-2xl font-semibold tabular-nums">{d.estimates.ltGrowth != null ? pct(d.estimates.ltGrowth) : "—"}</p>
             <NoteList notes={d.notes} />
           </GlassSection>
@@ -263,7 +263,7 @@ export function EstimatesTab({ sym }: { sym: string }) {
 function EstimateTable({ title, rows, ccy, kind }: { title: string; rows: EstimateRow[]; ccy: string; kind: "money" | "price" }) {
   const fmt = (v: number | null) => (kind === "money" ? money(v, ccy) : price(v, ccy));
   return (
-    <GlassSection title={title} subtitle="avg / low / high · analyst count · year-on-year growth" dataSource="yahoo">
+    <GlassSection title={title} subtitle="avg / low / high · analyst count · year-on-year growth" dataSource="supabase">
       {rows.length ? (
         <div className="glass-inset overflow-hidden rounded-xl">
           <div className="overflow-x-auto scrollbar-thin">
@@ -291,7 +291,7 @@ function EstimateTable({ title, rows, ccy, kind }: { title: string; rows: Estima
           </div>
         </div>
       ) : (
-        <EmptyDataState reason="empty" message="No analyst estimates published." hint="No sell-side coverage on the free feed for this security." badgeLabel="yahoo" />
+        <EmptyDataState reason="empty" message="No analyst estimates published." hint="No sell-side coverage on the free feed for this security." badgeLabel="unconfigured" />
       )}
     </GlassSection>
   );
@@ -303,7 +303,7 @@ const REC_LABEL: Record<string, string> = { strong_buy: "Strong Buy", buy: "Buy"
 
 export function ResearchTab({ sym }: { sym: string }) {
   return (
-    <DeepGate sym={sym} title="Research" subtitle="Yahoo Finance analyst consensus and rating changes">
+    <DeepGate sym={sym} title="Research" subtitle="Latest filings, estimates, ownership and dividend history.">
       {(d) => {
         const r = d.research;
         const upside = r.targetMean != null && r.currentPrice != null && r.currentPrice > 0 ? (r.targetMean - r.currentPrice) / r.currentPrice : null;
@@ -314,7 +314,7 @@ export function ResearchTab({ sym }: { sym: string }) {
           : [];
         return (
           <div className="space-y-4">
-            <GlassSection title="Analyst consensus" subtitle="Yahoo Finance" dataSource="yahoo">
+            <GlassSection title="Analyst consensus" subtitle="Latest filings, estimates, ownership and dividend history." dataSource="supabase">
               <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[hsl(var(--glass-border))] sm:grid-cols-4">
                 <Stat k="Consensus" v={r.recommendationKey ? (REC_LABEL[r.recommendationKey] ?? r.recommendationKey) : "—"} tone={r.recommendationKey === "strong_buy" || r.recommendationKey === "buy" ? "up" : r.recommendationKey === "sell" ? "down" : "none"} />
                 <Stat k="Analysts" v={r.numAnalysts != null ? String(r.numAnalysts) : "—"} />
@@ -341,7 +341,7 @@ export function ResearchTab({ sym }: { sym: string }) {
               <NoteList notes={d.notes} />
             </GlassSection>
 
-            <GlassSection title="Recent rating changes" subtitle="Sell-side upgrades and downgrades" dataSource="yahoo">
+            <GlassSection title="Recent rating changes" subtitle="Sell-side upgrades and downgrades" dataSource="supabase">
               {r.actions.length ? (
                 <div className="glass-inset overflow-hidden rounded-xl">
                   <table className="w-full text-xs">
@@ -365,7 +365,7 @@ export function ResearchTab({ sym }: { sym: string }) {
                   </table>
                 </div>
               ) : (
-                <EmptyDataState reason="empty" message="No recent rating changes." hint="No up/downgrade history on the free feed." badgeLabel="yahoo" />
+                <EmptyDataState reason="empty" message="No recent rating changes." hint="No up/downgrade history on the free feed." badgeLabel="unconfigured" />
               )}
             </GlassSection>
           </div>
@@ -388,12 +388,12 @@ function Stat({ k, v, tone = "none" }: { k: string; v: string; tone?: "up" | "do
 
 export function OwnershipTab({ sym }: { sym: string }) {
   return (
-    <DeepGate sym={sym} title="Ownership" subtitle="Yahoo Finance institutional and insider holdings">
+    <DeepGate sym={sym} title="Ownership" subtitle="Latest filings, estimates, ownership and dividend history.">
       {(d) => {
         const o = d.ownership;
         return (
           <div className="space-y-4">
-            <GlassSection title="Ownership breakdown" subtitle="Yahoo Finance" dataSource="yahoo">
+            <GlassSection title="Ownership breakdown" subtitle="Latest filings, estimates, ownership and dividend history." dataSource="supabase">
               <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[hsl(var(--glass-border))] sm:grid-cols-4">
                 <Stat k="Institutions" v={pct(o.institutionPct)} />
                 <Stat k="Insiders" v={pct(o.insiderPct)} />
@@ -403,7 +403,7 @@ export function OwnershipTab({ sym }: { sym: string }) {
             </GlassSection>
 
             {o.insiders.length ? (
-              <GlassSection title="Insider roster" subtitle="Officers and directors, reported holdings" dataSource="yahoo">
+              <GlassSection title="Insider roster" subtitle="Officers and directors, reported holdings" dataSource="supabase">
                 <div className="glass-inset overflow-hidden rounded-xl">
                   <div className="overflow-x-auto scrollbar-thin">
                     <table className="w-full text-xs">
@@ -435,7 +435,7 @@ export function OwnershipTab({ sym }: { sym: string }) {
               </GlassSection>
             ) : null}
 
-            <GlassSection title="Top institutional holders" subtitle="Largest reported positions" dataSource="yahoo">
+            <GlassSection title="Top institutional holders" subtitle="Largest reported positions" dataSource="supabase">
               {o.topInstitutions.length ? (
                 <div className="glass-inset overflow-hidden rounded-xl">
                   <div className="overflow-x-auto scrollbar-thin">
@@ -462,11 +462,11 @@ export function OwnershipTab({ sym }: { sym: string }) {
                   </div>
                 </div>
               ) : (
-                <EmptyDataState reason="empty" message="No institutional holders reported." hint="Yahoo did not return institutional ownership for this symbol." badgeLabel="yahoo" />
+                <EmptyDataState reason="empty" message="No institutional holders reported." hint="The market data source did not return institutional ownership for this symbol." badgeLabel="unconfigured" />
               )}
             </GlassSection>
 
-            <GlassSection title="Recent insider transactions" subtitle="Reported insider buys and sells" dataSource="yahoo">
+            <GlassSection title="Recent insider transactions" subtitle="Reported insider buys and sells" dataSource="supabase">
               {o.insiderTx.length ? (
                 <div className="glass-inset overflow-hidden rounded-xl">
                   <div className="overflow-x-auto scrollbar-thin">
@@ -494,7 +494,7 @@ export function OwnershipTab({ sym }: { sym: string }) {
                   </div>
                 </div>
               ) : (
-                <EmptyDataState reason="empty" message="No recent insider transactions." hint="Yahoo did not return insider activity for this symbol." badgeLabel="yahoo" />
+                <EmptyDataState reason="empty" message="No recent insider transactions." hint="The market data source did not return insider activity for this symbol." badgeLabel="unconfigured" />
               )}
             </GlassSection>
           </div>
@@ -531,9 +531,9 @@ export function DividendsTab({ sym }: { sym: string }) {
 
   return (
     <div className="space-y-4">
-      <GlassSection title="Dividend profile" subtitle="Yahoo Finance" dataSource="yahoo">
+      <GlassSection title="Dividend profile" subtitle="Latest filings, estimates, ownership and dividend history." dataSource="supabase">
         {none ? (
-          <EmptyDataState reason="empty" message={`${sym} does not currently pay a dividend.`} hint="No dividend rate or yield reported." badgeLabel="yahoo" />
+          <EmptyDataState reason="empty" message={`${sym} does not currently pay a dividend.`} hint="No dividend rate or yield reported." badgeLabel="unconfigured" />
         ) : (
           <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[hsl(var(--glass-border))] sm:grid-cols-3">
             <Stat k="Annual rate (DPS)" v={price(dv!.rate, ccy)} />
@@ -545,11 +545,11 @@ export function DividendsTab({ sym }: { sym: string }) {
         )}
       </GlassSection>
 
-      <GlassSection title="Dividend history" subtitle="Per-payment record" dataSource="yahoo">
+      <GlassSection title="Dividend history" subtitle="Per-payment record" dataSource="supabase">
         {hq.isLoading ? (
           <PanelSkeleton rows={4} />
         ) : !payments.length ? (
-          <EmptyDataState reason="empty" message="No dividend payment history." hint={hq.data?.error ?? "No dividend events returned for this security."} badgeLabel="yahoo" />
+          <EmptyDataState reason="empty" message="No dividend payment history." hint={hq.data?.error ?? "No dividend events returned for this security."} badgeLabel="unconfigured" />
         ) : (
           <div className="glass-inset overflow-hidden rounded-xl">
             <div className="max-h-[420px] overflow-y-auto scrollbar-thin">
@@ -663,8 +663,8 @@ export function ModelingTab({ sym }: { sym: string }) {
   if (dq.isLoading) return <PanelSkeleton rows={8} height="h-[420px]" />;
   if (!d || !d.ok || rev0 == null || ebitMargin == null) {
     return (
-      <GlassSection title="Valuation model (DCF)" subtitle="Discounted cash flow" dataSource="yahoo">
-        <EmptyDataState reason="empty" message={`Not enough statement data to model ${sym}.`} hint="A DCF needs revenue, operating income and cash-flow history, which the free feed did not return for this security." badgeLabel="yahoo" />
+      <GlassSection title="Valuation model (DCF)" subtitle="Discounted cash flow" dataSource="supabase">
+        <EmptyDataState reason="empty" message={`Not enough statement data to model ${sym}.`} hint="A DCF needs revenue, operating income and cash-flow history, which the free feed did not return for this security." badgeLabel="unconfigured" />
       </GlassSection>
     );
   }
@@ -674,7 +674,7 @@ export function ModelingTab({ sym }: { sym: string }) {
   ];
 
   return (
-    <GlassSection title="Valuation model (DCF)" subtitle="Unlevered FCF built from the reported statements. Indicative, not a recommendation." dataSource="yahoo">
+    <GlassSection title="Valuation model (DCF)" subtitle="Unlevered FCF built from the reported statements. Indicative, not a recommendation." dataSource="supabase">
       <div className="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4 lg:grid-cols-7">
         <NumInput label="Rev growth %" value={growth} step={0.5} onChange={setGrowth} icon={<TrendingUp className="h-3.5 w-3.5" />} />
         <NumInput label="Years" value={years} step={1} onChange={(n) => setYears(Math.max(3, Math.min(10, n)))} icon={<CalendarDays className="h-3.5 w-3.5" />} />
@@ -744,7 +744,7 @@ export function ModelingTab({ sym }: { sym: string }) {
           </p>
         </>
       ) : (
-        <EmptyDataState reason="empty" message="Model inputs incomplete." hint="Adjust the assumptions; some base figures were unavailable." badgeLabel="yahoo" />
+        <EmptyDataState reason="empty" message="Model inputs incomplete." hint="Adjust the assumptions; some base figures were unavailable." badgeLabel="unconfigured" />
       )}
     </GlassSection>
   );
@@ -804,11 +804,11 @@ export function NewsTab({ sym }: { sym: string }) {
   });
   const items = q.data?.items ?? [];
   return (
-    <GlassSection title="News" subtitle="Recent company news" dataSource="yahoo">
+    <GlassSection title="News" subtitle="Recent company news" dataSource="supabase">
       {q.isLoading ? (
         <PanelSkeleton rows={5} />
       ) : !items.length ? (
-        <EmptyDataState reason="empty" message={`No recent news for ${sym}.`} hint={q.data?.error ?? "No headlines from the news feed for this security."} badgeLabel="yahoo" />
+        <EmptyDataState reason="empty" message={`No recent news for ${sym}.`} hint={q.data?.error ?? "No headlines from the news feed for this security."} badgeLabel="unconfigured" />
       ) : (
         <ul className="glass-inset divide-y divide-[hsl(var(--glass-border))]/50 overflow-hidden rounded-xl">
           {items.slice(0, 20).map((n, i) => (
@@ -997,7 +997,7 @@ export function IndustryTab({ sym }: { sym: string }) {
   const peers = [sym, ...extra];
   return (
     <div className="space-y-4">
-      <GlassSection title="Industry" subtitle="Sector and industry classification" dataSource="yahoo">
+      <GlassSection title="Industry" subtitle="Sector and industry classification" dataSource="supabase">
         <div className={STAT_GRID}>
           <Stat k="Sector" v={o?.sector ?? "—"} />
           <Stat k="Industry" v={o?.industry ?? "—"} />
@@ -1008,7 +1008,7 @@ export function IndustryTab({ sym }: { sym: string }) {
       <GlassSection
         title="Peer comparison"
         subtitle="Add any ticker to compare key metrics"
-        dataSource="yahoo"
+        dataSource="supabase"
         right={
           <form
             onSubmit={(e) => {
@@ -1066,7 +1066,7 @@ export function InvestorRelationsTab({ sym }: { sym: string }) {
   const a = useAnalysis(sym);
   const o = a.data?.overview;
   return (
-    <GlassSection title="Investor relations" subtitle="IR resources and upcoming events" dataSource="yahoo">
+    <GlassSection title="Investor relations" subtitle="IR resources and upcoming events" dataSource="supabase">
       {a.isLoading ? (
         <PanelSkeleton rows={2} />
       ) : (

@@ -5,11 +5,16 @@
 
 import type { Quote } from "@/types/iress";
 
-/** Server-side: `USE_SUPABASE_QUOTES=true` */
+/** Server-side: `USE_SUPABASE_QUOTES=true` (or unset → default true for prod).
+ *
+ * Default-on matches the AGENTS.md mandate: "DB-first reads; UI reads Supabase;
+ * worker-ingested data". Setting `USE_SUPABASE_QUOTES=0`/`false` opts the BFF
+ * out (e.g. for a smoke test that needs a direct IRESS hit without the worker
+ * round-trip). Production deploys MUST leave the env unset or `true`. */
 export function isUseSupabaseQuotesEnabled(): boolean {
   const raw = process.env.USE_SUPABASE_QUOTES;
-  if (!raw) return false;
-  return raw === "1" || raw.toLowerCase() === "true";
+  if (raw === "0" || raw?.toLowerCase() === "false") return false;
+  return true;
 }
 
 /** Client-side mirror of `NEXT_PUBLIC_USE_SUPABASE_QUOTES`. */
