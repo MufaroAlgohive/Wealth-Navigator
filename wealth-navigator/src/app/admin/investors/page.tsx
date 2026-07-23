@@ -378,7 +378,7 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
                       <td className="px-3 py-2 text-[12px] text-foreground">{t.transaction_date ? new Date(t.transaction_date).toLocaleDateString("en-ZA") : "—"}</td>
                       <td className="px-3 py-2 text-[12px] text-foreground">{t.name || t.description || "—"}</td>
                       <td className="px-3 py-2 text-[12px] text-muted-foreground">{classifyTxn(t)}</td>
-                      <td className={cn("px-3 py-2 text-right text-[12px] font-medium", t.direction === "credit" ? "text-success" : "text-foreground")}>{t.direction === "credit" ? "+" : "-"}R {Math.abs(Number(t.amount) || 0).toLocaleString("en-ZA")}</td>
+                      <td className={cn("px-3 py-2 text-right text-[12px] font-medium tabular-nums", t.direction === "credit" ? "text-success" : "text-foreground")}>{t.direction === "credit" ? "+" : "-"}{R(Math.abs(Number(t.amount) || 0))}</td>
                     </tr>
                   ))}
               </tbody>

@@ -124,7 +124,12 @@ export default function DashboardPage() {
                   const day = num(r["1d_pct"]);
                   const month = num(r["1m_pct"]);
                   const sixMonth = num(r["6m_pct"]);
-                  const basketValue = num(r.basket_value);
+                  // client_strategy_returns_c.basket_value is integer CENTS (see
+                  // /api/client-book/route.ts:46). Divide by 100 to render Rands,
+                  // otherwise the column shows ~100× too large (177,946 instead
+                  // of R1,779.46 etc).
+                  const basketValueCents = num(r.basket_value);
+                  const basketValueRands = basketValueCents != null ? basketValueCents / 100 : null;
                   return (
                     <tr key={String(r.strategy_id ?? i)} className="border-b border-border/50 last:border-0">
                       <td className="px-2 py-2 text-left font-medium text-foreground">{String(r.name ?? "—")}</td>
@@ -132,7 +137,7 @@ export default function DashboardPage() {
                       <td className={cn("px-2 py-2 text-right tabular-nums font-semibold", pctCls(month))}>{pctStr(month)}</td>
                       <td className={cn("px-2 py-2 text-right tabular-nums font-semibold", pctCls(sixMonth))}>{pctStr(sixMonth)}</td>
                       <td className="px-2 py-2 text-right tabular-nums text-foreground">
-                        {basketValue == null ? "—" : basketValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        {basketValueRands == null ? "—" : basketValueRands.toLocaleString("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 2 })}
                       </td>
                     </tr>
                   );
