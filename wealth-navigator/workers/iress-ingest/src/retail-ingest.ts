@@ -200,9 +200,10 @@ export async function syncRetailPrices(opts: {
       // without backend validation + approval.
       const writeThisSymbol =
         retailWritesEnabled &&
+        choice.scaleVerified && // never write an unanchored ×100 GUESS to the money track (see price-scale.ts)
         (!onUatEndpoint || iressOwnsSymbol(sec.symbol, approvedIress)) &&
         withinWriteGuard(choice.cents, refCents);
-      if (!writeThisSymbol) continue; // shadow: comparison captured, nothing written to RETAIL
+      if (!writeThisSymbol) continue; // shadow / unverified-scale: comparison captured, Yahoo value kept
 
       // `symbol` is NOT NULL on the production stock_intraday_c (a denormalised
       // column the legacy Yahoo feed populated). Omitting it makes every insert

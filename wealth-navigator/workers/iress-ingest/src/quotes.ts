@@ -580,6 +580,22 @@ export async function syncWatchlistQuotes(
     // cutover. Closes the latent path where CT/test prices reach the money track.
     if (isUatEnv()) continue;
 
+    // Never persist an unanchored scale GUESS to the money track — that is what
+    // seeds the ×100 corruption. If the scale wasn't verified against a reference,
+    // skip the write and keep the prior (Yahoo) value; the display snapshot above
+    // is already captured. See src/lib/iress/price-scale.ts + docs/IRESS_PRICE_SCALE_INCIDENT_HANDOFF.md.
+    if (!choice.scaleVerified) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "money_track_write_skipped_unverified_scale",
+          symbol,
+          basis: choice.basis,
+        }),
+      );
+      continue;
+    }
+
     const { error: intradayErr } = await supabase.from("stock_intraday_c").insert({
       security_id: securityId,
       current_price: priceCents,

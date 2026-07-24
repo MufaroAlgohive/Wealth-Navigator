@@ -51,6 +51,27 @@ describe("chooseDisplayCents", () => {
     // 100x-mislabel → multiplier 1 (value is already cents)
     expect(chooseDisplayCents(4125, 3090).centsMultiplier).toBe(1);
   });
+
+  it("marks scaleVerified=false with no reference (money-track must skip)", () => {
+    expect(chooseDisplayCents(41.25, 0).scaleVerified).toBe(false);
+    expect(chooseDisplayCents(0, 3090).scaleVerified).toBe(false);
+  });
+
+  it("marks scaleVerified=true when a reference disambiguated the scale", () => {
+    expect(chooseDisplayCents(897.26, 89726).scaleVerified).toBe(true);
+    expect(chooseDisplayCents(4125, 3090).scaleVerified).toBe(true);
+  });
+
+  it("trustedRefCents overrides a corrupted mutable reference (anti-perpetuation)", () => {
+    // SOL: IRESS integer-cents 17500 (R175). The mutable last_price has already
+    // been corrupted to 1,750,000c (R17,500, ×100). With only the corrupt ref the
+    // logic locks in the ×100 (documents the bug); the immutable trusted ref heals it.
+    expect(chooseDisplayCents(17500, 1_750_000).cents).toBe(1_750_000);
+    const healed = chooseDisplayCents(17500, 1_750_000, 17500);
+    expect(healed.cents).toBe(17500);
+    expect(healed.basis).toBe("cents-mislabeled");
+    expect(healed.scaleVerified).toBe(true);
+  });
 });
 
 /**

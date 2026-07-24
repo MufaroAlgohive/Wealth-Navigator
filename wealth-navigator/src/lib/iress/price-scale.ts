@@ -32,27 +32,56 @@ export interface CentsChoice {
   basis: "rands" | "cents-mislabeled" | "no-reference" | "empty";
   /** Multiplier to convert a same-scale value to cents under the chosen scale. */
   centsMultiplier: 1 | 100;
+  /**
+   * True ONLY when a positive reference actually disambiguated the cents/Rand
+   * scale (basis "rands" or "cents-mislabeled"). False for "no-reference" and
+   * "empty" — i.e. the ×100 was a GUESS, not a verified scale.
+   *
+   * Money-track writers (securities_c.last_price / stock_intraday_c) MUST NOT
+   * persist a value when this is false: an unanchored ×100 guess is exactly what
+   * seeds the daily corruption. Display/chart callers may still show it (with a
+   * caveat) or prefer Yahoo. See docs/IRESS_PRICE_SCALE_INCIDENT_HANDOFF.md.
+   */
+  scaleVerified: boolean;
 }
 
 /**
  * @param lastRands  the value intended to be Rands, but which may actually be an
  *                   un-divided cents value (the 100× ambiguity).
  * @param referenceCents  existing `securities_c.last_price` in cents (0 if unknown).
+ *                   NOTE: the tick loop OVERWRITES this column, so a corrupted
+ *                   value here can "confirm" its own ×100 scale — the
+ *                   self-perpetuating anchor behind the daily corruption.
+ * @param trustedRefCents  optional IMMUTABLE, human-verified magnitude in cents
+ *                   (e.g. securities_c.scale_ref_cents) that no tick loop
+ *                   overwrites. When > 0 it takes precedence over referenceCents,
+ *                   breaking the self-referential anchor. Default 0 (disabled) →
+ *                   behaviour identical to the original two-argument form.
  */
-export function chooseDisplayCents(lastRands: number, referenceCents: number): CentsChoice {
+export function chooseDisplayCents(
+  lastRands: number,
+  referenceCents: number,
+  trustedRefCents = 0,
+): CentsChoice {
   if (!Number.isFinite(lastRands) || lastRands <= 0) {
-    return { cents: 0, basis: "empty", centsMultiplier: 100 };
+    return { cents: 0, basis: "empty", centsMultiplier: 100, scaleVerified: false };
   }
   const asRands = Math.round(lastRands * 100); // value treated as Rands (the intended path)
-  if (!Number.isFinite(referenceCents) || referenceCents <= 0) {
-    return { cents: asRands, basis: "no-reference", centsMultiplier: 100 };
+  // Prefer the immutable trusted reference; fall back to the mutable last_price.
+  const ref =
+    Number.isFinite(trustedRefCents) && trustedRefCents > 0 ? trustedRefCents : referenceCents;
+  if (!Number.isFinite(ref) || ref <= 0) {
+    // No anchor → the ×100 is a GUESS, not a verified scale. Kept for the chart
+    // path (anchored=false ⇒ prefer Yahoo); money-track writers must skip on
+    // scaleVerified=false rather than persist an unanchored guess.
+    return { cents: asRands, basis: "no-reference", centsMultiplier: 100, scaleVerified: false };
   }
   const asCents = Math.round(lastRands); // value was actually cents (the 100× mis-scale)
-  const dist = (c: number) => Math.abs(Math.log(c / referenceCents));
+  const dist = (c: number) => Math.abs(Math.log(c / ref));
   if (asCents > 0 && dist(asCents) < dist(asRands)) {
-    return { cents: asCents, basis: "cents-mislabeled", centsMultiplier: 1 };
+    return { cents: asCents, basis: "cents-mislabeled", centsMultiplier: 1, scaleVerified: true };
   }
-  return { cents: asRands, basis: "rands", centsMultiplier: 100 };
+  return { cents: asRands, basis: "rands", centsMultiplier: 100, scaleVerified: true };
 }
 
 export interface AnchoredSeries {
@@ -74,6 +103,7 @@ export interface AnchoredSeries {
 export function anchorHistoryToRands(
   raw: Array<{ t: number; v: number }>,
   referenceCents: number,
+  trustedRefCents = 0,
 ): AnchoredSeries {
   const positive = raw
     .map((p) => p.v)
@@ -83,7 +113,7 @@ export function anchorHistoryToRands(
     return { points: [], multiplier: 0.01, basis: "empty", anchored: false };
   }
   const representative = positive[Math.floor(positive.length / 2)]!; // median
-  const choice = chooseDisplayCents(representative, referenceCents);
+  const choice = chooseDisplayCents(representative, referenceCents, trustedRefCents);
   const multiplier = choice.centsMultiplier / 100; // rands = value * centsMultiplier / 100
   const points = raw
     .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v) && p.v > 0)
