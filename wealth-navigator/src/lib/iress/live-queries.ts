@@ -228,10 +228,18 @@ async function fetchQuotesFromSupabase(
   }
 
   const ids = metaRows.map((r) => r.id);
+  // Bound the scan to a recent window so this hot read uses the
+  // (security_id, timestamp DESC) index instead of a top-N sort over the whole
+  // ~3.5M-row table (measured ~7.5s → connection-pool exhaustion). The window is
+  // wide enough to survive weekends + public holidays; anything still missing
+  // falls back to an unbounded per-security lookup so a valid price is NEVER dropped.
+  const INTRADAY_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+  const windowStart = new Date(Date.now() - INTRADAY_WINDOW_MS).toISOString();
   const { data: ticks, error: tickErr } = await supabase
     .from("stock_intraday_c")
     .select("security_id, current_price, timestamp")
     .in("security_id", ids)
+    .gte("timestamp", windowStart)
     .order("timestamp", { ascending: false })
     .limit(Math.max(ids.length * 2, 50));
   if (tickErr) {
@@ -242,6 +250,22 @@ async function fetchQuotesFromSupabase(
   for (const t of tickRows) {
     if (!latestBySecurity.has(t.security_id)) {
       latestBySecurity.set(t.security_id, t);
+    }
+  }
+  // Fallback: any security with no tick inside the window (e.g. an unusually long
+  // market closure) → fetch its latest tick unbounded so it never disappears.
+  const missingIds = ids.filter((id) => !latestBySecurity.has(id));
+  if (missingIds.length > 0) {
+    const { data: fbTicks } = await supabase
+      .from("stock_intraday_c")
+      .select("security_id, current_price, timestamp")
+      .in("security_id", missingIds)
+      .order("timestamp", { ascending: false })
+      .limit(Math.max(missingIds.length * 2, 20));
+    for (const t of (fbTicks ?? []) as IntradayRow[]) {
+      if (!latestBySecurity.has(t.security_id)) {
+        latestBySecurity.set(t.security_id, t);
+      }
     }
   }
 

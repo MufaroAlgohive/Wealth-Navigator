@@ -3110,7 +3110,10 @@ export function startHttpApi(
   deps: HttpApiDeps,
   getLastQuoteSyncAt: () => string | undefined,
 ): Promise<HttpApiHandle> {
-  const port = Number(process.env.WORKER_HTTP_PORT ?? "8765");
+  // Railway injects PORT and its public proxy forwards to that port — prefer it so
+  // the public domain actually reaches this server (fixes the 502 "Application failed
+  // to respond"). WORKER_HTTP_PORT/8765 remain the local-dev fallback.
+  const port = Number(process.env.PORT ?? process.env.WORKER_HTTP_PORT ?? "8765");
   const host = process.env.WORKER_HTTP_HOST ?? "0.0.0.0";
   const authToken = deps.authToken ?? process.env.WORKER_HTTP_TOKEN ?? undefined;
 

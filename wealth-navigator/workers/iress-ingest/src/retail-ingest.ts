@@ -26,7 +26,7 @@
  *    closed-with-data, last > 0) are written; everything else is skipped.
  */
 import { fetchLiveQuote, normaliseSymbol } from "./quotes";
-import { chooseDisplayCents } from "./scale";
+// Money track trusts mapQuote's OHLC-anchored Rands (see live.ts) — no chooseDisplayCents self-anchor.
 import { iressOwnsSymbol, loadApprovedIressSymbols, withinWriteGuard } from "./cutover";
 import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { isUatEnv } from "../../../src/lib/oems/uat-scope";
@@ -162,20 +162,26 @@ export async function syncRetailPrices(opts: {
       covered += 1;
 
       const refCents = Number(sec.last_price) || 0;
-      const choice = chooseDisplayCents(lastRands, refCents);
+      // Trust mapQuote's OHLC-anchored Rands (see live.ts iressQuotePriceScale):
+      // convert Rands->cents directly; do NOT self-anchor to the mutable refCents.
+      const priceCents = lastRands > 0 ? Math.round(lastRands * 100) : 0;
+      // Daily change from Rands (scale-free ratio) for full column parity with the
+      // Yahoo feed (stock_intraday_c.1d_pct/1d_abs, securities_c.change_price/percent).
+      const prevCloseRands = quoteRow?.prevClose ?? 0;
+      const changeAbsCents = prevCloseRands > 0 ? Math.round((lastRands - prevCloseRands) * 100) : 0;
+      const changePct = prevCloseRands > 0 ? Math.round(((lastRands - prevCloseRands) / prevCloseRands) * 10000) / 100 : 0;
       if (sample.length < 15) {
-        sample.push({ symbol: sec.symbol, iressCents: choice.cents, yahooCents: refCents || null, basis: choice.basis });
+        sample.push({ symbol: sec.symbol, iressCents: priceCents, yahooCents: refCents || null, basis: "iress-ohlc-anchored" });
       }
 
       // Build the institutional L1 snapshot (cents scale matching securities_c),
       // so the dashboard overlay has IRESS last + prev_close for this symbol.
       if (institutional) {
-        const mlt = choice.centsMultiplier;
-        const px = (v: number | null | undefined) => (v != null && v > 0 ? Math.round(v * mlt) : null);
+        const px = (v: number | null | undefined) => (v != null && v > 0 ? Math.round(v * 100) : null);
         snapshotRows.push({
           security_code: iressCode,
           exchange,
-          last: choice.cents,
+          last: priceCents,
           open: px(quoteRow?.open),
           high: px(quoteRow?.high),
           low: px(quoteRow?.low),
@@ -200,10 +206,10 @@ export async function syncRetailPrices(opts: {
       // without backend validation + approval.
       const writeThisSymbol =
         retailWritesEnabled &&
-        choice.scaleVerified && // never write an unanchored ×100 GUESS to the money track (see price-scale.ts)
+        priceCents > 0 && // IRESS could actually price it (0 = keep Yahoo's value)
         (!onUatEndpoint || iressOwnsSymbol(sec.symbol, approvedIress)) &&
-        withinWriteGuard(choice.cents, refCents);
-      if (!writeThisSymbol) continue; // shadow / unverified-scale: comparison captured, Yahoo value kept
+        withinWriteGuard(priceCents, refCents);
+      if (!writeThisSymbol) continue; // shadow / unpriceable: comparison captured, Yahoo value kept
 
       // `symbol` is NOT NULL on the production stock_intraday_c (a denormalised
       // column the legacy Yahoo feed populated). Omitting it makes every insert
@@ -218,8 +224,12 @@ export async function syncRetailPrices(opts: {
         {
           security_id: sec.id,
           symbol: sec.symbol,
-          current_price: choice.cents,
+          current_price: priceCents,
           timestamp: ts,
+          // Full column parity with the Yahoo feed so daily-change UI keeps working
+          // after cutover (MINT reads 1d_pct / 1d_abs off the latest intraday row).
+          "1d_pct": changePct,
+          "1d_abs": changeAbsCents,
         },
         { onConflict: "symbol,timestamp" },
       );
@@ -227,17 +237,11 @@ export async function syncRetailPrices(opts: {
         console.error(`[retail-ingest] stock_intraday_c insert(${sec.symbol}): ${tickErr.message}`);
         continue;
       }
-      const update: Record<string, unknown> = { last_price: choice.cents };
-      // Yahoo parity: derive `change_percent` from the IRESS quote so the CRM's
-      // change column stays correct without Yahoo. `last` and `prevClose` are
-      // both in rands here, so the ratio is scale-free — independent of the
-      // cents-scale anchoring applied to `last_price` (see scale.ts). Only the
-      // ratio is written; `change_price` (cents) is intentionally left to the
-      // existing feed until the cents scale per symbol is verified.
-      const prevCloseRands = quoteRow?.prevClose ?? 0;
+      // Full parity with the Yahoo feed: last_price + change_percent + change_price (cents).
+      const update: Record<string, unknown> = { last_price: priceCents };
       if (prevCloseRands > 0 && lastRands > 0) {
-        update["change_percent"] =
-          Math.round(((lastRands - prevCloseRands) / prevCloseRands) * 10000) / 100;
+        update["change_percent"] = changePct;
+        update["change_price"] = changeAbsCents;
       }
       if (setSourceCol) update["price_source"] = "iress";
       const { error: secErr } = await retail.from("securities_c").update(update).eq("id", sec.id);

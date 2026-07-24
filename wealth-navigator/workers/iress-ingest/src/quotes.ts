@@ -13,7 +13,9 @@ import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
 import { getMarketDataSession, marketDataProdEnabled, noteMarketDataError } from "./market-data";
 import { isUatEnv } from "../../../src/lib/oems/uat-scope";
-import { chooseDisplayCents } from "./scale";
+// NOTE: the money-track write no longer uses chooseDisplayCents — mapQuote already
+// resolves cents-vs-Rand from the quote's own OHLC cluster (see live.ts
+// iressQuotePriceScale), so we trust quote.last (Rands) and convert directly.
 
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -507,11 +509,12 @@ export async function syncWatchlistQuotes(
   for (const { symbol, quote, exchange: qExchange } of quotes) {
     const ref = securityMap.get(symbol);
     const securityId = ref?.id;
-    // Reference-anchored scaling: pick the cents value whose magnitude matches
-    // the existing securities_c.last_price, fixing the 100x cents/Rand
-    // mis-scale (see scale.ts). Falls back to Rands->cents with no reference.
-    const choice = chooseDisplayCents(quote.last, ref?.lastPriceCents ?? 0);
-    const priceCents = choice.cents;
+    // Trust mapQuote's OHLC-anchored value: iressQuotePriceScale (live.ts) resolves
+    // cents-vs-Rand from the quote's OWN OHLC cluster (immutable), so quote.last is
+    // already clean Rands. Convert Rands->cents directly and do NOT re-disambiguate
+    // against the mutable securities_c.last_price — that self-anchor is the ×100
+    // perpetuation trap (see docs/IRESS_PRICE_SCALE_INCIDENT_HANDOFF.md).
+    const priceCents = quote.last > 0 ? Math.round(quote.last * 100) : 0;
     const plan: QuoteUpsertPlan = {
       symbol,
       securityId: securityId ?? `unknown-${symbol}`,
@@ -522,8 +525,8 @@ export async function syncWatchlistQuotes(
 
     // Snapshot the full L1 block (scaled to cents like last_price). Keyed on
     // security_code, so it's captured even when there's no securities_c UUID.
-    const m = choice.centsMultiplier;
-    const px = (v: number) => (v > 0 ? Math.round(v * m) : null);
+    // All quote fields are Rands from mapQuote → ×100 for the cents-scaled snapshot.
+    const px = (v: number) => (v > 0 ? Math.round(v * 100) : null);
     snapshotRows.push({
       security_code: symbol,
       exchange: qExchange,
@@ -546,7 +549,7 @@ export async function syncWatchlistQuotes(
     if (env.dryRun || !env.allowWrites) {
       console.info(
         `[iress-ingest] would upsert stock_intraday_c`,
-        JSON.stringify({ ...plan, exchange: qExchange, scaleBasis: choice.basis }),
+        JSON.stringify({ ...plan, exchange: qExchange, scaleBasis: "iress-ohlc-anchored" }),
       );
       continue;
     }
@@ -580,18 +583,12 @@ export async function syncWatchlistQuotes(
     // cutover. Closes the latent path where CT/test prices reach the money track.
     if (isUatEnv()) continue;
 
-    // Never persist an unanchored scale GUESS to the money track — that is what
-    // seeds the ×100 corruption. If the scale wasn't verified against a reference,
-    // skip the write and keep the prior (Yahoo) value; the display snapshot above
-    // is already captured. See src/lib/iress/price-scale.ts + docs/IRESS_PRICE_SCALE_INCIDENT_HANDOFF.md.
-    if (!choice.scaleVerified) {
+    // Never persist a non-positive / unpriceable value to the money track.
+    // resolveQuoteLast already returns 0 for bogus ticks with no OHLC anchor, so a
+    // 0 here means "IRESS couldn't price it" → keep the prior (Yahoo) value.
+    if (!(priceCents > 0)) {
       console.warn(
-        JSON.stringify({
-          level: "warn",
-          event: "money_track_write_skipped_unverified_scale",
-          symbol,
-          basis: choice.basis,
-        }),
+        JSON.stringify({ level: "warn", event: "money_track_write_skipped_no_price", symbol }),
       );
       continue;
     }
@@ -609,7 +606,7 @@ export async function syncWatchlistQuotes(
     }
 
     const prevCloseCents =
-      quote.prevClose > 0 ? Math.round(quote.prevClose * choice.centsMultiplier) : null;
+      quote.prevClose > 0 ? Math.round(quote.prevClose * 100) : null;
     const { error: secErr } = await supabase
       .from("securities_c")
       .update({

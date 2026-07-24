@@ -243,7 +243,50 @@ display** — it writes nothing to the database.
 
 ---
 
-### The only decision I need from you to start
+---
 
-Reply **"go step 1"** and either you run the Step 1 queries, or say the word and I run
-them read-only and paste the results. We do not move to Step 2 until Step 1 confirms the cause.
+## ⚠️ UPDATE — after running Steps 1 & 2 (corrected diagnosis, 2026-07-24)
+
+**Step 2 ✅** — index `idx_stock_intraday_sec_ts` created. Perf win stands.
+
+**Step 1 changed the diagnosis. The earlier "missing cost basis" theory was WRONG.**
+- Lonwabo: 4 holdings, ALL with cost recorded (`no_cost_holdings = 0`). His **real** value =
+  **R1,290.76**; the app shows **R128,231** → the app inflates ~**100×**.
+- 1c: `median_expected_over_avg = 0.01` → `avg_fill` is **cents**, `Expected_fill` is **Rands**
+  (mixed scales in one table — the trap).
+
+**The database is CORRECT. The ×100 is entirely in the display/deploy layer.** Every current
+source file already ÷100s correctly: MINT `api/user/holdings.js`, MINT `src/lib/useFinancialData.js`,
+WN `api/admin/studio/route.ts`. Two real causes remain:
+
+1. **Live MINT client app is running stale code.** The fix `a732c490` ("Fix 100x portfolio
+   inflation") has been in **dev** since **2026-05-25**, but **`MINT-DEVELOPMENT` (dev) and
+   `MINT-LIVE` (production) are separate repos** (see `SYNC_TO_LIVE.md`). Live never got the fix.
+2. **WN admin KPI strip** `src/components/admin/clients/client-studio.tsx:86` prints cents as
+   Rands without ÷100 (chart at line 355 divides correctly) — a current admin ×100 to fix.
+
+### ❌ Do NOT apply the old Step 3 edit — `studio/route.ts` is already correct.
+### ❌ STOP editing DB prices/values — the DB is correct; edits are wasted risk.
+
+### Corrected next steps
+
+**Fix A — deploy dev → live** (fixes the phone / "Open in Mint"). From Tsie's Replit workspace,
+in a low-traffic window, confirm with Tsie first (it force-pushes live):
+```bash
+git fetch dev
+git reset --hard dev/main
+rm -f .git/shallow.lock && git fetch dev --unshallow && git push origin main --force
+```
+Let Vercel redeploy MINT-LIVE → open Lonwabo & Asisipho → value ≈ R1,290, P&L small.
+
+**Fix B — WN admin ÷100** (if you use the admin breakdown): I confirm the `/api/admin/clients`
+`valueCents` scale, then patch `client-studio.tsx` so the KPI strip divides by 100 like the
+chart. Reviewed diff, DEV/preview first.
+
+### What I need from you to proceed
+Tell me **which screen** you're watching the ×100 on:
+- the **phone / "Open as … in Mint"** → Fix A (deploy dev→live), or
+- the **admin "Client Breakdown" panel** → Fix B (I patch the WN admin), or
+- **both** → we do A and B.
+
+Then we verify Lonwabo/Asisipho read ~R1,290 and it's done. No DB writes at any point.
