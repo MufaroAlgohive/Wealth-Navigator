@@ -626,8 +626,36 @@ export function NoteEditor({
   }, [symbol, applyIdentifyMeta]);
 
 
-  // step 2: auto-fetch hook
+  // step 1 (and beyond): live price badge next to the Target Price input.
+  // Reuses the same /api/company-analysis endpoint that step 2 uses (which overlays
+  // a fresh IRESS quote on cached Yahoo fundamentals) — so the price the analyst
+  // sees next to the target is the same live mark used in the Valuation (TTM) card.
   const fetchSymbol = symbol.replace(/\.(JO|JSE)$/i, "");
+  const livePriceQuery = useQuery<CompanyAnalysis | null>({
+    queryKey: ["wizard-live-price", fetchSymbol],
+    enabled: fetchSymbol.length > 0,
+    queryFn: async () => {
+      const r = await fetch(
+        `/api/company-analysis/${encodeURIComponent(fetchSymbol)}.JO`,
+        { cache: "no-store" },
+      );
+      if (!r.ok) return null;
+      const json = (await r.json()) as CompanyAnalysis;
+      return json?.ok ? json : null;
+    },
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+  const livePrice = livePriceQuery.data?.price.last ?? null;
+  const livePriceSource = livePriceQuery.data?.price.priceSource ?? null;
+  const livePriceChangePct = livePriceQuery.data?.price.changePct ?? null;
+  const targetNum = targetPrice ? Number(targetPrice) : NaN;
+  const upsidePct =
+    livePrice != null && Number.isFinite(targetNum) && targetNum > 0 && livePrice > 0
+      ? ((targetNum - livePrice) / livePrice) * 100
+      : null;
+
+  // step 2: auto-fetch hook
   const autoFetch = useQuery<{ analysis: CompanyAnalysis | null; peers: string[] | null }>({
     queryKey: ["wizard-autofetch", fetchSymbol],
     enabled: step === 2 && fetchSymbol.length > 0,
@@ -889,6 +917,18 @@ export function NoteEditor({
   }
 
   // ── step renderers ─────────────────────────────────────────────────────
+  const livePriceBadgeTone = cn(
+    livePrice != null && upsidePct != null
+      ? upsidePct >= 0
+        ? "border-[hsl(var(--up)/0.4)] bg-[hsl(var(--up)/0.1)] text-up"
+        : "border-[hsl(var(--down)/0.4)] bg-[hsl(var(--down)/0.1)] text-down"
+      : "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] text-muted-foreground",
+  );
+  const upsideBadgeLabel =
+    livePrice != null && upsidePct != null
+      ? `${upsidePct >= 0 ? "+" : ""}${upsidePct.toFixed(1)}% vs current`
+      : "—";
+
   const renderStep1 = () => (
     <div className="space-y-4">
       <div>
@@ -962,13 +1002,49 @@ export function NoteEditor({
         <Field label="Style tag">
           <input className={INPUT} value={style} onChange={(e) => setStyle(e.target.value)} placeholder="BUY & HOLD" />
         </Field>
-        <Field label="Target price (R)" hint="for upside calc">
-          <input
-            className={INPUT}
-            value={targetPrice}
-            onChange={(e) => setTargetPrice(e.target.value)}
-            inputMode="decimal"
-          />
+        <Field
+          label="Target price (R)"
+          hint={
+            livePrice != null
+              ? `live ${livePriceSource === "iress" ? "IRESS" : "stored"} · R${livePrice.toFixed(2)} · upside ${upsideBadgeLabel}`
+              : "for upside calc"
+          }
+        >
+          <div className="relative">
+            <input
+              className={cn(INPUT, "pr-24")}
+              value={targetPrice}
+              onChange={(e) => setTargetPrice(e.target.value)}
+              inputMode="decimal"
+              placeholder={livePrice != null ? `Now R${livePrice.toFixed(2)}` : "e.g. 125.00"}
+            />
+            {livePrice != null ? (
+              <span
+                className={cn(
+                  "pointer-events-none absolute right-1.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-1 rounded-md border px-1.5 py-0.5 font-mono text-[10px] tabular-nums",
+                  livePriceBadgeTone,
+                )}
+                title={
+                  livePriceChangePct != null
+                    ? `Live mark · day change ${livePriceChangePct >= 0 ? "+" : ""}${livePriceChangePct.toFixed(2)}%`
+                    : "Live mark"
+                }
+              >
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" aria-hidden />
+                R{livePrice.toFixed(2)}
+                {upsidePct != null && (
+                  <span className="ml-0.5 border-l border-current/30 pl-1">
+                    {upsidePct >= 0 ? "+" : ""}
+                    {upsidePct.toFixed(1)}%
+                  </span>
+                )}
+              </span>
+            ) : fetchSymbol ? (
+              <span className="pointer-events-none absolute right-2 top-1/2 inline-flex -translate-y-1/2 items-center gap-1 text-[10px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> fetching live price…
+              </span>
+            ) : null}
+          </div>
         </Field>
         <Field
           label="Linked strategies"
@@ -1606,7 +1682,18 @@ export function NoteEditor({
           <ReviewRow k="Conviction" v={conviction || "—"} />
           <ReviewRow k="ESG" v={esg || "—"} />
           <ReviewRow k="Style" v={style || "—"} />
-          <ReviewRow k="Target" v={targetPrice ? `R${Number(targetPrice).toFixed(2)}` : "—"} />
+          <ReviewRow
+            k="Target"
+            v={
+              targetPrice
+                ? `R${Number(targetPrice).toFixed(2)}${
+                    livePrice != null && upsidePct != null
+                      ? ` · now R${livePrice.toFixed(2)} · upside ${upsidePct >= 0 ? "+" : ""}${upsidePct.toFixed(1)}%`
+                      : ""
+                  }`
+                : "—"
+            }
+          />
           <ReviewRow
             k="Valuation"
             v={`P/E ${peMultiple || "—"} · EV/EBITDA ${evEbitda || "—"} · ROE ${roePct || "—"}% · Div ${divYieldPct || "—"}%`}
