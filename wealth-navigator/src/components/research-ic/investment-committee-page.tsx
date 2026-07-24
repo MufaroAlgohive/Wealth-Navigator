@@ -8,17 +8,46 @@
  * transitions the note (approved/rejected) and promotes rebalance proposals to
  * ic_approved, after which they can be released to the order book.
  *
- * Committee members, charter/quorum and the session-prep checklist are the
- * desk's standing config (static), matching the OEMS design.
+ * Committee members are sourced from `lib/research-ic/committee.ts` (the 3
+ * standing voters — Lonwabo, Juan, Lethabo). The chair has a casting vote on
+ * a 1-1 tie; the gate is strict majority (≥ 2 of 3).
+ *
+ * UX:
+ *   - Sticky section tab bar (Agenda / Approved / Recent / Charter) with
+ *     scroll-spy + jump-to-section. Solves the "static, can't navigate"
+ *     pain when the page grows with multiple proposals + decisions.
+ *   - Each major section is collapsible (header click toggles). Sections
+ *     default to expanded when they contain items, collapsed when empty.
+ *   - "Back to top" floating button appears once the user scrolls past the
+ *     first section.
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Calendar, Check, ExternalLink, MinusCircle, Rocket, ThumbsDown, ThumbsUp, X } from "lucide-react";
+import {
+  ArrowUp,
+  Calendar,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  MinusCircle,
+  Rocket,
+  ScrollText,
+  ThumbsDown,
+  ThumbsUp,
+  Users,
+  X,
+} from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
+import {
+  IC_COMMITTEE_SIZE,
+  IC_MAJORITY_REQUIRED_YES,
+  type CommitteeMember,
+} from "@/lib/research-ic/committee";
 import {
   agendaKindForNote,
   agendaKindForRebalance,
@@ -30,23 +59,10 @@ import {
 import type { ProposedHolding, RebalanceRequest, ResearchNote, ResearchPerms } from "./types";
 import { ActionBadge, RatingBadge, moneyR, rebalanceCodeMap, signedPct, useQuotes, weightPct } from "./ui";
 
-const MEMBERS: Array<{
-  initials: string;
-  name: string;
-  title: string;
-  role: string;
-  /** The "You" slot — always the signed-in viewer, matched by their session email. */
-  self: boolean;
-  /** Standing member's email for exact vote attribution (null placeholder never matches). */
-  email: string | null;
-}> = [
-  { initials: "YO", name: "You", title: "Fund Manager / CIO", role: "CHAIR", self: true, email: null },
-  { initials: "TM", name: "T. Molefe", title: "Chief Operating Officer", role: "VOTING", self: false, email: null },
-  { initials: "LN", name: "L. Ndlovu", title: "Junior Analyst", role: "OBSERVER", self: false, email: null },
-];
 const CHARTER = [
-  ["Quorum", "2 of 3 members. Chair has casting vote on tie."],
-  ["Pre-read", "analyst circulates research note ≥ 24h before session."],
+  ["Quorum", `${IC_COMMITTEE_SIZE} voting members. Strict majority (≥ ${IC_MAJORITY_REQUIRED_YES} of ${IC_COMMITTEE_SIZE}) carries a decision; abstentions do not lower the bar.`],
+  ["Chair tie-break", "If a vote ends 1-1, the chair's ballot (cast on or before the deadline) counts as the deciding vote. A 0-0-3 does not pass."],
+  ["Pre-read", "Analyst circulates research note ≥ 24h before session."],
   ["Rebalance gate", "IC approval required before any change flows to the Rebalance Engine."],
   ["Cadence", "Tue & Thu 14:00 SAST · 60 min · minutes filed in Committee log."],
 ];
@@ -57,6 +73,37 @@ const CHECKLIST = [
   "Cash & liquidity impact modelled",
   "Investor-communication draft prepared (if material)",
 ];
+
+/** Pill shape used by the per-member vote indicator row. */
+interface MemberPill {
+  initials: string;
+  displayName: string;
+  role: "chair" | "voting" | "observer";
+  email: string;
+  /** True when this slot is the signed-in viewer (always clickable). */
+  isViewer: boolean;
+}
+
+const TITLES_BY_ROLE: Record<MemberPill["role"], string> = {
+  chair: "Chair · CIO",
+  voting: "Investment Committee",
+  observer: "Observer",
+};
+
+/** Build the committee pill list, marking the viewer's own slot. */
+function buildCommitteePills(
+  members: CommitteeMember[],
+  viewerEmail: string | null,
+): MemberPill[] {
+  const v = viewerEmail?.toLowerCase() ?? null;
+  return members.map((m) => ({
+    initials: m.initials,
+    displayName: m.displayName,
+    role: m.role,
+    email: m.email,
+    isViewer: v != null && m.email !== "" && m.email === v,
+  }));
+}
 
 export function InvestmentCommitteePage({
   perms,
@@ -69,6 +116,27 @@ export function InvestmentCommitteePage({
 }) {
   void viewerName;
   const qc = useQueryClient();
+
+  // Pull committee roster (emails resolved at runtime from admin_team when
+  // possible). The fallback inside the helper still gives us the 3 names so
+  // the UI never goes blank — only voting is disabled until emails resolve.
+  const [committee, setCommittee] = React.useState<CommitteeMember[]>([]);
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/research/committee", { cache: "no-store" });
+        const j = (await r.json().catch(() => null)) as { members?: CommitteeMember[] } | null;
+        if (!cancelled && j?.members) setCommittee(j.members);
+      } catch {
+        // Soft fail — leave committee empty; UI shows the static fallback.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const pills = React.useMemo(() => buildCommitteePills(committee, viewerEmail), [committee, viewerEmail]);
 
   const notesQ = useQuery<{ notes: ResearchNote[] }>({
     queryKey: ["ric-notes-all"],
@@ -121,6 +189,65 @@ export function InvestmentCommitteePage({
   const rebCodes = rebalanceCodeMap(requests);
   const [checks, setChecks] = React.useState<boolean[]>(CHECKLIST.map((_, i) => i < 3));
 
+  // ── Section collapse state (default: expanded when non-empty) ───────────
+  const [openSections, setOpenSections] = React.useState<Record<string, boolean>>(() => ({
+    agenda: true,
+    approved: true,
+    recent: true,
+    members: false,
+    charter: false,
+    checklist: false,
+  }));
+  const toggleSection = (k: string) =>
+    setOpenSections((prev) => ({ ...prev, [k]: !prev[k] }));
+
+  // ── Sticky tab bar + scroll-spy ──────────────────────────────────────────
+  type SectionId = "agenda" | "approved" | "recent" | "members" | "charter" | "checklist";
+  const sections: Array<{ id: SectionId; label: string; count?: number; icon: React.ComponentType<{ className?: string }> }> = [
+    { id: "agenda", label: "Agenda", count: agendaCount, icon: ScrollText },
+    { id: "approved", label: "Approved", count: approvedReqs.length, icon: Rocket },
+    { id: "recent", label: "Recent", count: recent.length, icon: Calendar },
+    { id: "members", label: "Members", count: pills.length, icon: Users },
+    { id: "charter", label: "Charter", icon: ScrollText },
+    { id: "checklist", label: "Prep", icon: Check },
+  ];
+  const [active, setActive] = React.useState<SectionId>("agenda");
+  const sectionRefs = React.useRef<Record<SectionId, HTMLElement | null>>({
+    agenda: null,
+    approved: null,
+    recent: null,
+    members: null,
+    charter: null,
+    checklist: null,
+  });
+  React.useEffect(() => {
+    const onScroll = () => {
+      // Pick the section whose top is just above the sticky bar (64px header +
+      // 56px tab bar = 120px scroll offset).
+      const offset = 140;
+      let bestId: SectionId = active;
+      let bestTop = Number.POSITIVE_INFINITY;
+      (Object.entries(sectionRefs.current) as [SectionId, HTMLElement | null][]).forEach(([id, el]) => {
+        if (!el) return;
+        const top = el.getBoundingClientRect().top - offset;
+        if (top <= 0 && Math.abs(top) < bestTop) {
+          bestTop = Math.abs(top);
+          bestId = id;
+        }
+      });
+      setActive(bestId);
+      setShowBackToTop(window.scrollY > 400);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [active]);
+
+  const [showBackToTop, setShowBackToTop] = React.useState(false);
+  const scrollTo = (id: SectionId) => {
+    sectionRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["ric-notes-all"] });
     qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
@@ -131,152 +258,422 @@ export function InvestmentCommitteePage({
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1">
           <h1 className="text-xl font-semibold tracking-tight">Investment Committee</h1>
-          <p className="text-caption">Tuesdays &amp; Thursdays · 14:00 SAST · chaired by Fund Manager.</p>
+          <p className="text-caption">Tuesdays &amp; Thursdays · 14:00 SAST · majority vote ({IC_MAJORITY_REQUIRED_YES} of {IC_COMMITTEE_SIZE}).</p>
         </div>
         <span className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs text-muted-foreground">
           <Calendar className="h-3.5 w-3.5" /> Next session · Tuesday, 14 Jul
         </span>
       </header>
 
-      <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
+      {/* ── Sticky in-page navigator ─────────────────────────────────────── */}
+      <nav
+        aria-label="Investment Committee sections"
+        className="sticky top-0 z-30 -mx-1 mt-3 flex items-center gap-1 overflow-x-auto rounded-xl border border-[hsl(var(--glass-border))] bg-[hsl(var(--background)/0.85)] px-1 py-1 backdrop-blur supports-[backdrop-filter]:bg-[hsl(var(--background)/0.7)]"
+      >
+        {sections.map((s) => {
+          const isActive = active === s.id;
+          const Icon = s.icon;
+          return (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => scrollTo(s.id)}
+              className={cn(
+                "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors",
+                isActive
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] hover:text-foreground",
+              )}
+              aria-current={isActive ? "true" : undefined}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              <span>{s.label}</span>
+              {typeof s.count === "number" && s.count > 0 ? (
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 py-0.5 text-[9px] font-semibold tabular-nums",
+                    isActive
+                      ? "bg-primary/25 text-primary"
+                      : "bg-[hsl(var(--foreground)/0.08)] text-muted-foreground",
+                  )}
+                >
+                  {s.count}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </nav>
+
+      <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_320px]">
         <div className="space-y-5">
-          <GlassSection title={`Agenda · ${agendaCount} item${agendaCount === 1 ? "" : "s"}`} dataSource="supabase" db="institutional">
-            {agendaCount === 0 ? (
-              <p className="text-caption">
-                Nothing on the agenda. Submitted proposals and notes appear here.
-              </p>
-            ) : (
-              <div className="space-y-4">
-                {pendingReqs.map((r) => (
-                  <RebalanceAgendaItem
-                    key={r.id}
-                    req={r}
-                    code={rebCodes.get(r.id) ?? "REB"}
-                    linkedNote={linkedNoteForRebalance(r, agendaNotes)}
-                    canApprove={perms.approveRebalance}
-                    canApproveNote={perms.approveNote}
-                    canVote={perms.approveRebalance}
-                    viewerEmail={viewerEmail}
-                    onChanged={refresh}
-                  />
-                ))}
-                {agendaNotes.map((n) => (
-                  <ResearchAgendaItem
-                    key={n.id}
-                    note={n}
-                    linkedRebalance={linkedRebalanceForNote(n, pendingReqs)}
-                    perms={perms}
-                    viewerEmail={viewerEmail}
-                    onChanged={refresh}
-                  />
-                ))}
-              </div>
-            )}
-          </GlassSection>
+          {/* ── Agenda ──────────────────────────────────────────────────── */}
+          <section
+            id="sec-agenda"
+            ref={(el) => {
+              sectionRefs.current.agenda = el;
+            }}
+            className="scroll-mt-32"
+          >
+            <CollapsibleCard
+              title={`Agenda · ${agendaCount} item${agendaCount === 1 ? "" : "s"}`}
+              dataSource="supabase"
+              db="institutional"
+              open={!!openSections.agenda}
+              onToggle={() => toggleSection("agenda")}
+              badge={agendaCount > 0 ? { tone: "warn", label: `${pendingReqs.length} rebalance · ${agendaNotes.length} research` } : null}
+            >
+              {agendaCount === 0 ? (
+                <p className="text-caption">
+                  Nothing on the agenda. Submitted proposals and notes appear here.
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {pendingReqs.map((r) => (
+                    <RebalanceAgendaItem
+                      key={r.id}
+                      req={r}
+                      code={rebCodes.get(r.id) ?? "REB"}
+                      linkedNote={linkedNoteForRebalance(r, agendaNotes)}
+                      canApprove={perms.approveRebalance}
+                      canApproveNote={perms.approveNote}
+                      canVote={perms.approveRebalance}
+                      viewerEmail={viewerEmail}
+                      pills={pills}
+                      onChanged={refresh}
+                    />
+                  ))}
+                  {agendaNotes.map((n) => (
+                    <ResearchAgendaItem
+                      key={n.id}
+                      note={n}
+                      linkedRebalance={linkedRebalanceForNote(n, pendingReqs)}
+                      perms={perms}
+                      viewerEmail={viewerEmail}
+                      pills={pills}
+                      onChanged={refresh}
+                    />
+                  ))}
+                </div>
+              )}
+            </CollapsibleCard>
+          </section>
 
-          <GlassSection title={`Approved — ready for order book · ${approvedReqs.length}`} dataSource="supabase" db="institutional">
-            {approvedReqs.length === 0 ? (
-              <p className="text-caption">No approved proposals waiting.</p>
-            ) : (
-              <div className="space-y-4">
-                {approvedReqs.map((r) => (
-                  <ApprovedItem
-                    key={r.id}
-                    req={r}
-                    code={rebCodes.get(r.id) ?? "REB"}
-                    canPush={perms.pushRebalance}
-                    onChanged={refresh}
-                  />
-                ))}
-              </div>
-            )}
-          </GlassSection>
+          {/* ── Approved ─────────────────────────────────────────────────── */}
+          <section
+            id="sec-approved"
+            ref={(el) => {
+              sectionRefs.current.approved = el;
+            }}
+            className="scroll-mt-32"
+          >
+            <CollapsibleCard
+              title={`Approved — ready for order book · ${approvedReqs.length}`}
+              dataSource="supabase"
+              db="institutional"
+              open={!!openSections.approved}
+              onToggle={() => toggleSection("approved")}
+            >
+              {approvedReqs.length === 0 ? (
+                <p className="text-caption">No approved proposals waiting.</p>
+              ) : (
+                <div className="space-y-4">
+                  {approvedReqs.map((r) => (
+                    <ApprovedItem
+                      key={r.id}
+                      req={r}
+                      code={rebCodes.get(r.id) ?? "REB"}
+                      canPush={perms.pushRebalance}
+                      onChanged={refresh}
+                    />
+                  ))}
+                </div>
+              )}
+            </CollapsibleCard>
+          </section>
 
-          <GlassSection title="Recent decisions" dataSource="supabase" db="institutional">
-            {recent.length === 0 ? (
-              <p className="text-caption">No decisions logged yet.</p>
-            ) : (
-              <ul className="space-y-2">
-                {recent.map((d) => (
-                  <li key={d.id} className="flex items-center justify-between gap-3 text-sm">
-                    <span className="truncate text-foreground/85">{d.label}</span>
-                    <span
-                      className={cn(
-                        "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
-                        d.status === "rejected"
-                          ? "border-[hsl(var(--down)/0.35)] text-down"
-                          : "border-[hsl(var(--up)/0.35)] text-up",
-                      )}
-                    >
-                      {d.status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </GlassSection>
+          {/* ── Recent decisions ─────────────────────────────────────────── */}
+          <section
+            id="sec-recent"
+            ref={(el) => {
+              sectionRefs.current.recent = el;
+            }}
+            className="scroll-mt-32"
+          >
+            <CollapsibleCard
+              title="Recent decisions"
+              dataSource="supabase"
+              db="institutional"
+              open={!!openSections.recent}
+              onToggle={() => toggleSection("recent")}
+            >
+              {recent.length === 0 ? (
+                <p className="text-caption">No decisions logged yet.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {recent.map((d) => (
+                    <li key={d.id} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="truncate text-foreground/85">{d.label}</span>
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
+                          d.status === "rejected"
+                            ? "border-[hsl(var(--down)/0.35)] text-down"
+                            : "border-[hsl(var(--up)/0.35)] text-up",
+                        )}
+                      >
+                        {d.status}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CollapsibleCard>
+          </section>
+
+          {/* ── Members (also surfaced in right rail) ─────────────────────── */}
+          <section
+            id="sec-members"
+            ref={(el) => {
+              sectionRefs.current.members = el;
+            }}
+            className="scroll-mt-32 lg:hidden"
+          >
+            <CollapsibleCard
+              title="Committee members"
+              dataSource="supabase"
+              db="institutional"
+              open={!!openSections.members}
+              onToggle={() => toggleSection("members")}
+            >
+              <MembersList pills={pills} viewerEmail={viewerEmail} />
+            </CollapsibleCard>
+          </section>
+
+          {/* ── Charter (also surfaced in right rail) ─────────────────────── */}
+          <section
+            id="sec-charter"
+            ref={(el) => {
+              sectionRefs.current.charter = el;
+            }}
+            className="scroll-mt-32 lg:hidden"
+          >
+            <CollapsibleCard
+              title="Charter · quorum & voting"
+              dataSource="seed"
+              open={!!openSections.charter}
+              onToggle={() => toggleSection("charter")}
+            >
+              <CharterList />
+            </CollapsibleCard>
+          </section>
+
+          {/* ── Prep checklist (also surfaced in right rail) ──────────────── */}
+          <section
+            id="sec-checklist"
+            ref={(el) => {
+              sectionRefs.current.checklist = el;
+            }}
+            className="scroll-mt-32 lg:hidden"
+          >
+            <CollapsibleCard
+              title="Session prep checklist"
+              dataSource="seed"
+              open={!!openSections.checklist}
+              onToggle={() => toggleSection("checklist")}
+            >
+              <ChecklistList
+                checks={checks}
+                onChange={(i, v) =>
+                  setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))
+                }
+              />
+            </CollapsibleCard>
+          </section>
         </div>
 
-        {/* right rail — standing config */}
+        {/* right rail — standing config (desktop) */}
         <div className="space-y-5">
-          <GlassSection title="Committee members" dataSource="seed">
-            <div className="space-y-3">
-              {MEMBERS.map((m) => (
-                <div key={m.initials} className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.06)] text-[10px] font-semibold text-muted-foreground">
-                      {m.initials}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{m.name}</p>
-                      <p className="truncate text-caption">{m.title}</p>
-                    </div>
-                  </div>
-                  <span className="shrink-0 rounded-full border border-[hsl(var(--glass-border))] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    {m.role}
-                  </span>
-                </div>
-              ))}
-            </div>
+          <GlassSection title="Committee members" dataSource="supabase" db="institutional">
+            <MembersList pills={pills} viewerEmail={viewerEmail} />
           </GlassSection>
 
           <GlassSection title="Charter · quorum & voting">
-            <dl className="space-y-2.5">
-              {CHARTER.map(([term, desc]) => (
-                <div key={term}>
-                  <dt className="text-[11px] font-semibold text-foreground">{term}</dt>
-                  <dd className="text-caption">{desc}</dd>
-                </div>
-              ))}
-            </dl>
+            <CharterList />
           </GlassSection>
 
           <GlassSection title="Session prep checklist">
-            <ul className="space-y-2">
-              {CHECKLIST.map((item, i) => (
-                <li key={item}>
-                  <label className="flex cursor-pointer items-start gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={checks[i] ?? false}
-                      onChange={(e) =>
-                        setChecks((prev) => prev.map((c, idx) => (idx === i ? e.target.checked : c)))
-                      }
-                      className="mt-0.5 h-4 w-4 rounded border-[hsl(var(--glass-border))]"
-                    />
-                    <span
-                      className={cn(checks[i] ? "text-foreground/70 line-through" : "text-foreground/85")}
-                    >
-                      {item}
-                    </span>
-                  </label>
-                </li>
-              ))}
-            </ul>
+            <ChecklistList
+              checks={checks}
+              onChange={(i, v) =>
+                setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))
+              }
+            />
           </GlassSection>
         </div>
       </div>
+
+      {/* ── Floating back-to-top button (only after first section) ─────── */}
+      <button
+        type="button"
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        aria-label="Back to top"
+        className={cn(
+          "fixed bottom-6 right-6 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[hsl(var(--glass-border))] bg-[hsl(var(--background)/0.85)] text-muted-foreground shadow-xl backdrop-blur transition-all hover:text-foreground",
+          showBackToTop
+            ? "pointer-events-auto translate-y-0 opacity-100"
+            : "pointer-events-none translate-y-3 opacity-0",
+        )}
+      >
+        <ArrowUp className="h-4 w-4" />
+      </button>
     </ResearchLabCanvas>
+  );
+}
+
+// ── right-rail components ───────────────────────────────────────────────────
+function MembersList({ pills, viewerEmail }: { pills: MemberPill[]; viewerEmail: string | null }) {
+  void viewerEmail;
+  if (pills.length === 0) {
+    return (
+      <p className="text-caption">
+        Resolving committee roster…
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {pills.map((m) => (
+        <div key={m.initials + m.email} className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.06)] text-[10px] font-semibold text-muted-foreground">
+              {m.initials}
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium">
+                {m.displayName}
+                {m.isViewer ? <span className="ml-1 text-[10px] text-muted-foreground">(you)</span> : null}
+              </p>
+              <p className="truncate text-caption">{TITLES_BY_ROLE[m.role]}</p>
+            </div>
+          </div>
+          <span
+            className={cn(
+              "shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+              m.role === "chair"
+                ? "border-primary/35 bg-primary/10 text-primary"
+                : "border-[hsl(var(--glass-border))] text-muted-foreground",
+            )}
+          >
+            {m.role}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CharterList() {
+  return (
+    <dl className="space-y-2.5">
+      {CHARTER.map(([term, desc]) => (
+        <div key={term}>
+          <dt className="text-[11px] font-semibold text-foreground">{term}</dt>
+          <dd className="text-caption">{desc}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function ChecklistList({
+  checks,
+  onChange,
+}: {
+  checks: boolean[];
+  onChange: (i: number, v: boolean) => void;
+}) {
+  return (
+    <ul className="space-y-2">
+      {CHECKLIST.map((item, i) => (
+        <li key={item}>
+          <label className="flex cursor-pointer items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={checks[i] ?? false}
+              onChange={(e) => onChange(i, e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-[hsl(var(--glass-border))]"
+            />
+            <span className={cn(checks[i] ? "text-foreground/70 line-through" : "text-foreground/85")}>
+              {item}
+            </span>
+          </label>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** GlassSection wrapper that adds a click-to-collapse header chrome. */
+function CollapsibleCard({
+  title,
+  dataSource,
+  db,
+  open,
+  onToggle,
+  badge,
+  children,
+}: {
+  title: string;
+  dataSource: "supabase" | "seed" | "hybrid";
+  db?: "retail" | "institutional";
+  open: boolean;
+  onToggle: () => void;
+  badge?: { tone: "warn" | "ok"; label: string } | null;
+  children: React.ReactNode;
+}) {
+  return (
+    <GlassSection
+      title={title}
+      dataSource={dataSource}
+      db={db}
+      right={
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-label={open ? `Collapse ${title}` : `Expand ${title}`}
+          className="inline-flex h-7 items-center gap-1 rounded-md border border-[hsl(var(--glass-border))] px-2 text-[10px] uppercase tracking-wide text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]"
+        >
+          {open ? "Collapse" : "Expand"}
+          {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        </button>
+      }
+    >
+      {badge ? (
+        <div className="mb-3">
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+              badge.tone === "warn"
+                ? "border-amber-400/40 bg-amber-400/10 text-amber-500"
+                : "border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.1)] text-up",
+            )}
+          >
+            {badge.label}
+          </span>
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "transition-all duration-200",
+          open ? "max-h-[8000px] opacity-100" : "max-h-0 -translate-y-1 overflow-hidden opacity-0",
+        )}
+        aria-hidden={!open}
+      >
+        {children}
+      </div>
+    </GlassSection>
   );
 }
 
@@ -360,11 +757,15 @@ function useVote() {
   const cast = async (id: string, vote: "yes" | "no" | "abstain", onChanged: () => void) => {
     setBusy(vote);
     try {
-      await fetch(`/api/rebalance/requests/${id}/vote`, {
+      const r = await fetch(`/api/rebalance/requests/${id}/vote`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ vote }),
       });
+      if (!r.ok) {
+        const body = (await r.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `vote failed (${r.status})`);
+      }
       onChanged();
     } finally {
       setBusy(null);
@@ -381,6 +782,7 @@ function RebalanceAgendaItem({
   canApproveNote,
   canVote,
   viewerEmail,
+  pills,
   onChanged,
 }: {
   req: RebalanceRequest;
@@ -390,6 +792,7 @@ function RebalanceAgendaItem({
   canApproveNote: boolean;
   canVote: boolean;
   viewerEmail: string | null;
+  pills: MemberPill[];
   onChanged: () => void;
 }) {
   const { busy, go } = useTransition("rebalance");
@@ -404,7 +807,16 @@ function RebalanceAgendaItem({
 
   const votes = req.votes ?? [];
   const tally =
-    req.tally ?? { yes: 0, no: 0, abstain: 0, quorum: 3, threshold: 0.6, requiredYes: 2, ratio: 0, passed: false };
+    req.tally ?? {
+      yes: 0,
+      no: 0,
+      abstain: 0,
+      quorum: IC_COMMITTEE_SIZE,
+      threshold: IC_MAJORITY_REQUIRED_YES / IC_COMMITTEE_SIZE,
+      requiredYes: IC_MAJORITY_REQUIRED_YES,
+      ratio: 0,
+      passed: false,
+    };
   const myVote = viewerEmail
     ? votes.find((v) => v.voter_email.toLowerCase() === viewerEmail.toLowerCase())?.vote ?? null
     : null;
@@ -416,16 +828,12 @@ function RebalanceAgendaItem({
     await go(req.id, "ic_approved", onChanged, "IC approved with research");
   }
 
-  // Per-member vote state for the committee-member pills (matches the Lovable
-  // spec's "YO TM LN" row under the Vote: heading). The viewer's own pill is
-  // clickable to cast a vote; the rest are read-only indicators.
-  function pillFor(member: (typeof MEMBERS)[number]) {
-    // Identity is a full, case-insensitive email comparison — never a substring
-    // or initials. The "You" slot resolves to the signed-in viewer's session
-    // email; every other pill matches its own standing-member email (a null
-    // placeholder simply never matches a real vote).
-    const memberEmail = member.self ? viewerEmail : member.email;
-    const isMe = member.self && viewerEmail != null;
+  // Per-member vote state for the committee-member pills. Only the viewer's
+  // own pill is clickable (when they're a recognised committee member); the
+  // rest are read-only indicators.
+  function pillFor(member: MemberPill) {
+    const memberEmail = member.email;
+    const isMe = member.isViewer;
     const v = memberEmail
       ? votes.find((vt) => vt.voter_email.toLowerCase() === memberEmail.toLowerCase())
       : undefined;
@@ -517,8 +925,8 @@ function RebalanceAgendaItem({
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Vote:
         </span>
-        {MEMBERS.map((m) => (
-          <div key={m.initials} className="flex items-center gap-1.5">
+        {pills.map((m) => (
+          <div key={m.initials + m.email} className="flex items-center gap-1.5">
             {pillFor(m)}
           </div>
         ))}
@@ -527,13 +935,13 @@ function RebalanceAgendaItem({
           {tally.passed ? (
             <span className="text-up">passed</span>
           ) : (
-            <span>needs {Math.round(tally.threshold * 100)}% ({tally.requiredYes} of {tally.quorum})</span>
+            <span>needs {tally.requiredYes} of {tally.quorum} ({Math.round(tally.threshold * 100)}%)</span>
           )}
         </span>
       </div>
 
-      {/* 60% vote gate — a proposal is promoted to the order-book lane once YES
-          votes reach requiredYes. */}
+      {/* Majority-vote gate — a proposal is promoted to the order-book lane once
+          YES votes reach the strict-majority threshold (≥ 2 of 3 by default). */}
       <div className="mb-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-3 py-2">
         <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
           <span>
@@ -544,7 +952,7 @@ function RebalanceAgendaItem({
           <span>
             {tally.passed ? (
               <span className="font-medium text-[hsl(var(--up))]">
-                passed · {Math.round(tally.threshold * 100)}% reached
+                passed · {tally.yes} ≥ {tally.requiredYes} (majority)
               </span>
             ) : (
               <>
@@ -628,15 +1036,18 @@ function ResearchAgendaItem({
   linkedRebalance,
   perms,
   viewerEmail,
+  pills,
   onChanged,
 }: {
   note: ResearchNote;
   linkedRebalance?: RebalanceRequest;
   perms: ResearchPerms;
   viewerEmail: string | null;
+  pills: MemberPill[];
   onChanged: () => void;
 }) {
   void viewerEmail;
+  void pills;
   const qc = useQueryClient();
   const { busy, go } = useTransition("note");
   const rebalanceTransition = useTransition("rebalance");
@@ -676,21 +1087,27 @@ function ResearchAgendaItem({
       },
   });
   const tally = sumQ.data?.tally ?? { yes: 0, no: 0, abstain: 0, total: 0 };
-  const QUORUM = 2;
 
   async function vote(v: "yes" | "no" | "abstain") {
     setVoting(v);
     try {
-      await fetch(`/api/research/notes/${note.id}/vote`, {
+      const r = await fetch(`/api/research/notes/${note.id}/vote`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ vote: v }),
       });
+      if (!r.ok) {
+        const body = (await r.json().catch(() => ({}))) as { error?: string };
+        // Surface the error inline (no toast pipeline on this page yet)
+        console.warn("vote rejected", body.error ?? r.status);
+      }
       await qc.invalidateQueries({ queryKey: ["ric-ic-summary", note.id] });
     } finally {
       setVoting(null);
     }
   }
+
+  const majorityMet = tally.yes >= IC_MAJORITY_REQUIRED_YES;
 
   return (
     <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
@@ -747,7 +1164,8 @@ function ResearchAgendaItem({
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
           <span className="ml-1 font-mono text-[11px] tabular-nums text-muted-foreground">
-            {tally.yes} for / {tally.no} against · quorum {QUORUM}
+            {tally.yes} for / {tally.no} against · majority {IC_MAJORITY_REQUIRED_YES} of {IC_COMMITTEE_SIZE}
+            {majorityMet ? <span className="ml-1 text-up">· passed</span> : null}
           </span>
         </div>
         <div className="flex items-center gap-2">

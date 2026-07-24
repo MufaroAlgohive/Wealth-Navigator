@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { tallyVotes, type RebalanceVote } from "@/lib/rebalance/ic-vote";
+import { committeeGate } from "@/lib/research-ic/committee-gate";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -11,13 +12,18 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  * Cast an IC vote (yes / no / abstain) on a rebalance proposal. Upserted per
  * (request_id, voter_email) so a committee member can revise their vote.
  *
- * When the YES votes cross the committee threshold (quorum 3, 60% -> 2 of 3;
- * see src/lib/rebalance/ic-vote.ts) and the proposal is still `pending`, it is
- * promoted to `ic_approved` in the same call — this is the gate the meeting
- * asked for: nothing reaches the order book without a 60% vote.
+ * When the YES votes cross the committee threshold (majority of 3 → ≥ 2 yes;
+ * see src/lib/rebalance/ic-vote.ts + lib/research-ic/committee.ts) and the
+ * proposal is still `pending`, it is promoted to `ic_approved` in the same
+ * call — this is the gate the meeting asked for: nothing reaches the order
+ * book without a majority vote.
  *
- * Gate: signed-in admin + `rebalance.approve_rebalance` (voting IS the approval
- * mechanism, so it reuses the approve permission — no new grant needed).
+ * Gate chain (all required):
+ *   1. signed-in admin
+ *   2. `rebalance.approve_rebalance` granular permission (voting IS the
+ *      approval mechanism, so no new grant needed)
+ *   3. voter_email is on the IC whitelist (committee_member_c with the same
+ *      fallback semantics as the research note vote route).
  */
 
 export const dynamic = "force-dynamic";
@@ -48,6 +54,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   if (!can(auth.ctx, "rebalance", "approve_rebalance")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  const gate = await committeeGate(auth.ctx.email);
+  if (!gate.ok) {
+    return NextResponse.json({ ok: false, error: gate.error }, { status: gate.status });
   }
 
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;

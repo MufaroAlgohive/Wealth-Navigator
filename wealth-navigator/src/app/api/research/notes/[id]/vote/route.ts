@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { committeeGate } from "@/lib/research-ic/committee-gate";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -10,7 +11,16 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  * Cast an IC vote (yes / no / abstain) on a research note. Upserted per
  * (note_id, voter_email) so a committee member can revise their vote.
  *
- * Gate: signed-in admin + `research.cast_vote`.
+ * Gate chain (all required):
+ *   1. signed-in admin
+ *   2. `research.cast_vote` granular permission
+ *   3. voter_email is on the IC whitelist (committee_member_c on institutional
+ *      DB, with a soft fallback to the static roster when the table isn't
+ *      migrated yet — see lib/research-ic/committee.ts).
+ *
+ * Tally: majority of the 3-member committee (≥ 2 yes) → note auto-promotes
+ * from `in_review` to `ic_pending`. Promotion is a separate concern handled by
+ * the transition route; voting here only records the ballot.
  */
 
 export const dynamic = "force-dynamic";
@@ -38,6 +48,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   if (!can(auth.ctx, "research-lab", "cast_vote")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+  const gate = await committeeGate(auth.ctx.email);
+  if (!gate.ok) {
+    return NextResponse.json({ ok: false, error: gate.error }, { status: gate.status });
   }
 
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
