@@ -26,7 +26,12 @@
  *    closed-with-data, last > 0) are written; everything else is skipped.
  */
 import { fetchLiveQuote, normaliseSymbol } from "./quotes";
-// Money track trusts mapQuote's OHLC-anchored Rands (see live.ts) — no chooseDisplayCents self-anchor.
+// Scale-safety: anchor each money-track write to an IMMUTABLE reference
+// (securities_c.scale_ref_cents) so a sub-R45 name delivered on the cents-schema can't
+// be mis-scaled 100x, and FAIL-CLOSED (skip the write) when the scale is unverified.
+// Using scale_ref_cents (immutable) rather than last_price (which this loop overwrites)
+// is what breaks the self-perpetuating anchor. See docs/IRESS_INTEGRATION_AND_SCALE_SAFETY.md.
+import { chooseDisplayCents } from "../../../src/lib/iress/price-scale";
 import { iressOwnsSymbol, loadApprovedIressSymbols, withinWriteGuard } from "./cutover";
 import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { isUatEnv } from "../../../src/lib/oems/uat-scope";
@@ -41,6 +46,9 @@ export interface RetailSecurity {
   symbol: string;
   isin: string | null;
   last_price: number | null;
+  /** Immutable, human-verified magnitude anchor in cents (optional — added by the
+   *  review-only migration; only selected when RETAIL_SCALE_REF_COL=1). */
+  scale_ref_cents?: number | null;
 }
 
 /** "MTN.JO" / " stx40.jo " -> "MTN" / "STX40" (bare IRESS code). */
@@ -61,14 +69,21 @@ export interface RetailSyncResult {
 }
 
 export async function loadRetailUniverse(retail: WorkerSupabase): Promise<RetailSecurity[]> {
-  const { data, error } = await retail
-    .from("securities_c")
-    .select("id, symbol, isin, last_price");
+  // scale_ref_cents is an OPTIONAL immutable scale anchor added by the review-only
+  // migration; only select it when RETAIL_SCALE_REF_COL=1 so an unmigrated DB never
+  // errors on an unknown column.
+  const cols =
+    process.env.RETAIL_SCALE_REF_COL === "1"
+      ? "id, symbol, isin, last_price, scale_ref_cents"
+      : "id, symbol, isin, last_price";
+  const { data, error } = await retail.from("securities_c").select(cols);
   if (error) {
     console.error(`[retail-ingest] securities_c read failed: ${error.message}`);
     return [];
   }
-  return (data ?? []) as RetailSecurity[];
+  // Cast via unknown: the dynamic select() string (scale_ref_cents is optional) defeats
+  // supabase-js's compile-time column parser, so `data` is inferred as ParserError[].
+  return (data ?? []) as unknown as RetailSecurity[];
 }
 
 export async function syncRetailPrices(opts: {
@@ -162,22 +177,37 @@ export async function syncRetailPrices(opts: {
       covered += 1;
 
       const refCents = Number(sec.last_price) || 0;
-      // Trust mapQuote's OHLC-anchored Rands (see live.ts iressQuotePriceScale):
-      // convert Rands->cents directly; do NOT self-anchor to the mutable refCents.
-      const priceCents = lastRands > 0 ? Math.round(lastRands * 100) : 0;
-      // Daily change from Rands (scale-free ratio) for full column parity with the
-      // Yahoo feed (stock_intraday_c.1d_pct/1d_abs, securities_c.change_price/percent).
-      const prevCloseRands = quoteRow?.prevClose ?? 0;
-      const changeAbsCents = prevCloseRands > 0 ? Math.round((lastRands - prevCloseRands) * 100) : 0;
-      const changePct = prevCloseRands > 0 ? Math.round(((lastRands - prevCloseRands) / prevCloseRands) * 10000) / 100 : 0;
+      const trustedRefCents = Number(sec.scale_ref_cents) || 0;
+      // Reference-anchor the scale to an IMMUTABLE magnitude (scale_ref_cents), falling
+      // back to the mutable last_price when it isn't seeded. chooseDisplayCents picks
+      // cents-vs-Rands against that anchor; scaleVerified is false ONLY when no anchor
+      // disambiguated it (the exact sub-R45 cents-schema case that seeds 100x inflation).
+      const choice = chooseDisplayCents(lastRands, refCents, trustedRefCents);
+      // FAIL-CLOSED (client-fund safety): never persist an unanchored scale guess.
+      // Leave Yahoo's value in place for this symbol until it has a verified anchor.
+      if (!choice.scaleVerified) {
+        skipped += 1;
+        continue;
+      }
+      const priceCents = choice.cents;
+      // Prev-close on the SAME corrected scale (centsMultiplier maps mapQuote's row
+      // scale to cents). Day-change is written in TWO units, matching each column's
+      // established contract: stock_intraday_c.1d_abs is CENTS; securities_c.change_price
+      // is RANDS (MINT readers: server/index.cjs:6241, src/lib/marketData.js:91).
+      const prevCloseCents = quoteRow?.prevClose && quoteRow.prevClose > 0
+        ? Math.round(quoteRow.prevClose * choice.centsMultiplier)
+        : 0;
+      const changeAbsCents = prevCloseCents > 0 ? priceCents - prevCloseCents : 0;
+      const changeAbsRands = prevCloseCents > 0 ? (priceCents - prevCloseCents) / 100 : 0;
+      const changePct = prevCloseCents > 0 ? Math.round(((priceCents - prevCloseCents) / prevCloseCents) * 10000) / 100 : 0;
       if (sample.length < 15) {
-        sample.push({ symbol: sec.symbol, iressCents: priceCents, yahooCents: refCents || null, basis: "iress-ohlc-anchored" });
+        sample.push({ symbol: sec.symbol, iressCents: priceCents, yahooCents: refCents || null, basis: choice.basis });
       }
 
       // Build the institutional L1 snapshot (cents scale matching securities_c),
       // so the dashboard overlay has IRESS last + prev_close for this symbol.
       if (institutional) {
-        const px = (v: number | null | undefined) => (v != null && v > 0 ? Math.round(v * 100) : null);
+        const px = (v: number | null | undefined) => (v != null && v > 0 ? Math.round(v * choice.centsMultiplier) : null);
         snapshotRows.push({
           security_code: iressCode,
           exchange,
@@ -237,11 +267,11 @@ export async function syncRetailPrices(opts: {
         console.error(`[retail-ingest] stock_intraday_c insert(${sec.symbol}): ${tickErr.message}`);
         continue;
       }
-      // Full parity with the Yahoo feed: last_price + change_percent + change_price (cents).
+      // Full parity with the Yahoo feed: last_price (cents) + change_percent + change_price (RANDS).
       const update: Record<string, unknown> = { last_price: priceCents };
-      if (prevCloseRands > 0 && lastRands > 0) {
+      if (prevCloseCents > 0) {
         update["change_percent"] = changePct;
-        update["change_price"] = changeAbsCents;
+        update["change_price"] = changeAbsRands; // RANDS — matches the MINT reader contract
       }
       if (setSourceCol) update["price_source"] = "iress";
       const { error: secErr } = await retail.from("securities_c").update(update).eq("id", sec.id);

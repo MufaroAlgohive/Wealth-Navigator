@@ -13,9 +13,12 @@ import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
 import { getMarketDataSession, marketDataProdEnabled, noteMarketDataError } from "./market-data";
 import { isUatEnv } from "../../../src/lib/oems/uat-scope";
-// NOTE: the money-track write no longer uses chooseDisplayCents — mapQuote already
-// resolves cents-vs-Rand from the quote's own OHLC cluster (see live.ts
-// iressQuotePriceScale), so we trust quote.last (Rands) and convert directly.
+import { withinWriteGuard } from "./cutover";
+// The money-track write trusts mapQuote's OHLC-anchored quote.last (Rands→cents), but
+// gates the write behind withinWriteGuard: a divergence backstop vs the last known
+// securities_c reference that catches a 100x mis-scale before it reaches the money
+// track (S2 in docs/IRESS_INTEGRATION_AND_SCALE_SAFETY.md — this path previously had
+// no scale guard, only the isUatEnv() endpoint check).
 
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -589,6 +592,22 @@ export async function syncWatchlistQuotes(
     if (!(priceCents > 0)) {
       console.warn(
         JSON.stringify({ level: "warn", event: "money_track_write_skipped_no_price", symbol }),
+      );
+      continue;
+    }
+
+    // S2 scale/divergence backstop: reject a tick that diverges grossly (>=25%) from
+    // the last known reference — catches a 100x mis-scale at write time. retail-ingest
+    // applies the same guard; the watchlist money-track write previously had none.
+    if (!withinWriteGuard(priceCents, ref?.lastPriceCents ?? 0)) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          event: "money_track_write_skipped_divergence",
+          symbol,
+          priceCents,
+          refCents: ref?.lastPriceCents ?? 0,
+        }),
       );
       continue;
     }
