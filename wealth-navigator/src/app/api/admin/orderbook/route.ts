@@ -45,15 +45,26 @@ export async function GET(req: Request) {
     .limit(3000);
   let rows = holds ?? [];
 
-  // Live/UAT scope by profiles.is_test.
+  // Live/UAT scope by the dual test classifier: profiles.is_test OR
+  // wallets.status='test'. Some test accounts (e.g. Tsie) are flagged only on
+  // the wallet, so checking profiles alone leaks their orders into the live
+  // book. Mirrors MyMintAdmin orderbook.html's getTestUserIdSet.
   const userIds = [...new Set(rows.map((h) => h.user_id).filter(Boolean))];
   const profMap: Record<string, { email: string | null; is_test: boolean | null; first_name: string | null; last_name: string | null }> = {};
+  const testUserIds = new Set<string>();
   if (userIds.length) {
-    const { data: profs } = await db.from("profiles").select("id, email, first_name, last_name, is_test").in("id", userIds);
-    for (const p of profs ?? []) profMap[p.id as string] = p as never;
+    const [{ data: profs }, { data: testWallets }] = await Promise.all([
+      db.from("profiles").select("id, email, first_name, last_name, is_test").in("id", userIds),
+      db.from("wallets").select("user_id").eq("status", "test").in("user_id", userIds),
+    ]);
+    for (const p of profs ?? []) {
+      profMap[p.id as string] = p as never;
+      if (p.is_test) testUserIds.add(p.id as string);
+    }
+    for (const w of testWallets ?? []) if (w.user_id) testUserIds.add(w.user_id as string);
   }
   rows = rows.filter((h) => {
-    const t = !!profMap[h.user_id as string]?.is_test;
+    const t = testUserIds.has(h.user_id as string);
     return scope === "uat" ? t : !t;
   });
 

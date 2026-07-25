@@ -543,15 +543,21 @@ export async function POST(req: Request) {
   const secIds = [...new Set(holdings.map((h) => h.security_id).filter(Boolean))];
   const userIds = [...new Set(holdings.map((h) => h.user_id).filter(Boolean))];
 
-  const [{ data: secs }, { data: profs }] = await Promise.all([
+  const [{ data: secs }, { data: profs }, { data: testWallets }] = await Promise.all([
     retail.from("securities_c").select("id, symbol, name, isin, last_price").in("id", secIds),
     retail.from("profiles").select("id, email, is_test").in("id", userIds),
+    retail.from("wallets").select("user_id").eq("status", "test").in("user_id", userIds),
   ]);
 
   const secMap: Record<string, Security> = {};
   for (const s of (secs ?? []) as Security[]) secMap[s.id] = s;
   const profMap: Record<string, Profile> = {};
   for (const p of (profs ?? []) as Profile[]) profMap[p.id] = p;
+  // Dual test classifier: profiles.is_test OR wallets.status='test'. Some test
+  // accounts are flagged only on the wallet.
+  const testUserIds = new Set<string>();
+  for (const p of (profs ?? []) as Profile[]) if (p.is_test === true) testUserIds.add(p.id);
+  for (const w of (testWallets ?? []) as Array<{ user_id: string | null }>) if (w.user_id) testUserIds.add(w.user_id);
 
   // CLIENT-DATA GUARD (UAT phase): a UAT dispatch fans real orders out to IRESS.
   // During the UAT phase, refuse fail-closed if the resolved book contains any
@@ -561,13 +567,13 @@ export async function POST(req: Request) {
   // the deployment is confidently on prod (isUatEnv() === false).
   if (uatTest && isUatEnv()) {
     const realOwners = [...new Set(holdings.map((h) => h.user_id).filter(Boolean))].filter(
-      (uid) => profMap[uid]?.is_test !== true,
+      (uid) => !testUserIds.has(uid),
     );
     if (realOwners.length > 0) {
       return NextResponse.json(
         {
           ok: false,
-          error: `Refused: this UAT dispatch resolves ${realOwners.length} real (non-test) client holding(s) for book '${bookId}'. UAT dispatches must contain only test clients (is_test=true) — use a UAT-* test book.`,
+          error: `Refused: this UAT dispatch resolves ${realOwners.length} real (non-test) client holding(s) for book '${bookId}'. UAT dispatches must contain only test clients (profiles.is_test=true or wallets.status='test') — use a UAT-* test book.`,
         },
         { status: 422 },
       );
