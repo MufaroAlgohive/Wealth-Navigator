@@ -23,7 +23,9 @@
  * client used by other BFF endpoints. RLS denies anon / authenticated
  * on the underlying tables, so this endpoint requires service_role.
  */
-import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+import { createRetailServiceRoleClient, createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 
 export const runtime = "nodejs";
@@ -194,26 +196,37 @@ export async function GET() {
   const positions = (positionsRes.data ?? []) as PositionRow[];
   const recentTx = (txRes.data ?? []) as TransactionRow[];
 
-  // Mark positions to market from securities_c.last_price (cents) when a live
+  // Mark positions to market from the RETAIL price tables (cents) when a live
   // quote exists for the symbol. market_value = qty × price(Rands); open_pl =
   // MV − qty × open_average_price. Positions without a quote keep null MV/PL
   // (the UI shows "—"), so we never fabricate a mark. NOTE: on the CT (test)
   // account the fill prices are test data, so the resulting P&L is illustrative
   // until production fills land.
+  //
+  // PRICE DB: securities_c / stock_intraday_c are owned by RETAIL (mfxng) — that is
+  // where the live feed writes (246 securities, ticks seconds old). The INSTITUTIONAL
+  // project also has same-named tables but they are a stale 13-symbol subset, so
+  // marking from `supabase` (the institutional client) priced almost nothing and used
+  // days-old ticks. Prices therefore come from the retail client; oems_* stay here.
   if (positions.length > 0) {
+    let prices: SupabaseClient | null = null;
+    try {
+      prices = createRetailServiceRoleClient();
+    } catch {
+      prices = null; // retail not configured → leave marks null rather than use stale institutional prices
+    }
     const symbols = [...new Set(positions.map((p) => p.security_code).filter(Boolean))];
-    const { data: secRows } = await supabase
-      .from("securities_c")
-      .select("id, symbol, last_price")
-      .in("symbol", symbols);
+    const { data: secRows } = prices
+      ? await prices.from("securities_c").select("id, symbol, last_price").in("symbol", symbols)
+      : { data: null };
     const secList = (secRows ?? []) as { id: string; symbol: string; last_price: number | null }[];
     // Prefer FRESH stock_intraday_c over the denormalised securities_c.last_price
     // (which can lag / freeze). Both are stored in cents. Latest tick per security
     // via the (security_id, timestamp DESC) index.
     const secIds = secList.map((s) => s.id).filter(Boolean);
     const intradayCentsById = new Map<string, number>();
-    if (secIds.length) {
-      const { data: intraday } = await supabase
+    if (prices && secIds.length) {
+      const { data: intraday } = await prices
         .from("stock_intraday_c")
         .select("security_id, current_price, timestamp")
         .in("security_id", secIds)

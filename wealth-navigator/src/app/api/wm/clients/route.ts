@@ -238,7 +238,12 @@ export async function GET(req: Request) {
       if (randDistance < rawDistance) fillCents *= 100;
     }
     let costCents = fillCents;
-    const expected = Number(holding.expected_fill) || 0;
+    // Column is "Expected_fill" (capital E) — the row comes from .select("*"), so the
+    // lowercase key was always undefined, silently disabling this cost-basis branch and
+    // falling back to avg_fill (the broker fill). That made this route's cost basis /
+    // P&L disagree with every other surface, which uses Expected_fill (the price the
+    // client actually saw). Lowercase kept as a defensive fallback.
+    const expected = Number(holding.Expected_fill ?? holding.expected_fill) || 0;
     if (expected > 0) {
       const expectedAsCents = Math.abs(expected - priceCents) <= Math.abs(expected * 100 - priceCents)
         ? expected
