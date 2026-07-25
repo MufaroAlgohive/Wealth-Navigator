@@ -30,7 +30,7 @@ export async function GET() {
   // Active BUY holdings (cost basis source).
   const { data: holdingsRaw } = await db
     .from("stock_holdings_c")
-    .select("user_id, family_member_id, security_id, strategy_id, quantity, avg_fill, Expected_fill, market_value, created_at")
+    .select("user_id, family_member_id, security_id, strategy_id, quantity, avg_fill, Expected_fill, market_value, created_at, transaction_id")
     .eq("is_active", true)
     .eq("trade_side", "BUY");
   let holdings = holdingsRaw ?? [];
