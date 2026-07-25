@@ -204,11 +204,32 @@ export async function GET() {
     const symbols = [...new Set(positions.map((p) => p.security_code).filter(Boolean))];
     const { data: secRows } = await supabase
       .from("securities_c")
-      .select("symbol, last_price")
+      .select("id, symbol, last_price")
       .in("symbol", symbols);
+    const secList = (secRows ?? []) as { id: string; symbol: string; last_price: number | null }[];
+    // Prefer FRESH stock_intraday_c over the denormalised securities_c.last_price
+    // (which can lag / freeze). Both are stored in cents. Latest tick per security
+    // via the (security_id, timestamp DESC) index.
+    const secIds = secList.map((s) => s.id).filter(Boolean);
+    const intradayCentsById = new Map<string, number>();
+    if (secIds.length) {
+      const { data: intraday } = await supabase
+        .from("stock_intraday_c")
+        .select("security_id, current_price, timestamp")
+        .in("security_id", secIds)
+        .order("timestamp", { ascending: false })
+        .limit(5000);
+      for (const row of (intraday ?? []) as { security_id: string; current_price: number | null }[]) {
+        const id = String(row.security_id);
+        const c = Number(row.current_price);
+        if (!intradayCentsById.has(id) && Number.isFinite(c) && c > 0) intradayCentsById.set(id, c);
+      }
+    }
     const priceCentsBySymbol = new Map<string, number>();
-    for (const s of (secRows ?? []) as { symbol: string; last_price: number | null }[]) {
-      const c = Number(s.last_price);
+    for (const s of secList) {
+      const intra = intradayCentsById.get(String(s.id));
+      const last = Number(s.last_price);
+      const c = intra != null ? intra : (Number.isFinite(last) && last > 0 ? last : NaN);
       if (Number.isFinite(c) && c > 0) priceCentsBySymbol.set(s.symbol, c);
     }
     for (const p of positions) {

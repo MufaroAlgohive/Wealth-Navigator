@@ -66,7 +66,13 @@ export function StrategyBuilder() {
     setStrategies(null);
     const d = await fetch("/api/admin/strategies?action=list").then((r) => r.json()).catch(() => ({ ok: false }));
     setStrategies(d.ok ? d.strategies || [] : []);
-    setSecurities(d.ok ? d.securities || {} : {});
+    // securities_c.last_price is stored in CENTS; the builder derives Rands everywhere
+    // (prices, market value, min investment). Normalise to Rands once at ingestion so
+    // every downstream calc is correct. Weights are ratios (scale-invariant), unaffected.
+    const rawSecs: Record<string, Sec> = d.ok ? d.securities || {} : {};
+    const secs: Record<string, Sec> = {};
+    for (const k in rawSecs) { const s = rawSecs[k]; if (!s) continue; secs[k] = s.last_price != null ? { ...s, last_price: Number(s.last_price) / 100 } : s; }
+    setSecurities(secs);
   }, []);
   React.useEffect(() => { void load(); }, [load]);
 
@@ -94,7 +100,10 @@ export function StrategyBuilder() {
     const t = setTimeout(async () => {
       const d = await fetch(`/api/admin/strategies?action=search-securities&q=${encodeURIComponent(secQuery.trim())}`).then((r) => r.json()).catch(() => ({ ok: false }));
       const existing = new Set(holdings.map((h) => h.symbol));
-      setSecResults((d.ok ? d.securities || [] : []).filter((s: Sec) => !existing.has(s.symbol)));
+      // last_price is CENTS from the API — normalise to Rands (see load()).
+      const raw = (d.ok ? d.securities || [] : []) as Sec[];
+      const norm = raw.map((s) => (s && s.last_price != null ? { ...s, last_price: Number(s.last_price) / 100 } : s));
+      setSecResults(norm.filter((s: Sec) => !existing.has(s.symbol)));
     }, 250);
     return () => clearTimeout(t);
   }, [secQuery, holdings]);

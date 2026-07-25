@@ -70,7 +70,8 @@ export async function GET(req: Request) {
     const qty = Number(h.quantity) || 0;
     const avgRands = (Number(h.avg_fill) || 0) / 100;
     const expectedRands = costRands(h);
-    const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) : expectedRands;
+    // securities_c.last_price is stored in CENTS; convert to rands (avgRands/expectedRands are already rands).
+    const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) / 100 : expectedRands;
     return {
       id: h.id,
       security_id: (h.security_id as string) ?? null,
