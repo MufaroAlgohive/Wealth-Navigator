@@ -192,7 +192,14 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
   React.useEffect(() => {
     (async () => {
       const d = await fetch(`/api/admin/factsheets?action=detail&id=${id}`).then((r) => r.json()).catch(() => ({ ok: false }));
-      if (d.ok) setData({ strategy: d.strategy, returns: d.returns || [], securities: d.securities || {} });
+      if (d.ok) {
+        // securities_c.last_price is stored in CENTS; this view renders Rands
+        // (holding value, min investment). Normalise to Rands once at ingestion.
+        const rawSecs: Record<string, Sec> = d.securities || {};
+        const securities: Record<string, Sec> = {};
+        for (const k in rawSecs) { const sc = rawSecs[k]; if (!sc) continue; securities[k] = sc.last_price != null ? { ...sc, last_price: Number(sc.last_price) / 100 } : sc; }
+        setData({ strategy: d.strategy, returns: d.returns || [], securities });
+      }
       else setNotFound(true);
     })();
   }, [id]);
