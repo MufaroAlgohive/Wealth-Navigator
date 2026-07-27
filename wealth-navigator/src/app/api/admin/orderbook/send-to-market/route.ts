@@ -5,7 +5,7 @@ import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { callWorker } from "@/lib/iress/worker-api";
-import { isUatEnv } from "@/lib/oems/uat-scope";
+import { isUatEnv, uatModeEnabled } from "@/lib/oems/uat-scope";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -479,7 +479,14 @@ export async function POST(req: Request) {
   // UAT escape hatch — only honoured when IRESS_UAT_MODE is set on Vercel.
   // When false, the audit rows are still written but the worker is never
   // called (existing audit-only path is preserved bit-for-bit).
-  const uatTest = body.uat_test === true && process.env.IRESS_UAT_MODE === "true";
+  //
+  // uatModeEnabled() accepts "1" as well as "true". The strict === "true" this
+  // replaces was the single highest-consequence instance of the mismatch: the
+  // Railway worker's own 403 says "set IRESS_UAT_MODE=1", so following that
+  // instruction turned UAT on at the worker while THIS line silently fell back
+  // to audit-only. Orders would be accepted in the UI, stamped in the audit
+  // table, and never reach a market — with no error raised anywhere.
+  const uatTest = body.uat_test === true && uatModeEnabled();
 
   if (!bookId) return NextResponse.json({ ok: false, error: "book_id is required" }, { status: 400 });
   if (!broker) return NextResponse.json({ ok: false, error: "broker is required" }, { status: 400 });

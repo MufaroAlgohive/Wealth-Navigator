@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { uatModeEnabled } from "@/lib/oems/uat-scope";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -56,7 +57,8 @@ function openRetail(): SupabaseClient | null {
 }
 
 export async function POST(req: Request) {
-  if (process.env.IRESS_UAT_MODE !== "true") {
+  // Accepts "1" as well as "true" — see uatModeEnabled().
+  if (!uatModeEnabled()) {
     return NextResponse.json(
       { ok: false, error: "UAT mode is not enabled on Vercel (IRESS_UAT_MODE!=true)" },
       { status: 403 },

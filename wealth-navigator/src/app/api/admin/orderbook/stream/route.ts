@@ -1,5 +1,6 @@
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { streamWorkerSse } from "@/lib/iress/worker-api";
+import { uatModeEnabled } from "@/lib/oems/uat-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,7 +34,9 @@ export async function GET(req: Request) {
     );
   }
 
-  if (process.env.IRESS_UAT_MODE !== "true") {
+  // Accepts "1" as well as "true" — see uatModeEnabled(). A strict === "true"
+  // here disagreed with the worker, which tells operators to set "1".
+  if (!uatModeEnabled()) {
     return Response.json(
       {
         ok: false,

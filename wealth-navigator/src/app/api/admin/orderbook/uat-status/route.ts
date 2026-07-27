@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getAdminContext } from "@/lib/admin/rbac";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { callWorker } from "@/lib/iress/worker-api";
+import { uatModeEnabled } from "@/lib/oems/uat-scope";
 
 /**
  * GET /api/admin/orderbook/uat-status
@@ -47,7 +48,10 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 
-  const uatMode = process.env.IRESS_UAT_MODE === "true";
+  // Accepts "1" as well as "true" — see uatModeEnabled(). This value drives the
+  // "UAT MODE" banner, so a strict === "true" made the UI claim UAT was off while
+  // the worker had it on.
+  const uatMode = uatModeEnabled();
   const workerConfigured = isIressWorkerConfigured();
 
   let workerStatus: WorkerUatStatus | null = null;

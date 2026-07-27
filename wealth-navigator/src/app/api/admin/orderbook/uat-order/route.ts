@@ -10,7 +10,7 @@
  *   - `price` is in RANDS (limit); omit/0 for a market order.
  * Returns: { ok, orderAuditId, orderId, bookId, mode, iressOrderNumber?, status?, preflight?, error? }
  *
- * Gated: admin + orderbook.send_to_market, and IRESS_UAT_MODE=true (never
+ * Gated: admin + orderbook.send_to_market, and IRESS_UAT_MODE=1|true (never
  * touches the production account; the worker enforces the UAT account).
  *
  * Force-correction contract (2026-07-20):
@@ -28,6 +28,7 @@
 import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
+import { uatModeEnabled } from "@/lib/oems/uat-scope";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { openSupabaseClients, preflight, submitOrder } from "@/lib/orders";
 import type { SubmitResult } from "@/lib/orders";
@@ -47,7 +48,8 @@ export async function POST(req: Request) {
   if (auth.status !== "ok" || !can(auth.ctx, "orderbook", "send_to_market")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (process.env.IRESS_UAT_MODE !== "true") {
+  // Accepts "1" as well as "true" — see uatModeEnabled().
+  if (!uatModeEnabled()) {
     return NextResponse.json({ ok: false, error: "IRESS_UAT_MODE is not enabled." }, { status: 403 });
   }
 
