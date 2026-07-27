@@ -1701,9 +1701,11 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
     async orderPadGetByAccount(req: {
       ServiceSessionKey: string;
       AccountCode: string;
-      OrderFilter: 1 | 2 | 3 | 4 | 5;
+      OrderFilter: 1 | 2 | 3 | 4 | 5 | 6 | 7;
       Updates?: boolean;
       RequestID: string;
+      /** Restrict to one destination, e.g. "Longmark Care". Omit for all. */
+      Destination?: string;
     }): Promise<IressResponse<Order>> {
       require(req.ServiceSessionKey, "ServiceSessionKey", "OrderPadGetByAccount");
       require(req.AccountCode, "AccountCode", "OrderPadGetByAccount");
@@ -1715,12 +1717,28 @@ export function createLiveIressClient(opts: LiveClientOptions = {}): IressClient
           requestID: req.RequestID,
           updates: req.Updates,
           timeout: 25,
-          pageSize: 500,
+          // 1000 to match the envelope IRESS themselves ran against account
+          // 43448. At 500 a busy day could silently truncate the order pad, and
+          // a truncated pad now means an unsettled fill.
+          pageSize: 1000,
           waitForResponse: true,
         }),
         parameters: {
+          // Scalar AccountCode, NOT AccountCodeArray. IRESS's own envelope wraps
+          // this in <AccountCodeArray>, and every other array-shaped parameter in
+          // this client (see orderCreate3) uses the wrapper. The scalar form does
+          // return our orders today, but we cannot tell from the outside whether
+          // IRESS is honouring it or ignoring it and returning the whole seat —
+          // MINT has only one account with orders, so both look identical. The
+          // moment a second account exists, an ignored filter would pull another
+          // account's fills into this poll and settle them against the wrong
+          // client. OPEN QUESTION FOR ANDRE before a second account is opened.
           AccountCode: req.AccountCode,
           OrderFilter: req.OrderFilter,
+          ...(req.Destination
+            ? { DestinationArray: { Destination: req.Destination }, DestinationExclude: false }
+            : {}),
+          RetrieveSecurityDescription: false,
         },
       });
       return mapResponse<Order>({

@@ -27,6 +27,7 @@ import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/erro
 import { getIressClient } from "../../../src/lib/iress/index";
 import type { Order, OrderState } from "../../../src/types/iress";
 import { productionOrdersEnabled, type WorkerEnv } from "./env";
+import { observedFillFromAudit, settleFill } from "./settlement";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 
@@ -118,7 +119,11 @@ class UatExecutionHub {
 
 export const uatExecutionHub = new UatExecutionHub();
 
-async function fetchUatOrders(session: WorkerMintSession, account: string): Promise<Order[]> {
+async function fetchUatOrders(
+  session: WorkerMintSession,
+  account: string,
+  orderFilter: 1 | 2 | 3 | 4 | 5 | 6 | 7,
+): Promise<Order[]> {
   const iosKey = session.serviceKeys.IOSPlus;
   if (!iosKey) {
     throw new Error("IOSPlus service session not available for UAT order poll");
@@ -127,19 +132,19 @@ async function fetchUatOrders(session: WorkerMintSession, account: string): Prom
   const res = await client.orderPadGetByAccount({
     ServiceSessionKey: iosKey,
     AccountCode: account,
-    // Filter=3 (ALL): we MUST see INACTIVE rows too, otherwise fully-filled
-    // orders disappear from the poll as soon as Hermes flips OrderState to
-    // INACTIVE on the final fill. That was the 2026-07-13 bug — the UI
-    // showed "partial 75%, remaining 100" and then stayed stuck on
-    // "working" because the WORKING-only filter (filter=1) excluded the
-    // fully-filled row, so `pollUatForFills` never stamped the audit
-    // status to `filled` and never published the final-fill SSE delta.
+    // We MUST see INACTIVE rows, or a fully-filled order disappears from the
+    // poll the moment Hermes flips OrderState to INACTIVE on the final print.
+    // That was the 2026-07-13 bug: the UI showed "partial 75%, remaining 100"
+    // and stuck on "working" because filter=1 excluded the filled row, so the
+    // audit status was never stamped `filled`. CARE / desk-routed orders fill
+    // later, so "fills arrive on the creation ack" is not true for us.
     //
-    // The earlier rationale "historical fills are written via the
-    // order-creation ack and don't need to be re-polled" only holds for
-    // orders that fill at creation. CARE / desk-routed orders fill later,
-    // and Hermes transitions them ACTIVE → INACTIVE on the final print.
-    OrderFilter: 3,
+    // This was hardcoded to 3 on the belief that 3 = ALL. That belief is not
+    // sourced — see the OrderFilter note in env.ts — and IRESS themselves used
+    // 7 against our production account on 2026-07-27. Now that a missed fill
+    // means a client is never debited, this defaults to 7 and is overridable
+    // via IRESS_ORDER_FILTER without a redeploy.
+    OrderFilter: orderFilter,
     RequestID: newRequestID(`uat-pad-${account}`),
   });
   return res.DataRows;
@@ -164,6 +169,13 @@ interface AuditUpdate {
   payload: Record<string, unknown>;
   result_payload: Record<string, unknown>;
   status: string;
+  settleRow: {
+    order_id: string;
+    symbol: string | null;
+    side: string | null;
+    status: string;
+    payload: Record<string, unknown>;
+  };
 }
 
 export interface UatOrderPollResult {
@@ -181,7 +193,10 @@ export interface UatOrderPollResult {
 export interface UatOrderPollOptions {
   env: WorkerEnv;
   sessions: WorkerSessionManager;
+  /** INSTITUTIONAL — oems_order_audit + the settlement ledger. */
   supabase: WorkerSupabase | null;
+  /** RETAIL — wallets + stock_holdings_c. Null disables settlement entirely. */
+  retailSupabase?: WorkerSupabase | null;
 }
 
 export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrderPollResult> {
@@ -220,7 +235,7 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
   let orders: Order[] = [];
   try {
     await opts.sessions.withSession(async (session) => {
-      orders = await fetchUatOrders(session, pollAccountCode);
+      orders = await fetchUatOrders(session, pollAccountCode, opts.env.iressOrderFilter);
     });
   } catch (err) {
     if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
@@ -420,6 +435,14 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
       payload: newPayload,
       result_payload: newResult,
       status: state,
+      // Carried so settlement can read the fill without a second round trip.
+      settleRow: {
+        order_id: audit.order_id,
+        symbol: audit.symbol,
+        side: audit.side,
+        status: state,
+        payload: newPayload,
+      },
     });
   }
 
@@ -454,6 +477,57 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
       elapsedMs: Date.now() - started,
       skipReason: "audit_write_failed",
     };
+  }
+
+  /* SETTLEMENT. Only after the audit row is safely stamped — the audit trail is
+     the record of what the broker did, and it must never lag the money. Failures
+     here are logged and retried next cycle; they never fail the poll, because a
+     settlement problem must not stop fills being recorded. */
+  if (opts.retailSupabase && opts.supabase && opts.env.retailSettlementEnabled) {
+    for (const u of updates) {
+      const fill = observedFillFromAudit(u.settleRow);
+      if (!fill) {
+        /* The commonest and most dangerous outcome, and it used to be silent.
+           A row with a real filled quantity that we decline to settle looks
+           identical to "there were no fills": the desk sees FILLED in the order
+           book and reasonably concludes the client was settled. Only shout when
+           something actually executed — an unfilled order skipping settlement is
+           just normal. */
+        const p = (u.settleRow.payload ?? {}) as Record<string, unknown>;
+        const q = Number(p.filled);
+        if (Number.isFinite(q) && q > 0) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              event: "settlement_skipped",
+              order: u.settleRow.order_id,
+              symbol: u.settleRow.symbol,
+              filled: q,
+              hasUserId: typeof p.user_id === "string" && p.user_id.length > 0,
+              hasAvgPx: Number(p.avgPx) > 0,
+              reason: "fill observed but not attributable — NOT settled to any client",
+            }),
+          );
+        }
+        continue;
+      }
+      try {
+        await settleFill(
+          {
+            institutional: opts.supabase,
+            retail: opts.retailSupabase,
+            enabled: true,
+            dryRun: opts.env.retailSettlementDryRun,
+          },
+          fill,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          JSON.stringify({ level: "error", event: "settlement_threw", order: fill.orderId, error: msg }),
+        );
+      }
+    }
   }
 
   console.info(

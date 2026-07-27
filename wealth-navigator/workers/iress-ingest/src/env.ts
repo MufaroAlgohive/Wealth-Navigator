@@ -38,6 +38,22 @@ export interface WorkerEnv {
   watchlistEntries: WatchlistEntry[];
   watchlistExchanges: Record<string, string>;
   instrumentSync: boolean;
+  /** OrderPadGetByAccount OrderFilter. See the note beside the parse below. */
+  iressOrderFilter: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  /**
+   * Push executed fills into the RETAIL database — debit/credit
+   * `wallets.balance` and write `stock_holdings_c` lots. Default OFF: this is
+   * the only worker path that moves client money, so it must be turned on
+   * deliberately, never inherited from a generic write flag.
+   */
+  retailSettlementEnabled: boolean;
+  /**
+   * Default ON whenever settlement is enabled. Computes and logs the exact
+   * per-order deltas (wallet before/after, lots opened/closed) and writes
+   * nothing — so the real effect on live client data can be read off the logs
+   * before a single balance moves. Set RETAIL_SETTLEMENT_DRY_RUN=0 to arm it.
+   */
+  retailSettlementDryRun: boolean;
   supabaseUrl: string;
   supabaseServiceKey: string;
   /** RETAIL prod (mfxng…) — shared price tables securities_c / stock_intraday_c. */
@@ -113,6 +129,27 @@ export interface WorkerEnv {
    * up to a 5-page cap.
    */
   newsMaxRows: number;
+}
+
+/* OrderFilter. We do NOT have an authoritative meaning for these values. This
+   repo carried two mutually inconsistent guesses — client.ts said
+   "3=all, 4=inactive, 5=active" while http-api.ts said
+   "3=ALL, 4=AMENDED, 5=HISTORICAL" — and neither was sourced from IRESS.
+   Andre Pietersen (IRESS) ran OrderPadGetByAccount against our production
+   account 43448 on 2026-07-27 using OrderFilter=7, a value outside both
+   guesses, which strongly suggests a bitmask rather than an enum
+   (1|2|4 = 7 = everything) and means our long-standing "3 = ALL" comment is
+   probably wrong.
+
+   This matters now that fills settle real money: if 3 is not actually ALL, an
+   order that filled and went inactive before we polled is never seen, and the
+   client is never debited. So the range is widened to accept what the vendor
+   demonstrably uses. Confirm the semantics with Andre before relying on any
+   single value. */
+function parseOrderFilter(value: string | undefined): 1 | 2 | 3 | 4 | 5 | 6 | 7 {
+  const n = Number(value);
+  if (Number.isInteger(n) && n >= 1 && n <= 7) return n as 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  return 7;
 }
 
 function parseBool(value: string | undefined, defaultValue: boolean): boolean {
@@ -253,6 +290,9 @@ export function loadWorkerEnv(): WorkerEnv {
     watchlistEntries: entries,
     watchlistExchanges: exchanges,
     instrumentSync: parseBool(process.env.IRESS_WORKER_INSTRUMENT_SYNC, false),
+    iressOrderFilter: parseOrderFilter(process.env.IRESS_ORDER_FILTER),
+    retailSettlementEnabled: parseBool(process.env.RETAIL_SETTLEMENT_ENABLED, false),
+    retailSettlementDryRun: parseBool(process.env.RETAIL_SETTLEMENT_DRY_RUN, true),
     supabaseUrl,
     supabaseServiceKey,
     retailSupabaseUrl,

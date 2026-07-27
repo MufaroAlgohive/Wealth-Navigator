@@ -157,6 +157,9 @@ export async function POST(req: Request) {
       side,
       qty,
       price_cents: priceCents,
+      // The ticket says "blank = market". A typed price means the client
+      // wants that limit, not the market.
+      order_type: priceCents != null ? "limit" as const : "market" as const,
       trader_email: traderEmail,
       // The order book's "Client" column. Without this it shows the DEALER who
       // clicked the button, not the client whose money is at risk — verified
@@ -189,7 +192,7 @@ export async function POST(req: Request) {
     side,
     qty,
     price_rands: priceCents != null ? priceCents / 100 : null,
-    order_type: priceCents != null ? "limit (reference)" : "market",
+    order_type: priceCents != null ? "limit" : "market",
     broker_destination: BROKER,
     advisory_preflight: advisory,
     notice:

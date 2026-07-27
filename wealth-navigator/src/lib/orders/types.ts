@@ -103,6 +103,18 @@ export interface SubmitInput extends PreflightInput {
   /** The trader's auth email — recorded in `payload.sent_by` / `payload.trader`. */
   trader_email: string;
   /**
+   * EXPLICIT order type. Absent means MARKET.
+   *
+   * This must be stated by the caller and cannot be inferred from the presence
+   * of `price_cents`. Mint client orders always attach a reference price, so
+   * "price present => limit" made every order a limit and a true market order
+   * was impossible — that is why the worker was hard-forced to MKT on
+   * 2026-07-23, which then silently downgraded genuine limit orders instead.
+   * The desk ticket says "blank = market", so the ticket knows the intent; it
+   * just never travelled. Now it does.
+   */
+  order_type?: "market" | "limit";
+  /**
    * The CLIENT this order is for, as displayed in the order book's "Client"
    * column. Defaults to `trader_email` (correct for a desk order on the desk's
    * own book). Set it on any order placed on someone else's behalf, or the

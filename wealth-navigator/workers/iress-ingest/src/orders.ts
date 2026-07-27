@@ -249,6 +249,7 @@ export function derivePositions(orders: Order[]): PositionUpsertRow[] {
 async function fetchOrdersForAccount(
   session: WorkerMintSession,
   accountCode: string,
+  orderFilter: 1 | 2 | 3 | 4 | 5 | 6 | 7,
 ): Promise<Order[]> {
   const iosKey = session.serviceKeys.IOSPlus;
   if (!iosKey) {
@@ -258,8 +259,11 @@ async function fetchOrdersForAccount(
   const res = await client.orderPadGetByAccount({
     ServiceSessionKey: iosKey,
     AccountCode: accountCode,
-    OrderFilter: 3, // ALL orders — feeds the audit/blotter history AND the
-    // positions-from-fills derivation (net DoneVolumeTotal per security).
+    // Was hardcoded 3 on the unsourced belief that 3 = ALL; IRESS used 7
+    // against account 43448 on 2026-07-27. See the OrderFilter note in env.ts.
+    // Feeds the audit/blotter history AND the positions-from-fills derivation
+    // (net DoneVolumeTotal per security).
+    OrderFilter: orderFilter,
     RequestID: newRequestID(`pad-${accountCode}`),
   });
   return res.DataRows;
@@ -293,7 +297,7 @@ export async function pollAccountsForOrders(
       await opts.sessions.withSession(async (session) => {
         for (const account of accounts) {
           try {
-            const rows = await fetchOrdersForAccount(session, account);
+            const rows = await fetchOrdersForAccount(session, account, opts.env.iressOrderFilter);
             orders = orders.concat(rows);
           } catch (err) {
             if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {

@@ -162,14 +162,17 @@ async function insertAuditRow(
     payload: {
       book_id: opts.bookId ?? null,
       broker: opts.broker ?? null,
-      // 2026-07-23: market orders only, for now — the worker
-      // (http-api.ts) forces MKT and omits Price regardless of
-      // price_cents, so this label must say "market" too rather than
-      // implying a limit order was actually sent. `limitPrice` (key kept
-      // for existing readers — execution/fills/send-to-market routes) is
-      // now a reference/expected price only, never an actual submitted
-      // limit.
-      order_type: "market",
+      /* EXPLICIT, from the caller. Defaults to market when unstated, so every
+         existing caller keeps today's behaviour.
+
+         Between 2026-07-23 and 2026-07-27 this was hardcoded to "market" and
+         the worker forced MKT to match, because price_cents was being used to
+         infer intent and mint always supplies a reference price — so no true
+         market order was possible. The fix at the time removed limits
+         entirely. That traded one silent misrepresentation for another: a desk
+         ticket with R45,20 typed into it went to the market unpriced, and both
+         IRESS and the client saw MKT. Intent now travels from the ticket. */
+      order_type: input.order_type ?? "market",
       strategy: opts.bookId ?? null,
       security_id: sec.id,
       isin: sec.isin ?? null,
@@ -178,6 +181,8 @@ async function insertAuditRow(
       // checks THIS client's wallet and holdings instead of the desk omnibus.
       // Never sent to the broker — LONGMARK sees only the MINT account.
       user_id: input.user_id ?? null,
+      /* RANDS. For a limit order this IS the submitted limit. For a market
+         order it stays a reference/expected price for the blotter. */
       limitPrice: input.price_cents != null ? Number(input.price_cents) / 100 : null,
       sent_by: input.trader_email,
       sent_at: nowIso,
