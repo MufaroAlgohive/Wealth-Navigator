@@ -48,7 +48,15 @@ import {
   marketDataBaseUrl,
   marketDataProdEnabled,
 } from "./market-data";
-import { availableToSell, availableToBuy, type SellAvailability, type CashAvailability } from "./pretrade-guard";
+import {
+  availableToSell,
+  availableToBuy,
+  availableToSellForClient,
+  availableToBuyForClient,
+  resolveHolderKind,
+  type SellAvailability,
+  type CashAvailability,
+} from "./pretrade-guard";
 import { fetchLiveQuote } from "./quotes";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import { type WorkerSupabase, writeHeartbeat } from "./supabase";
@@ -79,6 +87,25 @@ export interface HttpApiDeps {
   retailSupabase?: WorkerSupabase | null;
   /** Override the auth token check (mainly for tests). */
   authToken?: string;
+}
+
+/**
+ * `IRESS_PER_CLIENT_GUARD=1` — check a CLIENT order against that client's own
+ * retail ledger (holdings + wallet) instead of the desk omnibus.
+ *
+ * Off by default so the desk/UAT path is bit-for-bit unchanged until this has
+ * been exercised in UAT. Turning it on can only ever REJECT orders the desk
+ * path would have allowed: resolveHolderKind returns "desk" for anything
+ * without clear client linkage, so desk orders keep the desk guard, and client
+ * orders gain a stricter one.
+ *
+ * This MUST be on before any real client order is sent to a market. Without it
+ * a client's sell is validated against shares the desk holds and the client
+ * does not, which is a naked short on their account.
+ */
+function perClientGuardEnabled(): boolean {
+  const v = (process.env.IRESS_PER_CLIENT_GUARD ?? "").trim().toLowerCase();
+  return v === "1" || v === "true";
 }
 
 function newRequestID(prefix: string): string {
@@ -2945,12 +2972,26 @@ export async function handleRequest(
       return;
     }
 
+    // Holder routing must match the submit-time gate exactly, or the BFF's
+    // pre-submit verdict and the worker's submit-time verdict disagree — which
+    // is the failure this shared function exists to prevent. The caller declares
+    // the client by passing `user_id`; with IRESS_PER_CLIENT_GUARD off we ignore
+    // it and keep the desk path, same as the send path.
+    const preflightClientUserId =
+      typeof b["user_id"] === "string" && (b["user_id"] as string).trim()
+        ? (b["user_id"] as string).trim()
+        : null;
+    const preflightHolder =
+      perClientGuardEnabled() && preflightClientUserId ? "client" : "desk";
+
     const guard = await runUatPreflight(deps, {
       accountCode,
       symbol,
       side,
       qty: Math.floor(qty),
       priceCents,
+      holder: preflightHolder,
+      clientUserId: preflightClientUserId,
       excludeAuditId:
         typeof b["exclude_audit_id"] === "string"
           ? (b["exclude_audit_id"] as string)
@@ -3218,6 +3259,8 @@ interface UatAuditRow {
   quantity: number;
   price_cents: number | null;
   status: string;
+  /** Order origin (UAT_*, desk, client entry point). Drives resolveHolderKind. */
+  source: string | null;
   payload: Record<string, unknown>;
   result_payload: Record<string, unknown>;
 }
@@ -3534,6 +3577,22 @@ async function runUatPreflight(
     excludeAuditId?: string;
     /** For market orders, derive RANDS value from `arrivalMid` if available. */
     arrivalMidRands?: number | null;
+    /**
+     * Whose book backs this order.
+     *   "desk"   — the shared omnibus account (UAT and desk orders)
+     *   "client" — a real MINT client's own retail ledger
+     *
+     * This distinction is a client-money control, not a routing detail. The desk
+     * omnibus can hold thousands of a share while an individual client holds
+     * none; checking a client's SELL against the desk's holdings would pass an
+     * order that is a naked short for that client, and their BUY against desk
+     * cash would let them spend money they do not have.
+     *
+     * Defaults to "desk", which is the historical behaviour.
+     */
+    holder?: "desk" | "client";
+    /** Required when holder === "client" — the retail auth user whose ledger is checked. */
+    clientUserId?: string | null;
   },
 ): Promise<
   | { ok: true; verdict: "pass"; sell?: SellAvailability; cash?: CashAvailability; message: string }
@@ -3560,10 +3619,46 @@ async function runUatPreflight(
     };
   }
 
+  /* Per-client routing. A client order is checked against THAT CLIENT's retail
+     ledger, never the desk omnibus. Fail-closed in three ways, because getting
+     this wrong permits a naked short or an overspend on someone's real money:
+       - holder === "client" with no clientUserId  -> block
+       - holder === "client" with no retail client -> block
+     Neither falls back to the desk path. */
+  const holder = opts.holder ?? "desk";
+  const retailDb = deps.retailSupabase ?? null;
+  if (holder === "client") {
+    if (!opts.clientUserId) {
+      return {
+        ok: false,
+        status: 422,
+        code: opts.side === 2 ? "sell_guard_unavailable" : "buy_guard_unavailable",
+        message:
+          "Blocked: order is flagged as a client order but carries no user_id, so the client's own holdings and cash cannot be checked.",
+      };
+    }
+    if (!retailDb) {
+      return {
+        ok: false,
+        status: 503,
+        code: opts.side === 2 ? "sell_guard_unavailable" : "buy_guard_unavailable",
+        message:
+          "Blocked: client order requires the RETAIL ledger, but the worker has no retail Supabase client (set RETAIL_SUPABASE_URL + RETAIL_SUPABASE_SERVICE_ROLE_KEY).",
+      };
+    }
+  }
+
   if (opts.side === 2) {
     let avail;
     try {
-      avail = await availableToSell(db, opts.accountCode, opts.symbol, opts.excludeAuditId);
+      avail =
+        holder === "client"
+          ? await availableToSellForClient(
+              retailDb as WorkerSupabase,
+              opts.clientUserId as string,
+              opts.symbol,
+            )
+          : await availableToSell(db, opts.accountCode, opts.symbol, opts.excludeAuditId);
     } catch (guardErr) {
       const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
       console.warn(
@@ -3603,9 +3698,12 @@ async function runUatPreflight(
   const buffer = Number(process.env.IRESS_MARKET_BUY_BUFFER ?? "1.02");
   let cash;
   try {
-    cash = await availableToBuy(db, opts.accountCode, opts.excludeAuditId, {
-      fallbackCapRands: capRands,
-    });
+    cash =
+      holder === "client"
+        ? await availableToBuyForClient(retailDb as WorkerSupabase, opts.clientUserId as string)
+        : await availableToBuy(db, opts.accountCode, opts.excludeAuditId, {
+            fallbackCapRands: capRands,
+          });
   } catch (guardErr) {
     const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
     console.warn(
@@ -3665,7 +3763,9 @@ async function uatSendToMarket(
   // Read the audit row the BFF wrote at /api/admin/orderbook/send-to-market.
   const { data: row, error: readErr } = await db
     .from("oems_order_audit")
-    .select("id, order_id, symbol, side, quantity, price_cents, status, payload, result_payload")
+    // `source` is required by resolveHolderKind — without it every order would
+    // classify as desk and a client order would be guarded against the omnibus.
+    .select("id, order_id, symbol, side, quantity, price_cents, status, source, payload, result_payload")
     .eq("id", orderAuditId)
     .maybeSingle();
 
@@ -3727,6 +3827,26 @@ async function uatSendToMarket(
   // `runUatPreflight()` — both paths compute the exact same verdict so the
   // BFF pre-submit gate and the worker submit-time gate can never disagree.
   // (See the comment on `runUatPreflight` above for the rationale.)
+  //
+  // HOLDER ROUTING (2026-07-27). resolveHolderKind + availableTo*ForClient have
+  // existed since 2026-07-20 but nothing ever called them, so EVERY order —
+  // including one carrying a client's user_id — was checked against the desk
+  // omnibus. For a UAT/desk order that is correct. For a real client order it is
+  // not a guard at all: the omnibus can hold thousands of a share the client
+  // holds none of, so their sell passes as a naked short, and their buy is
+  // checked against desk cash rather than their own wallet.
+  //
+  // Behind IRESS_PER_CLIENT_GUARD so the desk path is untouched until this is
+  // exercised in UAT. resolveHolderKind already returns "desk" for anything
+  // without clear client linkage, so the flag only ever narrows what passes.
+  const holder = perClientGuardEnabled()
+    ? resolveHolderKind({ source: audit.source ?? null, payload: audit.payload ?? null })
+    : "desk";
+  const clientUserId =
+    typeof (audit.payload as { user_id?: unknown } | null)?.user_id === "string"
+      ? ((audit.payload as { user_id: string }).user_id)
+      : null;
+
   const guard = await runUatPreflight(deps, {
     accountCode,
     symbol,
@@ -3734,6 +3854,8 @@ async function uatSendToMarket(
     qty,
     priceCents: audit.price_cents ?? null,
     excludeAuditId: audit.id,
+    holder,
+    clientUserId,
     arrivalMidRands:
       Number((audit.result_payload as { arrivalMid?: number } | null)?.arrivalMid) || null,
   });
