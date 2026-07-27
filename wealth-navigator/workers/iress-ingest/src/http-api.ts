@@ -108,6 +108,60 @@ function perClientGuardEnabled(): boolean {
   return v === "1" || v === "true";
 }
 
+/**
+ * Every condition that must hold before a REAL client order may be sent to a
+ * REAL market. Returns the list of unmet conditions; empty means ready.
+ *
+ * Deliberately enumerated rather than collapsed into one flag. Each entry is a
+ * separate way this can be wrong, and an operator staring at a 409 during a
+ * trading window needs to be told which one — not "not ready".
+ *
+ * `GET /orders/readiness` returns this verbatim so the state is inspectable
+ * without attempting an order.
+ */
+export function productionOrderBlockers(env: WorkerEnv): string[] {
+  const blockers: string[] = [];
+
+  // 1. The explicit switch. Nothing implicit ever enables live client orders.
+  const flag = (process.env.IRESS_PRODUCTION_ORDERS ?? "").trim().toLowerCase();
+  if (flag !== "1" && flag !== "true") {
+    blockers.push("IRESS_PRODUCTION_ORDERS is not set to 1");
+  }
+
+  // 2. UAT and production are mutually exclusive lanes. With uatMode on, order
+  //    tagging, the poll loop and the account default all assume the test book.
+  if (env.uatMode) {
+    blockers.push("IRESS_UAT_MODE is on — the worker is on the UAT lane; production orders are refused");
+  }
+
+  // 3. The CT endpoint is a test venue. An order sent there is not a real trade,
+  //    and treating it as one would report a fill that never happened.
+  const baseUrl = process.env.IRESS_BASE_URL ?? "";
+  if (baseUrl && /webservices-ct\.iress\.co\.za/i.test(baseUrl)) {
+    blockers.push(`IRESS_BASE_URL points at the CT test endpoint (${baseUrl})`);
+  }
+
+  // 4. Without the per-client guard a client's SELL is validated against the
+  //    desk omnibus, which can hold shares the client does not — a naked short
+  //    on their account. This is the one blocker that protects the client
+  //    rather than the workflow, so production orders are refused outright
+  //    rather than falling back to the desk guard.
+  if (!perClientGuardEnabled()) {
+    blockers.push(
+      "IRESS_PER_CLIENT_GUARD is off — client orders would be checked against the desk omnibus, not the client's own holdings and cash",
+    );
+  }
+
+  // 5. A live order needs a real broker account and a live SOAP session.
+  if (!env.iressAccountCode) blockers.push("IRESS_ACCOUNT_CODE is not set");
+  if (env.iressMode !== "live") blockers.push(`IRESS_MODE is "${env.iressMode}", not "live"`);
+  if (!process.env.IRESS_PRODUCTION_DESTINATION?.trim()) {
+    blockers.push("IRESS_PRODUCTION_DESTINATION is not set (broker routing destination)");
+  }
+
+  return blockers;
+}
+
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -137,6 +191,7 @@ function isMutatingRequest(method: string | undefined, path: string): boolean {
     m === "POST" &&
     (path === "/orders/cancel" ||
       path === "/orders/amend" ||
+      path === "/orders/send-to-market" ||
       path === "/uat/send-to-market" ||
       path === "/debug/soap-raw" ||
       path === "/heartbeat/refresh")
@@ -3111,12 +3166,87 @@ export async function handleRequest(
       (typeof b["broker_destination"] === "string" && (b["broker_destination"] as string).trim()) ||
       "LONGMARK CARE";
 
-    const result = await uatSendToMarket(deps, orderAuditId, accountCode, brokerDestination);
+    const result = await sendOrderToMarket(deps, orderAuditId, accountCode, brokerDestination);
     if (!result.ok) {
       sendError(res, result.status, result.code, result.message, result.extra);
       return;
     }
     send(res, 200, result.body);
+    return;
+  }
+
+  /* GET /orders/readiness — is this worker allowed to send REAL client orders?
+     Inspectable without attempting an order, so the answer to "are production
+     buys ready?" is a URL rather than an opinion. */
+  if (req.method === "GET" && path === "/orders/readiness") {
+    const blockers = productionOrderBlockers(deps.env);
+    send(res, 200, {
+      ok: true,
+      production_orders_ready: blockers.length === 0,
+      blockers,
+      lane: deps.env.uatMode ? "uat" : "production",
+      iressMode: deps.env.iressMode,
+      accountCode: deps.env.iressAccountCode || null,
+      perClientGuard: perClientGuardEnabled(),
+      baseUrl: process.env.IRESS_BASE_URL ?? "(default)",
+      workerId: deps.env.workerId,
+    });
+    return;
+  }
+
+  /* POST /orders/send-to-market — the PRODUCTION lane.
+     Real broker account, real market, real client money.
+
+     It calls the SAME sendToMarket() the UAT lane uses. That is deliberate: the
+     idempotency tag, the transport-failure recovery via OrderNoGetByOrderTag,
+     the business-rejection handling and the audit stamping are all subtle and
+     hard-won, and a second copy of them would drift. The lanes differ only in
+     which gate they pass and which account/destination they target. */
+  if (req.method === "POST" && path === "/orders/send-to-market") {
+    const blockers = productionOrderBlockers(deps.env);
+    if (blockers.length > 0) {
+      sendError(
+        res,
+        409,
+        "production_orders_not_ready",
+        `Refusing to send a live client order: ${blockers.length} unmet condition(s)`,
+        { blockers, hint: "GET /orders/readiness" },
+      );
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    const orderAuditId =
+      typeof b["order_audit_id"] === "string" ? (b["order_audit_id"] as string).trim() : "";
+    if (!orderAuditId) {
+      sendError(res, 400, "bad_request", "`order_audit_id` is required");
+      return;
+    }
+
+    // The account is NOT caller-supplied. A production order goes to the
+    // configured production account, full stop — accepting it from the request
+    // body would let a mis-built BFF call route a client's trade to an
+    // arbitrary book.
+    const accountCode = deps.env.iressAccountCode;
+    const brokerDestination = (process.env.IRESS_PRODUCTION_DESTINATION ?? "").trim();
+
+    console.warn(
+      `[iress-ingest/PROD] LIVE ORDER send audit=${orderAuditId} account=${accountCode} dest=${brokerDestination}`,
+    );
+
+    const result = await sendOrderToMarket(deps, orderAuditId, accountCode, brokerDestination);
+    if (!result.ok) {
+      sendError(res, result.status, result.code, result.message, result.extra);
+      return;
+    }
+    send(res, 200, { ...result.body, lane: "production" });
     return;
   }
 
@@ -3744,7 +3874,23 @@ async function runUatPreflight(
   };
 }
 
-async function uatSendToMarket(
+/**
+ * Send an order to a market. Serves BOTH lanes — `/uat/send-to-market` and
+ * `/orders/send-to-market` — and knows about neither.
+ *
+ * One implementation on purpose. The idempotency tag, the transport-failure
+ * recovery through OrderNoGetByOrderTag, the business-rejection-vs-transport
+ * distinction and the audit stamping are subtle and were each learned from a
+ * real incident. A second copy for production would drift from this one, and
+ * the first symptom of that drift would be a client order in an unknown state.
+ *
+ * The lanes differ only in what the ROUTE decides before calling: which
+ * readiness gate must pass, and which account and destination to target.
+ *
+ * (Named uatSendToMarket until 2026-07-27, when the production lane started
+ * sharing it.)
+ */
+async function sendOrderToMarket(
   deps: HttpApiDeps,
   orderAuditId: string,
   accountCode: string,
