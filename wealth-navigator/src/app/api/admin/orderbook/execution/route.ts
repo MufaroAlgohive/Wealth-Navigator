@@ -354,6 +354,12 @@ export async function GET(req: Request) {
   const sources = sourceParam
     ? sourceParam.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
+  // order_book_seq: fetch the member orders of one archived/released order book
+  // (release-to-market stamps `payload.order_book_seq` on every released row).
+  // Lets "Active Order Books" expand a book to show the actual orders in it,
+  // reusing this route's full order-detail mapping.
+  const seqParam = (url.searchParams.get("order_book_seq") ?? "").trim();
+  const orderBookSeq = seqParam && Number.isFinite(Number(seqParam)) ? Number(seqParam) : null;
 
   // status view: default "active" hides user-cancelled orders from the live
   // blotter (they move to the Cancelled tab); "cancelled" returns ONLY them.
@@ -384,7 +390,12 @@ export async function GET(req: Request) {
     .select(
       "id, order_id, client_account, symbol, side, quantity, price_cents, status, source, payload, result_payload, created_at, updated_at",
     );
-  if (sources.length > 0) {
+  if (orderBookSeq != null) {
+    // A book's members are the audit rows carrying this order_book_seq. This
+    // takes precedence over source/book_id so a book expands to exactly its own
+    // orders regardless of which sources they came from.
+    sel = sel.eq("payload->>order_book_seq", String(orderBookSeq));
+  } else if (sources.length > 0) {
     sel = sel.in("source", sources);
   } else if (bookId) {
     const v = bookId.replace(/[\\"]/g, ""); // neutralise PostgREST filter metachars
@@ -407,17 +418,19 @@ export async function GET(req: Request) {
 
   const all = (data ?? []) as AuditRow[];
   const filtered =
-    sources.length > 0
-      ? all // already precise via .in("source", sources) above
-      : bookId
-        ? all.filter((r) => {
-            const p = r.payload ?? {};
-            return (
-              (typeof p.book_id === "string" && p.book_id === bookId) ||
-              (typeof p.strategy === "string" && p.strategy === bookId)
-            );
-          })
-        : all;
+    orderBookSeq != null
+      ? all.filter((r) => Number((r.payload ?? {}).order_book_seq) === orderBookSeq)
+      : sources.length > 0
+        ? all // already precise via .in("source", sources) above
+        : bookId
+          ? all.filter((r) => {
+              const p = r.payload ?? {};
+              return (
+                (typeof p.book_id === "string" && p.book_id === bookId) ||
+                (typeof p.strategy === "string" && p.strategy === bookId)
+              );
+            })
+          : all;
 
   const rows = filtered.map(mapRow);
   return NextResponse.json({ ok: true, rows, count: rows.length });
