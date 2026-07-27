@@ -81,24 +81,52 @@ export async function GET(req: Request) {
     const testIds = await testUserIds();
     const { data: clientRows } = await db
       .from("client_strategy_returns_effective_latest_c")
-      .select("user_id,basket_value_cents,ytd_pct,as_of_date")
+      .select(
+        "user_id,family_member_id,basket_value_cents,securities_value_cents,residual_cash_cents,unused_reserve_cents,inception_pct,inception_pnl_cents,ytd_pct,as_of_date",
+      )
       .eq("strategy_id", id)
       .limit(2000);
     const realRows = ((clientRows ?? []) as Array<Record<string, unknown>>).filter(
       (row) => row.user_id && !testIds.has(String(row.user_id)),
     );
-    const userIds = realRows.map((row) => String(row.user_id));
-    const { data: profiles } = userIds.length
-      ? await db.from("profiles").select("id,first_name,last_name,email").in("id", userIds)
-      : { data: [] };
+    const userIds = [...new Set(realRows.map((row) => String(row.user_id)))];
+    const famIds = [...new Set(realRows.map((row) => (row.family_member_id ? String(row.family_member_id) : "")).filter(Boolean))];
+    const [{ data: profiles }, { data: famRows }] = await Promise.all([
+      userIds.length
+        ? db.from("profiles").select("id,first_name,last_name,email,computershare_number").in("id", userIds)
+        : Promise.resolve({ data: [] }),
+      famIds.length
+        ? db.from("family_members").select("id,first_name,last_name,computershare_number").in("id", famIds)
+        : Promise.resolve({ data: [] }),
+    ]);
     const profileMap = new Map((profiles ?? []).map((profile) => [String(profile.id), profile]));
+    const famMap = new Map((famRows ?? []).map((member) => [String(member.id), member]));
     const investors = realRows.map((row) => {
       const userId = String(row.user_id);
+      const familyMemberId = row.family_member_id ? String(row.family_member_id) : null;
       const profile = profileMap.get(userId);
+      const parentName = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || profile?.email || userId;
+      const familyMember = familyMemberId ? famMap.get(familyMemberId) : null;
+      const childName = familyMember
+        ? [familyMember.first_name, familyMember.last_name].filter(Boolean).join(" ") || familyMemberId!.slice(0, 8)
+        : null;
+      const value = Number(row.basket_value_cents || 0) / 100;
+      const pnl = Number(row.inception_pnl_cents || 0) / 100;
       return {
         userId,
-        name: [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || profile?.email || userId,
-        value: Number(row.basket_value_cents || 0) / 100,
+        familyMemberId,
+        name: childName ? `${childName} (${parentName})` : parentName,
+        email: profile?.email || "",
+        computershare: (familyMember?.computershare_number || profile?.computershare_number) ?? null,
+        value,
+        // Complete-value breakdown, same convention as MyMintAdmin's
+        // investors.html card: positions + residual + held reserve.
+        holdingsValue: Number(row.securities_value_cents || 0) / 100,
+        residual: Number(row.residual_cash_cents || 0) / 100,
+        reserve: Number(row.unused_reserve_cents || 0) / 100,
+        pnl,
+        invested: value - pnl,
+        inceptionPct: row.inception_pct == null ? null : Number(row.inception_pct),
         // The view's own chain-preserved YTD — not re-derived from
         // value-minus-pnl (that math broke the moment a rebalance changed
         // the basket's composition mid-period).

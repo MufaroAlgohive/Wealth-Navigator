@@ -257,12 +257,14 @@ export default function InvestorsPage() {
               : listRows.map((i) => (
                 <div key={i.key} role="button" tabIndex={0} onClick={() => setSelId(i.selectedKey)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelId(i.selectedKey); }} className={cn("flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left", selId === i.selectedKey || (sel && i.ownerKey === ownerKeyOf(sel)) ? "bg-primary/10" : "hover:bg-accent/50")}>
                   <div className="min-w-0"><div className="truncate text-sm font-medium text-foreground">{i.name}</div>{i.parentName&&<div className="truncate text-[9px] text-muted-foreground">Managed by {i.parentName}</div>}
+                    {(i.email||i.computershare)&&<div className="truncate text-[9px] text-muted-foreground">{i.email}{i.computershare?` · ${i.computershare}`:""}</div>}
                     {i.groupCount > 1 ? (
                       <select value={i.selectedKey} onClick={(event) => event.stopPropagation()} onChange={(event) => setSelId(event.target.value)} className="mt-1 max-w-[190px] rounded-md border border-primary/20 bg-background px-1.5 py-1 text-[10px] font-semibold text-primary outline-none">
                         {i.strategies.map((strategy) => <option key={strategy.key} value={strategy.key}>{strategy.strategy || "Strategy"} - {R(strategy.valueCents)}</option>)}
                       </select>
                     ) : <div className="truncate text-[10px] text-muted-foreground">{i.strategy || "Single securities"}</div>}
-                    <div className="text-[11px] text-muted-foreground">{R(i.valueCents)}</div></div>
+                    <div className="text-[11px] font-semibold text-foreground">{R(i.valueCents)}</div>
+                    {i.groupCount===1&&(i.residualCents>0||i.bufferCents>0)&&<div className="truncate font-mono text-[9px] text-muted-foreground">Holdings {R(i.currentCents)} · Residual {R(i.residualCents)} · Reserve {R(i.bufferCents)}</div>}</div>
                   <span className={cn("text-xs font-semibold", pctCls(i.retPct))}>{pctStr(i.retPct)}</span>
                 </div>
               ))}
