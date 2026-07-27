@@ -737,6 +737,25 @@ export async function POST(req: Request) {
         sent_by: auth.ctx.email,
         sent_at: new Date().toISOString(),
         holding_id: h.id,
+        // ATTRIBUTION. Without this the fill is unattributable and settlement
+        // drops it — `observedFillFromAudit` returns null on a missing
+        // payload.user_id, which is not even the `blocked` path, so nothing is
+        // written to oems_fill_settlement_c.last_error either. The fill would
+        // vanish in silence.
+        //
+        // This is the ONLY working basket/rebalance dispatch path — /api/rebalance/
+        // requests/[id]/push has never produced an order row — so every strategy
+        // rebalance would have executed at LONGMARK and then reconciled nothing.
+        // `h.user_id` was already in scope two lines up (profMap[h.user_id]) and
+        // was simply never stamped.
+        //
+        // Paired with holding_id above this puts the order in settlement's
+        // RECONCILE branch, which is correct here: these rows are built FROM
+        // stock_holdings_c, so the lot already exists and the MINT app already
+        // took the client's cash at purchase time. Reconcile stamps the true
+        // fill price and moves no money. Creating a new lot would double the
+        // client's position.
+        user_id: h.user_id,
         trader: auth.ctx.email,
         uat_test: uatTest,
         // 2026-07-14 — limit guard contract. Stamp on every audit row

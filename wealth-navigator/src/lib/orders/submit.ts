@@ -485,6 +485,16 @@ export async function releaseOrder(
     price_cents: row.price_cents as number | null,
     source: (row.source as OrderSource) ?? "MINT_CLIENT_ORDER",
     book_id: (payload.book_id as string) ?? undefined,
+    /* Carry the client through, or this pre-check silently becomes a DESK
+       check. preflight() forwards user_id to the worker, which uses it in
+       resolveHolderKind to pick between the client's own wallet/holdings and
+       the desk omnibus. Rebuilding the input from the row without it meant
+       every release validated against the omnibus — which can hold thousands
+       of a share the client owns none of, and cash the client does not have.
+       The worker's own submit-time guard still reads payload.user_id off the
+       audit row, so the last line of defence held; this restores the first
+       one, and stops the two gates disagreeing about who is being checked. */
+    user_id: (payload.user_id as string) ?? null,
   };
 
   const preflightResult = await preflight(preflightInput);

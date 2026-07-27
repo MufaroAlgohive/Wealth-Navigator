@@ -94,6 +94,45 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ ok: false, error: requestRes.error.message }, { status: 500 });
   }
 
+  /* DISABLED 2026-07-27. This route has never produced a single order row —
+     `oems_order_audit` has zero rows with source='rebalance_request' — and it
+     cannot safely produce one:
+
+       - `client_account: request.strategy_id` puts a STRATEGY NAME where a
+         client belongs, and no payload.user_id is stamped at all, so a fill
+         could never be attributed or settled to anybody.
+       - `shares` comes from `proposed_composition`, which is the strategy MODEL
+         template built from strategies_c.holdings — not any client's position.
+         It is neither a per-client quantity nor an aggregate of them.
+       - `affected_investors` is selected above and then never read. The builder
+         does not even send it, so it is null on every row.
+       - Nothing dispatches the `working` rows it writes. The only other reader
+         is broker-ingest's MOCK fill synthesiser, so the rows would sit forever.
+
+     And it is reachable: it accepts any request in `ic_approved`, of which
+     there are 21 in the live INSTITUTIONAL database right now — all written by
+     send-to-market as an AUDIT MIRROR of a book that was already dispatched.
+     POSTing here against any of them would emit a second, unattributable set of
+     orders for work already sent.
+
+     The real basket path is POST /api/admin/orderbook/send-to-market, which
+     reads stock_holdings_c and emits one order per client lot.
+
+     Refusing rather than deleting: the IC approval flow that feeds this is real
+     and someone will want to wire execution to it properly. Failing loudly with
+     the reason is more useful to that person than a silently missing route. */
+  return NextResponse.json(
+    {
+      ok: false,
+      deferred: true,
+      error:
+        "Rebalance push is disabled. This route emits orders with a strategy name in place of a client " +
+        "and no user_id, so their fills can never be settled — and nothing dispatches them. Use " +
+        "POST /api/admin/orderbook/send-to-market, which emits one order per client lot.",
+    },
+    { status: 501 },
+  );
+
   const request = (requestRes.data ?? null) as RebalanceRow | null;
   if (!request)
     return NextResponse.json({ ok: false, error: "rebalance request not found" }, { status: 404 });
