@@ -355,6 +355,14 @@ export async function GET(req: Request) {
     ? sourceParam.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
 
+  // status view: default "active" hides user-cancelled orders from the live
+  // blotter (they move to the Cancelled tab); "cancelled" returns ONLY them.
+  // Only `cancelled` is split off — broker-terminal states (rejected/expired/
+  // failed) stay on the blotter because the desk needs to see them there.
+  const statusView = (url.searchParams.get("status") ?? "active").trim().toLowerCase() === "cancelled"
+    ? "cancelled"
+    : "active";
+
   const db = openInstitutional();
   if (!db) {
     return NextResponse.json({
@@ -382,6 +390,9 @@ export async function GET(req: Request) {
     const v = bookId.replace(/[\\"]/g, ""); // neutralise PostgREST filter metachars
     sel = sel.or(`payload->>book_id.eq."${v}",payload->>strategy.eq."${v}"`);
   }
+  // Split cancelled off from the blotter at the DB level so neither view spends
+  // its 500-row window on the other's rows.
+  sel = statusView === "cancelled" ? sel.eq("status", "cancelled") : sel.neq("status", "cancelled");
   const { data, error } = await sel.order("updated_at", { ascending: false }).limit(500);
   if (error) {
     if (isSupabaseSchemaMissing(error)) {

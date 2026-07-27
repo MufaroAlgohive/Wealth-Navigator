@@ -15,6 +15,7 @@ import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
 import { UatTestRunner } from "@/components/admin/order-book/uat-test-runner";
 import { ExecutionView } from "@/components/admin/order-book/execution-view";
 import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-books";
+import { CancelledOrders } from "@/components/admin/order-book/cancelled-orders";
 
 interface Row {
   id: string; email: string; client: string; instrument: string; ticker: string; isin: string;
@@ -110,7 +111,7 @@ export default function OrderBookPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      {tab !== "uat-testing" && (
+      {tab !== "uat-testing" && tab !== "cancelled" && (
       <>
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
@@ -138,6 +139,7 @@ export default function OrderBookPage() {
         <TabsList>
           <TabsTrigger value="active">Active Orderbook</TabsTrigger>
           <TabsTrigger value="closed">Closed Books</TabsTrigger>
+          <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
           <TabsTrigger value="uat-testing">UAT Order Testing</TabsTrigger>
         </TabsList>
         {tab === "uat-testing" ? (
@@ -147,6 +149,10 @@ export default function OrderBookPage() {
             <UatTestRunner />
             <ExecutionView key={`orderbook-${uatRefresh}`} sources={["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"]} />
             <ActiveOrderBooks />
+          </TabsContent>
+        ) : tab === "cancelled" ? (
+          <TabsContent value="cancelled" className="mt-3">
+            <CancelledOrders />
           </TabsContent>
         ) : (
         <TabsContent value={tab} className="mt-3">

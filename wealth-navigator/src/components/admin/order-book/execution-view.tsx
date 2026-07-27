@@ -1153,6 +1153,11 @@ export function ExecutionView({ sources }: { sources: string[] }) {
     for (const k of keys) {
       const ov = liveOverrides[k];
       if (!ov) continue;
+      // A confirmed-CANCELLED override must drop off the live blotter — the poll
+      // now excludes cancelled rows (they live on the Cancelled tab), so keeping
+      // the optimistic override would leave a ghost the poll never refreshes.
+      // CANCEL_PENDING stays: that order is still at the broker until confirmed.
+      if (ov.state === "CANCELLED") continue;
       const p = byId.get(k) ?? byOrderId.get((ov.order_id || "").trim());
       if (!p) {
         out[k] = ov;
