@@ -30,15 +30,22 @@ export async function GET() {
   // Active BUY holdings (cost basis source).
   const { data: holdingsRaw } = await db
     .from("stock_holdings_c")
-    .select("user_id, family_member_id, security_id, strategy_id, quantity, avg_fill, Expected_fill, market_value, created_at")
+    .select("user_id, family_member_id, security_id, strategy_id, quantity, avg_fill, Expected_fill, market_value, created_at, transaction_id")
     .eq("is_active", true)
     .eq("trade_side", "BUY");
   let holdings = holdingsRaw ?? [];
 
-  // Exclude test accounts.
+  // Exclude test accounts — dual classifier: profiles.is_test OR
+  // wallets.status='test' (some test accounts are flagged only on the wallet).
   try {
-    const { data: testRows } = await db.from("profiles").select("id").eq("is_test", true);
-    const testIds = new Set((testRows ?? []).map((r) => r.id));
+    const [{ data: testRows }, { data: testWallets }] = await Promise.all([
+      db.from("profiles").select("id").eq("is_test", true),
+      db.from("wallets").select("user_id").eq("status", "test"),
+    ]);
+    const testIds = new Set([
+      ...(testRows ?? []).map((r) => r.id),
+      ...(testWallets ?? []).map((w) => w.user_id).filter(Boolean),
+    ]);
     if (testIds.size) holdings = holdings.filter((h) => !testIds.has(h.user_id));
   } catch {
     /* is_test absent */

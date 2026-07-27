@@ -11,14 +11,14 @@ import { cn } from "@/lib/cn";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
 /* ── Types (raw payload) ── */
-interface Holding { user_id: string; family_member_id: string | null; security_id: string; strategy_id: string | null; quantity: number; avg_fill: number | null; Expected_fill: number | null; }
+interface Holding { user_id: string; family_member_id: string | null; security_id: string; strategy_id: string | null; quantity: number; avg_fill: number | null; Expected_fill: number | null; transaction_id?: string | null; }
 interface ClosedHolding { user_id: string; family_member_id?: string | null; strategy_id?: string | null; quantity: number; avg_fill: number | null; avg_exit: number | null; }
 interface NavRow { user_id: string; strategy_id?: string | null; as_of_date: string; basket_value: number | null; ytd_pct: number | null; inception_pct: number | null; inception_pnl: number | null; }
 interface Profile { id: string; first_name: string | null; last_name: string | null; email: string | null; mint_number: string | null; computershare_number: string | null; }
 interface FamilyMember { id: string; first_name: string | null; last_name: string | null; computershare_number: string | null; }
 interface SecMeta { id: string; symbol: string; name: string | null; sector: string | null; logo_url: string | null; }
 interface SecLive { security_id: string; current_price: number | null; }
-interface Txn { id: string; user_id: string; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_consumed_cents: number | null; }
+interface Txn { id: string; user_id: string; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_cents: number | null; buffer_consumed_cents: number | null; }
 interface Residual { user_id: string; family_member_id?: string | null; strategy_id?: string | null; balance_cents: number | null; }
 interface Strategy { id: string; name: string; short_name: string | null; }
 interface Payload { holdings: Holding[]; strategies: Strategy[]; profiles: Profile[]; familyMembers: FamilyMember[]; secMeta: SecMeta[]; secLive: SecLive[]; txns: Txn[]; residuals: Residual[]; closedHoldings: ClosedHolding[]; stratHist: NavRow[]; }
@@ -44,7 +44,7 @@ function costCentsPerShare(h: Holding): number {
 interface HoldingView { securityId: string; symbol: string; name: string; sector: string; qty: number; priceCents: number; costCents: number; valueCents: number; investedCents: number; pnlCents: number; }
 interface Investor {
   key: string; userId: string; familyMemberId: string | null; strategyId: string | null; strategy: string | null; name: string; parentName: string | null; email: string; mintNumber: string | null; computershare: string | null;
-  investedCents: number; currentCents: number; residualCents: number; realizedCents: number; valueCents: number; pnlCents: number; retPct: number;
+  investedCents: number; currentCents: number; residualCents: number; bufferCents: number; realizedCents: number; valueCents: number; pnlCents: number; retPct: number;
   ytdPct: number | null; inceptionPct: number | null;
   nav: { date: string; v: number }[]; holdings: HoldingView[]; txns: Txn[];
 }
@@ -147,6 +147,23 @@ export default function InvestorsPage() {
     for (const r of data.residuals) { const key=scope(r.user_id,r.family_member_id,r.strategy_id);residualByUser[key]=(residualByUser[key]||0)+(Number(r.balance_cents)||0); }
     const realizedByUser: Record<string, number> = {};
     for (const c of data.closedHoldings) { const key=scope(c.user_id,c.family_member_id,c.strategy_id);const v=((Number(c.avg_exit)||0)-(Number(c.avg_fill)||0))*Number(c.quantity||0);realizedByUser[key]=(realizedByUser[key]||0)+v; }
+    /* Held 8% buffer (reserve) per investor scope — mirrors MyMintAdmin's
+       investors.html: Σ over the active holdings' funding transactions of
+       (buffer_cents − buffer_consumed_cents), each transaction counted once
+       per scope. It's the client's cash sitting in the strategy, so it joins
+       the residual in value. */
+    const bufferByTxnId: Record<string, number> = {};
+    for (const t of data.txns) bufferByTxnId[t.id] = (Number(t.buffer_cents) || 0) - (Number(t.buffer_consumed_cents) || 0);
+    const bufferByUser: Record<string, number> = {};
+    const bufSeen: Record<string, Set<string>> = {};
+    for (const h of data.holdings) {
+      if (!h.user_id || !h.transaction_id) continue;
+      const key = scope(h.user_id, h.family_member_id, h.strategy_id);
+      (bufSeen[key] ||= new Set());
+      if (bufSeen[key]!.has(h.transaction_id)) continue;
+      bufSeen[key]!.add(h.transaction_id);
+      bufferByUser[key] = (bufferByUser[key] || 0) + (bufferByTxnId[h.transaction_id] || 0);
+    }
     const navByUser: Record<string, NavRow[]> = {};
     for (const r of data.stratHist) (navByUser[scope(r.user_id,null,r.strategy_id)] ||= []).push(r);
     const txnByUser: Record<string, Txn[]> = {};
@@ -171,9 +188,15 @@ export default function InvestorsPage() {
         v.qty += qty; v.valueCents += mv; v.investedCents += inv; v.pnlCents = v.valueCents - v.investedCents;
       }
       const residualCents = residualByUser[key] || 0;
+      const bufferCents = bufferByUser[key] || 0;
       const realizedCents = realizedByUser[key] || 0;
-      const valueCents = currentCents + residualCents;
+      /* Value = positions + cash (residual + reserve). The buffer is
+         contributed cash, not a gain, so P&L excludes it; Invested is
+         derived (value − P&L = cost basis + buffer) so Invested + P&L =
+         Value — identical to MyMintAdmin's investors.html and dashboard. */
+      const valueCents = currentCents + residualCents + bufferCents;
       const pnlCents = currentCents - investedCents + realizedCents;
+      const investedStableCents = valueCents - pnlCents;
       const navKey=scope(userId,null,strategyId);
       const nav = (navByUser[navKey] || []).filter((r) => r.basket_value != null).map((r) => ({ date: r.as_of_date, v: Number(r.basket_value) }));
       const latestNav = (navByUser[navKey] || [])[(navByUser[navKey] || []).length - 1];
@@ -184,8 +207,8 @@ export default function InvestorsPage() {
       out.push({
         key,userId,familyMemberId,strategyId,strategy:strategyId?(strategyById.get(strategyId)?.short_name||strategyById.get(strategyId)?.name||"Strategy"):null, name:displayName,parentName,
         email: prof?.email || "", mintNumber: prof?.mint_number || null, computershare: familyMember?.computershare_number || prof?.computershare_number || null,
-        investedCents, currentCents, residualCents, realizedCents, valueCents, pnlCents,
-        retPct: investedCents > 0 ? (pnlCents / investedCents) * 100 : 0,
+        investedCents: investedStableCents, currentCents, residualCents, bufferCents, realizedCents, valueCents, pnlCents,
+        retPct: investedStableCents > 0 ? (pnlCents / investedStableCents) * 100 : 0,
         ytdPct: latestNav?.ytd_pct ?? null, inceptionPct: latestNav?.inception_pct ?? null,
         nav, holdings: Object.values(bysecurity).sort((a, b) => b.valueCents - a.valueCents), txns: txnByUser[userId] || [],
       });
@@ -285,7 +308,7 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
         </div>
         <div className="text-right">
           <div className="text-2xl font-bold text-foreground">{R(inv.valueCents)}</div>
-          <div className="text-[11px] text-muted-foreground">Holdings {R(inv.currentCents)} · Cash {R(inv.residualCents)}</div>
+          <div className="text-[11px] text-muted-foreground">Holdings {R(inv.currentCents)} · Residual {R(inv.residualCents)} · Reserve {R(inv.bufferCents)}</div>
         </div>
       </div>
 
