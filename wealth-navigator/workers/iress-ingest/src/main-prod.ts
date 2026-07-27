@@ -7,12 +7,18 @@
  *   - `newsIngestLoop`     — SENS / SENSD vendor-broadcast → `news_item_c`
  *                            (per-loop pilot-write gate via
  *                             `IRESS_NEWS_DRY_RUN` / `IRESS_NEWS_ALLOW_WRITES`)
+ *   - `orderFillLoop`      — OrderPadGetByAccount → fills stamped onto
+ *                            `oems_order_audit` (IRESS_PRODUCTION_ORDERS)
+ *   - `retailIngestLoop`   — PricingQuoteGet → `quote_snapshot_c` + the
+ *                            IRESS-vs-Yahoo validation scoreboard. The client
+ *                            money track stays gated by IRESS_RETAIL_DRY_RUN
+ *                            and per-symbol approval.
  *   - one-shot vendor catalog fetch on startup — `NewsVendorGet` →
  *     synthetic marker row in `news_item_c.payload.scope.vendor_catalog`
  *
- * Loops NOT started here: quotes, orders, UAT order-pad, time-series,
- * IPS, alerts, retail ingest — those stay on `main.ts` (UAT/CT). Seat
- * isolation per `AGENTS.md`.
+ * Loops NOT started here: watchlist quotes, UAT order-pad, time-series,
+ * IPS, alerts — those stay on `main.ts` (UAT/CT). Seat isolation per
+ * `AGENTS.md`.
  *
  * Activation:
  *
@@ -61,6 +67,7 @@ import {
   persistVendorCatalogMarker,
 } from "./news-ingest";
 import { getMarketDataSession, tearDownMarketDataSession } from "./market-data";
+import { syncRetailPrices } from "./retail-ingest";
 import { recordWorkerEvent } from "./events";
 import { LICENSE_RELEASE_DELAY_MS, WorkerSessionManager } from "./session";
 import { createInstitutionalSupabase, createRetailSupabase, writeHeartbeat } from "./supabase";
@@ -322,6 +329,71 @@ async function orderFillLoop(): Promise<void> {
   }
 }
 
+/**
+ * IRESS price ingest for the PROD seat.
+ *
+ * This is what actually makes Wealth Navigator show IRESS prices. Until now the
+ * loop only ran on `main.ts` (the CT/UAT entrypoint), so on production
+ * `quote_snapshot_c` had not been written since 2026-07-23 — 97 hours, well past
+ * the 48h freshness window — and every WN surface silently fell back to Yahoo.
+ * The IRESS-aware read paths were fine; nothing was feeding them.
+ *
+ * What it writes, and what it does NOT:
+ *
+ *   quote_snapshot_c (institutional)  — full-universe IRESS L1. Gated by
+ *       IRESS_PRICE_OVERLAY, now 1. This is the unlock.
+ *   iress_price_validation_c          — the IRESS-vs-Yahoo scoreboard that has
+ *       been stuck at 0/20 because it never received a single IRESS price.
+ *   securities_c / stock_intraday_c   — the CLIENT MONEY track. Still gated by
+ *       IRESS_RETAIL_DRY_RUN (=1) AND per-symbol approval (0 approved). Both
+ *       must change deliberately; starting this loop does not move client money.
+ *
+ * Verified 2026-07-27 before enabling: PricingQuoteGet on the prod seat returned
+ * FSR PreviousClosePrice=9587, matching securities_c.scale_ref_cents and the
+ * Yahoo close to the cent. Real exchange data, correctly scaled in cents — not
+ * the CT test prices the overlay flag was originally guarding against. Note the
+ * feed is DataSource=JSED, roughly 15 minutes delayed.
+ */
+async function retailIngestLoop(): Promise<void> {
+  const enabled =
+    process.env.IRESS_RETAIL_INGEST === "1" && Boolean(process.env.RETAIL_SUPABASE_URL);
+  if (!enabled) {
+    console.info(
+      "[iress-prod] retail/quote ingest not started (needs IRESS_RETAIL_INGEST=1 + RETAIL_SUPABASE_URL).",
+    );
+    return;
+  }
+  if (!retailSupabase) {
+    console.error("[iress-prod] retail ingest enabled but no RETAIL Supabase client — skipping.");
+    return;
+  }
+  const intervalSec = Math.max(60, Number(process.env.IRESS_RETAIL_INGEST_INTERVAL_SEC ?? "300"));
+  console.warn(
+    `[iress-prod] IRESS PRICE INGEST on — money track ${
+      process.env.IRESS_RETAIL_DRY_RUN === "0" ? "LIVE WRITES" : "shadow (IRESS_RETAIL_DRY_RUN=1)"
+    }, quote_snapshot_c ${process.env.IRESS_PRICE_OVERLAY === "0" ? "suppressed" : "writing"}, interval ${intervalSec}s`,
+  );
+  while (!shuttingDown) {
+    try {
+      const r = await syncRetailPrices({
+        env,
+        sessions,
+        retail: retailSupabase,
+        institutional: supabase,
+      });
+      console.info(
+        `[iress-prod] price ingest ${r.dryRun ? "(shadow)" : "(WRITE)"}: ` +
+          `${r.covered}/${r.requested} covered, ${r.written} written, ${r.skipped} skipped`,
+      );
+    } catch (err) {
+      console.warn(
+        `[iress-prod] price ingest error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    await sleep(intervalSec * 1000);
+  }
+}
+
 void runHealthLoop({
   supabase,
   env,
@@ -331,6 +403,7 @@ void runHealthLoop({
 });
 void newsIngestLoop();
 void orderFillLoop();
+void retailIngestLoop();
 
 if (process.env.IRESS_NEWS_INGEST === "1") {
   // Trigger prod market-data bring-up early so the startup log shows

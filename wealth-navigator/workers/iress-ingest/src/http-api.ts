@@ -2979,7 +2979,18 @@ export async function handleRequest(
   // real client books.
   // ──────────────────────────────────────────────────────────────────
 
-  if (path === "/uat/send-to-market" || path === "/uat/preflight" || path === "/uat/execution-stream" || path === "/uat/status") {
+  /* `/uat/preflight` is deliberately NOT in this gate.
+     It is a pure READ-ONLY pre-trade computation — available-to-sell and
+     available-to-cash — and BOTH lanes need it. It only lives under the /uat/
+     prefix for historical reasons.
+
+     Gating it on uatMode meant that with IRESS_UAT_MODE=0 (i.e. production) it
+     returned 403, releaseOrder read that as a failed preflight, and EVERY
+     release was parked as "blocked" — including orders with ample funds.
+     Observed 2026-07-27: a R98 buy against a R1 000 wallet blocked, with no
+     order ever reaching the worker. The guard was not rejecting the order; the
+     route was refusing to evaluate it. */
+  if (path === "/uat/send-to-market" || path === "/uat/execution-stream" || path === "/uat/status") {
     if (!deps.env.uatMode) {
       sendError(
         res,

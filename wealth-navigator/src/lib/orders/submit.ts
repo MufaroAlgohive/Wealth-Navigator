@@ -26,6 +26,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { callWorker } from "@/lib/iress/worker-api";
+import { isUatEnv } from "@/lib/oems/uat-scope";
 import { createRetailServiceRoleClient, createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 import type {
   OrderSide,
@@ -231,8 +232,26 @@ async function fanOutToWorker(
   opts: { broker?: string },
   preflightResult: PreflightResult,
 ): Promise<SubmitResult> {
-  // Dry-run short-circuit — preserves today's audit-only branch.
+  const productionOrders = ["1", "true"].includes(
+    (process.env.IRESS_PRODUCTION_ORDERS ?? "").trim().toLowerCase(),
+  );
+
+  /* Dry-run short-circuit — audit-only, no worker call.
+     Refused on the production lane. Returning `status: "working"` without
+     contacting a broker is a lie the operator cannot see: the order book shows
+     the order live while nothing was ever sent. Better to fail loudly than to
+     report a phantom fill on real client money. */
   if (process.env.IRESS_WORKER_DRY_RUN === "1" || process.env.IRESS_WORKER_DRY_RUN === "true") {
+    if (productionOrders) {
+      return {
+        ok: false,
+        order_audit_id: auditId,
+        order_id: orderId,
+        preflight: preflightResult,
+        error:
+          "IRESS_PRODUCTION_ORDERS=1 but IRESS_WORKER_DRY_RUN is also set on this deployment. Refusing to report an order as working without sending it. Unset IRESS_WORKER_DRY_RUN on Vercel.",
+      };
+    }
     return {
       ok: true,
       order_audit_id: auditId,
@@ -242,8 +261,19 @@ async function fanOutToWorker(
     };
   }
 
-  // No broker configured → audit-only.
+  // No broker configured → audit-only. Same reasoning: never fake "working" on
+  // the production lane.
   if (!process.env.IRESS_WORKER_URL && !process.env.RAILWAY_SERVICE_URL) {
+    if (productionOrders) {
+      return {
+        ok: false,
+        order_audit_id: auditId,
+        order_id: orderId,
+        preflight: preflightResult,
+        error:
+          "IRESS_PRODUCTION_ORDERS=1 but no IRESS_WORKER_URL is configured — the order cannot reach the worker.",
+      };
+    }
     return {
       ok: true,
       order_audit_id: auditId,
@@ -253,13 +283,26 @@ async function fanOutToWorker(
     };
   }
 
+  /* LANE. This is the path the "Send to Market" button actually takes
+     (release-to-market -> releaseOrder -> here). It was hardcoded to
+     /uat/send-to-market, which 403s whenever IRESS_UAT_MODE is off — so on a
+     production deployment no released order could ever reach a market.
+
+     Production takes the account AND destination from the worker's own env;
+     passing broker_destination on that lane would let a caller route a client's
+     trade to an arbitrary book. UAT keeps its existing behaviour. */
+  const productionLane =
+    ["1", "true"].includes((process.env.IRESS_PRODUCTION_ORDERS ?? "").trim().toLowerCase()) &&
+    !isUatEnv();
   const res = await callWorker<WorkerUatSendResponse>({
     method: "POST",
-    path: "/uat/send-to-market",
-    body: {
-      order_audit_id: auditId,
-      broker_destination: opts.broker ?? "LONGMARK CARE",
-    },
+    path: productionLane ? "/orders/send-to-market" : "/uat/send-to-market",
+    body: productionLane
+      ? { order_audit_id: auditId }
+      : {
+          order_audit_id: auditId,
+          broker_destination: opts.broker ?? "LONGMARK CARE",
+        },
     timeoutMs: 15_000,
   });
 
