@@ -111,11 +111,25 @@ function MarketTicker({ items }: { items: Array<{ symbol: string; price: number 
 export function StrategiesMonitor() {
   const router = useRouter();
   const realDataOnly = isRealDataOnlyClient();
+  // Two independent requests: the panels (strategy list/hero) and the market
+  // ticker each render as soon as their own data lands, instead of the whole
+  // page blocking on one combined BFF response.
   const strategiesQ = useQuery<StrategiesResponse>({
     queryKey: ["bff-strategies"],
     queryFn: async () => {
-      const r = await fetch("/api/strategies", { cache: "no-store" });
+      const r = await fetch("/api/strategies?part=core", { cache: "no-store" });
       if (!r.ok) throw new Error(`Strategies BFF ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
+    ...queryOpts("reference"),
+  });
+  const marketQ = useQuery<StrategiesResponse>({
+    queryKey: ["bff-strategies-market"],
+    queryFn: async () => {
+      const r = await fetch("/api/strategies?part=market", { cache: "no-store" });
+      if (!r.ok) throw new Error(`Strategies market BFF ${r.status}`);
       return r.json();
     },
     enabled: realDataOnly,
@@ -159,7 +173,7 @@ export function StrategiesMonitor() {
 
   return (
     <div className="space-y-5 pb-8">
-      <div className="-mx-4 -mt-4 sm:-mx-6 sm:-mt-6"><MarketTicker items={strategiesQ.data?.market ?? []} /></div>
+      <div className="-mx-4 -mt-4 sm:-mx-6 sm:-mt-6"><MarketTicker items={marketQ.data?.market ?? []} /></div>
       <StrategiesHero strategies={strategies} />
 
       {strategiesQ.isLoading ? (

@@ -61,12 +61,41 @@ interface RetailStrategyRow {
 
 async function loadRetailStrategies(
   retail: ReturnType<typeof createRetailServiceRoleClient>,
+  part: "full" | "core" | "market" = "full",
 ): Promise<{ strategies: ReturnType<typeof mapRow>[]; market: Array<{ symbol: string; price: number | null; changePct: number | null }>; source: string; count: number; lastUpdatedAt: string | null }> {
-  const { data: stratData, error: stratErr } = await retail
-    .from("strategies_c")
-    .select(
-      "id,name,slug,short_name,description,objective,risk_level,sector,base_currency,provider_name,benchmark_name,benchmark_symbol,status,is_public,is_featured,investor_environment,holdings,updated_at",
-    );
+  // Both stock_intraday_c reads are bounded to the last 2 days — the table
+  // holds months of ticks (3.5M+ rows) and an unbounded DESC scan was
+  // measured at ~7.5s on the saturated Micro tier (production-readiness
+  // audit P1.9). Two days covers weekends/holidays for "latest tick".
+  const sinceIso = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+  const wantCore = part !== "market";
+  const wantMarket = part !== "core";
+  // Stage 1 — every read here is independent; run them concurrently. The
+  // previous fully-sequential chain (9 round trips) multiplied the pegged
+  // DB's per-query latency into a page-blocking wait.
+  const [stratRes, testProfileRows, testWalletRows, clientHoldingsRes, residualRes, strategyReturnRes] = await Promise.all([
+    retail
+      .from("strategies_c")
+      .select(
+        "id,name,slug,short_name,description,objective,risk_level,sector,base_currency,provider_name,benchmark_name,benchmark_symbol,status,is_public,is_featured,investor_environment,holdings,updated_at",
+      ),
+    wantCore ? retail.from("profiles").select("id").eq("is_test", true) : Promise.resolve({ data: [] as Array<{ id: string }> }),
+    wantCore ? retail.from("wallets").select("user_id").eq("status", "test") : Promise.resolve({ data: [] as Array<{ user_id: string }> }),
+    wantCore
+      ? retail
+          .from("stock_holdings_c")
+          .select("user_id,family_member_id,strategy_id,security_id,quantity,avg_fill,transaction_id")
+          .eq("is_active", true)
+          .eq("trade_side", "BUY")
+      : Promise.resolve({ data: [] }),
+    wantCore
+      ? retail.from("strategy_rebalance_residuals").select("user_id,family_member_id,strategy_id,balance_cents")
+      : Promise.resolve({ data: [] }),
+    wantCore
+      ? retail.from("strategy_returns_effective_latest_c").select('strategy_id,ytd_pct,"1d_pct"')
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const { data: stratData, error: stratErr } = stratRes;
   if (stratErr) throw stratErr;
   const strategies = (stratData ?? []) as RetailStrategyRow[];
   const holdingSymbols = Array.from(new Set(strategies.flatMap((strategy) => {
@@ -78,49 +107,9 @@ async function loadRetailStrategies(
       return String(row.ticker ?? row.symbol ?? "");
     });
   }).map((symbol) => symbol.trim()).filter(Boolean)));
-  const market: Array<{ symbol: string; price: number | null; changePct: number | null }> = [];
-  const securityBySymbol = new Map<string, { symbol: string; logoUrl: string | null; priceR: number | null }>();
-  if (holdingSymbols.length) {
-    const { data: securities } = await retail
-      .from("securities_c")
-      .select("id,symbol,last_price,change_percent,logo_url")
-      .in("symbol", holdingSymbols);
-    const securityIds = (securities ?? []).map((security) => security.id).filter(Boolean);
-    const { data: intraday } = securityIds.length
-      ? await retail
-          .from("stock_intraday_c")
-          .select('security_id,current_price,"1d_pct",timestamp')
-          .in("security_id", securityIds)
-          .order("timestamp", { ascending: false })
-          .limit(5000)
-      : { data: [] };
-    const latest = new Map<string, Record<string, unknown>>();
-    for (const quote of (intraday ?? []) as Array<Record<string, unknown>>) {
-      const id = String(quote.security_id ?? "");
-      if (id && !latest.has(id)) latest.set(id, quote);
-    }
-    for (const security of (securities ?? []) as Array<Record<string, unknown>>) {
-      const quote = latest.get(String(security.id));
-      const rawPrice = Number(quote?.current_price ?? security.last_price);
-      const rawChange = Number(quote?.["1d_pct"] ?? security.change_percent);
-      market.push({
-        symbol: String(security.symbol ?? "").replace(/\.JO$/i, ""),
-        price: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null,
-        changePct: Number.isFinite(rawChange) ? rawChange : null,
-      });
-      const normalizedSymbol = String(security.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
-      securityBySymbol.set(normalizedSymbol, { symbol: normalizedSymbol, logoUrl: security.logo_url ? String(security.logo_url) : null, priceR: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null });
-    }
-    market.sort((a, b) => a.symbol.localeCompare(b.symbol));
-  }
-
-  // Test/UAT exclusion (both classifiers — same dual check just added to
+  // Test/UAT exclusion (both classifiers — same dual check as
   // api/investors/data.js): a single is_test-only check let internal team
   // test-wallets leak real AUM into finances.html/investors.html.
-  const [testProfileRows, testWalletRows] = await Promise.all([
-    retail.from("profiles").select("id").eq("is_test", true),
-    retail.from("wallets").select("user_id").eq("status", "test"),
-  ]);
   const testUserIds = new Set<string>([
     ...((testProfileRows.data ?? []) as Array<{ id: string }>).map((r) => r.id),
     ...((testWalletRows.data ?? []) as Array<{ user_id: string }>).map((r) => r.user_id),
@@ -132,58 +121,96 @@ async function loadRetailStrategies(
   // strategy) position. This replaced summing the return-publication views'
   // basket_value_cents, which leaked a UAT test wallet's fake balance into
   // the total (confirmed: ~R45k of an apparent ~R65k was one test account).
-  const { data: clientHoldings } = await retail
-    .from("stock_holdings_c")
-    .select("user_id,family_member_id,strategy_id,security_id,quantity,avg_fill,transaction_id")
-    .eq("is_active", true)
-    .eq("trade_side", "BUY");
+  const clientHoldings = clientHoldingsRes.data;
   const realHoldings = ((clientHoldings ?? []) as Array<Record<string, unknown>>).filter(
     (h) => h.user_id && h.strategy_id && !testUserIds.has(String(h.user_id)),
   );
-
   const holdingSecurityIds = Array.from(
     new Set(realHoldings.map((h) => String(h.security_id ?? "")).filter(Boolean)),
   );
-  const livePriceCentsBySecId = new Map<string, number>();
-  if (holdingSecurityIds.length) {
-    const { data: liveRows } = await retail
-      .from("stock_intraday_c")
-      .select("security_id,current_price,timestamp")
-      .in("security_id", holdingSecurityIds)
-      .order("timestamp", { ascending: false })
-      .limit(5000);
-    for (const row of (liveRows ?? []) as Array<Record<string, unknown>>) {
-      const id = String(row.security_id ?? "");
-      if (id && !livePriceCentsBySecId.has(id) && row.current_price != null) {
-        livePriceCentsBySecId.set(id, Number(row.current_price));
+  const holdingTxIds = Array.from(
+    new Set(realHoldings.map((h) => String(h.transaction_id ?? "")).filter(Boolean)),
+  );
+
+  // Stage 2 — everything here depends only on stage 1; run concurrently.
+  const [securitiesRes, liveRowsRes, txnRowsRes] = await Promise.all([
+    holdingSymbols.length
+      ? retail.from("securities_c").select("id,symbol,last_price,change_percent,logo_url").in("symbol", holdingSymbols)
+      : Promise.resolve({ data: [] }),
+    wantCore && holdingSecurityIds.length
+      ? retail
+          .from("stock_intraday_c")
+          .select("security_id,current_price,timestamp")
+          .in("security_id", holdingSecurityIds)
+          .gte("timestamp", sinceIso)
+          .order("timestamp", { ascending: false })
+          .limit(5000)
+      : Promise.resolve({ data: [] }),
+    wantCore && holdingTxIds.length
+      ? retail.from("transactions").select("id,buffer_cents,buffer_consumed_cents").in("id", holdingTxIds)
+      : Promise.resolve({ data: [] }),
+  ]);
+  const securities = securitiesRes.data ?? [];
+
+  const market: Array<{ symbol: string; price: number | null; changePct: number | null }> = [];
+  const securityBySymbol = new Map<string, { symbol: string; logoUrl: string | null; priceR: number | null }>();
+  {
+    // Stage 3 — the ticker's intraday quotes need the securities ids.
+    const securityIds = securities.map((security) => security.id).filter(Boolean);
+    const { data: intraday } = wantMarket && securityIds.length
+      ? await retail
+          .from("stock_intraday_c")
+          .select('security_id,current_price,"1d_pct",timestamp')
+          .in("security_id", securityIds)
+          .gte("timestamp", sinceIso)
+          .order("timestamp", { ascending: false })
+          .limit(5000)
+      : { data: [] };
+    const latest = new Map<string, Record<string, unknown>>();
+    for (const quote of (intraday ?? []) as Array<Record<string, unknown>>) {
+      const id = String(quote.security_id ?? "");
+      if (id && !latest.has(id)) latest.set(id, quote);
+    }
+    for (const security of securities as Array<Record<string, unknown>>) {
+      const quote = latest.get(String(security.id));
+      const rawPrice = Number(quote?.current_price ?? security.last_price);
+      const rawChange = Number(quote?.["1d_pct"] ?? security.change_percent);
+      if (wantMarket) {
+        market.push({
+          symbol: String(security.symbol ?? "").replace(/\.JO$/i, ""),
+          price: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null,
+          changePct: Number.isFinite(rawChange) ? rawChange : null,
+        });
       }
+      const normalizedSymbol = String(security.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
+      securityBySymbol.set(normalizedSymbol, { symbol: normalizedSymbol, logoUrl: security.logo_url ? String(security.logo_url) : null, priceR: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null });
+    }
+    market.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }
+  if (part === "market") {
+    return { strategies: [], market, source: "supabase", count: 0, lastUpdatedAt: new Date().toISOString() };
+  }
+
+  const livePriceCentsBySecId = new Map<string, number>();
+  for (const row of (liveRowsRes.data ?? []) as Array<Record<string, unknown>>) {
+    const id = String(row.security_id ?? "");
+    if (id && !livePriceCentsBySecId.has(id) && row.current_price != null) {
+      livePriceCentsBySecId.set(id, Number(row.current_price));
     }
   }
 
-  const { data: residualRows } = await retail
-    .from("strategy_rebalance_residuals")
-    .select("user_id,family_member_id,strategy_id,balance_cents");
   const residualByPos = new Map<string, number>();
-  for (const r of (residualRows ?? []) as Array<Record<string, unknown>>) {
+  for (const r of (residualRes.data ?? []) as Array<Record<string, unknown>>) {
     const k = `${r.user_id}|${r.family_member_id ?? ""}|${r.strategy_id}`;
     residualByPos.set(k, (residualByPos.get(k) ?? 0) + toNumber(r.balance_cents as number));
   }
 
-  const holdingTxIds = Array.from(
-    new Set(realHoldings.map((h) => String(h.transaction_id ?? "")).filter(Boolean)),
-  );
   const bufferByTxId = new Map<string, number>();
-  if (holdingTxIds.length) {
-    const { data: txnRows } = await retail
-      .from("transactions")
-      .select("id,buffer_cents,buffer_consumed_cents")
-      .in("id", holdingTxIds);
-    for (const t of (txnRows ?? []) as Array<Record<string, unknown>>) {
-      bufferByTxId.set(
-        String(t.id),
-        toNumber(t.buffer_cents as number) - toNumber(t.buffer_consumed_cents as number),
-      );
-    }
+  for (const t of (txnRowsRes.data ?? []) as Array<Record<string, unknown>>) {
+    bufferByTxId.set(
+      String(t.id),
+      toNumber(t.buffer_cents as number) - toNumber(t.buffer_consumed_cents as number),
+    );
   }
 
   // Group into positions first (mirrors aumFeeEngine.buildPositions), then
@@ -248,9 +275,7 @@ async function loadRetailStrategies(
   // (Rand) below = corrected AUM × the strategy's own daily chain 1d_pct.
   const ytdByStrategy = new Map<string, number>();
   const day1PctByStrategy = new Map<string, number>();
-  const { data: strategyReturnRows, error: strategyReturnErr } = await retail
-    .from("strategy_returns_effective_latest_c")
-    .select('strategy_id,ytd_pct,"1d_pct"');
+  const { data: strategyReturnRows, error: strategyReturnErr } = strategyReturnRes as { data: Array<Record<string, unknown>> | null; error: unknown };
   if (!strategyReturnErr) {
     for (const r of (strategyReturnRows ?? []) as Array<Record<string, unknown>>) {
       const k = String(r["strategy_id"] ?? "");
@@ -427,14 +452,19 @@ function mapRow(r: StrategyRow) {
   };
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // ?part=market → ticker quotes only; ?part=core → everything except the
+  // ticker. Lets the strategies page render its panels and the market strip
+  // from two independent requests instead of blocking the whole page on one.
+  const partParam = new URL(req.url).searchParams.get("part");
+  const part = partParam === "market" ? "market" : partParam === "core" ? "core" : "full";
   // Prefer the retail catalogue — it's the populated source (9 model
   // portfolios + live per-strategy AUM/PnL). Fall back to the institutional
   // oems_strategy_c rollup only if retail isn't configured or returns nothing.
   if (isRetailSupabaseConfigured()) {
     try {
-      const retailResult = await loadRetailStrategies(createRetailServiceRoleClient());
-      if (retailResult.strategies.length > 0) {
+      const retailResult = await loadRetailStrategies(createRetailServiceRoleClient(), part);
+      if (part === "market" || retailResult.strategies.length > 0) {
         return Response.json(retailResult);
       }
     } catch {

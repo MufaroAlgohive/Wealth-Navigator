@@ -130,7 +130,7 @@ describe("GET /api/strategies", () => {
   it("returns empty list with source=unavailable when oems_strategy_c is empty", async () => {
     installSupabaseStub({ oems_strategy_c: [] });
     const { GET } = await import("@/app/api/strategies/route");
-    const res = await GET();
+    const res = await GET(new Request("http://x/api/strategies"));
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.source).toBe("unavailable");
@@ -164,7 +164,7 @@ describe("GET /api/strategies", () => {
     ];
     installSupabaseStub({ oems_strategy_c: rows });
     const { GET } = await import("@/app/api/strategies/route");
-    const res = await GET();
+    const res = await GET(new Request("http://x/api/strategies"));
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body.source).toBe("supabase");
@@ -217,7 +217,7 @@ describe("GET /api/strategies", () => {
       };
     });
     const { GET } = await import("@/app/api/strategies/route");
-    const res = await GET();
+    const res = await GET(new Request("http://x/api/strategies"));
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.reason).toBe("supabase_not_configured");
