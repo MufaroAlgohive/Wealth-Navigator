@@ -137,7 +137,14 @@ async function insertAuditRow(
   const nowIso = new Date().toISOString();
   const auditRow = {
     order_id: orderId,
-    client_account: input.trader_email,
+    /* WHOSE order this is — rendered as the "Client" column on the order book.
+       Defaults to the trader's email, which is right for a desk order placed on
+       the desk's own book. For a manual CLIENT order it is NOT: the column then
+       shows the dealer who clicked the button instead of the client whose money
+       is at risk, and a dealer cannot tell whose order they are releasing.
+       `client_account` overrides it; `sent_by` / `trader` in the payload keep
+       the audit trail of who actually placed it. */
+    client_account: input.client_account ?? input.trader_email,
     // The new typed column — every BFF-seeded row carries the IRESS
     // AccountCode here so downstream queries filter on this column
     // directly, dropping the `payload->>` workaround.

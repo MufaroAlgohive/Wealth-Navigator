@@ -96,6 +96,9 @@ export async function POST(req: Request) {
   // in a user_id would otherwise produce a parked order attributed to nobody,
   // which then fails closed at release time with a confusing 422.
   let clientLabel = userId.slice(0, 8);
+  // Rendered as the order book's "Client" column. Two Juan profiles exist with
+  // different wallets, so an email is the only unambiguous label.
+  let clientEmail: string | null = null;
   try {
     const retail = createRetailServiceRoleClient();
     const { data: prof } = await retail
@@ -110,6 +113,7 @@ export async function POST(req: Request) {
       );
     }
     const p = prof as { first_name: string | null; last_name: string | null; email: string | null };
+    clientEmail = p.email;
     clientLabel = [p.first_name, p.last_name].filter(Boolean).join(" ").trim() || p.email || clientLabel;
   } catch (e) {
     return NextResponse.json(
@@ -154,6 +158,12 @@ export async function POST(req: Request) {
       qty,
       price_cents: priceCents,
       trader_email: traderEmail,
+      // The order book's "Client" column. Without this it shows the DEALER who
+      // clicked the button, not the client whose money is at risk — verified
+      // 2026-07-27: an order placed for juan.vanwyk@mymint displayed as
+      // juan@autonama (the logged-in admin), which is exactly the confusion a
+      // dealer must not have when deciding what to release.
+      client_account: clientEmail ?? clientLabel,
       // No stock_holdings_c row backs a manual ticket — the order is being
       // originated here rather than mirrored from one the client already placed.
       holding_id: null,

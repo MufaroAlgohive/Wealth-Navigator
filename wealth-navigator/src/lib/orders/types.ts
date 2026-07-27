@@ -100,8 +100,15 @@ export interface PreflightResult {
 }
 
 export interface SubmitInput extends PreflightInput {
-  /** The trader's auth email — written to `client_account` for audit. */
+  /** The trader's auth email — recorded in `payload.sent_by` / `payload.trader`. */
   trader_email: string;
+  /**
+   * The CLIENT this order is for, as displayed in the order book's "Client"
+   * column. Defaults to `trader_email` (correct for a desk order on the desk's
+   * own book). Set it on any order placed on someone else's behalf, or the
+   * column names the dealer instead of the client.
+   */
+  client_account?: string | null;
   /**
    * The exact `stock_holdings_c.id` this order came from (mint client
    * orders, and eventually bulk/basket dispatch). Lets the order-book UI
