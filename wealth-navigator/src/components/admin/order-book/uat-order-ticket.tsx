@@ -30,6 +30,15 @@ interface SecurityOpt {
   name: string;
   lastRands: number | null;
 }
+interface ClientOpt {
+  user_id: string;
+  name: string;
+  email: string | null;
+  mint_number: string | null;
+  is_test: boolean;
+  available_cash_rands: number | null;
+  holds_qty: number | null;
+}
 interface PlaceResult {
   ok: boolean;
   mode?: string;
@@ -55,6 +64,8 @@ const GUARDRAIL_BLOCK_CODES = new Set([
 
 export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
   const [securities, setSecurities] = React.useState<SecurityOpt[]>([]);
+  const [clients, setClients] = React.useState<ClientOpt[]>([]);
+  const [clientId, setClientId] = React.useState("");
   const [side, setSide] = React.useState<"buy" | "sell">("buy");
   const [symbol, setSymbol] = React.useState("");
   const [qty, setQty] = React.useState("");
@@ -85,18 +96,59 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
     };
   }, []);
 
+  /* Client list, re-fetched when the ticker changes so `holds_qty` reflects the
+     security actually being traded. That is what makes a SELL ticket honest:
+     the dealer sees "holds 0" before typing a quantity rather than after a 422
+     at release time. */
+  React.useEffect(() => {
+    let alive = true;
+    const qs = symbol.trim() ? `?symbol=${encodeURIComponent(symbol.trim().toUpperCase())}` : "";
+    void fetch(`/api/admin/orderbook/clients${qs}`)
+      .then((r) => (r.ok ? r.json() : { clients: [] }))
+      .then((d: { clients?: ClientOpt[] }) => {
+        if (!alive) return;
+        setClients(d.clients ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [symbol]);
+
   const matched = React.useMemo(() => {
     const u = symbol.trim().toUpperCase();
     return securities.find((s) => s.symbol.toUpperCase() === u) ?? null;
   }, [symbol, securities]);
 
+  const client = React.useMemo(
+    () => clients.find((c) => c.user_id === clientId) ?? null,
+    [clients, clientId],
+  );
+
   const qtyN = Number(qty);
   const priceN = Number(price);
   const value = Number.isFinite(qtyN) && qtyN > 0 && Number.isFinite(priceN) && priceN > 0 ? qtyN * priceN : null;
-  const canSubmit = symbol.trim().length > 0 && Number.isFinite(qtyN) && qtyN > 0 && !busy;
+  // A client is REQUIRED. The order is placed on their behalf and checked
+  // against their wallet and holdings; there is no sensible desk default.
+  const canSubmit =
+    clientId.length > 0 && symbol.trim().length > 0 && Number.isFinite(qtyN) && qtyN > 0 && !busy;
+
+  /* Advisory affordability, shown live on the ticket. The BINDING check is the
+     worker's pre-trade guard at Send-to-Market against live balances — this is
+     the same arithmetic surfaced early so the dealer is not surprised. */
+  const overCash =
+    side === "buy" &&
+    client?.available_cash_rands != null &&
+    value != null &&
+    value > client.available_cash_rands;
+  const overHolding =
+    side === "sell" &&
+    client?.holds_qty != null &&
+    Number.isFinite(qtyN) &&
+    qtyN > client.holds_qty;
 
   const postPlace = async (body: Record<string, unknown>): Promise<PlaceResult> => {
-    const r = await fetch("/api/admin/orderbook/uat-order", {
+    const r = await fetch("/api/admin/orderbook/manual-order", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -110,6 +162,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
     setResult(null);
     try {
       const d = await postPlace({
+        user_id: clientId,
         symbol: symbol.trim().toUpperCase(),
         side,
         qty: Math.floor(qtyN),
@@ -152,6 +205,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
     price_cents?: number | null;
   }): Promise<SubmitResult> => {
     const d = await postPlace({
+      user_id: clientId,
       symbol: symbol.trim().toUpperCase(),
       side,
       qty: next.qty,
@@ -210,8 +264,44 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
   return (
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">New UAT order</h3>
-        <span className="text-[10px] text-muted-foreground">IRESS IOS+ · MINT_CT · account gated to UAT</span>
+        <h3 className="text-sm font-semibold">Manual client order</h3>
+        <span className="text-[10px] text-muted-foreground">
+          Parks only · nothing reaches the broker until Send to Market
+        </span>
+      </div>
+
+      {/* Client — REQUIRED. The broker never sees this; LONGMARK holds no client
+          accounts, only the MINT account. The attribution stays in our audit row
+          so the pre-trade guard can check THIS client's cash and holdings. */}
+      <div className="mb-3">
+        <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Client
+        </label>
+        <select
+          value={clientId}
+          onChange={(e) => setClientId(e.target.value)}
+          className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
+        >
+          <option value="">Select a client…</option>
+          {clients.map((c) => (
+            <option key={c.user_id} value={c.user_id}>
+              {c.name}
+              {c.mint_number ? ` · ${c.mint_number}` : ""}
+              {c.available_cash_rands != null ? ` · ${R(c.available_cash_rands)} available` : ""}
+              {c.is_test ? " · TEST" : ""}
+            </option>
+          ))}
+        </select>
+        {client && (
+          <span className="mt-1 block text-[10px] text-muted-foreground">
+            {client.available_cash_rands != null
+              ? `Available cash ${R(client.available_cash_rands)}`
+              : "No wallet row — cash cannot be verified"}
+            {client.holds_qty != null && symbol.trim() && (
+              <> · holds {client.holds_qty.toLocaleString("en-ZA")} {symbol.trim().toUpperCase()}</>
+            )}
+          </span>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -298,9 +388,32 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
           {price.trim() === "" && <span className="ml-2 text-[10px]">(market order, value settles at fill)</span>}
         </div>
         <Button size="sm" onClick={submit} disabled={!canSubmit}>
-          {busy ? "Placing…" : `Place ${side.toUpperCase()} order`}
+          {busy ? "Parking…" : `Park ${side.toUpperCase()} order`}
         </Button>
       </div>
+
+      {/* Advisory only — the binding check runs at Send to Market against live
+          balances. Shown as a warning rather than a hard block so the dealer can
+          still park an order they intend to fund; the guard will refuse the
+          release if the money still isn't there. */}
+      {(overCash || overHolding) && (
+        <div className="mt-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-[11px] text-warning-foreground">
+          {overCash && client?.available_cash_rands != null && (
+            <>
+              This order is {R((value ?? 0) - client.available_cash_rands)} more than{" "}
+              {client.name} has available ({R(client.available_cash_rands)}). It will park, but
+              Send to Market will refuse it unless the wallet is funded first.
+            </>
+          )}
+          {overHolding && client?.holds_qty != null && (
+            <>
+              {client.name} holds {client.holds_qty.toLocaleString("en-ZA")}{" "}
+              {symbol.trim().toUpperCase()} — selling {Math.floor(qtyN).toLocaleString("en-ZA")}{" "}
+              would be a short. Send to Market will refuse it.
+            </>
+          )}
+        </div>
+      )}
 
       {result && !modalOpen && (
         <div

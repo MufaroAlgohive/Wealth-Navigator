@@ -155,11 +155,37 @@ export function productionOrderBlockers(env: WorkerEnv): string[] {
   // 5. A live order needs a real broker account and a live SOAP session.
   if (!env.iressAccountCode) blockers.push("IRESS_ACCOUNT_CODE is not set");
   if (env.iressMode !== "live") blockers.push(`IRESS_MODE is "${env.iressMode}", not "live"`);
-  if (!process.env.IRESS_PRODUCTION_DESTINATION?.trim()) {
-    blockers.push("IRESS_PRODUCTION_DESTINATION is not set (broker routing destination)");
-  }
+
+  // The destination is NOT a blocker: it defaults to LONGMARK CARE, the same
+  // value UAT proved and the same value every other order path in this codebase
+  // already falls back to. IRESS (Andre) confirmed the production move is the
+  // same integration with `webservices` in place of `webservices-ct` — the
+  // destination is unchanged and routes to LONGMARK as the executing broker.
+  // Requiring an env var whose value is already known and hard-coded elsewhere
+  // would only produce a 409 at the worst possible moment.
+  //
+  // `productionDestination()` is surfaced on GET /orders/readiness so the
+  // resolved value is always visible before an order is sent.
 
   return blockers;
+}
+
+/**
+ * Broker routing destination for a PRODUCTION order.
+ *
+ * Free-text on this IRESS build (not a venue code): "LONGMARK CARE" routes to
+ * EXT_BROKERTI -> LONGMARK, the executing broker. Confirmed by IRESS (Andre,
+ * 2026-07-13) and exercised end-to-end in UAT.
+ *
+ * Override with IRESS_PRODUCTION_DESTINATION if IRESS ever moves the routing.
+ * `DestinationGet` on the IOS+ service session lists what the seat accepts.
+ */
+export function productionDestination(): string {
+  return (
+    process.env.IRESS_PRODUCTION_DESTINATION?.trim() ||
+    process.env.IRESS_DESTINATION?.trim() ||
+    "LONGMARK CARE"
+  );
 }
 
 function newRequestID(prefix: string): string {
@@ -3187,6 +3213,14 @@ export async function handleRequest(
       lane: deps.env.uatMode ? "uat" : "production",
       iressMode: deps.env.iressMode,
       accountCode: deps.env.iressAccountCode || null,
+      // Where a live order would actually route. Shown even when ready, so the
+      // destination is never an assumption at the moment of sending.
+      destination: productionDestination(),
+      destinationSource: process.env.IRESS_PRODUCTION_DESTINATION?.trim()
+        ? "IRESS_PRODUCTION_DESTINATION"
+        : process.env.IRESS_DESTINATION?.trim()
+          ? "IRESS_DESTINATION"
+          : "default (LONGMARK CARE)",
       perClientGuard: perClientGuardEnabled(),
       baseUrl: process.env.IRESS_BASE_URL ?? "(default)",
       workerId: deps.env.workerId,
@@ -3235,7 +3269,7 @@ export async function handleRequest(
     // body would let a mis-built BFF call route a client's trade to an
     // arbitrary book.
     const accountCode = deps.env.iressAccountCode;
-    const brokerDestination = (process.env.IRESS_PRODUCTION_DESTINATION ?? "").trim();
+    const brokerDestination = productionDestination();
 
     console.warn(
       `[iress-ingest/PROD] LIVE ORDER send audit=${orderAuditId} account=${accountCode} dest=${brokerDestination}`,

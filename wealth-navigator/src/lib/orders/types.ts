@@ -28,6 +28,8 @@ export type OrderSource =
   | "RESEARCH_LAB_THESIS"
   | "PAPER_MODEL_REBALANCE"
   | "MINT_CLIENT_ORDER"
+  /** Desk places an order on a named client's behalf from the order book. */
+  | "MANUAL_CLIENT_ORDER"
   | "IRESS";
 
 /** What the worker preflight / limit guard decided. */
@@ -78,6 +80,13 @@ export interface PreflightInput {
   source: OrderSource;
   /** Optional book id (strategy_name_snapshot for bulk). */
   book_id?: string;
+  /**
+   * When set, the worker checks THIS client's own wallet and holdings instead
+   * of the desk omnibus. Must match the `user_id` the order will be parked
+   * with, or the advisory verdict shown on the ticket will not match the
+   * binding one at release time.
+   */
+  user_id?: string | null;
 }
 
 export interface PreflightResult {
@@ -101,6 +110,19 @@ export interface SubmitInput extends PreflightInput {
    * holding row (e.g. the ad-hoc UAT ticket).
    */
   holding_id?: string | null;
+  /**
+   * The RETAIL auth user this order is FOR.
+   *
+   * The broker never sees it — LONGMARK only knows the MINT account, and MINT
+   * does the client breakdown internally. It exists so the pre-trade guard can
+   * check the order against THIS client's own wallet and holdings rather than
+   * the desk omnibus (see resolveHolderKind + availableTo*ForClient in the
+   * worker). Without it a manual client order classifies as "desk" and the
+   * client's available cash is never enforced.
+   *
+   * Omit for genuine desk orders.
+   */
+  user_id?: string | null;
 }
 
 export interface SubmitResult {

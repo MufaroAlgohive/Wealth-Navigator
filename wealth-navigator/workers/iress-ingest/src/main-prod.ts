@@ -51,7 +51,8 @@
  * market-data session directly, never to the main session.
  */
 
-import { loadWorkerEnv } from "./env";
+import { loadWorkerEnv, productionOrdersEnabled } from "./env";
+import { pollUatForFills, stampLastUatPollAt } from "./order-poller";
 import { gracefulStop, runHealthLoop } from "./health";
 import { runOrdersEntitlementProbe, startHttpApi, type HttpApiHandle } from "./http-api";
 import {
@@ -120,11 +121,16 @@ const sessions = new WorkerSessionManager({
   dryRun: env.dryRun,
 });
 const supabase = createInstitutionalSupabase(env);
-// createRetailSupabase is constructed (and warns if unconfigured) but
-// never USED on this entrypoint. The prod worker does NOT write to
-// `securities_c` / `stock_intraday_c` — that's a separate decision and
-// out of scope for the 2026-07-22 SENS plan.
-createRetailSupabase(env);
+// The prod worker still does NOT write `securities_c` / `stock_intraday_c` —
+// that remains gated by IRESS_RETAIL_DRY_RUN and is a separate decision.
+//
+// But the client READ path needs this handle. The per-client pre-trade guard
+// checks a client's own holdings + wallet in the RETAIL database, and it fails
+// CLOSED: with IRESS_PER_CLIENT_GUARD=1 and no retail client, every client order
+// is refused 503. This entrypoint passed `retailSupabase: null` to startHttpApi,
+// so on the prod worker the guard could never run and no client order could
+// succeed. Read-only use — nothing here writes to retail.
+const retailSupabase = createRetailSupabase(env);
 
 (sessions as unknown as { deps: { supabase: typeof supabase } }).deps.supabase = supabase;
 
@@ -273,6 +279,49 @@ logStartup();
 // has no quote loop, so `lastQuoteSyncAt` stays `undefined` (the
 // integration page renders the news vendor catalog + last vendor
 // sync instead).
+/**
+ * Fill poller for the PRODUCTION order lane.
+ *
+ * Without this the worker can SEND a real order and never learn what happened
+ * to it: the audit row stays on `working`, the order book shows nothing, and
+ * the desk is blind to an execution that has already traded. Sending orders you
+ * cannot track is worse than not sending them.
+ *
+ * Only runs when IRESS_PRODUCTION_ORDERS is on, so a SENS-only deployment is
+ * unaffected. `pollUatForFills` picks the account by lane — the real MINT
+ * account here, the test book under IRESS_UAT_MODE.
+ */
+async function orderFillLoop(): Promise<void> {
+  if (!productionOrdersEnabled()) {
+    console.info(
+      "[iress-prod] order fill poller not started (IRESS_PRODUCTION_ORDERS is off).",
+    );
+    return;
+  }
+  const everySec = Math.max(5, env.uatOrderPollSec || 15);
+  console.info(
+    `[iress-prod] ORDER FILL POLLER on — account ${env.iressAccountCode || "(unset)"} every ${everySec}s`,
+  );
+  while (!shuttingDown) {
+    try {
+      stampLastUatPollAt();
+      const r = await pollUatForFills({ env, sessions, supabase });
+      if (r.updated > 0 || r.published > 0) {
+        console.info(
+          `[iress-prod] order fill poll: updated=${r.updated} published=${r.published} elapsedMs=${r.elapsedMs}`,
+        );
+      } else if (r.skipReason && r.skipReason !== "no_order_lane_enabled") {
+        console.info(`[iress-prod] order fill poll: skip=${r.skipReason}`);
+      }
+    } catch (err) {
+      console.warn(
+        `[iress-prod] order fill poll error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    await sleep(everySec * 1000);
+  }
+}
+
 void runHealthLoop({
   supabase,
   env,
@@ -281,6 +330,7 @@ void runHealthLoop({
   isStopping: () => shuttingDown,
 });
 void newsIngestLoop();
+void orderFillLoop();
 
 if (process.env.IRESS_NEWS_INGEST === "1") {
   // Trigger prod market-data bring-up early so the startup log shows
@@ -396,8 +446,14 @@ if (process.env.WORKER_HTTP_DISABLED !== "1") {
       "[iress-prod] CRITICAL: worker HTTP API is UNAUTHENTICATED (WORKER_HTTP_TOKEN unset). Set WORKER_HTTP_TOKEN on the worker + BFF, then WORKER_REQUIRE_HTTP_TOKEN=1 to enforce.",
     );
   }
+  if (!retailSupabase) {
+    console.error(
+      "[iress-prod] CRITICAL: no RETAIL Supabase client (set RETAIL_SUPABASE_URL + RETAIL_SUPABASE_SERVICE_ROLE_KEY). " +
+        "With IRESS_PER_CLIENT_GUARD=1 every client order will be refused 503 — the guard cannot read the client's holdings or wallet.",
+    );
+  }
   startHttpApi(
-    { env, sessions, supabase, retailSupabase: null },
+    { env, sessions, supabase, retailSupabase: retailSupabase ?? null },
     () => undefined,
   )
     .then((handle) => {

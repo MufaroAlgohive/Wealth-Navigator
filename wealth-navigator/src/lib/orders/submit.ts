@@ -166,6 +166,10 @@ async function insertAuditRow(
       security_id: sec.id,
       isin: sec.isin ?? null,
       holding_id: input.holding_id ?? null,
+      // Drives resolveHolderKind in the worker: present => the pre-trade guard
+      // checks THIS client's wallet and holdings instead of the desk omnibus.
+      // Never sent to the broker — LONGMARK sees only the MINT account.
+      user_id: input.user_id ?? null,
       limitPrice: input.price_cents != null ? Number(input.price_cents) / 100 : null,
       sent_by: input.trader_email,
       sent_at: nowIso,

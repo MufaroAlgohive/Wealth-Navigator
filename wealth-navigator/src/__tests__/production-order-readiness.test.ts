@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { productionOrderBlockers } from "../../workers/iress-ingest/src/http-api";
+import { productionDestination, productionOrderBlockers } from "../../workers/iress-ingest/src/http-api";
 import type { WorkerEnv } from "../../workers/iress-ingest/src/env";
 
 /**
@@ -62,8 +62,8 @@ describe("productionOrderBlockers", () => {
       iressAccountCode: "",
       iressMode: "mock",
     } as unknown as WorkerEnv);
-    // The switch, the guard, the destination, the account and the mode.
-    expect(blockers.length).toBeGreaterThanOrEqual(5);
+    // The switch, the guard, the account and the mode.
+    expect(blockers.length).toBeGreaterThanOrEqual(4);
   });
 
   it("blocks when IRESS_PRODUCTION_ORDERS is unset", () => {
@@ -104,9 +104,25 @@ describe("productionOrderBlockers", () => {
     expect(msg).toContain("desk omnibus");
   });
 
-  it("blocks when no broker destination is configured", () => {
+  /**
+   * The destination is deliberately NOT a blocker. It defaults to
+   * "LONGMARK CARE" — the value UAT proved, and the same fallback every other
+   * order path in this codebase already uses. IRESS confirmed the production
+   * move changes only the endpoint host, not the routing destination.
+   * Requiring an env var whose value is already hard-coded elsewhere would only
+   * produce a 409 at the worst possible moment.
+   */
+  it("does NOT block when the destination env var is absent — it defaults", () => {
     delete process.env.IRESS_PRODUCTION_DESTINATION;
-    expect(productionOrderBlockers(readyEnv()).join(" ")).toContain("IRESS_PRODUCTION_DESTINATION");
+    delete process.env.IRESS_DESTINATION;
+    expect(productionOrderBlockers(readyEnv())).toEqual([]);
+    expect(productionDestination()).toBe("LONGMARK CARE");
+  });
+
+  it("honours an explicit destination override", () => {
+    process.env.IRESS_PRODUCTION_DESTINATION = "SOME OTHER ROUTE";
+    expect(productionDestination()).toBe("SOME OTHER ROUTE");
+    expect(productionOrderBlockers(readyEnv())).toEqual([]);
   });
 
   it("blocks when no broker account is configured", () => {
