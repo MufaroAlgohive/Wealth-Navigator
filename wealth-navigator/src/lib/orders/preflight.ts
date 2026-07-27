@@ -232,6 +232,9 @@ export async function preflight(input: PreflightInput): Promise<PreflightResult>
       price_cents: input.price_cents ?? null,
       source: input.source,
       book_id: input.book_id ?? null,
+      // Routes the worker's guard to this client's ledger. Omitted/null keeps
+      // the desk path, so every existing caller is unaffected.
+      user_id: input.user_id ?? null,
     },
     timeoutMs: 8_000,
   });

@@ -48,7 +48,15 @@ import {
   marketDataBaseUrl,
   marketDataProdEnabled,
 } from "./market-data";
-import { availableToSell, availableToBuy, type SellAvailability, type CashAvailability } from "./pretrade-guard";
+import {
+  availableToSell,
+  availableToBuy,
+  availableToSellForClient,
+  availableToBuyForClient,
+  resolveHolderKind,
+  type SellAvailability,
+  type CashAvailability,
+} from "./pretrade-guard";
 import { fetchLiveQuote } from "./quotes";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import { type WorkerSupabase, writeHeartbeat } from "./supabase";
@@ -81,6 +89,105 @@ export interface HttpApiDeps {
   authToken?: string;
 }
 
+/**
+ * `IRESS_PER_CLIENT_GUARD=1` — check a CLIENT order against that client's own
+ * retail ledger (holdings + wallet) instead of the desk omnibus.
+ *
+ * Off by default so the desk/UAT path is bit-for-bit unchanged until this has
+ * been exercised in UAT. Turning it on can only ever REJECT orders the desk
+ * path would have allowed: resolveHolderKind returns "desk" for anything
+ * without clear client linkage, so desk orders keep the desk guard, and client
+ * orders gain a stricter one.
+ *
+ * This MUST be on before any real client order is sent to a market. Without it
+ * a client's sell is validated against shares the desk holds and the client
+ * does not, which is a naked short on their account.
+ */
+function perClientGuardEnabled(): boolean {
+  const v = (process.env.IRESS_PER_CLIENT_GUARD ?? "").trim().toLowerCase();
+  return v === "1" || v === "true";
+}
+
+/**
+ * Every condition that must hold before a REAL client order may be sent to a
+ * REAL market. Returns the list of unmet conditions; empty means ready.
+ *
+ * Deliberately enumerated rather than collapsed into one flag. Each entry is a
+ * separate way this can be wrong, and an operator staring at a 409 during a
+ * trading window needs to be told which one — not "not ready".
+ *
+ * `GET /orders/readiness` returns this verbatim so the state is inspectable
+ * without attempting an order.
+ */
+export function productionOrderBlockers(env: WorkerEnv): string[] {
+  const blockers: string[] = [];
+
+  // 1. The explicit switch. Nothing implicit ever enables live client orders.
+  const flag = (process.env.IRESS_PRODUCTION_ORDERS ?? "").trim().toLowerCase();
+  if (flag !== "1" && flag !== "true") {
+    blockers.push("IRESS_PRODUCTION_ORDERS is not set to 1");
+  }
+
+  // 2. UAT and production are mutually exclusive lanes. With uatMode on, order
+  //    tagging, the poll loop and the account default all assume the test book.
+  if (env.uatMode) {
+    blockers.push("IRESS_UAT_MODE is on — the worker is on the UAT lane; production orders are refused");
+  }
+
+  // 3. The CT endpoint is a test venue. An order sent there is not a real trade,
+  //    and treating it as one would report a fill that never happened.
+  const baseUrl = process.env.IRESS_BASE_URL ?? "";
+  if (baseUrl && /webservices-ct\.iress\.co\.za/i.test(baseUrl)) {
+    blockers.push(`IRESS_BASE_URL points at the CT test endpoint (${baseUrl})`);
+  }
+
+  // 4. Without the per-client guard a client's SELL is validated against the
+  //    desk omnibus, which can hold shares the client does not — a naked short
+  //    on their account. This is the one blocker that protects the client
+  //    rather than the workflow, so production orders are refused outright
+  //    rather than falling back to the desk guard.
+  if (!perClientGuardEnabled()) {
+    blockers.push(
+      "IRESS_PER_CLIENT_GUARD is off — client orders would be checked against the desk omnibus, not the client's own holdings and cash",
+    );
+  }
+
+  // 5. A live order needs a real broker account and a live SOAP session.
+  if (!env.iressAccountCode) blockers.push("IRESS_ACCOUNT_CODE is not set");
+  if (env.iressMode !== "live") blockers.push(`IRESS_MODE is "${env.iressMode}", not "live"`);
+
+  // The destination is NOT a blocker: it defaults to LONGMARK CARE, the same
+  // value UAT proved and the same value every other order path in this codebase
+  // already falls back to. IRESS (Andre) confirmed the production move is the
+  // same integration with `webservices` in place of `webservices-ct` — the
+  // destination is unchanged and routes to LONGMARK as the executing broker.
+  // Requiring an env var whose value is already known and hard-coded elsewhere
+  // would only produce a 409 at the worst possible moment.
+  //
+  // `productionDestination()` is surfaced on GET /orders/readiness so the
+  // resolved value is always visible before an order is sent.
+
+  return blockers;
+}
+
+/**
+ * Broker routing destination for a PRODUCTION order.
+ *
+ * Free-text on this IRESS build (not a venue code): "LONGMARK CARE" routes to
+ * EXT_BROKERTI -> LONGMARK, the executing broker. Confirmed by IRESS (Andre,
+ * 2026-07-13) and exercised end-to-end in UAT.
+ *
+ * Override with IRESS_PRODUCTION_DESTINATION if IRESS ever moves the routing.
+ * `DestinationGet` on the IOS+ service session lists what the seat accepts.
+ */
+export function productionDestination(): string {
+  return (
+    process.env.IRESS_PRODUCTION_DESTINATION?.trim() ||
+    process.env.IRESS_DESTINATION?.trim() ||
+    "LONGMARK CARE"
+  );
+}
+
 function newRequestID(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -110,6 +217,7 @@ function isMutatingRequest(method: string | undefined, path: string): boolean {
     m === "POST" &&
     (path === "/orders/cancel" ||
       path === "/orders/amend" ||
+      path === "/orders/send-to-market" ||
       path === "/uat/send-to-market" ||
       path === "/debug/soap-raw" ||
       path === "/heartbeat/refresh")
@@ -2871,7 +2979,18 @@ export async function handleRequest(
   // real client books.
   // ──────────────────────────────────────────────────────────────────
 
-  if (path === "/uat/send-to-market" || path === "/uat/preflight" || path === "/uat/execution-stream" || path === "/uat/status") {
+  /* `/uat/preflight` is deliberately NOT in this gate.
+     It is a pure READ-ONLY pre-trade computation — available-to-sell and
+     available-to-cash — and BOTH lanes need it. It only lives under the /uat/
+     prefix for historical reasons.
+
+     Gating it on uatMode meant that with IRESS_UAT_MODE=0 (i.e. production) it
+     returned 403, releaseOrder read that as a failed preflight, and EVERY
+     release was parked as "blocked" — including orders with ample funds.
+     Observed 2026-07-27: a R98 buy against a R1 000 wallet blocked, with no
+     order ever reaching the worker. The guard was not rejecting the order; the
+     route was refusing to evaluate it. */
+  if (path === "/uat/send-to-market" || path === "/uat/execution-stream" || path === "/uat/status") {
     if (!deps.env.uatMode) {
       sendError(
         res,
@@ -2945,12 +3064,26 @@ export async function handleRequest(
       return;
     }
 
+    // Holder routing must match the submit-time gate exactly, or the BFF's
+    // pre-submit verdict and the worker's submit-time verdict disagree — which
+    // is the failure this shared function exists to prevent. The caller declares
+    // the client by passing `user_id`; with IRESS_PER_CLIENT_GUARD off we ignore
+    // it and keep the desk path, same as the send path.
+    const preflightClientUserId =
+      typeof b["user_id"] === "string" && (b["user_id"] as string).trim()
+        ? (b["user_id"] as string).trim()
+        : null;
+    const preflightHolder =
+      perClientGuardEnabled() && preflightClientUserId ? "client" : "desk";
+
     const guard = await runUatPreflight(deps, {
       accountCode,
       symbol,
       side,
       qty: Math.floor(qty),
       priceCents,
+      holder: preflightHolder,
+      clientUserId: preflightClientUserId,
       excludeAuditId:
         typeof b["exclude_audit_id"] === "string"
           ? (b["exclude_audit_id"] as string)
@@ -3070,12 +3203,95 @@ export async function handleRequest(
       (typeof b["broker_destination"] === "string" && (b["broker_destination"] as string).trim()) ||
       "LONGMARK CARE";
 
-    const result = await uatSendToMarket(deps, orderAuditId, accountCode, brokerDestination);
+    const result = await sendOrderToMarket(deps, orderAuditId, accountCode, brokerDestination);
     if (!result.ok) {
       sendError(res, result.status, result.code, result.message, result.extra);
       return;
     }
     send(res, 200, result.body);
+    return;
+  }
+
+  /* GET /orders/readiness — is this worker allowed to send REAL client orders?
+     Inspectable without attempting an order, so the answer to "are production
+     buys ready?" is a URL rather than an opinion. */
+  if (req.method === "GET" && path === "/orders/readiness") {
+    const blockers = productionOrderBlockers(deps.env);
+    send(res, 200, {
+      ok: true,
+      production_orders_ready: blockers.length === 0,
+      blockers,
+      lane: deps.env.uatMode ? "uat" : "production",
+      iressMode: deps.env.iressMode,
+      accountCode: deps.env.iressAccountCode || null,
+      // Where a live order would actually route. Shown even when ready, so the
+      // destination is never an assumption at the moment of sending.
+      destination: productionDestination(),
+      destinationSource: process.env.IRESS_PRODUCTION_DESTINATION?.trim()
+        ? "IRESS_PRODUCTION_DESTINATION"
+        : process.env.IRESS_DESTINATION?.trim()
+          ? "IRESS_DESTINATION"
+          : "default (LONGMARK CARE)",
+      perClientGuard: perClientGuardEnabled(),
+      baseUrl: process.env.IRESS_BASE_URL ?? "(default)",
+      workerId: deps.env.workerId,
+    });
+    return;
+  }
+
+  /* POST /orders/send-to-market — the PRODUCTION lane.
+     Real broker account, real market, real client money.
+
+     It calls the SAME sendToMarket() the UAT lane uses. That is deliberate: the
+     idempotency tag, the transport-failure recovery via OrderNoGetByOrderTag,
+     the business-rejection handling and the audit stamping are all subtle and
+     hard-won, and a second copy of them would drift. The lanes differ only in
+     which gate they pass and which account/destination they target. */
+  if (req.method === "POST" && path === "/orders/send-to-market") {
+    const blockers = productionOrderBlockers(deps.env);
+    if (blockers.length > 0) {
+      sendError(
+        res,
+        409,
+        "production_orders_not_ready",
+        `Refusing to send a live client order: ${blockers.length} unmet condition(s)`,
+        { blockers, hint: "GET /orders/readiness" },
+      );
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readBodyJson(req);
+    } catch (err) {
+      sendError(res, 400, "bad_request", (err as Error).message);
+      return;
+    }
+    const b = (body ?? {}) as Record<string, unknown>;
+    const orderAuditId =
+      typeof b["order_audit_id"] === "string" ? (b["order_audit_id"] as string).trim() : "";
+    if (!orderAuditId) {
+      sendError(res, 400, "bad_request", "`order_audit_id` is required");
+      return;
+    }
+
+    // The account is NOT caller-supplied. A production order goes to the
+    // configured production account, full stop — accepting it from the request
+    // body would let a mis-built BFF call route a client's trade to an
+    // arbitrary book.
+    const accountCode = deps.env.iressAccountCode;
+    const brokerDestination = productionDestination();
+
+    console.warn(
+      `[iress-ingest/PROD] LIVE ORDER send audit=${orderAuditId} account=${accountCode} dest=${brokerDestination}`,
+    );
+
+    const result = await sendOrderToMarket(deps, orderAuditId, accountCode, brokerDestination);
+    if (!result.ok) {
+      sendError(res, result.status, result.code, result.message, result.extra);
+      return;
+    }
+    send(res, 200, { ...result.body, lane: "production" });
     return;
   }
 
@@ -3218,6 +3434,8 @@ interface UatAuditRow {
   quantity: number;
   price_cents: number | null;
   status: string;
+  /** Order origin (UAT_*, desk, client entry point). Drives resolveHolderKind. */
+  source: string | null;
   payload: Record<string, unknown>;
   result_payload: Record<string, unknown>;
 }
@@ -3534,6 +3752,22 @@ async function runUatPreflight(
     excludeAuditId?: string;
     /** For market orders, derive RANDS value from `arrivalMid` if available. */
     arrivalMidRands?: number | null;
+    /**
+     * Whose book backs this order.
+     *   "desk"   — the shared omnibus account (UAT and desk orders)
+     *   "client" — a real MINT client's own retail ledger
+     *
+     * This distinction is a client-money control, not a routing detail. The desk
+     * omnibus can hold thousands of a share while an individual client holds
+     * none; checking a client's SELL against the desk's holdings would pass an
+     * order that is a naked short for that client, and their BUY against desk
+     * cash would let them spend money they do not have.
+     *
+     * Defaults to "desk", which is the historical behaviour.
+     */
+    holder?: "desk" | "client";
+    /** Required when holder === "client" — the retail auth user whose ledger is checked. */
+    clientUserId?: string | null;
   },
 ): Promise<
   | { ok: true; verdict: "pass"; sell?: SellAvailability; cash?: CashAvailability; message: string }
@@ -3560,14 +3794,51 @@ async function runUatPreflight(
     };
   }
 
+  /* Per-client routing. A client order is checked against THAT CLIENT's retail
+     ledger, never the desk omnibus. Fail-closed in three ways, because getting
+     this wrong permits a naked short or an overspend on someone's real money:
+       - holder === "client" with no clientUserId  -> block
+       - holder === "client" with no retail client -> block
+     Neither falls back to the desk path. */
+  const holder = opts.holder ?? "desk";
+  const retailDb = deps.retailSupabase ?? null;
+  if (holder === "client") {
+    if (!opts.clientUserId) {
+      return {
+        ok: false,
+        status: 422,
+        code: opts.side === 2 ? "sell_guard_unavailable" : "buy_guard_unavailable",
+        message:
+          "Blocked: order is flagged as a client order but carries no user_id, so the client's own holdings and cash cannot be checked.",
+      };
+    }
+    if (!retailDb) {
+      return {
+        ok: false,
+        status: 503,
+        code: opts.side === 2 ? "sell_guard_unavailable" : "buy_guard_unavailable",
+        message:
+          "Blocked: client order requires the RETAIL ledger, but the worker has no retail Supabase client (set RETAIL_SUPABASE_URL + RETAIL_SUPABASE_SERVICE_ROLE_KEY).",
+      };
+    }
+  }
+
   if (opts.side === 2) {
     let avail;
     try {
-      avail = await availableToSell(db, opts.accountCode, opts.symbol, opts.excludeAuditId);
+      avail =
+        holder === "client"
+          ? await availableToSellForClient(
+              retailDb as WorkerSupabase,
+              db,
+              opts.clientUserId as string,
+              opts.symbol,
+            )
+          : await availableToSell(db, opts.accountCode, opts.symbol, opts.excludeAuditId);
     } catch (guardErr) {
       const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
       console.warn(
-        `[iress-ingest/uat] sell guard could not verify holdings for ${opts.symbol} on ${opts.accountCode}: ${m}`,
+        `[iress-ingest/guard] sell guard could not verify holdings for ${opts.symbol} on ${opts.accountCode}: ${m}`,
       );
       return {
         ok: false,
@@ -3578,7 +3849,7 @@ async function runUatPreflight(
     }
     if (opts.qty > avail.available) {
       console.warn(
-        `[iress-ingest/uat] NAKED-SHORT BLOCKED ${opts.symbol} sell ${opts.qty} > available ${avail.available} on ${opts.accountCode} (held ${avail.held}, inflight ${avail.inflightSells}, src ${avail.source})`,
+        `[iress-ingest/guard] NAKED-SHORT BLOCKED ${opts.symbol} sell ${opts.qty} > available ${avail.available} on ${opts.accountCode} (held ${avail.held}, inflight ${avail.inflightSells}, src ${avail.source})`,
       );
       return {
         ok: false,
@@ -3603,13 +3874,16 @@ async function runUatPreflight(
   const buffer = Number(process.env.IRESS_MARKET_BUY_BUFFER ?? "1.02");
   let cash;
   try {
-    cash = await availableToBuy(db, opts.accountCode, opts.excludeAuditId, {
-      fallbackCapRands: capRands,
-    });
+    cash =
+      holder === "client"
+        ? await availableToBuyForClient(retailDb as WorkerSupabase, db, opts.clientUserId as string)
+        : await availableToBuy(db, opts.accountCode, opts.excludeAuditId, {
+            fallbackCapRands: capRands,
+          });
   } catch (guardErr) {
     const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
     console.warn(
-      `[iress-ingest/uat] buy guard could not verify cash for ${opts.symbol} on ${opts.accountCode}: ${m}`,
+      `[iress-ingest/guard] buy guard could not verify cash for ${opts.symbol} on ${opts.accountCode}: ${m}`,
     );
     return {
       ok: false,
@@ -3628,7 +3902,7 @@ async function runUatPreflight(
         : null;
   if (cash.available != null && orderValue != null && orderValue > cash.available) {
     console.warn(
-      `[iress-ingest/uat] INSUFFICIENT-CASH BLOCKED ${opts.symbol} buy value ${orderValue.toFixed(2)} > available ${cash.available.toFixed(2)} on ${opts.accountCode} (cash ${cash.cash}, inflight ${cash.inflightBuys.toFixed(2)}, src ${cash.source})`,
+      `[iress-ingest/guard] INSUFFICIENT-CASH BLOCKED ${opts.symbol} buy value ${orderValue.toFixed(2)} > available ${cash.available.toFixed(2)} on ${opts.accountCode} (cash ${cash.cash}, inflight ${cash.inflightBuys.toFixed(2)}, src ${cash.source})`,
     );
     return {
       ok: false,
@@ -3646,7 +3920,23 @@ async function runUatPreflight(
   };
 }
 
-async function uatSendToMarket(
+/**
+ * Send an order to a market. Serves BOTH lanes — `/uat/send-to-market` and
+ * `/orders/send-to-market` — and knows about neither.
+ *
+ * One implementation on purpose. The idempotency tag, the transport-failure
+ * recovery through OrderNoGetByOrderTag, the business-rejection-vs-transport
+ * distinction and the audit stamping are subtle and were each learned from a
+ * real incident. A second copy for production would drift from this one, and
+ * the first symptom of that drift would be a client order in an unknown state.
+ *
+ * The lanes differ only in what the ROUTE decides before calling: which
+ * readiness gate must pass, and which account and destination to target.
+ *
+ * (Named uatSendToMarket until 2026-07-27, when the production lane started
+ * sharing it.)
+ */
+async function sendOrderToMarket(
   deps: HttpApiDeps,
   orderAuditId: string,
   accountCode: string,
@@ -3665,7 +3955,9 @@ async function uatSendToMarket(
   // Read the audit row the BFF wrote at /api/admin/orderbook/send-to-market.
   const { data: row, error: readErr } = await db
     .from("oems_order_audit")
-    .select("id, order_id, symbol, side, quantity, price_cents, status, payload, result_payload")
+    // `source` is required by resolveHolderKind — without it every order would
+    // classify as desk and a client order would be guarded against the omnibus.
+    .select("id, order_id, symbol, side, quantity, price_cents, status, source, payload, result_payload")
     .eq("id", orderAuditId)
     .maybeSingle();
 
@@ -3727,6 +4019,26 @@ async function uatSendToMarket(
   // `runUatPreflight()` — both paths compute the exact same verdict so the
   // BFF pre-submit gate and the worker submit-time gate can never disagree.
   // (See the comment on `runUatPreflight` above for the rationale.)
+  //
+  // HOLDER ROUTING (2026-07-27). resolveHolderKind + availableTo*ForClient have
+  // existed since 2026-07-20 but nothing ever called them, so EVERY order —
+  // including one carrying a client's user_id — was checked against the desk
+  // omnibus. For a UAT/desk order that is correct. For a real client order it is
+  // not a guard at all: the omnibus can hold thousands of a share the client
+  // holds none of, so their sell passes as a naked short, and their buy is
+  // checked against desk cash rather than their own wallet.
+  //
+  // Behind IRESS_PER_CLIENT_GUARD so the desk path is untouched until this is
+  // exercised in UAT. resolveHolderKind already returns "desk" for anything
+  // without clear client linkage, so the flag only ever narrows what passes.
+  const holder = perClientGuardEnabled()
+    ? resolveHolderKind({ source: audit.source ?? null, payload: audit.payload ?? null })
+    : "desk";
+  const clientUserId =
+    typeof (audit.payload as { user_id?: unknown } | null)?.user_id === "string"
+      ? ((audit.payload as { user_id: string }).user_id)
+      : null;
+
   const guard = await runUatPreflight(deps, {
     accountCode,
     symbol,
@@ -3734,6 +4046,8 @@ async function uatSendToMarket(
     qty,
     priceCents: audit.price_cents ?? null,
     excludeAuditId: audit.id,
+    holder,
+    clientUserId,
     arrivalMidRands:
       Number((audit.result_payload as { arrivalMid?: number } | null)?.arrivalMid) || null,
   });

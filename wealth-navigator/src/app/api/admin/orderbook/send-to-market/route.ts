@@ -5,7 +5,7 @@ import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { callWorker } from "@/lib/iress/worker-api";
-import { isUatEnv } from "@/lib/oems/uat-scope";
+import { isUatEnv, uatModeEnabled } from "@/lib/oems/uat-scope";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -479,7 +479,14 @@ export async function POST(req: Request) {
   // UAT escape hatch — only honoured when IRESS_UAT_MODE is set on Vercel.
   // When false, the audit rows are still written but the worker is never
   // called (existing audit-only path is preserved bit-for-bit).
-  const uatTest = body.uat_test === true && process.env.IRESS_UAT_MODE === "true";
+  //
+  // uatModeEnabled() accepts "1" as well as "true". The strict === "true" this
+  // replaces was the single highest-consequence instance of the mismatch: the
+  // Railway worker's own 403 says "set IRESS_UAT_MODE=1", so following that
+  // instruction turned UAT on at the worker while THIS line silently fell back
+  // to audit-only. Orders would be accepted in the UI, stamped in the audit
+  // table, and never reach a market — with no error raised anywhere.
+  const uatTest = body.uat_test === true && uatModeEnabled();
 
   if (!bookId) return NextResponse.json({ ok: false, error: "book_id is required" }, { status: 400 });
   if (!broker) return NextResponse.json({ ok: false, error: "broker is required" }, { status: 400 });
@@ -812,7 +819,7 @@ export async function POST(req: Request) {
   // desk falls back to the existing /fills POST (manual Excel upload).
   const uatFanout: {
     attempted: boolean;
-    mode: "uat" | "audit-only";
+    mode: "uat" | "production" | "audit-only";
     ok: boolean;
     sent: number;
     failed: number;
@@ -826,9 +833,47 @@ export async function POST(req: Request) {
     notice: null,
   };
 
-  if (uatTest && isIressWorkerConfigured()) {
+  /* LANE SELECTION.
+     "uat"        -> worker POST /uat/send-to-market   (test book, CT semantics)
+     "production" -> worker POST /orders/send-to-market (real client money)
+     "audit-only" -> neither; rows are written and nothing is dispatched.
+
+     Production requires IRESS_PRODUCTION_ORDERS=1 on Vercel AND the worker's own
+     readiness gate to pass. The two are checked independently on purpose: Vercel
+     decides whether to ATTEMPT dispatch, the worker decides whether it is safe to
+     EXECUTE, and the worker's answer is the one that governs. A Vercel flag set
+     ahead of the worker's cannot send an order — the worker returns 409 with the
+     unmet conditions named.
+
+     uat_test wins when both are set, so a UAT run can never be silently promoted
+     to a real trade by a stray production flag. */
+  const productionOrders = ["1", "true"].includes(
+    (process.env.IRESS_PRODUCTION_ORDERS ?? "").trim().toLowerCase(),
+  );
+
+  /* A caller that ASKED for the UAT lane must never be promoted to production.
+     `uatTest` is already false when IRESS_UAT_MODE is off, so testing `!uatTest`
+     alone would have sent a `uat_test: true` request — from the UAT Test Runner,
+     whose whole purpose is throwaway orders — straight to a real broker the
+     moment production orders were enabled. Gate on the caller's INTENT
+     (`body.uat_test`), not on the resolved lane. */
+  const wantsUatLane = body.uat_test === true;
+  if (wantsUatLane && !uatModeEnabled()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error:
+          "uat_test=true but IRESS_UAT_MODE is off on Vercel. Refusing to run a UAT request against the production lane. Enable UAT mode, or drop uat_test to place a real order deliberately.",
+      },
+      { status: 409 },
+    );
+  }
+  const productionSend = !wantsUatLane && productionOrders && !isUatEnv();
+  const workerPath = uatTest ? "/uat/send-to-market" : "/orders/send-to-market";
+
+  if ((uatTest || productionSend) && isIressWorkerConfigured()) {
     uatFanout.attempted = true;
-    uatFanout.mode = "uat";
+    uatFanout.mode = uatTest ? "uat" : "production";
     const insertedRows = (inserted ?? []) as Array<{ id: string; order_id: string }>;
     const results: Array<{ id: string; ok: boolean; error?: string; iressOrderNumber?: string }> = [];
     // Sequential (not Promise.all) to avoid hammering the worker's single
@@ -836,8 +881,14 @@ export async function POST(req: Request) {
     for (const row of insertedRows) {
       const res = await callWorker<WorkerUatResponse>({
         method: "POST",
-        path: "/uat/send-to-market",
-        body: { order_audit_id: row.id, broker_destination: broker },
+        path: workerPath,
+        // The production lane takes the account AND destination from the
+        // worker's own env — never from this request. Passing broker_destination
+        // on that lane would let the BFF route a client's trade to an arbitrary
+        // book, so it is sent only on the UAT lane.
+        body: uatTest
+          ? { order_audit_id: row.id, broker_destination: broker }
+          : { order_audit_id: row.id },
         timeoutMs: 15_000,
       });
       if (res.ok && res.body?.ok) {
@@ -853,7 +904,8 @@ export async function POST(req: Request) {
     }
     uatFanout.ok = uatFanout.failed === 0;
     if (uatFanout.failed > 0) {
-      uatFanout.notice = `${uatFanout.failed} of ${insertedRows.length} UAT orders could not be sent to IRESS — audit rows are intact; see uat_results for per-row detail.`;
+      const lane = uatTest ? "UAT" : "PRODUCTION";
+      uatFanout.notice = `${uatFanout.failed} of ${insertedRows.length} ${lane} orders could not be sent to IRESS — audit rows are intact; see uat_results for per-row detail.`;
     }
     return NextResponse.json({
       ok: uatFanout.ok,

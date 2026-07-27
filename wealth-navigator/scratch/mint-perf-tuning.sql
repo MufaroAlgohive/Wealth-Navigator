@@ -101,9 +101,9 @@ LIMIT 40;
 --     triggers. Rows are huge (JSONB before/after snapshots). It is a COMPLIANCE
 --     artifact, so do NOT delete without a retention decision + an export.
 --     Inspect the age distribution and per-table share first:
-SELECT date_trunc('month', created_at) AS month, count(*), pg_size_pretty(sum(pg_column_size(t.*))::bigint) AS approx_size
+SELECT date_trunc('month', changed_at) AS month, count(*), pg_size_pretty(sum(pg_column_size(t.*))::bigint) AS approx_size
 FROM public.cc_audit_log t
-WHERE created_at IS NOT NULL
+WHERE changed_at IS NOT NULL
 GROUP BY 1 ORDER BY 1;
 --     Then, if policy allows (EXPORT FIRST):
 --     DELETE FROM public.cc_audit_log WHERE created_at < now() - interval '12 months';

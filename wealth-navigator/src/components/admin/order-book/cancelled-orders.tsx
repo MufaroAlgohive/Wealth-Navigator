@@ -60,8 +60,10 @@ const fmtDate = (iso: string | null) => {
 };
 
 // Matches the live blotter's source scope so the Cancelled tab covers the same
-// universe of orders (UAT ad-hoc + forwarded mint client orders).
-const SOURCES = "UAT_ADHOC_ORDER,MINT_CLIENT_ORDER";
+// universe of orders (manual desk orders + UAT ad-hoc + forwarded mint client
+// orders). Keep in sync with the ExecutionView `sources` on the Manual Orders
+// tab — a source missing here means a cancelled order of that kind never shows.
+const SOURCES = "MANUAL_CLIENT_ORDER,UAT_ADHOC_ORDER,MINT_CLIENT_ORDER";
 
 export function CancelledOrders() {
   const cancelled = usePolling<ExecutionPayload>(

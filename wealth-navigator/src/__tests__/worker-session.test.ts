@@ -60,7 +60,26 @@ describe("WorkerSessionManager sticky ApplicationID", () => {
     expect(bringUp).toHaveBeenCalledWith(
       expect.objectContaining({ applicationId: "Mint-OEMS-Worker-railway-1" }),
     );
-    expect(supabase._upsert).not.toHaveBeenCalled();
+
+    /* Contract CHANGED 2026-07-27. This previously asserted the upsert must NOT
+       happen under dryRun. That was the bug, not the guarantee.
+
+       dryRun / allowWrites exist to stop the worker writing MARKET or CLIENT
+       data. `worker_session_metadata` is neither — it is the worker's own
+       bookkeeping, and it is what lets the NEXT boot reuse its IRESS seat.
+       Suppressing it meant every restart minted a fresh ApplicationID and
+       orphaned the previous seat, which keeps consuming a licence until IRESS
+       support clears it. Three restarts on 2026-07-27 leaked three seats and
+       took the production market-data login down with "No more licenses
+       available for this login"; the same failure hit on 11 June.
+
+       A dry-run worker that silently burns licences is not dry. It must persist
+       the ID precisely so the sticky reuse this test covers keeps working. */
+    expect(supabase._upsert).toHaveBeenCalled();
+    expect(supabase._upsert.mock.calls[0]?.[0]).toMatchObject({
+      worker_id: "iress-ingest-railway-1",
+      application_id: "Mint-OEMS-Worker-railway-1",
+    });
   });
 
   it("persists sticky ApplicationID before IRESSSessionStart when writes are enabled", async () => {

@@ -12,7 +12,6 @@ import { cn } from "@/lib/cn";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { UatBanner } from "@/components/admin/order-book/uat-banner";
 import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
-import { UatTestRunner } from "@/components/admin/order-book/uat-test-runner";
 import { ExecutionView } from "@/components/admin/order-book/execution-view";
 import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-books";
 import { CancelledOrders } from "@/components/admin/order-book/cancelled-orders";
@@ -140,14 +139,25 @@ export default function OrderBookPage() {
           <TabsTrigger value="active">Active Orderbook</TabsTrigger>
           <TabsTrigger value="closed">Closed Books</TabsTrigger>
           <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
-          <TabsTrigger value="uat-testing">UAT Order Testing</TabsTrigger>
+          <TabsTrigger value="uat-testing">Manual Orders</TabsTrigger>
         </TabsList>
         {tab === "uat-testing" ? (
           <TabsContent value="uat-testing" className="mt-3 space-y-3">
             <UatBanner />
             <UatOrderTicket onPlaced={() => setUatRefresh((n) => n + 1)} />
-            <UatTestRunner />
-            <ExecutionView key={`orderbook-${uatRefresh}`} sources={["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"]} />
+            {/* UatTestRunner removed 2026-07-27. It is a bulk harness that
+                dispatches throwaway orders with uat_test=true, which the BFF now
+                refuses whenever IRESS_UAT_MODE is off — and which, before the
+                lane-intent fix, would have been promoted to the PRODUCTION lane
+                and placed real orders from a button labelled "UAT Test Runner".
+                This tab is the manual client order desk now. The component is
+                still in the tree for the UAT deployment. */}
+            {/* MANUAL_CLIENT_ORDER must be listed or a manual order placed above
+                is parked but never appears in the execution list below it. */}
+            <ExecutionView
+              key={`orderbook-${uatRefresh}`}
+              sources={["MANUAL_CLIENT_ORDER", "UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"]}
+            />
             <ActiveOrderBooks />
           </TabsContent>
         ) : tab === "cancelled" ? (

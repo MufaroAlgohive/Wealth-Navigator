@@ -290,8 +290,22 @@ export async function availableToBuy(
  * When the bridge lands, switch to filtering on `broker_account_code`
  * the same way the desk path does.
  */
+/**
+ * In-flight reservations for ONE client, read from `oems_order_audit`.
+ *
+ * Takes the INSTITUTIONAL client. The parameter used to be named `retail` and
+ * callers passed the retail handle, so every call died with
+ * "Could not find the table 'public.oems_order_audit' in the schema cache" —
+ * that table lives on the institutional database. The pre-trade guard treats a
+ * thrown read as unverifiable and refuses the order, so a fully funded client
+ * order was blocked at the last gate on 2026-07-27 with a R1 000 wallet against
+ * a R98 buy. Fail-closed behaved correctly; it was reading the wrong database.
+ *
+ * The 3-DB split (docs/DB_TOPOLOGY_DECISION.md): wallets and holdings on
+ * RETAIL, the order book on INSTITUTIONAL. A guard for one client needs both.
+ */
 async function clientOpenOrderReservations(
-  retail: WorkerSupabase,
+  institutional: WorkerSupabase,
   userId: string,
   traderEmail: string | null | undefined,
   symbol: string,
@@ -307,7 +321,7 @@ async function clientOpenOrderReservations(
   if (traderEmail) {
     filters.push(`client_account.eq.${traderEmail}`);
   }
-  const { data, error } = await retail
+  const { data, error } = await institutional
     .from("oems_order_audit")
     .select("side, quantity, status, payload, price_cents")
     .or(filters.join(","))
@@ -351,8 +365,13 @@ async function clientOpenOrderReservations(
 }
 
 /** Client SELL availability from the retail per-client ledger (stock_holdings_c). */
+/**
+ * Needs BOTH databases — holdings live on RETAIL, the order book on
+ * INSTITUTIONAL. Passing one handle for both is what broke this on 2026-07-27.
+ */
 export async function availableToSellForClient(
   retail: WorkerSupabase,
+  institutional: WorkerSupabase,
   userId: string,
   symbol: string,
   opts?: { traderEmail?: string | null },
@@ -393,7 +412,7 @@ export async function availableToSellForClient(
   // can't each consume the whole position. (Per-client reservation wired
   // on 2026-07-20; was a TODO before.)
   const { inflightSells } = await clientOpenOrderReservations(
-    retail,
+    institutional,
     userId,
     opts?.traderEmail ?? null,
     symbol,
@@ -412,8 +431,13 @@ export async function availableToSellForClient(
 }
 
 /** Client BUY cash availability from the retail wallet (RANDS). */
+/**
+ * Needs BOTH databases — the wallet lives on RETAIL, the order book on
+ * INSTITUTIONAL. Passing one handle for both is what broke this on 2026-07-27.
+ */
 export async function availableToBuyForClient(
   retail: WorkerSupabase,
+  institutional: WorkerSupabase,
   userId: string,
   opts?: { traderEmail?: string | null },
 ): Promise<CashAvailability> {
@@ -431,7 +455,7 @@ export async function availableToBuyForClient(
   // `availableToBuy` notional chain. (Per-client reservation wired on
   // 2026-07-20; was a TODO before.)
   const { inflightBuysRands } = await clientOpenOrderReservations(
-    retail,
+    institutional,
     userId,
     opts?.traderEmail ?? null,
     "*",

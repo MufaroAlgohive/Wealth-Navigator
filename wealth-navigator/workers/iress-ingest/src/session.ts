@@ -79,15 +79,28 @@ async function readPersistedApplicationId(
   }
 }
 
-/** Persist only the sticky ApplicationID — safe before IRESSSessionStart completes. */
+/**
+ * Persist only the sticky ApplicationID — safe before IRESSSessionStart completes.
+ *
+ * NOT gated on dryRun / allowWrites. Those flags exist to stop the worker writing
+ * MARKET or CLIENT data; `worker_session_metadata` is neither. It is the worker's
+ * own bookkeeping, and suppressing it actively costs money:
+ *
+ * IRESS recovers a session by (UserName + CompanyName + ApplicationID). If the ID
+ * is not persisted, every restart mints a NEW one and ORPHANS the previous seat —
+ * which keeps consuming a licence until IRESS support clears it. Three restarts on
+ * 2026-07-27 leaked three seats and took the production market-data login down with
+ * "No more licenses available for this login"; the same failure hit on 11 June.
+ *
+ * A dry-run worker that silently burns licences is not dry.
+ */
 async function persistStickyApplicationId(
   deps: WorkerSessionDeps,
   applicationId: string,
 ): Promise<void> {
-  if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
-    console.info(
-      "[iress-ingest] would upsert sticky application_id",
-      JSON.stringify({ worker_id: deps.workerId, application_id: applicationId }),
+  if (!deps.supabase) {
+    console.warn(
+      "[iress-ingest] no Supabase client — cannot persist ApplicationID; this restart will orphan its IRESS seat.",
     );
     return;
   }
@@ -121,16 +134,11 @@ async function persistApplicationId(
     metadata?: Record<string, unknown>;
   },
 ): Promise<void> {
-  if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
-    console.info(
-      "[iress-ingest] would upsert worker_session_metadata",
-      JSON.stringify({
-        worker_id: deps.workerId,
-        application_id: row.applicationId,
-        iress_session_key_hash: hashForLog(row.iressSessionKey),
-        expires_at: new Date(row.expiresAt).toISOString(),
-        metadata: row.metadata ?? {},
-      }),
+  // Also NOT gated on dryRun / allowWrites — see persistStickyApplicationId.
+  // This row is what lets the next boot REUSE the seat instead of orphaning it.
+  if (!deps.supabase) {
+    console.warn(
+      "[iress-ingest] no Supabase client — cannot persist session metadata; this restart will orphan its IRESS seat.",
     );
     return;
   }
@@ -158,10 +166,10 @@ async function persistApplicationId(
 }
 
 async function clearPersistedSessionKey(deps: WorkerSessionDeps): Promise<void> {
-  if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
-    console.info(`[iress-ingest] would clear iress_session_key for ${deps.workerId}`);
-    return;
-  }
+  // Session bookkeeping — not gated on dryRun/allowWrites (see
+  // persistStickyApplicationId). A stale key left behind forces the next boot to
+  // purge and re-login, which is another orphaned seat.
+  if (!deps.supabase) return;
   try {
     const { error } = await deps.supabase
       .from("worker_session_metadata")
@@ -187,12 +195,11 @@ async function clearPersistedSessionKey(deps: WorkerSessionDeps): Promise<void> 
  * forces a needless purge + re-login.
  */
 async function clearShutdownFlag(deps: WorkerSessionDeps): Promise<void> {
-  if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
-    console.info(
-      `[iress-ingest] would reset metadata.shutdown for ${deps.workerId}`,
-    );
-    return;
-  }
+  // Not gated on dryRun/allowWrites (see persistStickyApplicationId). The doc
+  // comment above says it exactly: skipping this makes the next boot treat the
+  // persisted session as stale and force a purge + re-login — i.e. it orphans a
+  // seat. Suppressing it under dry-run was self-defeating.
+  if (!deps.supabase) return;
   try {
     const { error } = await deps.supabase
       .from("worker_session_metadata")
@@ -215,10 +222,10 @@ async function clearShutdownFlag(deps: WorkerSessionDeps): Promise<void> {
 }
 
 async function clearPersistedApplicationId(deps: WorkerSessionDeps): Promise<void> {
-  if (!deps.supabase || !deps.allowWrites || deps.dryRun) {
-    console.info(`[iress-ingest] would expire worker_session_metadata for ${deps.workerId}`);
-    return;
-  }
+  // Runs on graceful shutdown. Not gated on dryRun/allowWrites (see
+  // persistStickyApplicationId) — stamping the row as expired is how the next
+  // boot knows the seat was released cleanly rather than abandoned.
+  if (!deps.supabase) return;
   try {
     const { error } = await deps.supabase
       .from("worker_session_metadata")

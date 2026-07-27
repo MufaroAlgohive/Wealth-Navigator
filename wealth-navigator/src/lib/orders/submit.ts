@@ -26,6 +26,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { callWorker } from "@/lib/iress/worker-api";
+import { isUatEnv } from "@/lib/oems/uat-scope";
 import { createRetailServiceRoleClient, createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 import type {
   OrderSide,
@@ -137,7 +138,14 @@ async function insertAuditRow(
   const nowIso = new Date().toISOString();
   const auditRow = {
     order_id: orderId,
-    client_account: input.trader_email,
+    /* WHOSE order this is — rendered as the "Client" column on the order book.
+       Defaults to the trader's email, which is right for a desk order placed on
+       the desk's own book. For a manual CLIENT order it is NOT: the column then
+       shows the dealer who clicked the button instead of the client whose money
+       is at risk, and a dealer cannot tell whose order they are releasing.
+       `client_account` overrides it; `sent_by` / `trader` in the payload keep
+       the audit trail of who actually placed it. */
+    client_account: input.client_account ?? input.trader_email,
     // The new typed column — every BFF-seeded row carries the IRESS
     // AccountCode here so downstream queries filter on this column
     // directly, dropping the `payload->>` workaround.
@@ -166,6 +174,10 @@ async function insertAuditRow(
       security_id: sec.id,
       isin: sec.isin ?? null,
       holding_id: input.holding_id ?? null,
+      // Drives resolveHolderKind in the worker: present => the pre-trade guard
+      // checks THIS client's wallet and holdings instead of the desk omnibus.
+      // Never sent to the broker — LONGMARK sees only the MINT account.
+      user_id: input.user_id ?? null,
       limitPrice: input.price_cents != null ? Number(input.price_cents) / 100 : null,
       sent_by: input.trader_email,
       sent_at: nowIso,
@@ -220,8 +232,26 @@ async function fanOutToWorker(
   opts: { broker?: string },
   preflightResult: PreflightResult,
 ): Promise<SubmitResult> {
-  // Dry-run short-circuit — preserves today's audit-only branch.
+  const productionOrders = ["1", "true"].includes(
+    (process.env.IRESS_PRODUCTION_ORDERS ?? "").trim().toLowerCase(),
+  );
+
+  /* Dry-run short-circuit — audit-only, no worker call.
+     Refused on the production lane. Returning `status: "working"` without
+     contacting a broker is a lie the operator cannot see: the order book shows
+     the order live while nothing was ever sent. Better to fail loudly than to
+     report a phantom fill on real client money. */
   if (process.env.IRESS_WORKER_DRY_RUN === "1" || process.env.IRESS_WORKER_DRY_RUN === "true") {
+    if (productionOrders) {
+      return {
+        ok: false,
+        order_audit_id: auditId,
+        order_id: orderId,
+        preflight: preflightResult,
+        error:
+          "IRESS_PRODUCTION_ORDERS=1 but IRESS_WORKER_DRY_RUN is also set on this deployment. Refusing to report an order as working without sending it. Unset IRESS_WORKER_DRY_RUN on Vercel.",
+      };
+    }
     return {
       ok: true,
       order_audit_id: auditId,
@@ -231,8 +261,19 @@ async function fanOutToWorker(
     };
   }
 
-  // No broker configured → audit-only.
+  // No broker configured → audit-only. Same reasoning: never fake "working" on
+  // the production lane.
   if (!process.env.IRESS_WORKER_URL && !process.env.RAILWAY_SERVICE_URL) {
+    if (productionOrders) {
+      return {
+        ok: false,
+        order_audit_id: auditId,
+        order_id: orderId,
+        preflight: preflightResult,
+        error:
+          "IRESS_PRODUCTION_ORDERS=1 but no IRESS_WORKER_URL is configured — the order cannot reach the worker.",
+      };
+    }
     return {
       ok: true,
       order_audit_id: auditId,
@@ -242,13 +283,26 @@ async function fanOutToWorker(
     };
   }
 
+  /* LANE. This is the path the "Send to Market" button actually takes
+     (release-to-market -> releaseOrder -> here). It was hardcoded to
+     /uat/send-to-market, which 403s whenever IRESS_UAT_MODE is off — so on a
+     production deployment no released order could ever reach a market.
+
+     Production takes the account AND destination from the worker's own env;
+     passing broker_destination on that lane would let a caller route a client's
+     trade to an arbitrary book. UAT keeps its existing behaviour. */
+  const productionLane =
+    ["1", "true"].includes((process.env.IRESS_PRODUCTION_ORDERS ?? "").trim().toLowerCase()) &&
+    !isUatEnv();
   const res = await callWorker<WorkerUatSendResponse>({
     method: "POST",
-    path: "/uat/send-to-market",
-    body: {
-      order_audit_id: auditId,
-      broker_destination: opts.broker ?? "LONGMARK CARE",
-    },
+    path: productionLane ? "/orders/send-to-market" : "/uat/send-to-market",
+    body: productionLane
+      ? { order_audit_id: auditId }
+      : {
+          order_audit_id: auditId,
+          broker_destination: opts.broker ?? "LONGMARK CARE",
+        },
     timeoutMs: 15_000,
   });
 

@@ -298,7 +298,7 @@ describe("availableToSellForClient (retail per-client ledger)", () => {
         { quantity: 30, trade_side: "SELL" },
       ],
     });
-    const r = await availableToSellForClient(db, "user-1", "AGL");
+    const r = await availableToSellForClient(db, db, "user-1", "AGL");
     expect(r.source).toBe("retail_holdings");
     expect(r.held).toBe(120);
     expect(r.available).toBe(120);
@@ -306,21 +306,21 @@ describe("availableToSellForClient (retail per-client ledger)", () => {
 
   it("fails closed (available 0) when the security is unknown in the retail universe", async () => {
     const db = fakeRetailDb({ security: null });
-    const r = await availableToSellForClient(db, "user-1", "ZZZ");
+    const r = await availableToSellForClient(db, db, "user-1", "ZZZ");
     expect(r.available).toBe(0);
     expect(r.source).toBe("none");
   });
 
   it("throws on a stock_holdings_c read error (fail-closed)", async () => {
     const db = fakeRetailDb({ security: { id: "sec-1" }, holdingsError: "db down" });
-    await expect(availableToSellForClient(db, "user-1", "AGL")).rejects.toThrow(/stock_holdings_c/);
+    await expect(availableToSellForClient(db, db, "user-1", "AGL")).rejects.toThrow(/stock_holdings_c/);
   });
 });
 
 describe("availableToBuyForClient (retail wallet)", () => {
   it("uses the client's wallet balance (RANDS)", async () => {
     const db = fakeRetailDb({ wallet: { balance: 5000 } });
-    const r = await availableToBuyForClient(db, "user-1");
+    const r = await availableToBuyForClient(db, db, "user-1");
     expect(r.source).toBe("wallet");
     expect(r.cash).toBe(5000);
     expect(r.available).toBe(5000);
@@ -328,14 +328,14 @@ describe("availableToBuyForClient (retail wallet)", () => {
 
   it("is advisory (available null) when the client has no wallet row", async () => {
     const db = fakeRetailDb({ wallet: null });
-    const r = await availableToBuyForClient(db, "user-1");
+    const r = await availableToBuyForClient(db, db, "user-1");
     expect(r.source).toBe("none");
     expect(r.available).toBeNull();
   });
 
   it("throws on a wallets read error (fail-closed on infra failure)", async () => {
     const db = fakeRetailDb({ walletError: "db down" });
-    await expect(availableToBuyForClient(db, "user-1")).rejects.toThrow(/wallets/);
+    await expect(availableToBuyForClient(db, db, "user-1")).rejects.toThrow(/wallets/);
   });
 
   // 2026-07-20: per-client reservation is wired up. A client's own open
@@ -355,7 +355,7 @@ describe("availableToBuyForClient (retail wallet)", () => {
         },
       ],
     });
-    const r = await availableToSellForClient(db, "user-1", "AGL");
+    const r = await availableToSellForClient(db, db, "user-1", "AGL");
     expect(r.held).toBe(100);
     expect(r.inflightSells).toBe(60);
     expect(r.available).toBe(40);
@@ -376,11 +376,74 @@ describe("availableToBuyForClient (retail wallet)", () => {
         },
       ],
     });
-    const r = await availableToBuyForClient(db, "user-1");
+    const r = await availableToBuyForClient(db, db, "user-1");
     expect(r.cash).toBe(1000);
     expect(r.inflightBuys).toBe(200);
     expect(r.available).toBe(800);
     expect(r.note).toMatch(/R200\.00 in open buys/);
+  });
+});
+
+/**
+ * REGRESSION — the two-database split.
+ *
+ * These guards read the client's wallet and holdings from RETAIL, but the order
+ * book (`oems_order_audit`) lives on INSTITUTIONAL. The functions used to take a
+ * single handle and pass it to both, so every call died with "Could not find the
+ * table 'public.oems_order_audit' in the schema cache". The guard treats a
+ * thrown read as unverifiable and refuses, so on 2026-07-27 a fully funded
+ * client order was blocked at the last gate — R98 buy, R1 000 wallet.
+ *
+ * The tests above did not catch it because `fakeRetailDb` answers for BOTH
+ * tables from one object, which is exactly the assumption the production code
+ * got wrong. These use SEPARATE doubles: the retail one has no order book, so
+ * anything reaching for `oems_order_audit` on it throws.
+ */
+describe("guards read the order book from INSTITUTIONAL, not RETAIL", () => {
+  /** Retail-only double: throws if asked for the institutional order book. */
+  function retailOnly(opts: Parameters<typeof fakeRetailDb>[0]) {
+    const inner = fakeRetailDb(opts);
+    return {
+      from(table: string) {
+        if (table === "oems_order_audit") {
+          throw new Error(
+            "Could not find the table 'public.oems_order_audit' in the schema cache",
+          );
+        }
+        return (inner as unknown as { from: (t: string) => unknown }).from(table);
+      },
+    } as unknown as WorkerSupabase;
+  }
+
+  it("availableToBuyForClient does not look for the order book on retail", async () => {
+    const retail = retailOnly({ wallet: { balance: 1000 } });
+    const institutional = fakeRetailDb({ audit: [] });
+    const r = await availableToBuyForClient(retail, institutional, "user-1");
+    expect(r.cash).toBe(1000);
+    expect(r.available).toBe(1000);
+  });
+
+  it("availableToSellForClient does not look for the order book on retail", async () => {
+    const retail = retailOnly({
+      security: { id: "sec-1" },
+      holdings: [{ quantity: 100, trade_side: "BUY" }],
+    });
+    const institutional = fakeRetailDb({ audit: [] });
+    const r = await availableToSellForClient(retail, institutional, "user-1", "AGL");
+    expect(r.held).toBe(100);
+    expect(r.available).toBe(100);
+  });
+
+  it("reserves in-flight buys read from the INSTITUTIONAL handle", async () => {
+    const retail = retailOnly({ wallet: { balance: 1000 } });
+    const institutional = fakeRetailDb({
+      audit: [
+        { id: "b-1", side: "buy", quantity: 100, status: "working", payload: null, price_cents: 200 },
+      ],
+    });
+    const r = await availableToBuyForClient(retail, institutional, "user-1");
+    expect(r.inflightBuys).toBe(200);
+    expect(r.available).toBe(800);
   });
 });
 

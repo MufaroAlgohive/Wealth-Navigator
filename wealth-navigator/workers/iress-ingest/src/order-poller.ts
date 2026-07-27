@@ -26,7 +26,7 @@
 import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { getIressClient } from "../../../src/lib/iress/index";
 import type { Order, OrderState } from "../../../src/types/iress";
-import type { WorkerEnv } from "./env";
+import { productionOrdersEnabled, type WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 
@@ -194,8 +194,21 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
     skipReason: reason,
   });
 
-  if (!opts.env.uatMode) return skip("uat_mode_disabled");
-  if (!opts.env.uatAccountCode) return skip("uat_account_not_configured");
+  /* LANE. This loop originally only ran on UAT. It must also run on the
+     production lane, or a real order is sent and its fills never come back —
+     the audit row sits on `working` forever and the desk is blind to an
+     execution that actually happened. An order you cannot track is worse than
+     an order you did not send.
+
+     The account differs by lane: UAT polls the test book, production polls the
+     real MINT account. */
+  const productionLane = !opts.env.uatMode && productionOrdersEnabled();
+  if (!opts.env.uatMode && !productionLane) return skip("no_order_lane_enabled");
+
+  const pollAccountCode = opts.env.uatMode ? opts.env.uatAccountCode : opts.env.iressAccountCode;
+  if (!pollAccountCode) {
+    return skip(opts.env.uatMode ? "uat_account_not_configured" : "iress_account_not_configured");
+  }
 
   const isLive = opts.env.iressMode === "live" || opts.env.iressMode === "wsdl-stub";
   if (!isLive) {
@@ -207,7 +220,7 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
   let orders: Order[] = [];
   try {
     await opts.sessions.withSession(async (session) => {
-      orders = await fetchUatOrders(session, opts.env.uatAccountCode);
+      orders = await fetchUatOrders(session, pollAccountCode);
     });
   } catch (err) {
     if (isIressSessionDeadError(err) || (err instanceof IressError && err.code === 25001)) {
@@ -232,12 +245,34 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
     .map((o) => o.id)
     .filter((id): id is string => Boolean(id && id.length > 0));
 
-  if (opts.env.dryRun || !opts.env.allowWrites || !opts.supabase) {
+  /* WRITE GATE. The worker-wide dryRun / allowWrites flags exist to stop the
+     INSTITUTIONAL FEED (quotes, IPS, bonds, alerts) writing. They must not
+     suppress order bookkeeping: on the production lane the prod worker runs
+     with IRESS_WORKER_DRY_RUN=1 and SUPABASE_ALLOW_WRITES=0, and under the old
+     condition a real, filled order would have been logged and then dropped —
+     the audit row left on `working` while the client's shares had actually
+     traded.
+
+     Enabling IRESS_PRODUCTION_ORDERS is an explicit decision to send real
+     orders; recording what happened to them is part of that same decision, not
+     a separate opt-in. */
+  const mustRecordFills = productionLane || opts.env.uatMode;
+  if (!opts.supabase) {
+    // No database at all — nothing can be stamped. Loud on a live lane: this
+    // means real fills are being observed and thrown away.
+    if (mustRecordFills) {
+      console.error(
+        "[iress-ingest] CRITICAL: order fills observed but the worker has no Supabase client — executions are NOT being recorded.",
+      );
+    }
+    return skip("no_supabase_client");
+  }
+  if ((opts.env.dryRun || !opts.env.allowWrites) && !mustRecordFills) {
     console.info(
       JSON.stringify({
         level: "info",
         event: "uat_poll_dry_run",
-        uatAccount: opts.env.uatAccountCode,
+        account: pollAccountCode,
         count: orders.length,
         sample: orders.slice(0, 3).map((o) => ({
           orderNumber: o.id,

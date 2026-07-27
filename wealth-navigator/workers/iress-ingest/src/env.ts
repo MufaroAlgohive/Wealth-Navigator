@@ -120,6 +120,18 @@ function parseBool(value: string | undefined, defaultValue: boolean): boolean {
   return value === "1" || value.toLowerCase() === "true";
 }
 
+/**
+ * `IRESS_PRODUCTION_ORDERS=1` — the production order lane is switched on.
+ *
+ * Shared by the HTTP API's readiness gate and the fill poller so the two can
+ * never disagree about which lane the worker is on. Sending orders you cannot
+ * track is worse than not sending them, so the poller keys off the SAME flag
+ * that permits sending.
+ */
+export function productionOrdersEnabled(): boolean {
+  return parseBool(process.env.IRESS_PRODUCTION_ORDERS, false);
+}
+
 function parseList(value: string | undefined, fallback: string[]): string[] {
   const raw = (value ?? "")
     .split(",")
