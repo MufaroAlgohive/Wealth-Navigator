@@ -3830,6 +3830,7 @@ async function runUatPreflight(
         holder === "client"
           ? await availableToSellForClient(
               retailDb as WorkerSupabase,
+              db,
               opts.clientUserId as string,
               opts.symbol,
             )
@@ -3837,7 +3838,7 @@ async function runUatPreflight(
     } catch (guardErr) {
       const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
       console.warn(
-        `[iress-ingest/uat] sell guard could not verify holdings for ${opts.symbol} on ${opts.accountCode}: ${m}`,
+        `[iress-ingest/guard] sell guard could not verify holdings for ${opts.symbol} on ${opts.accountCode}: ${m}`,
       );
       return {
         ok: false,
@@ -3848,7 +3849,7 @@ async function runUatPreflight(
     }
     if (opts.qty > avail.available) {
       console.warn(
-        `[iress-ingest/uat] NAKED-SHORT BLOCKED ${opts.symbol} sell ${opts.qty} > available ${avail.available} on ${opts.accountCode} (held ${avail.held}, inflight ${avail.inflightSells}, src ${avail.source})`,
+        `[iress-ingest/guard] NAKED-SHORT BLOCKED ${opts.symbol} sell ${opts.qty} > available ${avail.available} on ${opts.accountCode} (held ${avail.held}, inflight ${avail.inflightSells}, src ${avail.source})`,
       );
       return {
         ok: false,
@@ -3875,14 +3876,14 @@ async function runUatPreflight(
   try {
     cash =
       holder === "client"
-        ? await availableToBuyForClient(retailDb as WorkerSupabase, opts.clientUserId as string)
+        ? await availableToBuyForClient(retailDb as WorkerSupabase, db, opts.clientUserId as string)
         : await availableToBuy(db, opts.accountCode, opts.excludeAuditId, {
             fallbackCapRands: capRands,
           });
   } catch (guardErr) {
     const m = guardErr instanceof Error ? guardErr.message : String(guardErr);
     console.warn(
-      `[iress-ingest/uat] buy guard could not verify cash for ${opts.symbol} on ${opts.accountCode}: ${m}`,
+      `[iress-ingest/guard] buy guard could not verify cash for ${opts.symbol} on ${opts.accountCode}: ${m}`,
     );
     return {
       ok: false,
@@ -3901,7 +3902,7 @@ async function runUatPreflight(
         : null;
   if (cash.available != null && orderValue != null && orderValue > cash.available) {
     console.warn(
-      `[iress-ingest/uat] INSUFFICIENT-CASH BLOCKED ${opts.symbol} buy value ${orderValue.toFixed(2)} > available ${cash.available.toFixed(2)} on ${opts.accountCode} (cash ${cash.cash}, inflight ${cash.inflightBuys.toFixed(2)}, src ${cash.source})`,
+      `[iress-ingest/guard] INSUFFICIENT-CASH BLOCKED ${opts.symbol} buy value ${orderValue.toFixed(2)} > available ${cash.available.toFixed(2)} on ${opts.accountCode} (cash ${cash.cash}, inflight ${cash.inflightBuys.toFixed(2)}, src ${cash.source})`,
     );
     return {
       ok: false,
