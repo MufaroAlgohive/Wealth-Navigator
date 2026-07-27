@@ -1060,7 +1060,10 @@ async function cancelLiveOrder(
           cancelledQty = typeof ex.quantity === "number" ? ex.quantity : null;
           const p = ex.payload ?? {};
           if (typeof p.filled === "number") cancelledFilled = p.filled;
-          if (typeof p.avgPx === "number") cancelledAvgFillCents = Math.round(p.avgPx * 100);
+          /* `payload.avgPx` is already in CENTS (the poller stores it in the
+             DB-canonical unit). Multiplying by 100 here treated it as rands and
+             produced a fill price 100x too large on every cancel/amend delta. */
+          if (typeof p.avgPx === "number") cancelledAvgFillCents = p.avgPx;
         }
         await deps.supabase
           .from("oems_order_audit")
@@ -1143,7 +1146,7 @@ async function cancelLiveOrder(
             filled: cancelledFilled ?? 0,
             limit: null,
             stop: null,
-            avgPx: cancelledAvgFillCents != null ? cancelledAvgFillCents / 100 : null,
+            avgPx: cancelledAvgFillCents, // Order.avgPx is CENTS
             vwap: null,
             trader: "",
             ts: Date.parse(cancelledAt) || Date.now(),
@@ -1328,7 +1331,10 @@ async function amendLiveOrder(
           amendedQty = typeof ex.quantity === "number" ? ex.quantity : null;
           const p = ex.payload ?? {};
           if (typeof p.filled === "number") amendedFilled = p.filled;
-          if (typeof p.avgPx === "number") amendedAvgFillCents = Math.round(p.avgPx * 100);
+          /* `payload.avgPx` is already in CENTS (the poller stores it in the
+             DB-canonical unit). Multiplying by 100 here treated it as rands and
+             produced a fill price 100x too large on every cancel/amend delta. */
+          if (typeof p.avgPx === "number") amendedAvgFillCents = p.avgPx;
         }
         const amendSummary = [
           amend.price != null ? `price=${amend.price}` : null,
@@ -1424,8 +1430,8 @@ async function amendLiveOrder(
             filled: amendedFilled ?? 0,
             limit: amend.price ?? null,
             stop: amend.triggerPrice ?? null,
-            avgPx: amendedAvgFillCents != null ? amendedAvgFillCents / 100 : null,
-            vwap: amendedAvgFillCents != null ? amendedAvgFillCents / 100 : null,
+            avgPx: amendedAvgFillCents, // Order.avgPx is CENTS
+            vwap: amendedAvgFillCents, // Order.vwap is CENTS
             trader: "",
             ts: Date.parse(amendedAt) || Date.now(),
             state: "AMEND_PENDING" as OrderState,

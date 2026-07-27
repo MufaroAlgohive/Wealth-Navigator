@@ -268,7 +268,24 @@ export async function syncRetailPrices(opts: {
         continue;
       }
       // Full parity with the Yahoo feed: last_price (cents) + change_percent + change_price (RANDS).
-      const update: Record<string, unknown> = { last_price: priceCents };
+      //
+      // `updated_at` is stamped explicitly. Without it the column kept whatever
+      // value it had when the row was last edited by hand — FSR still read
+      // 2026-01-29 while last_price was updating every 5 minutes.
+      //
+      // This column is how the Yahoo fundamentals cron decides who owns a
+      // symbol's price: cron/yahoo-fundamentals/route.ts computes
+      //   iressStale = now - securities_c.updated_at > IRESS_STALE_FALLBACK_HOURS (3h)
+      //   yahooOwnsPrice = !iressOwns || iressStale
+      // A frozen `updated_at` pins `iressStale` true forever, so Yahoo
+      // permanently reclaims last_price + change_percent from IRESS on every
+      // cron run (whenever YAHOO_FUNDAMENTALS_WRITE=1) — silently inverting
+      // the IRESS-primary/Yahoo-fallback policy for every cut-over symbol.
+      // Stamping it is what makes that handover work as designed.
+      const update: Record<string, unknown> = {
+        last_price: priceCents,
+        updated_at: ts,
+      };
       if (prevCloseCents > 0) {
         update["change_percent"] = changePct;
         update["change_price"] = changeAbsRands; // RANDS — matches the MINT reader contract

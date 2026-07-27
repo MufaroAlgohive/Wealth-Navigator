@@ -395,6 +395,29 @@ export function groupOrdersByStrategy(groupedRows: GroupedRow[]): StrategyBlock[
     });
 }
 
+/** One member order of a released book. All prices are RANDS — the BFF
+ *  (`/api/admin/orderbook/order-books`) converts the CENTS it reads out of
+ *  `oems_order_audit` exactly once, on the way out. */
+export interface OrderBookMember {
+  id: string;
+  order_id: string | null;
+  client_account: string | null;
+  symbol: string | null;
+  side: string;
+  qty: number;
+  filled: number;
+  status: string;
+  order_type: "limit" | "market";
+  limit_price_rands: number | null;
+  avg_fill_price_rands: number | null;
+  value_rands: number | null;
+  venue: string | null;
+  broker: string | null;
+  last_action: string | null;
+  filled_at: string | null;
+  iress_error: string | null;
+}
+
 export interface OrderBookSummary {
   sequence: number;
   released_at: string;
@@ -402,6 +425,10 @@ export interface OrderBookSummary {
   total_count: number;
   filled_count: number;
   fully_filled: boolean;
+  /** Present from 2026-07-27 so the archive panel can show what executed.
+   *  Optional because an older cached response won't carry it. */
+  members?: OrderBookMember[];
+  filled_value_rands?: number | null;
 }
 
 /**

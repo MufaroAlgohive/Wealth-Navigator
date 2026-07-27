@@ -249,15 +249,32 @@ function fakeRetailDb(opts: {
     status: string;
     payload: Record<string, unknown> | null;
     price_cents?: number | null;
+    result_payload?: Record<string, unknown> | null;
+    /** Used by the symbol filter below; omit to mean "matches any filter". */
+    symbol?: string;
   }>;
 }): WorkerSupabase {
   return {
     from(table: string) {
       const builder: Record<string, unknown> = {};
       const chain = () => builder;
+      /**
+       * `.in("symbol", …)` is HONOURED, not swallowed.
+       *
+       * This used to be `builder.in = chain`, which discarded the filter — so a
+       * test could not tell the difference between "queried all symbols" and
+       * "queried the literal string `*` and matched nothing". That is exactly
+       * the bug that shipped: `availableToBuyForClient` passed `"*"`, reserved
+       * R0 on every call, and the suite stayed green. A double that ignores the
+       * constraint under test cannot catch a bug in that constraint.
+       */
+      let symbolFilter: string[] | null = null;
       builder.select = chain;
       builder.eq = chain;
-      builder.in = chain;
+      builder.in = (col: string, values: string[]) => {
+        if (col === "symbol") symbolFilter = values;
+        return builder;
+      };
       builder.or = chain; // 2026-07-20: per-client reservation uses `.or(...)` to filter on either user_id OR client_account
       builder.limit = chain;
       builder.maybeSingle = () =>
@@ -274,7 +291,12 @@ function fakeRetailDb(opts: {
             table === "stock_holdings_c"
               ? (opts.holdings ?? [])
               : table === "oems_order_audit"
-                ? (opts.audit ?? [])
+                ? (opts.audit ?? []).filter(
+                    (r) =>
+                      symbolFilter === null ||
+                      r.symbol === undefined ||
+                      symbolFilter.includes(r.symbol),
+                  )
                 : [],
           error:
             opts.holdingsError
@@ -444,6 +466,115 @@ describe("guards read the order book from INSTITUTIONAL, not RETAIL", () => {
     const r = await availableToBuyForClient(retail, institutional, "user-1");
     expect(r.inflightBuys).toBe(200);
     expect(r.available).toBe(800);
+  });
+});
+
+/**
+ * REGRESSION — buy-side reservations against a client's wallet.
+ *
+ * Cash is FUNGIBLE. An open FSR buy must reduce what the same client can spend
+ * on AGL. Two bugs meant it never did:
+ *
+ *  1. `availableToBuyForClient` passed the string `"*"` as the symbol filter,
+ *     which became `.in("symbol", ["*", "*.JO"])` — a literal match against no
+ *     row. inflightBuys was R0,00 on every call.
+ *  2. The client path had its own short price chain that stopped at
+ *     `payload.avgPx`, which only exists AFTER a fill. Every unfilled MARKET
+ *     order therefore priced at 0 and reserved nothing — and the worker forces
+ *     MKT on all orders.
+ *
+ * Together: a client with R1 000 could release R900 of FSR and then R900 of AGL,
+ * both passing. R1 800 committed against R1 000.
+ */
+describe("client buy reservations (cash is fungible)", () => {
+  it("reserves an open buy in ANOTHER symbol against the same wallet", async () => {
+    const retail = fakeRetailDb({ wallet: { balance: 1000 } });
+    const institutional = fakeRetailDb({
+      audit: [
+        // Open FSR buy: 5 @ R100 limit = R500 committed.
+        { id: "b-fsr", symbol: "FSR.JO", side: "buy", quantity: 5, status: "working", payload: null, price_cents: 10000 },
+      ],
+    });
+    const r = await availableToBuyForClient(retail, institutional, "user-1");
+    expect(r.cash).toBe(1000);
+    expect(r.inflightBuys).toBe(500);
+    // Before the fix this was 1000 — the client could spend it twice.
+    expect(r.available).toBe(500);
+  });
+
+  it("prices an unfilled MARKET buy from arrivalMid, with the buy buffer", async () => {
+    const retail = fakeRetailDb({ wallet: { balance: 1000 } });
+    const institutional = fakeRetailDb({
+      audit: [
+        {
+          id: "b-mkt",
+          side: "buy",
+          quantity: 2,
+          status: "acknowledged",
+          price_cents: null, // market order — no limit
+          payload: null, // no avgPx yet: nothing has filled
+          result_payload: { arrivalMid: 100 },
+        },
+      ],
+    });
+    const r = await availableToBuyForClient(retail, institutional, "user-1");
+    // 2 x R100 x 1.02 buffer = R204. Before the fix this reserved R0.
+    expect(r.inflightBuys).toBeCloseTo(204, 2);
+    expect(r.available).toBeCloseTo(796, 2);
+  });
+
+  it("reserves only the UNFILLED remainder of a partial fill", async () => {
+    const retail = fakeRetailDb({ wallet: { balance: 1000 } });
+    const institutional = fakeRetailDb({
+      audit: [
+        {
+          id: "b-part",
+          side: "buy",
+          quantity: 10,
+          status: "partial",
+          price_cents: 5000, // R50 limit
+          payload: { filled: 6 }, // 4 still working = R200
+        },
+      ],
+    });
+    const r = await availableToBuyForClient(retail, institutional, "user-1");
+    expect(r.inflightBuys).toBe(200);
+  });
+
+  /**
+   * avgPx is CENTS while every other source in the price chain is RANDS.
+   * Live order 700002 (FSR, 2026-07-27) stamped payload.avgPx = 9600 alongside
+   * result_payload.arrivalMid = 96.07 for the same order — the poller copies it
+   * straight from the IRESS OrderPad, and IRESS quotes the JSE in cents.
+   * Returning it unconverted reserved 100x: one partly-filled R96 order would
+   * hold R9 600 and lock a R1 000 client out of every subsequent buy.
+   */
+  it("treats payload.avgPx as CENTS, not rands (100x guard)", async () => {
+    const retail = fakeRetailDb({ wallet: { balance: 1000 } });
+    const institutional = fakeRetailDb({
+      audit: [
+        {
+          id: "b-partial",
+          side: "buy",
+          quantity: 2,
+          status: "partial",
+          price_cents: null, // market order
+          payload: { filled: 1, avgPx: 9600 }, // 9600 CENTS = R96,00
+        },
+      ],
+    });
+    const r = await availableToBuyForClient(retail, institutional, "user-1");
+    // 1 remaining x R96,00 x 1.02 buffer = R97,92 — NOT R9 792.
+    expect(r.inflightBuys).toBeCloseTo(97.92, 2);
+    expect(r.available).toBeCloseTo(902.08, 2);
+  });
+
+  it("a filled order reserves nothing (it has left the open set)", async () => {
+    const retail = fakeRetailDb({ wallet: { balance: 1000 } });
+    const institutional = fakeRetailDb({ audit: [] }); // poller moved it to `filled`
+    const r = await availableToBuyForClient(retail, institutional, "user-1");
+    expect(r.inflightBuys).toBe(0);
+    expect(r.available).toBe(1000);
   });
 });
 

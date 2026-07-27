@@ -313,7 +313,17 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
     if (!order.id) continue;
     const audit = auditByNumber.get(order.id);
     const fillQty = Number(order.filled) || 0;
-    const avgFillPrice = order.avgPx != null && Number.isFinite(order.avgPx) ? order.avgPx : null;
+    // `Order.avgPx` off the IRESS OrderPad is in CENTS — same unit as quotes,
+    // see derivePositions() in orders.ts which sums it straight into
+    // `buyCostCents`. Two units live in this loop and conflating them was a
+    // 100x bug: `payload.avgPx` is stored in CENTS (project-wide DB
+    // convention, and what orders.ts already writes), while
+    // `UatExecutionDelta.avgFillPrice` is RANDS (see the `priceRands` publish
+    // in http-api.ts and the `* 100` that turns it back into
+    // `avg_fill_price_cents` on the SSE wire). Keep them as two named
+    // variables so neither can be passed where the other belongs.
+    const avgFillCents = order.avgPx != null && Number.isFinite(order.avgPx) ? order.avgPx : null;
+    const avgFillRands = avgFillCents != null ? avgFillCents / 100 : null;
     const state = mapStateToDb(order.state);
 
     // 2026-07-13 (Andre + Juan call, 26:21): Andre flagged "action status"
@@ -325,9 +335,9 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
     // Format: "<verb> <state>" — e.g. "Acknowledged", "Filled +200",
     // "Partial @ R177.00", "Cancelled", "Expired".
     let lastAction: string | null = null;
-    if (state === "filled") lastAction = `Filled (${fillQty} @ R${avgFillPrice?.toFixed(2) ?? "?"})`;
+    if (state === "filled") lastAction = `Filled (${fillQty} @ R${avgFillRands?.toFixed(2) ?? "?"})`;
     else if (state === "partial")
-      lastAction = `Partial +${fillQty}${avgFillPrice != null ? ` @ R${avgFillPrice.toFixed(2)}` : ""}`;
+      lastAction = `Partial +${fillQty}${avgFillRands != null ? ` @ R${avgFillRands.toFixed(2)}` : ""}`;
     else if (state === "cancelled") lastAction = "Cancelled by broker/trader";
     else if (state === "expired") lastAction = "Expired (DAY TIF rollover)";
     else if (state === "rejected")
@@ -344,7 +354,7 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
       orderAuditId: audit?.id ?? null,
       state,
       filled: fillQty,
-      avgFillPrice,
+      avgFillPrice: avgFillRands, // hub contract is RANDS
       lastFillTimestamp: observedAt,
       // 2026-07-13 — Transcript gap #2 (26:21): carry the same
       // one-liner we stamp on the audit row so the SSE consumer can
@@ -364,7 +374,7 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
     const newPayload: Record<string, unknown> = {
       ...prevPayload,
       filled: fillQty,
-      avgPx: avgFillPrice,
+      avgPx: avgFillCents,
       lastFillAt: observedAt,
       brokerState: order.brokerState ?? order.state,
       actionStatus: order.actionStatus ?? prevPayload.actionStatus ?? null,
@@ -382,7 +392,7 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
     };
     const newResult: Record<string, unknown> = {
       ...prevResult,
-      avgFillPrice,
+      avgFillPrice: avgFillCents, // result_payload is CENTS, like payload.avgPx
       brokerState: order.brokerState ?? order.state,
       state: order.state,
       lastObservedAt: observedAt,
@@ -391,7 +401,7 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
     };
     // Slippage / day-1 P&L refresh so the UI updates without waiting for
     // a manual /fills POST.
-    if (avgFillPrice != null) {
+    if (avgFillRands != null) {
       const limitRands =
         typeof prevPayload.limitPrice === "number"
           ? (prevPayload.limitPrice as number)
@@ -400,9 +410,9 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
             : null;
       if (limitRands != null) {
         newResult.slippageBps = Math.round(
-          ((limitRands - avgFillPrice) * 10000) / Math.max(0.0001, limitRands),
+          ((limitRands - avgFillRands) * 10000) / Math.max(0.0001, limitRands),
         );
-        newResult.dayOnePnlCents = Math.round((limitRands - avgFillPrice) * 100) * fillQty;
+        newResult.dayOnePnlCents = Math.round((limitRands - avgFillRands) * 100) * fillQty;
       }
     }
     updates.push({
