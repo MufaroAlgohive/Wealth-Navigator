@@ -10,11 +10,8 @@ import type { PreflightResult, SubmitResult } from "@/lib/orders";
 import { cn } from "@/lib/cn";
 
 /**
- * Free-form UAT order ticket: pick a ticker, side (BUY/SELL), quantity and an
- * optional limit price, and place a single order on the IRESS UAT (IOS+) seat
- * via POST /api/admin/orderbook/uat-order. The order lands in the shared
- * "UAT-ADHOC" book so the ExecutionView below tracks its full lifecycle
- * (fills, route, status) live.
+ * Shared manual/UAT order ticket. In UAT mode it posts only to the guarded
+ * UAT_ADHOC_ORDER lane, where orders are parked and locally self-filled.
  *
  * 2026-07-20 refactor: the route now runs a preflight BEFORE writing the
  * audit row, so a blocked verdict (naked-short, insufficient cash) never
@@ -62,7 +59,13 @@ const GUARDRAIL_BLOCK_CODES = new Set([
   "limit_guard_unverified_sell",
 ]);
 
-export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
+export function UatOrderTicket({
+  onPlaced,
+  mode = "manual",
+}: {
+  onPlaced?: () => void;
+  mode?: "manual" | "uat";
+}) {
   const [securities, setSecurities] = React.useState<SecurityOpt[]>([]);
   const [clients, setClients] = React.useState<ClientOpt[]>([]);
   const [clientId, setClientId] = React.useState("");
@@ -107,13 +110,13 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
       .then((r) => (r.ok ? r.json() : { clients: [] }))
       .then((d: { clients?: ClientOpt[] }) => {
         if (!alive) return;
-        setClients(d.clients ?? []);
+        setClients(mode === "uat" ? (d.clients ?? []).filter((client) => client.is_test) : (d.clients ?? []));
       })
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [symbol]);
+  }, [mode, symbol]);
 
   const matched = React.useMemo(() => {
     const u = symbol.trim().toUpperCase();
@@ -148,7 +151,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
     qtyN > client.holds_qty;
 
   const postPlace = async (body: Record<string, unknown>): Promise<PlaceResult> => {
-    const r = await fetch("/api/admin/orderbook/manual-order", {
+    const r = await fetch(mode === "uat" ? "/api/admin/orderbook/uat-order" : "/api/admin/orderbook/manual-order", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -171,8 +174,8 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
       setResult(d);
       if (d.ok) {
         toast.success(
-          d.mode === "uat"
-            ? `Order sent to IRESS UAT: #${d.iressOrderNumber ?? "?"} (${d.status ?? "working"})`
+          mode === "uat"
+            ? `UAT order parked for self-fill (${d.status ?? "parked"}).`
             : "Order recorded (audit-only, worker not configured)",
         );
         onPlaced?.();
@@ -217,8 +220,8 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
     if (d.ok) {
       setResult(d);
       toast.success(
-        d.mode === "uat"
-          ? `Order sent to IRESS UAT: #${d.iressOrderNumber ?? "?"} (${d.status ?? "working"})`
+        mode === "uat"
+          ? `UAT order parked for self-fill (${d.status ?? "parked"}).`
           : "Order recorded (audit-only, worker not configured)",
       );
       onPlaced?.();
@@ -264,9 +267,11 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
   return (
     <div className="rounded-xl border border-border bg-card p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">Manual client order</h3>
+        <h3 className="text-sm font-semibold">{mode === "uat" ? "UAT self-fill order" : "Manual client order"}</h3>
         <span className="text-[10px] text-muted-foreground">
-          Parks only · nothing reaches the broker until Send to Market
+          {mode === "uat"
+            ? "Test clients only · permanently blocked from IRESS and LONGMARK"
+            : "Parks only · nothing reaches the broker until Send to Market"}
         </span>
       </div>
 
@@ -282,7 +287,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
           onChange={(e) => setClientId(e.target.value)}
           className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs"
         >
-          <option value="">Select a client…</option>
+          <option value="">{mode === "uat" ? "Select a test client…" : "Select a client…"}</option>
           {clients.map((c) => (
             <option key={c.user_id} value={c.user_id}>
               {c.name}
@@ -388,7 +393,7 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
           {price.trim() === "" && <span className="ml-2 text-[10px]">(market order, value settles at fill)</span>}
         </div>
         <Button size="sm" onClick={submit} disabled={!canSubmit}>
-          {busy ? "Parking…" : `Park ${side.toUpperCase()} order`}
+          {busy ? "Parking…" : mode === "uat" ? `Create UAT ${side.toUpperCase()}` : `Park ${side.toUpperCase()} order`}
         </Button>
       </div>
 
@@ -401,15 +406,15 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
           {overCash && client?.available_cash_rands != null && (
             <>
               This order is {R((value ?? 0) - client.available_cash_rands)} more than{" "}
-              {client.name} has available ({R(client.available_cash_rands)}). It will park, but
-              Send to Market will refuse it unless the wallet is funded first.
+              {client.name} has available ({R(client.available_cash_rands)}).
+              {mode === "uat" ? " It remains a local UAT simulation." : " It will park, but Send to Market will refuse it unless the wallet is funded first."}
             </>
           )}
           {overHolding && client?.holds_qty != null && (
             <>
               {client.name} holds {client.holds_qty.toLocaleString("en-ZA")}{" "}
               {symbol.trim().toUpperCase()} — selling {Math.floor(qtyN).toLocaleString("en-ZA")}{" "}
-              would be a short. Send to Market will refuse it.
+              would be a short. {mode === "uat" ? "This remains a local UAT simulation." : "Send to Market will refuse it."}
             </>
           )}
         </div>
@@ -424,10 +429,10 @@ export function UatOrderTicket({ onPlaced }: { onPlaced?: () => void }) {
         >
           {result.ok ? (
             <span>
-              {result.mode === "uat" ? (
+              {mode === "uat" ? (
                 <>
-                  Sent to IRESS UAT: order <span className="font-mono font-semibold">#{result.iressOrderNumber ?? "?"}</span>,
-                  status <span className="font-semibold">{result.status ?? "working"}</span>. Track it in the table below.
+                  UAT order <span className="font-mono font-semibold">{result.orderId ?? ""}</span> is{" "}
+                  <span className="font-semibold">{result.status ?? "parked"}</span>. Use Fill (UAT) in the table below.
                 </>
               ) : (
                 <>Recorded (audit-only): {result.notice ?? "worker not configured"}.</>

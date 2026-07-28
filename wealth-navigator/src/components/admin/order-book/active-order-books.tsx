@@ -14,6 +14,7 @@ interface OrderBooksPayload {
   ok: boolean;
   books?: OrderBookSummary[];
   notice?: string;
+  error?: string;
 }
 
 /** Rands, en-ZA. Returns an em dash for null so an empty cell is unambiguous. */
@@ -51,27 +52,33 @@ function fmtReleasedAt(iso: string): string {
  */
 export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
   const query = sources?.length ? `?source=${encodeURIComponent(sources.join(","))}` : "";
-  const { data, refresh } = usePolling<OrderBooksPayload>(`/api/admin/orderbook/order-books${query}`, { interval: 5_000 });
+  const { data, error, loading, refresh } = usePolling<OrderBooksPayload>(`/api/admin/orderbook/order-books${query}`, { interval: 5_000 });
   // Fully filled AND not yet moved to Closed Books — a closed book lives only
   // on the Closed Books tab from here on.
   const books = (data?.books ?? []).filter((b) => b.fully_filled && !b.closed_at);
-  const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
-  const toggle = (seq: number) =>
+  const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+  const toggle = (key: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(seq)) next.delete(seq);
-      else next.add(seq);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
 
-  const [closing, setClosing] = React.useState<Record<number, boolean>>({});
-  const moveToClosed = async (sequence: number) => {
-    setClosing((p) => ({ ...p, [sequence]: true }));
+  const [closing, setClosing] = React.useState<Record<string, boolean>>({});
+  const moveToClosed = async (book: OrderBookSummary) => {
+    const key = book.archive_id ?? String(book.sequence);
+    setClosing((p) => ({ ...p, [key]: true }));
     try {
       const res = await fetch("/api/admin/orderbook/close-book", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sequence, closed: true }),
+        body: JSON.stringify({
+          sequence: book.sequence,
+          archive_id: book.archive_id,
+          origin: book.origin,
+          closed: true,
+        }),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; email_status?: string };
       if (!res.ok || body.ok === false) {
@@ -79,15 +86,17 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
         return;
       }
       toast.success(
-        body.email_status === "sent"
-          ? `Order Book ${sequence} closed — confirmation emailed.`
-          : `Order Book ${sequence} closed — confirmation email failed (retry from Closed Books).`,
+        book.origin === "crm"
+          ? `${book.title ?? `Order Book ${book.sequence}`} moved to Closed Books.`
+          : body.email_status === "sent"
+            ? `Order Book ${book.sequence} closed — confirmation emailed.`
+            : `Order Book ${book.sequence} closed — confirmation email failed (retry from Closed Books).`,
       );
       await refresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Move to Closed Book failed");
     } finally {
-      setClosing((p) => ({ ...p, [sequence]: false }));
+      setClosing((p) => ({ ...p, [key]: false }));
     }
   };
 
@@ -101,26 +110,34 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
           Orders move here automatically once fully filled. Sending stays manual.
         </div>
       </div>
+      {error || data?.ok === false || data?.notice ? (
+        <div className="border-b border-border px-4 py-2 text-[11px] text-destructive">
+          {error?.message ?? data?.error ?? data?.notice ?? "The order-book archive could not be loaded."}
+        </div>
+      ) : null}
       <div className="divide-y divide-border/40">
-        {books.length === 0 ? (
+        {loading ? (
+          <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">Loading order books...</div>
+        ) : books.length === 0 ? (
           <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">No archived order books yet.</div>
         ) : (
           books.map((b) => {
-            const open = expanded.has(b.sequence);
+            const bookKey = b.archive_id ?? `${b.origin ?? "oem"}-${b.sequence}`;
+            const open = expanded.has(bookKey);
             const members = b.members ?? [];
             return (
-              <div key={b.sequence}>
+              <div key={bookKey}>
                 <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
                   <button
                     type="button"
-                    onClick={() => toggle(b.sequence)}
+                    onClick={() => toggle(bookKey)}
                     className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-foreground hover:underline"
                     aria-expanded={open}
                   >
                     <ChevronRight
                       className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
                     />
-                    Order Book {b.sequence}: {fmtReleasedAt(b.released_at)}
+                    {b.title ?? `Order Book ${b.sequence}`}: {fmtReleasedAt(b.released_at)}
                   </button>
                   <div className="flex items-center gap-2">
                     {/* The money figure belongs on the collapsed row — the whole
@@ -138,11 +155,11 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                     <Button
                       variant="secondary"
                       size="sm"
-                      disabled={!!closing[b.sequence]}
-                      onClick={() => void moveToClosed(b.sequence)}
+                      disabled={!!closing[bookKey]}
+                      onClick={() => void moveToClosed(b)}
                       title="Emails a CSV of this book's fills to the desk, then moves it to Closed Books."
                     >
-                      {closing[b.sequence] ? "Closing…" : "Move to Closed Book"}
+                      {closing[bookKey] ? "Closing…" : "Move to Closed Book"}
                     </Button>
                   </div>
                 </div>
