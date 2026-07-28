@@ -86,6 +86,50 @@ export async function loadRetailUniverse(retail: WorkerSupabase): Promise<Retail
   return (data ?? []) as unknown as RetailSecurity[];
 }
 
+/**
+ * The symbols a human is actually looking at: everything held in an open lot,
+ * plus everything any strategy tracks. Roughly a third of the universe, which
+ * is the difference between a ~6 minute price and a live one.
+ *
+ * Falls back to an empty list on error, and the caller treats empty as "sweep
+ * everything" — degrading to the old behaviour rather than silently sweeping
+ * nothing and freezing every price in the app.
+ */
+export async function loadHotSymbols(retail: WorkerSupabase): Promise<string[]> {
+  const out = new Set<string>();
+  try {
+    const { data: lots } = await retail
+      .from("stock_holdings_c")
+      .select("security_id")
+      .eq("is_active", true);
+    const ids = [...new Set((lots ?? []).map((l) => (l as { security_id: string }).security_id).filter(Boolean))];
+    if (ids.length) {
+      const { data: secs } = await retail.from("securities_c").select("symbol").in("id", ids);
+      for (const sec of secs ?? []) {
+        const sym = (sec as { symbol: string }).symbol;
+        if (sym) out.add(sym);
+      }
+    }
+    const { data: strats } = await retail.from("strategies_c").select("holdings");
+    for (const row of strats ?? []) {
+      const raw = (row as { holdings: unknown }).holdings;
+      const arr = Array.isArray(raw) ? raw : typeof raw === "string" ? JSON.parse(raw || "[]") : [];
+      for (const h of Array.isArray(arr) ? arr : []) {
+        const t = (h as { ticker?: string })?.ticker;
+        if (typeof t === "string" && t) out.add(t);
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[retail-ingest] hot-symbol load failed, falling back to full universe: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
+  return [...out];
+}
+
 export async function syncRetailPrices(opts: {
   env: WorkerEnv;
   sessions: WorkerSessionManager;
@@ -102,6 +146,15 @@ export async function syncRetailPrices(opts: {
   exchange?: string;
   /** Optional cap (e.g. a small shadow run). */
   limit?: number;
+  /**
+   * Restrict the sweep to these securities_c.symbol values. Used by the FAST
+   * LANE: the full-universe walk takes ~374s wall clock over ~197 symbols, so
+   * any price a client is actually looking at is minutes old and every
+   * freshness badge in the app reads STALE — correctly. Sweeping just the
+   * symbols someone holds or a strategy tracks is a far smaller set and can run
+   * on a much tighter cadence. Empty or omitted = the whole universe, unchanged.
+   */
+  symbols?: string[];
 }): Promise<RetailSyncResult> {
   const { env, sessions, retail } = opts;
   const institutional = opts.institutional ?? null;
@@ -136,7 +189,9 @@ export async function syncRetailPrices(opts: {
   }
 
   const universe = await loadRetailUniverse(retail);
-  const list = opts.limit && opts.limit > 0 ? universe.slice(0, opts.limit) : universe;
+  const wanted = opts.symbols && opts.symbols.length ? new Set(opts.symbols) : null;
+  const scoped = wanted ? universe.filter((u) => wanted.has(u.symbol)) : universe;
+  const list = opts.limit && opts.limit > 0 ? scoped.slice(0, opts.limit) : scoped;
   const ts = new Date().toISOString();
 
   // Per-symbol cutover allowlist (approved + backend-validated), from the

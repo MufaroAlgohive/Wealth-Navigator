@@ -19,7 +19,7 @@ import { evaluateTriggers } from "./alerts";
 import { LICENSE_RELEASE_DELAY_MS, WorkerSessionManager } from "./session";
 import { tearDownMarketDataSession } from "./market-data";
 import { createInstitutionalSupabase, createRetailSupabase, writeHeartbeat } from "./supabase";
-import { loadTimeSeriesConfig, syncTimeSeries } from "./timeseries";
+import { loadTimeSeriesConfig, syncIndexIntraday, syncTimeSeries } from "./timeseries";
 
 const env = loadWorkerEnv();
 
@@ -268,6 +268,49 @@ async function timeSeriesLoop(): Promise<void> {
   }
 }
 
+/**
+ * Tight intraday poll for index codes (J203 / sector basket). Runs in
+ * parallel to the daily `timeSeriesLoop` and writes to the same
+ * `index_intraday_c` table. Off when `IRESS_WORKER_INDEX_INTRADAY_INTERVAL_SEC<=0`
+ * (deliberate disable sentinel, same convention as `orderPollIntervalSec`).
+ *
+ * Until the JSE index entitlement lands on `DFM@Mint` (Andre/Charles —
+ * `IRESS_ISSUES_FOR_ANDRE.md` §1), this loop logs
+ * `time_series_entitlement_missing` and writes nothing. When the
+ * entitlement flips, the next cycle starts populating without any code
+ * change.
+ */
+async function indexIntradayLoop(): Promise<void> {
+  if (timeSeriesConfig.intradayIntervalSec <= 0) return;
+  while (!shuttingDown) {
+    try {
+      const result = await syncIndexIntraday({
+        env,
+        config: timeSeriesConfig,
+        sessions,
+        supabase,
+      });
+      if (result.points > 0 || result.entitlementRequired) {
+        console.info(
+          JSON.stringify({
+            level: "info",
+            event: "index_intraday_sync_complete",
+            source: "iress-worker",
+            requested: result.requested,
+            points: result.points,
+            errors: result.errors,
+            entitlementRequired: result.entitlementRequired,
+          }),
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] index intraday sync error: ${msg}`);
+    }
+    await sleep(timeSeriesConfig.intradayIntervalSec * 1000);
+  }
+}
+
 async function ipsLoop(): Promise<void> {
   if (ipsConfig.intervalSec <= 0) return;
   while (!shuttingDown) {
@@ -477,6 +520,7 @@ void quoteLoop();
 void orderLoop();
 void uatOrderLoop();
 void timeSeriesLoop();
+void indexIntradayLoop();
 void alertLoop();
 // IPS is parked (IRESS scope = market data + IOS+). The loop only errors every
 // cycle without an IPS service session — re-enable with IRESS_ENABLE_IPS=1.

@@ -420,12 +420,34 @@ export async function availableToSellForClient(
       note: `no securities_c row for ${code} — fail-closed`,
     };
   }
+  /* Scoped to the ACCOUNT HOLDER'S OWN lots — this MUST match the FIFO scope in
+     settlement.ts:375-383, which filters `.is("family_member_id", null)`.
+
+     A minor's holdings live under the PARENT's user_id, distinguished only by
+     family_member_id. This query had no family filter and summed every lot, so
+     the guard and settlement silently disagreed about the same position: the
+     guard said sellable, settlement then refused to touch the lot. The sell
+     executes at LONGMARK, no lot closes, no cash arrives — a real disposal with
+     no ledger entry, which is worse than the naked short the guard exists to
+     stop.
+
+     Live proof (2026-07-27, retail): user b215eb9a-4017-45f1-a460-6056b1db0c4d
+     holds 4 shares of security 9dbca8ee-a8d6-41dd-9d2a-0d53c34b4dd8 in their own
+     name and 4 more under family_member 5acb7c10-2f39-43cb-9ce3-f9142f95c6ec.
+     Unfiltered this reported held=8 and passed a sell of 8; settlement can only
+     deliver 4. Book-wide there are 14 such (user, security) pairs across 2 users,
+     overstating available-to-sell by 34 shares.
+
+     The OEMS order payload cannot express a family member at all, so the only
+     honest scope is the holder's own lots — a family-member sale has to come
+     through a path that knows whose it is. */
   const rows = await retail
     .from("stock_holdings_c")
     .select("quantity, trade_side")
     .eq("user_id", userId)
     .eq("security_id", securityId)
-    .eq("is_active", true);
+    .eq("is_active", true)
+    .is("family_member_id", null);
   if (rows.error) throw new Error(`stock_holdings_c read failed: ${rows.error.message}`);
   let held = 0;
   for (const r of (rows.data ?? []) as { quantity: number | null; trade_side: string | null }[]) {

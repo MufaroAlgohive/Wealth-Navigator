@@ -107,7 +107,16 @@ export interface TimeSeriesConfig {
   curveExchange: string;
   /** DataSource for the curve/bond codes — CONFIRMED `YFXD` (NOT JSED). */
   curveDataSource: string;
+  /** Daily-loop cadence (the "TimeSeriesGet2(..., Interval=Daily)" pull). */
   intervalSec: number;
+  /** Intraday-loop cadence (the "TimeSeriesGet2(..., Interval=IntraDay)" pull).
+   *  Off when <= 0; default 120 s. Writes to the SAME `index_intraday_c` table
+   *  as the daily loop — the BFF dedups by (index_code, timestamp) and serves
+   *  the union. Until the JSE index entitlement lands, this loop logs
+   *  `time_series_entitlement_missing` and writes nothing, exactly like the
+   *  daily loop — so it costs nothing in production but is ready to wake up
+   *  the moment Andre/Charles flips the entitlement. */
+  intradayIntervalSec: number;
 }
 
 export function loadTimeSeriesConfig(env: WorkerEnv): TimeSeriesConfig {
@@ -148,6 +157,13 @@ export function loadTimeSeriesConfig(env: WorkerEnv): TimeSeriesConfig {
     curveExchange: (process.env.IRESS_TIMESERIES_CURVE_EXCHANGE ?? "YFX").trim() || "YFX",
     curveDataSource: (process.env.IRESS_TIMESERIES_CURVE_DATASOURCE ?? "YFXD").trim() || "YFXD",
     intervalSec: Math.max(60, Number(process.env.IRESS_WORKER_TIMESERIES_INTERVAL_SEC ?? "300")),
+    // Intraday loop — 0 disables (deliberate sentinel, like orderPollIntervalSec).
+    // Default 120 s gives ~5-min-resolution bars off IntraDay, which matches the
+    // 5m Yahoo fallback cadence used today. Floor 60 s in code; env wins if set.
+    intradayIntervalSec: (() => {
+      const n = Number(process.env.IRESS_WORKER_INDEX_INTRADAY_INTERVAL_SEC ?? "120");
+      return Number.isFinite(n) ? (n <= 0 ? n : Math.max(60, n)) : 120;
+    })(),
   };
 }
 
@@ -844,5 +860,125 @@ export async function syncTimeSeries(opts: TimeSeriesSyncOptions): Promise<TimeS
     requestedCurve: config.curveCodes.length + config.realCodes.length,
     entitlementRequired,
     errors,
+  };
+}
+
+export interface IndexIntradaySyncResult {
+  /** Total rows upserted into `index_intraday_c` across all codes. */
+  points: number;
+  requested: number;
+  errors: number;
+  entitlementRequired: boolean;
+}
+
+/**
+ * Intraday poll for index codes (J203 / sector basket). Mirrors
+ * `syncTimeSeries()` for the daily loop but asks for `Interval="IntraDay"`
+ * over a tight [now − 6 h, now] window, on a much faster cadence
+ * (default 120 s; off when `<= 0`). Writes land in the SAME
+ * `index_intraday_c` table as the daily loop — the BFF's
+ * `(index_code, timestamp)` dedup keeps the union coherent, and the UI
+ * stops showing only the four-tick Yahoo fallback once this lands.
+ *
+ * Entitlement gap (Andre, 2026-06-22, IRESS_ISSUES_FOR_ANDRE.md §1):
+ * `TimeSeriesGet2(J203, …)` returns 0 rows on CT today. This loop logs
+ * `time_series_entitlement_missing` and writes nothing until the JSE
+ * index `DataSource` is enabled on `DFM@Mint` (or we cut over to prod).
+ * Once entitlement is on, the loop wakes up automatically — no extra
+ * operator step.
+ */
+export async function syncIndexIntraday(opts: {
+  env: WorkerEnv;
+  config: TimeSeriesConfig;
+  sessions: WorkerSessionManager;
+  supabase: WorkerSupabase | null;
+}): Promise<IndexIntradaySyncResult> {
+  const { env, config, sessions, supabase } = opts;
+  const isLive = env.iressMode === "live" || env.iressMode === "wsdl-stub";
+
+  let points = 0;
+  let errors = 0;
+  let entitlementRequired = false;
+
+  // Tight window — IntraDay is intended to be a recent snapshot, not a
+  // long history. Six hours covers JSE pre-open + the first half of the
+  // session with margin; IRESS caps IntraDay rows at whatever the
+  // configured bar frequency is, so a 6-hour pull is plenty.
+  const now = Date.now();
+  const fromDate = new Date(now - 6 * 3600_000).toISOString().slice(0, 10);
+  const toDate = new Date(now).toISOString().slice(0, 10);
+
+  for (const code of [...config.indexCodes, ...config.sectorCodes]) {
+    try {
+      const t0 = Date.now();
+      const res = isLive
+        ? await fetchSeries(
+            sessions,
+            code,
+            "JSEI",
+            { from: fromDate, to: toDate, interval: "1m" },
+            config.indexDataSource,
+          )
+        : { points: await fetchMockSeries(code, "JSE"), entitlementRequired: false };
+      // The mock loop answers J203 with a handful of synthetic ticks (handy
+      // for local UI; never fabricated in live because `isLive` short-circuits
+      // the mock path). `timeSeriesIntervalString("1m")` returns "IntraDay" on
+      // the live wire, so the live call is a 1-minute-bar pull — which is the
+      // closest match to the 5m Yahoo fallback cadence.
+      const intervalWire = timeSeriesIntervalString("1m");
+      recordWorkerEvent({
+        level: "info",
+        event: "iress_call_complete",
+        msg: `TimeSeriesGet2(${code}/JSE, IntraDay) returned ${res.points.length} points`,
+        data: {
+          method: "TimeSeriesGet2",
+          series: "index_intraday",
+          code,
+          exchange: "JSEI",
+          interval: intervalWire,
+          elapsedMs: Date.now() - t0,
+          points: res.points.length,
+        },
+      });
+      if (res.entitlementRequired) entitlementRequired = true;
+      if (res.points.length === 0) {
+        recordWorkerEvent({
+          level: "warn",
+          event: res.entitlementRequired
+            ? "time_series_entitlement_missing"
+            : "index_intraday_no_data",
+          msg: res.entitlementRequired
+            ? `TimeSeriesGet2 IntraDay entitlement required for ${code} — ask Andre to enable JSE index DataSource`
+            : `No intraday points for ${code} — likely entitlement, holiday, or market closed`,
+          data: {
+            series: "index_intraday",
+            code,
+            iressMode: env.iressMode,
+            elapsedMs: Date.now() - t0,
+            points: 0,
+          },
+        });
+        continue;
+      }
+      // `insertIndexPoints` does the same (index_code, timestamp) upsert the
+      // daily path uses — conflict-key dedup keeps the union clean across
+      // both loops. The intraday bar timestamp may collide with the daily
+      // bar's 00:00 timestamp on the same calendar day; the upsert
+      // overwrites with the latest value, which is what we want (live beats
+      // historical on a clash).
+      points += await insertIndexPoints(supabase, env, code, res.points);
+    } catch (err) {
+      if (isIressSessionDeadError(err)) throw err;
+      errors += 1;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-ingest] index intraday sync(${code}) failed: ${msg}`);
+    }
+  }
+
+  return {
+    points,
+    requested: config.indexCodes.length + config.sectorCodes.length,
+    errors,
+    entitlementRequired,
   };
 }
