@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getAdminContext } from "@/lib/admin/rbac";
 import { buildCanonicalReturnIndex } from "@/lib/returns/canonical-index";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
-import { strategyCashAsset } from "@/lib/strategy-cash-asset";
+import { strategyCashAssetFromCanonicalReturns } from "@/lib/strategy-cash-asset";
 
 /**
  * Factsheets (read-only). Gallery + single-strategy detail over strategies_c,
@@ -30,6 +30,8 @@ interface ReturnRow {
   all_pct: number | null;
   "1d_pct": number | null;
   basket_value: number | null;
+  continuity_cash_cents: number | null;
+  securities_value_cents: number | null;
 }
 
 export async function GET(req: Request) {
@@ -97,7 +99,9 @@ export async function GET(req: Request) {
     if (!strategy) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
     const { data: returns } = await db
       .from("strategy_returns_effective_c")
-      .select('strategy_id, as_of_date, ytd_pct, all_pct, "1d_pct", basket_value')
+      .select(
+        'strategy_id, as_of_date, ytd_pct, all_pct, "1d_pct", basket_value,continuity_cash_cents,securities_value_cents',
+      )
       .eq("strategy_id", id)
       .order("as_of_date", { ascending: true })
       .limit(800);
@@ -164,9 +168,10 @@ export async function GET(req: Request) {
         asOf: row.as_of_date,
       };
     });
-    const securitiesValue = realRows.reduce((sum, row) => sum + Number(row.securities_value_cents || 0), 0);
-    const residualCash = realRows.reduce((sum, row) => sum + Number(row.residual_cash_cents || 0), 0);
-    const cashAsset = strategyCashAsset(residualCash, securitiesValue);
+    // CA is a model/strategy asset, not an investor aggregate. Summing client
+    // residuals duplicated the same per-strategy CA once per owner (for
+    // example R148.47 became R296.94 with two investors).
+    const cashAsset = strategyCashAssetFromCanonicalReturns((returns ?? []) as ReturnRow[]);
     return NextResponse.json({
       ok: true,
       strategy,
@@ -196,7 +201,9 @@ export async function GET(req: Request) {
     // Recent returns series grouped by strategy (newest-first fetch → ascending series).
     const { data: ret } = await db
       .from("strategy_returns_effective_c")
-      .select('strategy_id, as_of_date, ytd_pct, all_pct, "1d_pct", basket_value')
+      .select(
+        'strategy_id, as_of_date, ytd_pct, all_pct, "1d_pct", basket_value,continuity_cash_cents,securities_value_cents',
+      )
       .order("as_of_date", { ascending: false })
       .limit(4000);
     const groupedReturns: Record<string, ReturnRow[]> = {};

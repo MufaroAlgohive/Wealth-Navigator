@@ -92,7 +92,9 @@ async function loadRetailStrategies(
       ? retail.from("strategy_rebalance_residuals").select("user_id,family_member_id,strategy_id,balance_cents")
       : Promise.resolve({ data: [] }),
     wantCore
-      ? retail.from("strategy_returns_effective_latest_c").select('strategy_id,ytd_pct,"1d_pct"')
+      ? retail
+          .from("strategy_returns_effective_latest_c")
+          .select('strategy_id,ytd_pct,"1d_pct",continuity_cash_cents,securities_value_cents')
       : Promise.resolve({ data: [], error: null }),
   ]);
   const { data: stratData, error: stratErr } = stratRes;
@@ -275,6 +277,7 @@ async function loadRetailStrategies(
   // (Rand) below = corrected AUM × the strategy's own daily chain 1d_pct.
   const ytdByStrategy = new Map<string, number>();
   const day1PctByStrategy = new Map<string, number>();
+  const cashPctByStrategy = new Map<string, number>();
   const { data: strategyReturnRows, error: strategyReturnErr } = strategyReturnRes as { data: Array<Record<string, unknown>> | null; error: unknown };
   if (!strategyReturnErr) {
     for (const r of (strategyReturnRows ?? []) as Array<Record<string, unknown>>) {
@@ -284,6 +287,12 @@ async function loadRetailStrategies(
       if (y != null) ytdByStrategy.set(k, toNumber(y as number));
       const d1 = r["1d_pct"];
       if (d1 != null) day1PctByStrategy.set(k, toNumber(d1 as number));
+      const continuityCash = toNumber(r.continuity_cash_cents as number);
+      const securitiesValue = toNumber(r.securities_value_cents as number);
+      const strategyValue = continuityCash + securitiesValue;
+      if (continuityCash > 0 && strategyValue > 0) {
+        cashPctByStrategy.set(k, (continuityCash / strategyValue) * 100);
+      }
     }
   }
 
@@ -291,10 +300,10 @@ async function loadRetailStrategies(
     const a = agg.get(s.id) ?? { aum: 0, cash: 0, users: new Set<string>() };
     // basket_value / pnl are integer CENTS in retail (see /api/client-book).
     const aumR = a.aum / 100;
-    // Cash as a % of AUM, not a summed Rand total — the point is "how much
-    // of this basket is currently cash", a ratio that doesn't grow just
-    // because more investors hold the strategy.
-    const cashPct = a.aum > 0 ? (a.cash / a.aum) * 100 : null;
+    // CA is the canonical model-level continuity cash weight. Never derive it
+    // by summing client residuals, which duplicates the same strategy asset
+    // once per investor.
+    const cashPct = cashPctByStrategy.get(s.id) ?? null;
     const day1Pct = day1PctByStrategy.get(s.id) ?? null;
     const dayPnlR = day1Pct != null ? aumR * (day1Pct / 100) : 0;
     const sector = String(s.sector ?? "").toLowerCase();
@@ -343,10 +352,7 @@ async function loadRetailStrategies(
       // independent of which clients are currently invested, and never reset
       // by a rebalance. null only if the strategy has never published.
       ytd: ytdByStrategy.has(s.id) ? (ytdByStrategy.get(s.id) as number) : null,
-      // Rebalance residual as a % of AUM — the cash asset class left in the
-      // basket after a liquidation, not yet redeployed. null when there's no
-      // AUM to divide by; 0 (not null) when there's AUM but no residual, so
-      // "0.0%" reads as "confirmed none", same convention as everywhere else.
+      // Rebalance residual as a percentage of the canonical strategy model.
       cashWeight: cashPct,
       nav: aumR,
       investorCount: a.users.size,
