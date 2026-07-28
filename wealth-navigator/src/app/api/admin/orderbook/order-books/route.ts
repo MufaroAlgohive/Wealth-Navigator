@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
+import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * GET /api/admin/orderbook/order-books
@@ -117,6 +117,41 @@ function openInstitutional(): SupabaseClient | null {
   }
 }
 
+function crmMoney(v: unknown): number | null {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const raw = String(v ?? "").replace(/[^\d,.-]/g, "").trim();
+  if (!raw) return null;
+  const normalized = raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function crmMember(row: Record<string, unknown>, index: number, bookId: string): BookMember {
+  const qty = num(row.totalQuantity) ?? num(row.quantityValue) ?? num(row.quantity) ?? 0;
+  const avgFill = num(row.avgFillNumber) ?? crmMoney(row.avgFill);
+  const expected = crmMoney(row.actualFill);
+  const sourceId = str(row.sourceId) ?? `${bookId}-${index + 1}`;
+  return {
+    id: `crm-${sourceId}`,
+    order_id: str(row.bndReference) ?? sourceId,
+    client_account: str(row.clientAccountId) ?? str(row.clientName) ?? null,
+    symbol: str(row.ticker) ?? str(row.instrumentName),
+    side: (str(row.side) ?? "BUY").toUpperCase(),
+    qty,
+    filled: avgFill != null && avgFill > 0 ? qty : 0,
+    status: avgFill != null && avgFill > 0 ? "filled" : "pending",
+    order_type: String(row.orderType ?? "").toLowerCase().includes("limit") ? "limit" : "market",
+    limit_price_rands: expected,
+    avg_fill_price_rands: avgFill,
+    value_rands: avgFill != null ? avgFill * qty : null,
+    venue: "CRM",
+    broker: str(row.brokerRef),
+    last_action: str(row.notificationStatus),
+    filled_at: str(row.fillDate) ?? null,
+    iress_error: null,
+  };
+}
+
 export async function GET(req?: Request) {
   const auth = await getAdminContext();
   if (auth.status === "no-session") {
@@ -170,10 +205,6 @@ export async function GET(req?: Request) {
     }
     return NextResponse.json({ ok: false, error: bookErr.message }, { status: 500 });
   }
-  if (!bookRows || bookRows.length === 0) {
-    return NextResponse.json({ ok: true, books: [] });
-  }
-
   const { data: memberRows, error: memberErr } = await db
     .from("oems_order_audit")
     .select(
@@ -197,7 +228,7 @@ export async function GET(req?: Request) {
     bySeq.set(seq, agg);
   }
 
-  const books = (bookRows as Array<{
+  const books = ((bookRows ?? []) as Array<{
     sequence: number; released_at: string; released_by: string | null; member_count: number;
     closed_at?: string | null; closed_by?: string | null;
     email_status?: "sent" | "failed" | null; email_error?: string | null; email_sent_at?: string | null;
@@ -242,5 +273,83 @@ export async function GET(req?: Request) {
     },
   );
 
-  return NextResponse.json({ ok: true, books });
+  // CRM order-book snapshots live in RETAIL, not in the institutional OEMS
+  // tables. Merge them into the same read model so the OEM archive is the
+  // operational view of both systems. This is read-only and never enters an
+  // IRESS/worker dispatch path.
+  let crmBooks: Array<Record<string, unknown>> = [];
+  let crmNotice: string | undefined;
+  try {
+    if (sourceFilter && !sourceFilter.has("CRM")) {
+      return NextResponse.json({ ok: true, books: books.map((book) => ({
+        ...book,
+        archive_id: `oem-${book.sequence}`,
+        origin: "oem",
+      })) });
+    }
+    const retail = createRetailServiceRoleClient();
+    const crmResult = await retail
+      .from("orderbook_email_runs")
+      .select("run_date,status,sent_at,error_message,created_at,updated_at,sequence_number,title,date_label,snapshot_rows,closed_at,closed_by")
+      .order("run_date", { ascending: false })
+      .order("sequence_number", { ascending: false });
+    let crmData: Array<Record<string, unknown>> | null = crmResult.data as Array<Record<string, unknown>> | null;
+    let crmError = crmResult.error;
+    if (crmResult.error && String(crmResult.error.code) === "42703") {
+      const fallback = await retail
+        .from("orderbook_email_runs")
+        .select("run_date,status,sent_at,error_message,created_at,updated_at,sequence_number,title,date_label,snapshot_rows")
+        .order("run_date", { ascending: false })
+        .order("sequence_number", { ascending: false });
+      crmData = fallback.data as Array<Record<string, unknown>> | null;
+      crmError = fallback.error;
+    }
+    if (crmError) {
+      crmNotice = `CRM archive unavailable: ${crmError.message}`;
+    } else {
+      crmBooks = (crmData ?? []).map((raw) => {
+        const row = raw as Record<string, unknown>;
+        const sequence = num(row.sequence_number) ?? 1;
+        const runDate = str(row.run_date) ?? "unknown-date";
+        const archiveId = `${runDate}-${sequence}`;
+        const snapshotRows = Array.isArray(row.snapshot_rows)
+          ? row.snapshot_rows.filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+          : [];
+        const members = snapshotRows.map((item, index) => crmMember(item, index, archiveId));
+        const filledCount = members.filter((member) => member.status === "filled").length;
+        return {
+          archive_id: archiveId,
+          origin: "crm",
+          sequence,
+          title: str(row.title) ?? `Order Book ${sequence}`,
+          released_at: str(row.sent_at) ?? str(row.updated_at) ?? str(row.created_at) ?? `${runDate}T00:00:00Z`,
+          released_by: null,
+          closed_at: str(row.closed_at),
+          closed_by: str(row.closed_by),
+          email_status: row.status === "sent" ? "sent" : row.status === "failed" ? "failed" : null,
+          email_error: str(row.error_message),
+          email_sent_at: str(row.sent_at),
+          total_count: members.length,
+          filled_count: filledCount,
+          fully_filled: members.length > 0 && filledCount === members.length,
+          sources: ["CRM"],
+          members,
+          filled_value_rands: members.reduce((sum, member) => sum + (member.value_rands ?? 0), 0),
+        };
+      });
+    }
+  } catch (error) {
+    crmNotice = `CRM archive unavailable: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  const oemBooks = books.map((book) => ({
+    ...book,
+    archive_id: `oem-${book.sequence}`,
+    origin: "oem",
+  }));
+  const merged = [...crmBooks, ...oemBooks].sort(
+    (a, b) => Date.parse(String(b.released_at ?? 0)) - Date.parse(String(a.released_at ?? 0)),
+  );
+
+  return NextResponse.json({ ok: true, books: merged, ...(crmNotice ? { notice: crmNotice } : {}) });
 }

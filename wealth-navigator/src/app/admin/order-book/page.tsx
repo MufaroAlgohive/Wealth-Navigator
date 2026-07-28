@@ -53,8 +53,17 @@ export default function OrderBookPage() {
           // but scoped to app orders (MINT_CLIENT_ORDER) only; manual/UAT desk
           // orders stay on the Manual Orders tab.
           <TabsContent value="active" className="mt-3 space-y-3">
-            <ExecutionView key="orderbook-active" sources={["MINT_CLIENT_ORDER"]} />
-            <ActiveOrderBooks sources={["MINT_CLIENT_ORDER"]} />
+            <UatBanner />
+            <UatOrderTicket mode="uat" onPlaced={() => setUatRefresh((n) => n + 1)} />
+            <ExecutionView
+              key={`orderbook-active-${uatRefresh}`}
+              sources={["MINT_CLIENT_ORDER", "UAT_ADHOC_ORDER"]}
+            />
+            {/* The archive is shared across order-entry lanes. Older books and
+                releases made through the desk/UAT routes do not carry the
+                MINT_CLIENT_ORDER source, so filtering here can hide the only
+                place from which an admin can close them. */}
+            <ActiveOrderBooks />
           </TabsContent>
         ) : (
           // Closed Books — CRM-style archive of books an admin has explicitly

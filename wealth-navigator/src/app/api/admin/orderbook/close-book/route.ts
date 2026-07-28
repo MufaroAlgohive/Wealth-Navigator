@@ -56,11 +56,46 @@ export async function POST(req: Request) {
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   const sequence = Number(body.sequence);
+  const origin = body.origin === "crm" ? "crm" : "oem";
+  const archiveId = typeof body.archive_id === "string" ? body.archive_id.trim() : "";
   if (!Number.isFinite(sequence)) {
     return NextResponse.json({ ok: false, error: "sequence is required" }, { status: 400 });
   }
   const closed = body.closed !== false;
   const retryEmail = body.retry_email === true;
+
+  if (origin === "crm") {
+    const match = archiveId.match(/^(\d{4}-\d{2}-\d{2})-(\d+)$/);
+    if (!match) {
+      return NextResponse.json({ ok: false, error: "Invalid CRM archive id." }, { status: 400 });
+    }
+    let retail: ReturnType<typeof createRetailServiceRoleClient>;
+    try {
+      retail = createRetailServiceRoleClient();
+    } catch (e) {
+      return NextResponse.json(
+        { ok: false, error: e instanceof Error ? e.message : "Retail Supabase not configured" },
+        { status: 503 },
+      );
+    }
+    const patch = closed
+      ? { closed_at: new Date().toISOString(), closed_by: null }
+      : { closed_at: null, closed_by: null };
+    const { error } = await retail
+      .from("orderbook_email_runs")
+      .update(patch)
+      .eq("run_date", match[1])
+      .eq("sequence_number", Number(match[2]));
+    if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    return NextResponse.json({
+      ok: true,
+      sequence,
+      archive_id: archiveId,
+      closed,
+      email_status: closed && retryEmail ? "failed" : undefined,
+      email_error: closed && retryEmail ? "CRM email retry remains managed by MyMintAdmin." : undefined,
+    });
+  }
 
   let institutional: ReturnType<typeof createInstitutionalServiceRoleClient>;
   try {

@@ -14,6 +14,7 @@ interface OrderBooksPayload {
   ok: boolean;
   books?: OrderBookSummary[];
   notice?: string;
+  error?: string;
 }
 
 function fmtDate(iso: string | null | undefined): string {
@@ -38,62 +39,64 @@ function fmtDate(iso: string | null | undefined): string {
  */
 export function ClosedBooks({ sources }: { sources?: string[] } = {}) {
   const query = sources?.length ? `?source=${encodeURIComponent(sources.join(","))}` : "";
-  const { data, refresh } = usePolling<OrderBooksPayload>(`/api/admin/orderbook/order-books${query}`, { interval: 10_000 });
+  const { data, error, loading, refresh } = usePolling<OrderBooksPayload>(`/api/admin/orderbook/order-books${query}`, { interval: 10_000 });
   const books = (data?.books ?? []).filter((b) => !!b.closed_at);
-  const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
-  const toggle = (seq: number) =>
+  const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+  const toggle = (key: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(seq)) next.delete(seq);
-      else next.add(seq);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
 
-  const [busy, setBusy] = React.useState<Record<number, boolean>>({});
+  const [busy, setBusy] = React.useState<Record<string, boolean>>({});
 
-  const retryEmail = async (sequence: number) => {
-    setBusy((p) => ({ ...p, [sequence]: true }));
+  const retryEmail = async (book: OrderBookSummary) => {
+    const key = book.archive_id ?? String(book.sequence);
+    setBusy((p) => ({ ...p, [key]: true }));
     try {
       const res = await fetch("/api/admin/orderbook/close-book", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sequence, closed: true, retry_email: true }),
+        body: JSON.stringify({ sequence: book.sequence, archive_id: book.archive_id, origin: book.origin, closed: true, retry_email: true }),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; email_status?: string };
       if (!res.ok || body.ok === false) {
         toast.error(body.error ?? `Retry failed (${res.status})`);
       } else {
         toast[body.email_status === "sent" ? "success" : "error"](
-          body.email_status === "sent" ? `Order Book ${sequence} confirmation resent.` : "Retry failed again — check RESEND_API_KEY / recipients.",
+          body.email_status === "sent" ? `Order Book ${book.sequence} confirmation resent.` : "Retry failed again — check RESEND_API_KEY / recipients.",
         );
       }
       await refresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Retry failed");
     } finally {
-      setBusy((p) => ({ ...p, [sequence]: false }));
+      setBusy((p) => ({ ...p, [key]: false }));
     }
   };
 
-  const reopen = async (sequence: number) => {
-    setBusy((p) => ({ ...p, [sequence]: true }));
+  const reopen = async (book: OrderBookSummary) => {
+    const key = book.archive_id ?? String(book.sequence);
+    setBusy((p) => ({ ...p, [key]: true }));
     try {
       const res = await fetch("/api/admin/orderbook/close-book", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sequence, closed: false }),
+        body: JSON.stringify({ sequence: book.sequence, archive_id: book.archive_id, origin: book.origin, closed: false }),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || body.ok === false) {
         toast.error(body.error ?? `Reopen failed (${res.status})`);
       } else {
-        toast.success(`Order Book ${sequence} reopened — back on the live archive.`);
+        toast.success(`Order Book ${book.sequence} reopened — back on the live archive.`);
       }
       await refresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Reopen failed");
     } finally {
-      setBusy((p) => ({ ...p, [sequence]: false }));
+      setBusy((p) => ({ ...p, [key]: false }));
     }
   };
 
@@ -105,24 +108,32 @@ export function ClosedBooks({ sources }: { sources?: string[] } = {}) {
           Books move here once an admin clicks &ldquo;Move to Closed Book&rdquo;.
         </div>
       </div>
+      {error || data?.ok === false || data?.notice ? (
+        <div className="border-b border-border px-4 py-2 text-[11px] text-destructive">
+          {error?.message ?? data?.error ?? data?.notice ?? "The closed-book archive could not be loaded."}
+        </div>
+      ) : null}
       <div className="divide-y divide-border/40">
-        {books.length === 0 ? (
+        {loading ? (
+          <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">Loading closed books...</div>
+        ) : books.length === 0 ? (
           <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">No closed books yet.</div>
         ) : (
           books.map((b) => {
-            const open = expanded.has(b.sequence);
+            const bookKey = b.archive_id ?? `${b.origin ?? "oem"}-${b.sequence}`;
+            const open = expanded.has(bookKey);
             const members = b.members ?? [];
             return (
-              <div key={b.sequence}>
+              <div key={bookKey}>
                 <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
                   <button
                     type="button"
-                    onClick={() => toggle(b.sequence)}
+                    onClick={() => toggle(bookKey)}
                     className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-foreground hover:underline"
                     aria-expanded={open}
                   >
                     <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />
-                    Order Book {b.sequence}: {fmtDate(b.released_at)}
+                    {b.title ?? `Order Book ${b.sequence}`}: {fmtDate(b.released_at)}
                   </button>
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] text-muted-foreground">Closed: {fmtDate(b.closed_at)}{b.closed_by ? ` · ${b.closed_by}` : ""}</span>
@@ -131,19 +142,21 @@ export function ClosedBooks({ sources }: { sources?: string[] } = {}) {
                       <Badge variant="success" className="text-[9px]" title={b.email_sent_at ? `Sent ${fmtDate(b.email_sent_at)}` : undefined}>
                         Email Sent
                       </Badge>
+                    ) : b.origin === "crm" ? (
+                      <Badge variant="outline" className="text-[9px]">CRM</Badge>
                     ) : (
                       <Button
                         variant="destructive"
                         size="sm"
-                        disabled={!!busy[b.sequence]}
-                        onClick={() => void retryEmail(b.sequence)}
+                        disabled={!!busy[bookKey]}
+                        onClick={() => void retryEmail(b)}
                         title={b.email_error ?? "Retry the confirmation email"}
                         className="h-6 px-2 text-[10px]"
                       >
-                        {busy[b.sequence] ? "Retrying…" : "Email Failed — Retry"}
+                        {busy[bookKey] ? "Retrying…" : "Email Failed — Retry"}
                       </Button>
                     )}
-                    <Button variant="ghost" size="sm" disabled={!!busy[b.sequence]} onClick={() => void reopen(b.sequence)}>
+                    <Button variant="ghost" size="sm" disabled={!!busy[bookKey]} onClick={() => void reopen(b)}>
                       Reopen
                     </Button>
                   </div>

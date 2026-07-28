@@ -419,7 +419,10 @@ export interface OrderBookMember {
 }
 
 export interface OrderBookSummary {
+  archive_id?: string;
+  origin?: "oem" | "crm";
   sequence: number;
+  title?: string;
   released_at: string;
   released_by: string | null;
   total_count: number;

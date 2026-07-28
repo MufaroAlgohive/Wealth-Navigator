@@ -1,17 +1,15 @@
 /**
  * POST /api/admin/orderbook/uat-order
  *
- * Ad-hoc single-order UAT tester. Thin wrapper around `submitOrder()` from
- * the core `src/lib/orders/` module — the same helper every other order
- * entry point uses, so the preflight + audit + worker fanout + force-
- * correction contract is shared.
+ * Ad-hoc single-order UAT tester. It parks an internal audit row which can
+ * only be completed through the OEM's local Fill (UAT) action.
  *
  * Body: { symbol: string, side: "buy" | "sell", qty: number, price?: number }
  *   - `price` is in RANDS (limit); omit/0 for a market order.
  * Returns: { ok, orderAuditId, orderId, bookId, mode, iressOrderNumber?, status?, preflight?, error? }
  *
- * Gated: admin + orderbook.send_to_market, and IRESS_UAT_MODE=1|true (never
- * touches the production account; the worker enforces the UAT account).
+ * Gated by admin permission and profiles.is_test=true. The shared UAT guard
+ * blocks worker, IRESS, and LONGMARK fanout regardless of environment.
  *
  * Force-correction contract (2026-07-20):
  *   - A blocked preflight returns `422` with `{ ok: false, preflight }` and
@@ -28,18 +26,16 @@
 import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
-import { uatModeEnabled } from "@/lib/oems/uat-scope";
-import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { openSupabaseClients, submitOrder } from "@/lib/orders";
 import type { SubmitResult } from "@/lib/orders";
+import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
 const BOOK_ID = "UAT-ADHOC";
-// UAT orders route to the LONGMARK CARE destination (-> EXT_BROKERTI), per IRESS
-// (Andre, 2026-07-13, connecting the LONGMARK CARE session).
-// IRESS_UAT_DESTINATION overrides without a redeploy.
-const BROKER = process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE";
+// Internal marker only. UAT orders are parked and self-filled; this value is
+// never passed to the worker, IRESS, or LONGMARK.
+const UAT_ACCOUNT = "UAT_SELF_FILL";
 
 export async function POST(req: Request) {
   const auth = await getAdminContext();
@@ -48,12 +44,8 @@ export async function POST(req: Request) {
   if (auth.status !== "ok" || !can(auth.ctx, "orderbook", "send_to_market")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  // Accepts "1" as well as "true" — see uatModeEnabled().
-  if (!uatModeEnabled()) {
-    return NextResponse.json({ ok: false, error: "IRESS_UAT_MODE is not enabled." }, { status: 403 });
-  }
-
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const userId = typeof body.user_id === "string" ? body.user_id.trim() : "";
   const rawSymbol = typeof body.symbol === "string" ? body.symbol.trim().toUpperCase() : "";
   const side = String(body.side ?? "").toLowerCase() === "sell" ? "sell" : "buy";
   const qty = Math.floor(Number(body.qty));
@@ -68,11 +60,37 @@ export async function POST(req: Request) {
   if (!Number.isFinite(qty) || qty <= 0) {
     return NextResponse.json({ ok: false, error: "qty must be a positive integer" }, { status: 400 });
   }
+  if (!userId) {
+    return NextResponse.json({ ok: false, error: "Select a UAT test client." }, { status: 400 });
+  }
+
+  let clientAccount = userId;
+  try {
+    const retail = createRetailServiceRoleClient();
+    const { data: profile, error } = await retail
+      .from("profiles")
+      .select("id,email,is_test")
+      .eq("id", userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!profile || profile.is_test !== true) {
+      return NextResponse.json(
+        { ok: false, error: "UAT orders are restricted to test clients." },
+        { status: 403 },
+      );
+    }
+    clientAccount = profile.email ?? userId;
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: `Could not verify UAT client: ${error instanceof Error ? error.message : String(error)}` },
+      { status: 503 },
+    );
+  }
 
   // No broker preflight for UAT. UAT never contacts IRESS/the worker at all —
   // it self-fills in the OEM (see uat-guard.ts). submitOrder parks the order
   // with zero broker contact; the desk fills it via the Fill (UAT) button.
-  let supabase;
+  let supabase: Awaited<ReturnType<typeof openSupabaseClients>>;
   try {
     supabase = await openSupabaseClients();
   } catch (e) {
@@ -85,16 +103,18 @@ export async function POST(req: Request) {
   const result: SubmitResult = await submitOrder(
     supabase,
     {
-      account_code: BROKER,
+      account_code: UAT_ACCOUNT,
       symbol: rawSymbol,
       side,
       qty,
       price_cents: priceCents,
       source: "UAT_ADHOC_ORDER",
       book_id: BOOK_ID,
+      user_id: userId,
+      client_account: clientAccount,
       trader_email: auth.ctx.email,
     },
-    { bookId: BOOK_ID, broker: BROKER, uatTest: true },
+    { bookId: BOOK_ID, broker: UAT_ACCOUNT, uatTest: true },
   );
 
   if (!result.ok && !result.order_audit_id) {
@@ -113,19 +133,6 @@ export async function POST(req: Request) {
       },
       { status: 422 },
     );
-  }
-
-  // Audit-only fallback (worker not configured) → return the same
-  // `mode: "audit-only"` shape the legacy route used, for UI continuity.
-  if (result.ok && !result.iress_order_number && !isIressWorkerConfigured()) {
-    return NextResponse.json({
-      ok: true,
-      orderAuditId: result.order_audit_id,
-      orderId: result.order_id,
-      bookId: BOOK_ID,
-      mode: "audit-only",
-      notice: "IRESS_WORKER_URL not configured on Vercel; order recorded, not sent to IRESS.",
-    });
   }
 
   if (!result.ok) {
@@ -149,9 +156,10 @@ export async function POST(req: Request) {
     orderAuditId: result.order_audit_id,
     orderId: result.order_id,
     bookId: BOOK_ID,
-    mode: "uat",
-    iressOrderNumber: result.iress_order_number ?? null,
-    status: result.status ?? "working",
+    mode: "uat-self-fill",
+    iressOrderNumber: null,
+    status: result.status ?? "parked",
+    notice: "UAT self-fill only. This order cannot be released to IRESS or LONGMARK.",
     preflight: result.preflight,
   });
 }
