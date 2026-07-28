@@ -59,6 +59,10 @@ export default function OrderBookPage() {
   const [uatRefresh, setUatRefresh] = React.useState(0);
 
   const load = React.useCallback(async () => {
+    // Only the retail-holdings tabs (Closed Books) use this feed now. Active is
+    // the ExecutionView, and cancelled/uat-testing have their own sources — so
+    // don't spend a DB round-trip fetching holdings they won't render.
+    if (tab !== "closed") { setRows([]); return; }
     setRows(null);
     const d = await fetch(`/api/admin/orderbook?status=${tab}&scope=${scope}`).then((r) => r.json()).catch(() => ({ ok: false }));
     setRows(d.ok ? d.rows || [] : []);
@@ -110,7 +114,7 @@ export default function OrderBookPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
-      {tab !== "uat-testing" && tab !== "cancelled" && (
+      {tab !== "uat-testing" && tab !== "cancelled" && tab !== "active" && (
       <>
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-3">
@@ -152,17 +156,27 @@ export default function OrderBookPage() {
                 and placed real orders from a button labelled "UAT Test Runner".
                 This tab is the manual client order desk now. The component is
                 still in the tree for the UAT deployment. */}
-            {/* MANUAL_CLIENT_ORDER must be listed or a manual order placed above
-                is parked but never appears in the execution list below it. */}
+            {/* Manual + UAT desk orders only. App (MINT_CLIENT_ORDER) orders
+                live on the Active Orderbook tab, not here — a manual order
+                placed above is MANUAL_CLIENT_ORDER, so it still appears below. */}
             <ExecutionView
-              key={`orderbook-${uatRefresh}`}
-              sources={["MANUAL_CLIENT_ORDER", "UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"]}
+              key={`orderbook-manual-${uatRefresh}`}
+              sources={["MANUAL_CLIENT_ORDER", "UAT_ADHOC_ORDER"]}
             />
             <ActiveOrderBooks />
           </TabsContent>
         ) : tab === "cancelled" ? (
           <TabsContent value="cancelled" className="mt-3">
             <CancelledOrders />
+          </TabsContent>
+        ) : tab === "active" ? (
+          // Active Orderbook — the live app-order book. Renders exactly like the
+          // Manual Orders tab (same ExecutionView + archived Active Order Books),
+          // but scoped to app orders (MINT_CLIENT_ORDER) only; manual/UAT desk
+          // orders stay on the Manual Orders tab.
+          <TabsContent value="active" className="mt-3 space-y-3">
+            <ExecutionView key="orderbook-active" sources={["MINT_CLIENT_ORDER"]} />
+            <ActiveOrderBooks />
           </TabsContent>
         ) : (
         <TabsContent value={tab} className="mt-3">
