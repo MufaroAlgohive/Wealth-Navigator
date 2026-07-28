@@ -22,6 +22,93 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
+export interface MemberAuditRow {
+  id: string;
+  order_id: string | null;
+  client_account: string | null;
+  symbol: string | null;
+  side: string | null;
+  quantity: number | null;
+  price_cents: number | null;
+  status: string;
+  source: string | null;
+  payload: Record<string, unknown> | null;
+  result_payload: Record<string, unknown> | null;
+  updated_at: string | null;
+}
+
+export interface BookMember {
+  id: string;
+  order_id: string | null;
+  client_account: string | null;
+  symbol: string | null;
+  side: string;
+  qty: number;
+  filled: number;
+  status: string;
+  order_type: "limit" | "market";
+  limit_price_rands: number | null;
+  /** Volume-weighted average fill, in RANDS. */
+  avg_fill_price_rands: number | null;
+  /** filled x avg fill, in RANDS — what the client actually paid/received. */
+  value_rands: number | null;
+  venue: string | null;
+  broker: string | null;
+  last_action: string | null;
+  filled_at: string | null;
+  iress_error: string | null;
+}
+
+function num(v: unknown): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function str(v: unknown): string | null {
+  return typeof v === "string" && v !== "" ? v : null;
+}
+
+export function toMember(r: MemberAuditRow): BookMember {
+  const p = r.payload ?? {};
+  const rp = r.result_payload ?? {};
+  const qty = num(r.quantity) ?? 0;
+  const filled = num(p.filled) ?? 0;
+  // `payload.avgPx` and `result_payload.avgFillPrice` are CENTS (IRESS quotes
+  // the JSE in cents; the poller stores the raw value in the DB-canonical
+  // unit). `limitPrice` and `arrivalMid` are RANDS. Convert once, here.
+  const avgFillCents = num(p.avgPx) ?? num(rp.avgFillPrice);
+  const avgFillRands = avgFillCents != null && avgFillCents > 0 ? avgFillCents / 100 : null;
+  const limitRands = num(p.limitPrice) ?? (r.price_cents != null ? Number(r.price_cents) / 100 : null);
+  const errNo = num(rp.uatErrorNumber) ?? num(rp.errorNumber) ?? num(p.iressErrorNumber);
+  const errDesc = str(rp.uatErrorDescription) ?? str(rp.errorDescription) ?? str(p.iressErrorDescription);
+  return {
+    id: r.id,
+    order_id: r.order_id,
+    client_account: r.client_account,
+    side: (r.side ?? "buy").toUpperCase(),
+    symbol: r.symbol,
+    qty,
+    filled,
+    status: r.status,
+    order_type: p.order_type === "limit" || limitRands != null ? "limit" : "market",
+    limit_price_rands: limitRands,
+    avg_fill_price_rands: avgFillRands,
+    // Prefer what IRESS reported for the whole order; fall back to qty x price.
+    value_rands:
+      num(p.orderValueCents) != null
+        ? (num(p.orderValueCents) as number) / 100
+        : avgFillRands != null
+          ? avgFillRands * filled
+          : null,
+    venue: str(p.destination) ?? str(rp.venue) ?? "JSE",
+    broker: str(p.broker) ?? str(rp.broker),
+    last_action: str(p.lastAction) ?? str(rp.lastAction),
+    filled_at: str(p.lastFillAt) ?? str(rp.lastActionAt) ?? r.updated_at,
+    iress_error: errNo != null || errDesc ? `${errNo ?? "?"}: ${errDesc ?? "no detail"}` : null,
+  };
+}
+
 function openInstitutional(): SupabaseClient | null {
   try {
     return createInstitutionalServiceRoleClient();
@@ -64,26 +151,29 @@ export async function GET() {
 
   const { data: memberRows, error: memberErr } = await db
     .from("oems_order_audit")
-    .select("status, payload")
+    .select(
+      "id, order_id, client_account, symbol, side, quantity, price_cents, status, source, payload, result_payload, updated_at",
+    )
     .not("payload->>order_book_seq", "is", null);
   if (memberErr) {
     return NextResponse.json({ ok: false, error: memberErr.message }, { status: 500 });
   }
 
-  const bySeq = new Map<number, { total: number; filled: number }>();
-  for (const r of (memberRows ?? []) as Array<{ status: string; payload: Record<string, unknown> | null }>) {
+  const bySeq = new Map<number, { total: number; filled: number; members: BookMember[] }>();
+  for (const r of (memberRows ?? []) as MemberAuditRow[]) {
     const rawSeq = r.payload?.order_book_seq;
     const seq = typeof rawSeq === "number" ? rawSeq : Number(rawSeq);
     if (!Number.isFinite(seq)) continue;
-    const agg = bySeq.get(seq) ?? { total: 0, filled: 0 };
+    const agg = bySeq.get(seq) ?? { total: 0, filled: 0, members: [] };
     agg.total += 1;
     if (r.status === "filled") agg.filled += 1;
+    agg.members.push(toMember(r));
     bySeq.set(seq, agg);
   }
 
   const books = (bookRows as Array<{ sequence: number; released_at: string; released_by: string | null; member_count: number }>).map(
     (b) => {
-      const agg = bySeq.get(b.sequence) ?? { total: 0, filled: 0 };
+      const agg = bySeq.get(b.sequence) ?? { total: 0, filled: 0, members: [] };
       return {
         sequence: b.sequence,
         released_at: b.released_at,
@@ -91,6 +181,19 @@ export async function GET() {
         total_count: agg.total,
         filled_count: agg.filled,
         fully_filled: agg.total > 0 && agg.filled === agg.total,
+        // Members are returned so the archive row can be expanded to show what
+        // actually executed. Without this a fully-filled book rendered as
+        // "Order Book 2: <date> · 1/1 filled" and nothing else — the fill price,
+        // the client and the symbol were all unreachable from the UI, because
+        // `filterOutPromotedBooks` had already removed the order from the live
+        // execution table. A filled order was strictly LESS visible than a
+        // cancelled one.
+        members: agg.members.sort((x, y) => (x.symbol ?? "").localeCompare(y.symbol ?? "")),
+        // Book-level totals, so the collapsed row can carry the money figure.
+        filled_value_rands: agg.members.reduce(
+          (s, m) => s + (m.avg_fill_price_rands != null ? m.avg_fill_price_rands * m.filled : 0),
+          0,
+        ),
       };
     },
   );

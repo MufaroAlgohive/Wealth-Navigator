@@ -219,7 +219,13 @@ function mapRow(r: AuditRow): ExecutionRow {
   const qty = Number(r.quantity) || 0;
   const filledPct = qty > 0 ? Math.min(100, (filled / qty) * 100) : 0;
 
-  const avgFill = num(payload.avgPx) ?? num(result.avgFillPrice) ?? num(result.avg_fill_price);
+  // `payload.avgPx` / `result_payload.avgFillPrice` are CENTS — the IRESS
+  // OrderPad quotes the JSE in cents and the poller stores it unchanged, in the
+  // DB-canonical unit. `limit_price` below is RANDS, and this row is rendered as
+  // rands, so it MUST be converted here. Live order 700002 (FSR, 2026-07-27)
+  // displayed a R96,00 fill as "R9 600,00" through this line.
+  const avgFillCents = num(payload.avgPx) ?? num(result.avgFillPrice) ?? num(result.avg_fill_price);
+  const avgFill = avgFillCents != null ? avgFillCents / 100 : null;
 
   // Slip = limit − actual fill (in cents). GREEN when fill < client limit.
   let slippageCents: number | null = null;

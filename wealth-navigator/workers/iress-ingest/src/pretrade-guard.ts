@@ -185,10 +185,19 @@ function openBuyUnitPriceRands(r: AuditBuyLite): number | null {
   const cents = Number(r.price_cents);
   if (Number.isFinite(cents) && cents > 0) return cents / 100;
   const p = (r.payload ?? {}) as { avgPx?: number; limitPrice?: number };
-  if (Number(p.avgPx) > 0) return Number(p.avgPx);
-  if (Number(p.limitPrice) > 0) return Number(p.limitPrice);
+  /* avgPx is CENTS. The other three sources in this chain are RANDS, and this
+     line returned avgPx unconverted — a 100x over-reservation on any partially
+     filled order.
+     Verified on live order 700002 (FSR, 2026-07-27): payload.avgPx = 9600 while
+     result_payload.arrivalMid = 96.07 for the same order. The poller stamps it
+     straight from the IRESS OrderPad, and IRESS quotes the JSE in cents.
+     Effect: one partly-filled R96 order would reserve R9 600 and lock a R1 000
+     client out of every subsequent buy. It fails CLOSED, so no money was at
+     risk — but it reads to an operator as "the guard is broken". */
+  if (Number(p.avgPx) > 0) return Number(p.avgPx) / 100;
+  if (Number(p.limitPrice) > 0) return Number(p.limitPrice); // RANDS (submit.ts: price_cents / 100)
   const rp = (r.result_payload ?? {}) as { arrivalMid?: number };
-  if (Number(rp.arrivalMid) > 0) return Number(rp.arrivalMid);
+  if (Number(rp.arrivalMid) > 0) return Number(rp.arrivalMid); // RANDS
   return null;
 }
 
@@ -308,12 +317,22 @@ async function clientOpenOrderReservations(
   institutional: WorkerSupabase,
   userId: string,
   traderEmail: string | null | undefined,
-  symbol: string,
+  /**
+   * A bare/`.JO` symbol scopes the read to that security — correct for SHARES,
+   * where a holding of AGL says nothing about selling MTN.
+   *
+   * `null` means EVERY symbol — correct for CASH, which is fungible. The caller
+   * used to pass the string `"*"` for this, which became
+   * `.in("symbol", ["*", "*.JO"])` and matched no rows at all, so the buy
+   * reservation silently returned R0 on every call. A client with R1 000 could
+   * release R900 of FSR and then R900 of AGL, both passing. `null` is now an
+   * explicit "no symbol filter" rather than a sentinel that reads as one.
+   */
+  symbol: string | null,
 ): Promise<{
   inflightSells: number;
   inflightBuysRands: number;
 }> {
-  const code = bareCode(symbol);
   // Match by either the explicit user_id stamp OR the trader email — both
   // are written by `src/lib/orders/submit.ts` and cover the row shapes we
   // see in production today.
@@ -321,11 +340,12 @@ async function clientOpenOrderReservations(
   if (traderEmail) {
     filters.push(`client_account.eq.${traderEmail}`);
   }
-  const { data, error } = await institutional
+  let q = institutional
     .from("oems_order_audit")
-    .select("side, quantity, status, payload, price_cents")
+    // result_payload carries `arrivalMid`, the only price a MARKET order has
+    // before it fills. Omitting it is why market buys reserved nothing.
+    .select("side, quantity, status, payload, result_payload, price_cents")
     .or(filters.join(","))
-    .in("symbol", [code, `${code}.JO`])
     .in("status", [
       "working",
       "pending_ack",
@@ -334,31 +354,37 @@ async function clientOpenOrderReservations(
       "amend_pending",
       "cancel_pending",
     ]);
+  if (symbol !== null) {
+    const code = bareCode(symbol);
+    q = q.in("symbol", [code, `${code}.JO`]);
+  }
+  const { data, error } = await q;
   if (error) throw new Error(`oems_order_audit read failed: ${error.message}`);
+
+  // A still-open market buy can fill above the arrival mid, so reserve the same
+  // headroom the preflight applies to a NEW market order. Under-reserving is how
+  // the second order of the day gets approved against money already committed.
+  const buffer = Number(process.env.IRESS_MARKET_BUY_BUFFER ?? "1.02") || 1.02;
 
   let inflightSells = 0;
   let inflightBuysRands = 0;
-  for (const r of (data ?? []) as Array<{
-    side: string | null;
-    quantity: number | null;
-    status: string | null;
-    payload: Record<string, unknown> | null;
-    price_cents: number | null;
-  }>) {
-    const side = String(r.side ?? "").toLowerCase();
-    const qty = Number(r.quantity) || 0;
-    const filled = Number((r.payload as { filled?: number } | null)?.filled) || 0;
+  for (const row of (data ?? []) as AuditBuyLite[]) {
+    const side = String(row.side ?? "").toLowerCase();
+    const qty = Number(row.quantity) || 0;
+    const filled = Number((row.payload as { filled?: number } | null)?.filled) || 0;
     const remaining = Math.max(0, qty - filled);
     if (remaining <= 0) continue;
     if (side === "sell") {
       inflightSells += remaining;
     } else if (side === "buy") {
-      const pxCents = Number(r.price_cents);
-      const px =
-        Number.isFinite(pxCents) && pxCents > 0
-          ? pxCents / 100
-          : Number((r.payload as { avgPx?: number; limitPrice?: number } | null)?.avgPx) || 0;
-      if (px > 0) inflightBuysRands += remaining * px;
+      // Same chain the desk path uses: limit → avgPx → limitPrice → arrivalMid.
+      // The client path had its own shorter copy that stopped at avgPx, which is
+      // only populated AFTER a fill — so an unfilled market buy priced at 0.
+      const px = openBuyUnitPriceRands(row);
+      if (px != null && px > 0) {
+        const isMarket = !(Number(row.price_cents) > 0);
+        inflightBuysRands += remaining * px * (isMarket ? buffer : 1);
+      }
     }
   }
   return { inflightSells, inflightBuysRands };
@@ -454,11 +480,13 @@ export async function availableToBuyForClient(
   // buys can't each spend the whole wallet. Mirrors the desk path's
   // `availableToBuy` notional chain. (Per-client reservation wired on
   // 2026-07-20; was a TODO before.)
+  // null = every symbol. Cash is fungible: an open FSR buy must reserve against
+  // a subsequent AGL buy from the same wallet.
   const { inflightBuysRands } = await clientOpenOrderReservations(
     institutional,
     userId,
     opts?.traderEmail ?? null,
-    "*",
+    null,
   );
 
   return {
