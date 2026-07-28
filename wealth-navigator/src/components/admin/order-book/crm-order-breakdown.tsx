@@ -1,5 +1,8 @@
 "use client";
 
+import * as React from "react";
+
+import { cn } from "@/lib/cn";
 import type { OrderBookMember } from "./execution-view";
 
 const money = (value: number | null) =>
@@ -13,7 +16,17 @@ const money = (value: number | null) =>
 
 export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
   const details = member.crm_details;
+  const [selectedInvestorId, setSelectedInvestorId] = React.useState<string | null>(null);
   if (!details) return null;
+  const selectedInvestor =
+    details.investors.find((investor) => investor.id === selectedInvestorId) ?? null;
+  const selectedSources = new Set(selectedInvestor?.source_ids ?? []);
+  const visibleHoldings =
+    selectedInvestor && selectedSources.size > 0
+      ? details.holdings.filter((holding) =>
+          holding.source_ids.some((sourceId) => selectedSources.has(sourceId)),
+        )
+      : details.holdings;
 
   return (
     <div className="space-y-3 border-t border-border/40 bg-muted/20 px-3 py-3">
@@ -22,8 +35,9 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
           <section>
             <h4 className="mb-1.5 text-[10px] font-semibold uppercase text-muted-foreground">
               Holdings under {details.strategy_name ?? member.symbol ?? "strategy"}
+              {selectedInvestor ? ` · ${selectedInvestor.name}` : ""}
             </h4>
-            {details.holdings.length ? (
+            {visibleHoldings.length ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-[11px]">
                   <thead>
@@ -39,7 +53,7 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {details.holdings.map((holding) => (
+                    {visibleHoldings.map((holding) => (
                       <tr key={holding.id} className="border-t border-border/30">
                         <td className="py-1.5 pr-3 font-medium">{holding.instrument}</td>
                         <td className="py-1.5 pr-3 text-muted-foreground">{holding.ticker}</td>
@@ -76,8 +90,18 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {details.investors.map((investor) => (
-                      <tr key={investor.id} className="border-t border-border/30">
+                    {details.investors.map((investor) => {
+                      const selected = investor.id === selectedInvestorId;
+                      return (
+                      <tr
+                        key={investor.id}
+                        className={cn(
+                          "cursor-pointer border-t border-border/30 transition-colors hover:bg-accent/60",
+                          selected && "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+                        )}
+                        onClick={() => setSelectedInvestorId(selected ? null : investor.id)}
+                        aria-selected={selected}
+                      >
                         <td className="py-1.5 pr-3 font-medium">{investor.name}</td>
                         <td className="py-1.5 pr-3">{investor.account_id ?? "—"}</td>
                         <td className="py-1.5 pr-3 text-muted-foreground">
@@ -86,7 +110,7 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
                         <td className="py-1.5 pr-3 text-right tabular-nums">{investor.holdings_count}</td>
                         <td className="py-1.5 text-right tabular-nums">{money(investor.market_value_rands)}</td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>

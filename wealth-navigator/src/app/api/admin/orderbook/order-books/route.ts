@@ -62,6 +62,7 @@ export interface BookMember {
     strategy_name: string | null;
     holdings: Array<{
       id: string;
+      source_ids: string[];
       instrument: string;
       ticker: string;
       side: string;
@@ -73,6 +74,7 @@ export interface BookMember {
     }>;
     investors: Array<{
       id: string;
+      source_ids: string[];
       name: string;
       account_id: string | null;
       family_relationship: string | null;
@@ -177,6 +179,7 @@ function crmMember(row: Record<string, unknown>, index: number, bookId: string):
   const isStrategy = row.isStrategy === true || strategyUsers.length > 0 || strategyHoldings.length > 0;
   const investors = strategyUsers.map((user, userIndex) => ({
     id: str(user.userId ?? user.user_id ?? user.id) ?? `${sourceId}-investor-${userIndex}`,
+    source_ids: Array.isArray(user.sourceIds) ? user.sourceIds.map(String).filter(Boolean) : [],
     name: str(user.clientName) ?? "Unknown client",
     account_id: str(user.clientAccountId),
     family_relationship: str(user.familyMemberRelationship),
@@ -224,6 +227,11 @@ function crmMember(row: Record<string, unknown>, index: number, bookId: string):
       strategy_name: str(row.strategyName) ?? (isStrategy ? str(row.instrumentName) : null),
       holdings: strategyHoldings.map((holding, holdingIndex) => ({
         id: str(holding.sourceId) ?? `${sourceId}-holding-${holdingIndex}`,
+        source_ids: Array.isArray(holding.sourceIds)
+          ? holding.sourceIds.map(String).filter(Boolean)
+          : str(holding.sourceId)
+            ? [str(holding.sourceId) as string]
+            : [],
         instrument: str(holding.instrumentName) ?? "Unknown instrument",
         ticker: str(holding.ticker) ?? "-",
         side: (str(holding.side ?? holding.tradeSide) ?? "BUY").toUpperCase(),
