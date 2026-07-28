@@ -30,7 +30,7 @@ import { NextResponse } from "next/server";
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { uatModeEnabled } from "@/lib/oems/uat-scope";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
-import { openSupabaseClients, preflight, submitOrder } from "@/lib/orders";
+import { openSupabaseClients, submitOrder } from "@/lib/orders";
 import type { SubmitResult } from "@/lib/orders";
 
 export const dynamic = "force-dynamic";
@@ -69,36 +69,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "qty must be a positive integer" }, { status: 400 });
   }
 
-  // Preflight explicitly so we can return the worker's exact preflight
-  // payload (vs the synthetic 503 the core module returns when the worker
-  // is offline). This matches the legacy contract where the BFF surfaced
-  // the worker's `naked_short_blocked` reason verbatim.
-  const pre = await preflight({
-    account_code: BROKER,
-    symbol: rawSymbol,
-    side,
-    qty,
-    price_cents: priceCents,
-    source: "UAT_ADHOC_ORDER",
-    book_id: BOOK_ID,
-  });
-  if (!pre.ok) {
-    // NO AUDIT ROW WRITTEN. Trader stays on the entry screen. The UI
-    // opens `<GuardrailForceCorrectionDialog/>` with `pre` as the payload.
-    return NextResponse.json(
-      {
-        ok: false,
-        bookId: BOOK_ID,
-        mode: "uat",
-        status: "blocked",
-        code: pre.code,
-        error: pre.message,
-        preflight: pre,
-      },
-      { status: 422 },
-    );
-  }
-
+  // No broker preflight for UAT. UAT never contacts IRESS/the worker at all —
+  // it self-fills in the OEM (see uat-guard.ts). submitOrder parks the order
+  // with zero broker contact; the desk fills it via the Fill (UAT) button.
   let supabase;
   try {
     supabase = await openSupabaseClients();
