@@ -167,7 +167,21 @@ export default function ClientsPage() {
           added += 1;
         }
       }
-      zip.file("manifest.json", JSON.stringify({ profile_id: sel.id, client: sel.name, generated_at: new Date().toISOString(), document_count: added }, null, 2));
+      // Bundle the Computershare account-creation PDF into the pack (mirrors
+      // the CRM, which includes it in the client pack download). Best-effort:
+      // a generation failure must never sink the rest of the pack.
+      let computershareIncluded = false;
+      if (detail) {
+        try {
+          const report = await buildComputersharePdf(p, ob, detail.onboarding_pack ?? {});
+          zip.file(report.filename, report.doc.output("blob"));
+          computershareIncluded = true;
+          added += 1;
+        } catch (csErr) {
+          console.error("Computershare PDF for pack failed:", csErr);
+        }
+      }
+      zip.file("manifest.json", JSON.stringify({ profile_id: sel.id, client: sel.name, generated_at: new Date().toISOString(), document_count: added, computershare_included: computershareIncluded }, null, 2));
       const blob = await zip.generateAsync({ type: "blob" });
       const objectUrl = URL.createObjectURL(blob);
       const anchor = window.document.createElement("a");
@@ -522,23 +536,104 @@ function firstValue(values: unknown[], fallback = "N/A"): string {
   return found == null ? fallback : String(found).trim();
 }
 
-async function buildComputersharePdf(profile: Record<string, unknown>, onboarding: Record<string, unknown>, packValue: Record<string, unknown>) {
+// Computershare letterhead logo — same public asset the CRM's account-creation
+// PDF draws top-right (MyMintAdmin index.html COMPUTERSHARE_LOGO_URL).
+const COMPUTERSHARE_LOGO_URL =
+  "https://mfxnghmuccevsxwcetej.supabase.co/storage/v1/object/public/Mint%20Assets/tMOmeIOo4KE20Yh1bIuk8PFMlFHZ421rVESa2dcn.jpg";
+
+async function loadImageAsDataUrl(url: string): Promise<string> {
+  const imageUrl = String(url || "").trim();
+  if (!imageUrl) return "";
+  const response = await fetch(imageUrl);
+  if (!response.ok) throw new Error(`Logo request failed: ${response.status}`);
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read logo data."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Computershare "ACCOUNT DETAILS" account-creation PDF. A field-for-field,
+ * layout-for-layout port of MyMintAdmin's buildComputerSharePdfReport
+ * (public/index.html): same 16-row table, same logo top-right, same box
+ * borders and vertical rhythm, and the same data-mapping fallback chains so
+ * the same fields populate (rather than reading "N/A").
+ *
+ * When `existingDoc` is supplied, the ACCOUNT DETAILS page is appended to it
+ * (used to bundle this into the client pack ZIP) instead of a new document.
+ */
+async function buildComputersharePdf(
+  profile: Record<string, unknown>,
+  onboarding: Record<string, unknown>,
+  packValue: Record<string, unknown>,
+  existingDoc?: import("jspdf").jsPDF,
+) {
   const { jsPDF } = await import("jspdf");
   const pack = objectValue(packValue);
   const sumsubRaw = objectValue(onboarding.sumsub_raw);
   const mandate = objectValue(sumsubRaw.mandate_data);
   const tax = objectValue(sumsubRaw.tax_details);
   const bank = objectValue(sumsubRaw.bank_details);
+
   const firstName = firstValue([profile.first_name, pickPath(pack, ["info.firstName", "fixedInfo.firstName", "firstName"])], "");
   const lastName = firstValue([profile.last_name, pickPath(pack, ["info.lastName", "fixedInfo.lastName", "lastName"])], "");
   const fullName = `${firstName} ${lastName}`.trim() || firstValue([pickPath(pack, ["fullName", "info.fullName", "fixedInfo.fullName"])]);
-  const physicalAddress = firstValue([pickPath(pack, ["info.addresses.0.streetEn", "info.addresses.0.street", "fixedInfo.residentialAddress", "fixedInfo.address", "info.residentialAddress", "info.address"]), onboarding.physical_address, onboarding.residential_address, onboarding.address, profile.address]);
-  const postalAddress = firstValue([pickPath(pack, ["info.addresses.0.formattedAddress", "fixedInfo.postalAddress", "info.postalAddress"]), onboarding.postal_address, profile.postal_address], physicalAddress);
+
+  // De-duplicating multi-part address join (mirrors the CRM's composeAddress).
+  const composeAddress = (parts: unknown[]): string => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const part of parts) {
+      const value = String(part ?? "").trim();
+      if (!value || value.toLowerCase() === "n/a") continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+    }
+    return out.join("\n");
+  };
+
+  const physicalAddress = firstValue([
+    pickPath(pack, [
+      "info.addresses.0.streetEn", "info.addresses.0.street",
+      "info.idDocs.1.address.streetEn", "info.idDocs.1.address.street",
+      "fixedInfo.address", "fixedInfo.residentialAddress", "info.address", "info.residentialAddress",
+      "address.formattedAddress", "address.fullAddress", "address.street", "address.line1",
+      "addresses.residential.formatted", "addresses.residential.fullAddress", "addresses.residential.addressLine", "addresses.residential.street",
+      "addresses.0.streetEn", "addresses.0.street", "addresses.0.fullAddress", "addresses.0.formattedAddress", "addresses.0.addressLine",
+    ]),
+    onboarding.physical_address, onboarding.residential_address, onboarding.address, onboarding.street_address, onboarding.address_line_1, onboarding.address_line1, onboarding.line1,
+    profile.address, profile.street_address, profile.address_line_1, profile.address_line1, profile.line1,
+    composeAddress([
+      onboarding.address_line_2, onboarding.suburb, onboarding.city, onboarding.province, onboarding.postal_code, onboarding.country,
+      profile.suburb, profile.city, profile.province, profile.postal_code, profile.country,
+    ]),
+  ]);
+
+  const postalAddress = firstValue([
+    pickPath(pack, [
+      "info.addresses.0.formattedAddress", "info.idDocs.1.address.formattedAddress", "info.addresses.0.fullAddress",
+      "fixedInfo.postalAddress", "fixedInfo.address", "info.postalAddress", "info.address",
+      "addresses.postal.formatted", "addresses.postal.formattedAddress", "addresses.postal.fullAddress", "addresses.postal.addressLine", "addresses.postal.street",
+      "addresses.0.formattedAddress", "addresses.0.fullAddress", "addresses.0.addressLine", "address.postalAddress", "address.formattedAddress",
+    ]),
+    onboarding.postal_address, onboarding.postalAddress, onboarding.postal_line_1, onboarding.postal_line1,
+    profile.postal_address, profile.postalAddress, profile.postal_line_1, profile.postal_line1,
+    composeAddress([
+      onboarding.postal_line_2, onboarding.postal_suburb, onboarding.postal_city, onboarding.postal_province, onboarding.postal_code, onboarding.postal_country,
+      profile.postal_suburb, profile.postal_city, profile.postal_province, profile.postal_code, profile.postal_country,
+    ]),
+  ], physicalAddress);
+
   const rows: [string, string][] = [
     ["ASSET / FUND MANAGER", firstValue([onboarding.asset_fund_manager, onboarding.company_name, "MINT PLATFORMS (pty) Ltd"])],
     ["ACCOUNT NAME", fullName],
     ["CONTACT NAME", fullName],
-    ["IDENTITY / REGISTRATION NUMBER", firstValue([profile.identity_number, profile.id_number, onboarding.id_number, onboarding.identity_number, pickPath(pack, ["info.idNumber", "fixedInfo.idNumber", "idNumber"]), mandate.id_number])],
+    ["IDENTITY / REGISTRATION NUMBER", firstValue([profile.identity_number, profile.id_number, onboarding.id_number, onboarding.identity_number, pickPath(pack, ["info.idNumber", "info.identityNumber", "fixedInfo.idNumber", "fixedInfo.identityNumber", "idNumber"]), mandate.id_number])],
     ["INCOME TAX NUMBER", firstValue([tax.tax_number, sumsubRaw.tax_number, onboarding.tax_number, onboarding.income_tax_number, profile.tax_number, pickPath(pack, ["info.taxId", "fixedInfo.taxId"])])],
     ["PHYSICAL ADDRESS", physicalAddress],
     ["POSTAL ADDRESS", postalAddress],
@@ -549,18 +644,36 @@ async function buildComputersharePdf(profile: Record<string, unknown>, onboardin
     ["BANK ACCOUNT NUMBER", firstValue([onboarding.bank_account_number, profile.bank_account_number, profile.bank_account])],
     ["BRANCH NUMBER", firstValue([onboarding.bank_branch_code, onboarding.branch_code, profile.branch_number])],
     ["BANK NAME", firstValue([onboarding.bank_name, profile.bank_name])],
-    ["ACCOUNT NAME", firstValue([onboarding.bank_account_name, profile.bank_account_name, mandate.bank_account_name, mandate.account_name, fullName])],
-    ["ACCOUNT TYPE", firstValue([bank.bank_account_type, bank.account_type, onboarding.bank_account_type, profile.bank_account_type, mandate.bank_account_type, mandate.account_type])],
+    ["ACCOUNT NAME", firstValue([onboarding.bank_account_name, profile.bank_account_name, mandate.bank_account_name, mandate.account_name, mandate.account_holder_name, pickPath(pack, ["bankAccountName", "bank_account_name", "accountName", "account_name", "info.bankAccountName", "info.accountName"]), fullName])],
+    ["ACCOUNT TYPE", firstValue([bank.bank_account_type, bank.account_type, bank.type, onboarding.bank_account_type, profile.bank_account_type, onboarding.account_type, profile.account_type, mandate.bank_account_type, mandate.account_type, pickPath(pack, ["bankAccountType", "bank_account_type", "accountType", "account_type", "info.bankAccountType", "info.accountType"])])],
   ];
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
+
+  const doc = existingDoc ?? new jsPDF({ unit: "pt", format: "a4" });
+  if (existingDoc) doc.addPage();
   const width = doc.internal.pageSize.getWidth();
   const height = doc.internal.pageSize.getHeight();
   const margin = 38;
   const contentWidth = width - margin * 2;
   const leftWidth = Math.round(contentWidth * 0.34);
   const rightWidth = contentWidth - leftWidth;
-  let y = margin + 70;
-  doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.text("ACCOUNT DETAILS", width / 2, y, { align: "center" }); y += 24;
+  let y = margin + 12;
+
+  // Logo top-right (170×44 JPEG), optional — never block the PDF on it.
+  try {
+    const logoDataUrl = await loadImageAsDataUrl(COMPUTERSHARE_LOGO_URL);
+    if (logoDataUrl) {
+      const logoWidth = 170;
+      const logoHeight = 44;
+      doc.addImage(logoDataUrl, "JPEG", width - margin - logoWidth, y, logoWidth, logoHeight);
+    }
+  } catch { /* logo optional */ }
+
+  y += 58;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("ACCOUNT DETAILS", width / 2, y + 10, { align: "center" });
+  y += 32;
+
   for (const [label, value] of rows) {
     const labelLines = doc.splitTextToSize(label, leftWidth - 16);
     const valueLines = doc.splitTextToSize(value || "N/A", rightWidth - 16);
