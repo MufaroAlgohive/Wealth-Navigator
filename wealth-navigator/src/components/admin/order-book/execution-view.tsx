@@ -1150,7 +1150,12 @@ export function ExecutionView({ sources }: { sources: string[] }) {
     [],
   );
 
-  const stream = useUatStream(uatEnabled, applyDelta);
+  /* Subscribe unconditionally. This used to be `useUatStream(uatEnabled, …)`,
+     so on production — where the real orders are — the browser never opened
+     the stream and fills only appeared on the next poll. The route now 503s
+     only when the worker is unconfigured, and the client already retries on
+     error, so an unconfigured worker degrades to polling exactly as before. */
+  const stream = useUatStream(true, applyDelta);
 
   const polledRows = executions.data?.rows ?? [];
 

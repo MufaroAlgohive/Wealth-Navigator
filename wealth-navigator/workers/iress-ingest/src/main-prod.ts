@@ -312,7 +312,7 @@ async function orderFillLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
       stampLastUatPollAt();
-      const r = await pollUatForFills({ env, sessions, supabase });
+      const r = await pollUatForFills({ env, sessions, supabase, retailSupabase });
       if (r.updated > 0 || r.published > 0) {
         console.info(
           `[iress-prod] order fill poll: updated=${r.updated} published=${r.published} elapsedMs=${r.elapsedMs}`,

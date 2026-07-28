@@ -12,13 +12,21 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * CARE order flipped OrderState to INACTIVE on Hermes, it dropped out of
  * the poll and the audit row stayed stuck on `partial` forever.
  *
- * The fix: pass `OrderFilter: 3` (ALL) so INACTIVE rows are returned too
- * — the poller can then stamp the audit `status` to `filled` and publish
- * the final-fill SSE delta to the UI.
+ * The fix was to pass a filter that also returns INACTIVE rows, so the poller
+ * can stamp the audit `status` to `filled` and publish the final-fill delta.
  *
- * This test imports the worker's `fetchUatOrders` helper indirectly via
- * `pollUatForFills` and asserts that the IRESS client was invoked with
- * `OrderFilter: 3`. If anyone reverts that filter, this test fires.
+ * 2026-07-27: this test used to assert the literal `OrderFilter === 3`, on the
+ * belief that 3 means ALL. That belief was never sourced from IRESS — and our
+ * own two comments describing this enum contradicted each other. IRESS ran
+ * OrderPadGetByAccount against our production account 43448 using
+ * `OrderFilter=7`, outside both. Pinning the literal would now fail for a value
+ * the vendor themselves uses.
+ *
+ * So the assertion is the INVARIANT, not the number: the poller must never send
+ * the WORKING-only filter, and must send whatever `IRESS_ORDER_FILTER` selects.
+ * That is what actually protects against the 2026-07-13 bug — and it matters
+ * more now than it did then, because a fill we fail to observe is a client
+ * wallet that never gets debited.
  */
 
 const ORIGINAL_ENV = { ...process.env };
@@ -137,6 +145,9 @@ function makeWorkerEnv(overrides: Partial<{ uatMode: boolean; uatAccountCode: st
     fxExchange: "FX",
     moneyMarketExchange: "MM",
     instrumentSync: false,
+  iressOrderFilter: 7 as const,
+    retailSettlementEnabled: false,
+  retailSettlementDryRun: true,
     supabaseUrl: "https://example.supabase.co",
     supabaseServiceKey: "sk",
     retailSupabaseUrl: "https://example.supabase.co",
@@ -166,7 +177,7 @@ describe("UAT order poller — OrderFilter regression (Juan + Andre 2026-07-13)"
     vi.unmock("../../workers/iress-ingest/src/index");
   });
 
-  it("calls IRESS OrderPadGetByAccount with OrderFilter=3 (ALL), not 1 (WORKING)", async () => {
+  it("never sends the WORKING-only filter, and honours IRESS_ORDER_FILTER", async () => {
     process.env.IRESS_WORKER_DRY_RUN = "0";
     process.env.SUPABASE_ALLOW_WRITES = "1";
     vi.resetModules();
@@ -232,10 +243,12 @@ describe("UAT order poller — OrderFilter regression (Juan + Andre 2026-07-13)"
 
     expect(orderPadMock).toHaveBeenCalledTimes(1);
     const call = orderPadMock.mock.calls[0]?.[0] as { OrderFilter?: number };
-    // THE assertion that pins the fix: OrderFilter MUST be 3 (ALL), never
-    // 1 (WORKING) or 2 (OPEN). If anyone reverts this, the partial-then-
-    // full-fill flow goes invisible to the UI again.
-    expect(call.OrderFilter).toBe(3);
+    // THE invariant: never the WORKING-only filter, which is what dropped
+    // fully-filled INACTIVE rows out of the poll in the first place.
+    expect(call.OrderFilter).not.toBe(1);
+    // And it must be exactly what the environment selected — the value is now
+    // operator-tunable precisely because we do not know the vendor's semantics.
+    expect(call.OrderFilter).toBe(7);
 
     // Sanity: the poll actually ran (not skipped) and the IRESS mock
     // returned the fully-filled row. The hub publish count isn't asserted

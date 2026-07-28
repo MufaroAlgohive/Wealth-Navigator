@@ -1,6 +1,5 @@
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { streamWorkerSse } from "@/lib/iress/worker-api";
-import { uatModeEnabled } from "@/lib/oems/uat-scope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,7 +7,7 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/admin/orderbook/stream
  *
- * Mint OEM Finalisation Phase UAT — SSE forwarder to the Railway worker's
+ * SSE forwarder to the Railway worker's
  * `/uat/execution-stream` endpoint. Pipes `status` / `delta` events from
  * the worker's UAT order-pad poll back to the browser so the ExecutionView
  * can update fills in real time without polling.
@@ -18,8 +17,8 @@ export const dynamic = "force-dynamic";
  * socket.
  *
  * Returns 503 with the standard error envelope when the worker is not
- * configured or UAT mode is off — never 500. The UI must handle 503 by
- * gracefully reverting to the 30s poll on `/api/admin/orderbook/execution`.
+ * configured — never 500. The UI handles 503 by falling back to its poll of
+ * `/api/admin/orderbook/execution`.
  */
 export async function GET(req: Request) {
   if (!isIressWorkerConfigured()) {
@@ -34,19 +33,11 @@ export async function GET(req: Request) {
     );
   }
 
-  // Accepts "1" as well as "true" — see uatModeEnabled(). A strict === "true"
-  // here disagreed with the worker, which tells operators to set "1".
-  if (!uatModeEnabled()) {
-    return Response.json(
-      {
-        ok: false,
-        status: 503,
-        code: "uat_mode_off",
-        error: "UAT mode is not enabled on Vercel (IRESS_UAT_MODE!=true)",
-      },
-      { status: 503, headers: { "content-type": "application/json" } },
-    );
-  }
+  /* No UAT gate. This is a read-only feed of execution deltas from our own
+     order pad, and the worker's fill poller runs on the production lane too. The
+     UAT gate here meant that with IRESS_UAT_MODE off — i.e. in production, where
+     the real orders are — the stream 503'd, the UI fell back to polling, and a
+     fill took a poll cycle to appear instead of arriving as it happened. */
 
   const target = streamWorkerSse({ path: "/uat/execution-stream" });
   if (!target) {

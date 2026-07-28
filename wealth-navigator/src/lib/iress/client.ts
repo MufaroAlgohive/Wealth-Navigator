@@ -328,7 +328,9 @@ export interface OrderDeleteRequest {
 
 export interface OrderPadFilter {
   AccountCode: string;
-  OrderFilter: 1 | 2 | 3 | 4 | 5; // 1=working, 2=filled today, 3=all, 4=inactive, 5=active
+  /** See the OrderFilter note in workers/iress-ingest/src/env.ts — the meaning
+   *  of these values is NOT confirmed with IRESS. */
+  OrderFilter: 1 | 2 | 3 | 4 | 5 | 6 | 7;
 }
 
 // ─── Portfolio (IPS) ────────────────────────────────────────────────────
@@ -486,7 +488,7 @@ export interface IressClient {
   orderPadGetByAccount(req: {
     ServiceSessionKey: string;
     AccountCode: string;
-    OrderFilter: 1 | 2 | 3 | 4 | 5;
+    OrderFilter: 1 | 2 | 3 | 4 | 5 | 6 | 7;
     Updates?: boolean;
     RequestID: string;
   }): Promise<IressResponse<Order>>;

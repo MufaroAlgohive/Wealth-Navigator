@@ -156,15 +156,37 @@ export async function POST(req: Request) {
   // Confirm the holding actually exists — a data-integrity check, not a
   // gate on who may order. Every client's order (real or test) parks here;
   // the broker-facing gate lives at release time (see route doc comment).
+  //
+  // 2026-07-27: this used to select only "id". The holding carries the
+  // client's user_id, and it is required downstream: the per-client pre-trade
+  // guard routes on payload.user_id, and fill settlement refuses to move money
+  // for an order it cannot attribute to a client. Every desk-placed MANUAL_CLIENT_ORDER carried user_id; every
+  // app-placed MINT_CLIENT_ORDER did not, so an app order would have filled
+  // at the broker and then been silently skipped by settlement — the client
+  // debited nothing and owning nothing, which is the exact failure this whole
+  // path exists to prevent. We were discarding a column already in hand.
   const { data: holding, error: holdingErr } = await supabase.retail
     .from("stock_holdings_c")
-    .select("id")
+    .select("id, user_id")
     .eq("id", holdingId)
     .maybeSingle();
   if (holdingErr || !holding) {
     return NextResponse.json(
       { ok: false, error: `Could not resolve holding '${holdingId}': ${holdingErr?.message ?? "not found"}` },
       { status: 404 },
+    );
+  }
+  const holdingRow = holding as { id: string; user_id: string | null };
+  if (!holdingRow.user_id) {
+    // Fail loudly rather than park an unattributable order. A parked order we
+    // cannot settle is worse than one we refuse to place: it reaches the market
+    // and then strands the client.
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Holding '${holdingId}' has no user_id — refusing to place an order that could not be settled to a client.`,
+      },
+      { status: 422 },
     );
   }
 
@@ -186,6 +208,10 @@ export async function POST(req: Request) {
       book_id: bodyBookId,
       trader_email: clientEmail,
       holding_id: holdingId,
+      // Attribution. Without this the fill cannot be settled to a client.
+      // security_id is NOT passed — parkOrder derives it from the symbol
+      // lookup, which is the canonical resolution path.
+      user_id: holdingRow.user_id,
     },
     { bookId: bodyBookId, broker: BROKER, uatTest },
   );

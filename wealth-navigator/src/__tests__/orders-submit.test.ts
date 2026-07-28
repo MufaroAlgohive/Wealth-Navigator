@@ -175,6 +175,71 @@ describe("submitOrder", () => {
     expect((row.payload as { broker_account_code?: string })?.broker_account_code).toBe("56378");
   });
 
+  /**
+   * 2026-07-27. Juan typed R45,20 into the desk ticket for 2 NY1.JO and it
+   * reached LONGMARK as a MARKET order. Andre saw MKT on the IRESS OrderPad;
+   * Mpumelelo saw the MKT badge in our own UI. A client asking to pay no more
+   * than R45,20 was sent to buy at any price, with nothing in the audit trail
+   * recording that we had changed the instruction.
+   *
+   * Intent must travel from the ticket and must never be inferred from the
+   * presence of a price — mint client orders always attach a reference price,
+   * and inferring from it is what made a true market order impossible in the
+   * first place.
+   */
+  describe("order_type intent", () => {
+    const pass = () => preflightQueue.push({ ok: true, verdict: "pass", code: "pass", message: "ok" });
+    const ack = () =>
+      workerResponses.push({ ok: true, body: { ok: true, iressOrderNumber: "ORD-1", status: "working" } });
+    const base = {
+      account_code: "56378",
+      symbol: "SOL",
+      side: "buy" as const,
+      qty: 2,
+      source: "MANUAL_CLIENT_ORDER" as const,
+      trader_email: "trader@mint.local",
+    };
+    const payloadOf = () => insertedRows[0]!.payload as { order_type?: string; limitPrice?: number | null };
+
+    it("records a limit order as a limit when the ticket says so", async () => {
+      pass();
+      ack();
+      const clients = await openSupabaseClients();
+      await submitOrder(clients, { ...base, price_cents: 4520, order_type: "limit" });
+      expect(payloadOf().order_type).toBe("limit");
+      expect(payloadOf().limitPrice).toBeCloseTo(45.2, 2);
+    });
+
+    it("records a market order when the ticket leaves the price blank", async () => {
+      pass();
+      ack();
+      const clients = await openSupabaseClients();
+      await submitOrder(clients, { ...base, price_cents: null, order_type: "market" });
+      expect(payloadOf().order_type).toBe("market");
+      expect(payloadOf().limitPrice).toBeNull();
+    });
+
+    it("does NOT infer a limit from a reference price alone", async () => {
+      // A mint client order carries a reference price but no limit intent.
+      // Inferring here is the original bug, in the other direction.
+      pass();
+      ack();
+      const clients = await openSupabaseClients();
+      await submitOrder(clients, { ...base, price_cents: 17_700, source: "MINT_CLIENT_ORDER" });
+      expect(payloadOf().order_type).toBe("market");
+      // The reference price is still recorded for the blotter.
+      expect(payloadOf().limitPrice).toBeCloseTo(177.0, 2);
+    });
+
+    it("defaults to market for every caller that states nothing", async () => {
+      pass();
+      ack();
+      const clients = await openSupabaseClients();
+      await submitOrder(clients, { ...base, price_cents: 4520 });
+      expect(payloadOf().order_type).toBe("market");
+    });
+  });
+
   it("stamps 'rejected' on a post-insert worker reject (race condition)", async () => {
     preflightQueue.push({
       ok: true,

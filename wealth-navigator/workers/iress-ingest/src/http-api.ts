@@ -70,9 +70,14 @@ function redactServiceKey(key: string | undefined): string | null {
   return key.slice(0, 8);
 }
 
-/** OrderFilter values (1=WORKING, 2=OPEN, 3=ALL, 4=AMENDED, 5=HISTORICAL). */
-type OrderFilter = 1 | 2 | 3 | 4 | 5;
-const VALID_FILTERS = new Set<OrderFilter>([1, 2, 3, 4, 5]);
+/* OrderFilter. The previous comment here ("1=WORKING, 2=OPEN, 3=ALL,
+   4=AMENDED, 5=HISTORICAL") contradicted the one in src/lib/iress/client.ts
+   ("3=all, 4=inactive, 5=active") — two unsourced guesses at the same enum,
+   in the same repo. IRESS used 7 against our production account on
+   2026-07-27, which is outside both. Range widened to what the vendor
+   demonstrably accepts; semantics still to be confirmed with Andre. */
+type OrderFilter = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+const VALID_FILTERS = new Set<OrderFilter>([1, 2, 3, 4, 5, 6, 7]);
 
 export interface HttpApiDeps {
   env: WorkerEnv;
@@ -2996,7 +3001,18 @@ export async function handleRequest(
      Observed 2026-07-27: a R98 buy against a R1 000 wallet blocked, with no
      order ever reaching the worker. The guard was not rejecting the order; the
      route was refusing to evaluate it. */
-  if (path === "/uat/send-to-market" || path === "/uat/execution-stream" || path === "/uat/status") {
+  /* `/uat/execution-stream` is deliberately NOT in this gate either, for the
+     same reason `/uat/preflight` is not.
+
+     It is a read-only SSE feed of execution deltas from OUR OWN order pad, and
+     the poller that feeds it (`pollUatForFills`) has run on BOTH lanes since the
+     production order lane shipped — `mustRecordFills` is true whenever
+     productionLane OR uatMode. So on production the hub publishes deltas and
+     nothing was allowed to subscribe: the desk fell back to polling and Juan
+     watched a filled order sit there, which is exactly the "we need to see live
+     order execution and not wait" complaint. Same bug shape as the /uat/preflight
+     403 — a UAT prefix gating a capability both lanes need. */
+  if (path === "/uat/send-to-market" || path === "/uat/status") {
     if (!deps.env.uatMode) {
       sendError(
         res,
@@ -4007,16 +4023,44 @@ async function sendOrderToMarket(
     return { ok: false, status: 400, code: "invalid_symbol", message: "Audit row has no symbol" };
   }
   const side = (audit.side ?? "buy").toLowerCase() === "sell" ? 2 : 1; // 1=BUY, 2=SELL
-  // 2026-07-23: market orders only, for now — audit.price_cents used to
-  // silently make EVERY order a LMT at that price (mint always supplies a
-  // reference price, so a true MKT order never actually happened). Force
-  // MKT and omit Price from the IRESS order entirely; price_cents is still
-  // stored on the audit row for display/reference (expected-fill, arrival
-  // mid), it's just no longer sent to IRESS as a limit price. Revert this
-  // one line to restore LMT support once an explicit order_type choice is
-  // wired through from the caller.
-  const orderType = "MKT" as const;
-  const priceRands = undefined;
+  /* ORDER TYPE — from the caller's EXPLICIT intent, never inferred.
+     
+     History, because both previous behaviours were wrong in opposite
+     directions. Originally the worker made an order LMT whenever
+     audit.price_cents was set; mint client orders always attach a reference
+     price, so every order became a limit and a true market order was
+     impossible. On 2026-07-23 that was fixed by hard-forcing MKT and dropping
+     Price entirely, with a note to restore LMT "once an explicit order_type
+     choice is wired through from the caller".
+     
+     That note went unactioned while the desk ticket grew a Price field
+     labelled "blank = market". On 2026-07-27 Juan typed R45,20 for 2 NY1.JO
+     and it reached LONGMARK as a market order — Andre saw MKT on the
+     OrderPad, Mpumelelo saw the MKT badge in our own UI. A client asking to
+     pay no more than R45,20 was sent to buy at any price. That is a worse
+     failure than the one being fixed: an unpriced order can fill anywhere, and
+     nothing in the audit trail says we changed the instruction.
+     
+     The caller now states it. Absent or anything other than "limit" is a
+     market order, so every existing caller is unchanged. A limit is honoured
+     only with a usable price — an order stamped "limit" with no price is a
+     contradiction, and going to market on it would repeat exactly this bug. */
+  const auditPayload = (audit.payload ?? {}) as Record<string, unknown>;
+  const declaredType = typeof auditPayload.order_type === "string" ? auditPayload.order_type : null;
+  const limitCents = Number(audit.price_cents);
+  const wantsLimit = declaredType === "limit" && Number.isFinite(limitCents) && limitCents > 0;
+  if (declaredType === "limit" && !wantsLimit) {
+    return {
+      ok: false,
+      status: 400,
+      code: "limit_without_price",
+      message:
+        "Order is marked limit but carries no usable price_cents. Refusing to send it to market unpriced.",
+    };
+  }
+  const orderType = wantsLimit ? ("LMT" as const) : ("MKT" as const);
+  // NewOrder.Price is RANDS; live.ts multiplies by 100 for the wire.
+  const priceRands = wantsLimit ? limitCents / 100 : undefined;
   const exchange = "JSE";
   const tif = "DAY";
 
