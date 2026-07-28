@@ -2,16 +2,16 @@
 
 import * as React from "react";
 
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { UatBanner } from "@/components/admin/order-book/uat-banner";
-import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
-import { ExecutionView } from "@/components/admin/order-book/execution-view";
 import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-books";
-import { ClosedBooks } from "@/components/admin/order-book/closed-books";
 import { CancelledOrders } from "@/components/admin/order-book/cancelled-orders";
+import { ClosedBooks } from "@/components/admin/order-book/closed-books";
+import { ExecutionView } from "@/components/admin/order-book/execution-view";
 import { RebalanceBooks } from "@/components/admin/order-book/rebalance-books";
 import { StrateBir } from "@/components/admin/order-book/strate-bir";
+import { UatBanner } from "@/components/admin/order-book/uat-banner";
+import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export default function OrderBookPage() {
   const [tab, setTab] = React.useState("active");
@@ -24,10 +24,10 @@ export default function OrderBookPage() {
         <TabsList>
           <TabsTrigger value="active">Active Orderbook</TabsTrigger>
           <TabsTrigger value="closed">Closed Books</TabsTrigger>
-          <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
-          <TabsTrigger value="uat-testing">Manual Orders</TabsTrigger>
           <TabsTrigger value="rebalances">Rebalances</TabsTrigger>
           <TabsTrigger value="strate-bir">STRATE BIR</TabsTrigger>
+          <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
+          <TabsTrigger value="uat-testing">Manual Orders</TabsTrigger>
         </TabsList>
         {tab === "uat-testing" ? (
           <TabsContent value="uat-testing" className="mt-3 space-y-3">
@@ -98,7 +98,23 @@ export default function OrderBookPage() {
             />
           </TabsContent>
         ) : tab === "rebalances" ? (
-          <TabsContent value="rebalances" className="mt-3">
+          <TabsContent value="rebalances" className="mt-3 space-y-3">
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                size="sm"
+                variant={activeEnvironment === "uat" ? "warning" : "secondary"}
+                onClick={() => setActiveEnvironment((current) => (current === "live" ? "uat" : "live"))}
+                aria-pressed={activeEnvironment === "uat"}
+                title={
+                  activeEnvironment === "uat"
+                    ? "Showing UAT strategy rebalance batches only — click to return to LIVE"
+                    : "Showing LIVE strategy rebalance batches — click to view UAT"
+                }
+              >
+                Environment: {activeEnvironment === "uat" ? "UAT" : "LIVE"}
+              </Button>
+            </div>
             <RebalanceBooks scope={activeEnvironment} />
           </TabsContent>
         ) : tab === "strate-bir" ? (
