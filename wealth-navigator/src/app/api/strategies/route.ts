@@ -350,8 +350,11 @@ async function loadRetailStrategies(
       cashWeight: cashPct,
       nav: aumR,
       investorCount: a.users.size,
-      holdingsCount: Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0,
-      holdingsPreview: previewSymbols.map((symbol) => securityBySymbol.get(symbol) ?? { symbol, logoUrl: null }),
+      holdingsCount: (Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0) + (cashPct != null && cashPct > 0 ? 1 : 0),
+      holdingsPreview: [
+        ...previewSymbols.map((symbol) => securityBySymbol.get(symbol) ?? { symbol, logoUrl: null }),
+        ...(cashPct != null && cashPct > 0 ? [{ symbol: "CA", logoUrl: null, isCash: true }] : []),
+      ],
       minValue,
       lastRebalanced: s.updated_at ? new Date(s.updated_at).toISOString().slice(0, 10) : "—",
       deployedAt: null as string | null,

@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
+import { CASH_ASSET_NAME, CASH_ASSET_SYMBOL, CashAssetIcon } from "@/components/strategies/cash-asset-icon";
 import { cn } from "@/lib/cn";
 import { formatPct, formatZAR } from "@/lib/format";
 
@@ -434,6 +435,24 @@ function PortfolioWorkspace({ detail }: { detail: ClientDetail }) {
   const reserveCents = detail.transactions
     .filter((row) => transactionIds.has(String(row.id ?? "")))
     .reduce((sum, row) => sum + Math.max(0, cents(row.buffer_cents) - cents(row.buffer_consumed_cents)), 0);
+  const assetRows =
+    mode === "strategies" && residualCents > 0
+      ? [
+          ...rows,
+          {
+            id: `cash-asset-${scopeKey}`,
+            symbol: CASH_ASSET_SYMBOL,
+            securityName: CASH_ASSET_NAME,
+            strategyName: activeScope?.name,
+            quantity: 1,
+            investedCents: residualCents,
+            marketValueCents: residualCents,
+            averageCostCents: residualCents,
+            priceCents: residualCents,
+            isCashAsset: true,
+          },
+        ]
+      : rows;
 
   return (
     <div className="space-y-3">
@@ -470,11 +489,15 @@ function PortfolioWorkspace({ detail }: { detail: ClientDetail }) {
           <MiniMetric label="Basket" value={activeScope?.name ?? "—"} />
           <MiniMetric label="Latest value" value={formatZAR(cents(latestReturn?.basket_value) / 100)} />
           <MiniMetric label="YTD" value={latestReturn?.ytd_pct == null ? "—" : formatPct(cents(latestReturn.ytd_pct), 2)} />
-          <MiniMetric label="Strategy cash" value={formatZAR((residualCents + reserveCents) / 100)} sub={`Residual ${formatZAR(residualCents / 100)} · reserve ${formatZAR(reserveCents / 100)}`} />
+          <MiniMetric
+            label="CA cash asset"
+            value={formatZAR(residualCents / 100)}
+            sub={`Residual in strategy · execution reserve excluded (${formatZAR(reserveCents / 100)})`}
+          />
         </div>
       ) : null}
 
-      {view === "spreadsheet" ? <PortfolioSpreadsheet rows={rows} title={activeScope?.name ?? "Single Securities"} /> : <Portfolio rows={rows} />}
+      {view === "spreadsheet" ? <PortfolioSpreadsheet rows={assetRows} title={activeScope?.name ?? "Single Securities"} /> : <Portfolio rows={assetRows} />}
     </div>
   );
 }
@@ -504,7 +527,8 @@ function Portfolio({ rows }: { rows: Record<string, unknown>[] }) {
           {rows.map((row, index) => (
             <tr key={`${row.id ?? row.symbol}-${index}`} className="border-t border-border">
               <td className="p-2">
-                <b>{value(row.symbol)}</b>
+                {row.isCashAsset ? <CashAssetIcon className="mr-2 inline-flex h-7 w-7 align-middle" /> : null}
+                <b className={cn(Boolean(row.isCashAsset) && "text-success")}>{value(row.symbol)}</b>
                 <span className="ml-1 text-muted-foreground">{value(row.securityName)}</span>
               </td>
               <td className="p-2 text-muted-foreground">{value(row.strategyName)}</td>
@@ -528,6 +552,7 @@ interface SheetRow {
   quantity: number;
   averageFill: number;
   marketPrice: number;
+  isCashAsset: boolean;
 }
 function sheetRows(rows: Record<string, unknown>[]): SheetRow[] {
   return rows.map((row, index) => ({
@@ -537,6 +562,7 @@ function sheetRows(rows: Record<string, unknown>[]): SheetRow[] {
     quantity: cents(row.quantity),
     averageFill: cents(row.averageCostCents ?? row.averageFillCents ?? row.avg_fill) / 100,
     marketPrice: cents(row.priceCents) / 100,
+    isCashAsset: Boolean(row.isCashAsset),
   }));
 }
 function PortfolioSpreadsheet({ rows, title }: { rows: Record<string, unknown>[]; title: string }) {
@@ -571,7 +597,7 @@ function PortfolioSpreadsheet({ rows, title }: { rows: Record<string, unknown>[]
       <div className="overflow-x-auto">
         <table className="w-full min-w-[850px] text-[10px]">
           <thead className="bg-muted/40 text-[8px] uppercase text-muted-foreground"><tr><th className="p-2 text-left">Security</th><th className="p-2 text-right">Quantity</th><th className="p-2 text-right">Average fill</th><th className="p-2 text-right">Market price</th><th className="p-2 text-right">Invested</th><th className="p-2 text-right">Market value</th><th className="p-2 text-right">P&amp;L</th><th className="p-2 text-right">Return</th></tr></thead>
-          <tbody>{grid.map((row) => { const invested=row.quantity*row.averageFill, market=row.quantity*row.marketPrice, pnl=market-invested, ret=invested?pnl/invested*100:0;return <tr key={row.id} className="border-t border-border"><td className="p-2"><b>{row.symbol}</b><span className="ml-1 text-muted-foreground">{row.name}</span></td>{(["quantity","averageFill","marketPrice"] as const).map((field)=><td key={field} className="p-1.5 text-right"><input type="number" step="any" value={row[field]} onChange={(event)=>edit(row.id,field,event.target.value)} className="h-7 w-24 rounded border border-border bg-background px-1.5 text-right font-mono outline-none focus:border-primary" /></td>)}<td className="p-2 text-right font-mono">{formatZAR(invested)}</td><td className="p-2 text-right font-mono">{formatZAR(market)}</td><td className={cn("p-2 text-right font-mono",pnl>=0?"text-success":"text-destructive")}>{formatZAR(pnl)}</td><td className={cn("p-2 text-right font-mono",ret>=0?"text-success":"text-destructive")}>{formatPct(ret,2)}</td></tr>})}</tbody>
+          <tbody>{grid.map((row) => { const invested=row.quantity*row.averageFill, market=row.quantity*row.marketPrice, pnl=market-invested, ret=invested?pnl/invested*100:0;return <tr key={row.id} className="border-t border-border"><td className="p-2">{row.isCashAsset ? <CashAssetIcon className="mr-2 inline-flex h-7 w-7 align-middle" /> : null}<b className={cn(row.isCashAsset && "text-success")}>{row.symbol}</b><span className="ml-1 text-muted-foreground">{row.name}</span></td>{(["quantity","averageFill","marketPrice"] as const).map((field)=><td key={field} className="p-1.5 text-right"><input type="number" step="any" value={row[field]} onChange={(event)=>edit(row.id,field,event.target.value)} className="h-7 w-24 rounded border border-border bg-background px-1.5 text-right font-mono outline-none focus:border-primary" /></td>)}<td className="p-2 text-right font-mono">{formatZAR(invested)}</td><td className="p-2 text-right font-mono">{formatZAR(market)}</td><td className={cn("p-2 text-right font-mono",pnl>=0?"text-success":"text-destructive")}>{formatZAR(pnl)}</td><td className={cn("p-2 text-right font-mono",ret>=0?"text-success":"text-destructive")}>{formatPct(ret,2)}</td></tr>})}</tbody>
         </table>
       </div>
     </div>
