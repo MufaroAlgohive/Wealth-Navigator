@@ -5,6 +5,8 @@ import * as React from "react";
 import { cn } from "@/lib/cn";
 import type { OrderBookMember } from "./execution-view";
 
+type CrmHolding = NonNullable<OrderBookMember["crm_details"]>["holdings"][number];
+
 const money = (value: number | null) =>
   value == null
     ? "—"
@@ -17,16 +19,56 @@ const money = (value: number | null) =>
 export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
   const details = member.crm_details;
   const [selectedInvestorId, setSelectedInvestorId] = React.useState<string | null>(null);
+  const [investorHoldings, setInvestorHoldings] = React.useState<CrmHolding[] | null>(null);
+  const [investorLoading, setInvestorLoading] = React.useState(false);
+  const [investorError, setInvestorError] = React.useState<string | null>(null);
   if (!details) return null;
   const selectedInvestor =
     details.investors.find((investor) => investor.id === selectedInvestorId) ?? null;
   const selectedSources = new Set(selectedInvestor?.source_ids ?? []);
   const visibleHoldings =
-    selectedInvestor && selectedSources.size > 0
+    selectedInvestor && investorHoldings
+      ? investorHoldings
+      : selectedInvestor && selectedSources.size > 0
       ? details.holdings.filter((holding) =>
           holding.source_ids.some((sourceId) => selectedSources.has(sourceId)),
         )
       : details.holdings;
+
+  const selectInvestor = async (investorId: string) => {
+    if (selectedInvestorId === investorId) {
+      setSelectedInvestorId(null);
+      setInvestorHoldings(null);
+      setInvestorError(null);
+      return;
+    }
+    const investor = details.investors.find((item) => item.id === investorId);
+    setSelectedInvestorId(investorId);
+    setInvestorHoldings(null);
+    setInvestorError(null);
+    if (!investor?.source_ids.length) return;
+    setInvestorLoading(true);
+    try {
+      const response = await fetch(
+        `/api/admin/orderbook/crm-investor-holdings?ids=${encodeURIComponent(investor.source_ids.join(","))}`,
+        { cache: "no-store" },
+      );
+      const payload = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        holdings?: CrmHolding[];
+      };
+      if (!response.ok || payload.ok === false) {
+        setInvestorError(payload.error ?? `Investor holdings returned ${response.status}`);
+      } else {
+        setInvestorHoldings(payload.holdings ?? []);
+      }
+    } catch (error) {
+      setInvestorError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setInvestorLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-3 border-t border-border/40 bg-muted/20 px-3 py-3">
@@ -37,6 +79,11 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
               Holdings under {details.strategy_name ?? member.symbol ?? "strategy"}
               {selectedInvestor ? ` · ${selectedInvestor.name}` : ""}
             </h4>
+            {investorLoading ? (
+              <div className="mb-2 text-[11px] text-violet-600 dark:text-violet-300">Loading investor values...</div>
+            ) : investorError ? (
+              <div className="mb-2 text-[11px] text-destructive">{investorError}</div>
+            ) : null}
             {visibleHoldings.length ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-[11px]">
@@ -96,13 +143,24 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
                       <tr
                         key={investor.id}
                         className={cn(
-                          "cursor-pointer border-t border-border/30 transition-colors hover:bg-accent/60",
-                          selected && "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+                          "border-t border-border/30 transition-colors",
+                          selected && "bg-violet-600/25 text-violet-200",
                         )}
-                        onClick={() => setSelectedInvestorId(selected ? null : investor.id)}
                         aria-selected={selected}
                       >
-                        <td className="py-1.5 pr-3 font-medium">{investor.name}</td>
+                        <td className="p-0 pr-3 font-medium">
+                          <button
+                            type="button"
+                            className={cn(
+                              "w-full px-2 py-2 text-left font-semibold transition-colors hover:bg-violet-500/15 hover:text-violet-300",
+                              selected && "text-violet-200",
+                            )}
+                            onClick={() => void selectInvestor(investor.id)}
+                            aria-pressed={selected}
+                          >
+                            {investor.name}
+                          </button>
+                        </td>
                         <td className="py-1.5 pr-3">{investor.account_id ?? "—"}</td>
                         <td className="py-1.5 pr-3 text-muted-foreground">
                           {investor.family_relationship ?? "Primary"}
