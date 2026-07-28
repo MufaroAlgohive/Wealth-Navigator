@@ -117,7 +117,7 @@ function openInstitutional(): SupabaseClient | null {
   }
 }
 
-export async function GET() {
+export async function GET(req?: Request) {
   const auth = await getAdminContext();
   if (auth.status === "no-session") {
     return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
@@ -125,6 +125,14 @@ export async function GET() {
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
+
+  // Optional ?source=A,B — return only books whose members include one of these
+  // sources, so the Active tab shows app-order books and the Manual tab shows
+  // desk/UAT-order books, from the same archive.
+  const sourceParam = req ? (new URL(req.url).searchParams.get("source") ?? "").trim() : "";
+  const sourceFilter = sourceParam
+    ? new Set(sourceParam.split(",").map((s) => s.trim()).filter(Boolean))
+    : null;
 
   const db = openInstitutional();
   if (!db) {
@@ -159,21 +167,30 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: memberErr.message }, { status: 500 });
   }
 
-  const bySeq = new Map<number, { total: number; filled: number; members: BookMember[] }>();
+  const bySeq = new Map<number, { total: number; filled: number; members: BookMember[]; sources: Set<string> }>();
   for (const r of (memberRows ?? []) as MemberAuditRow[]) {
     const rawSeq = r.payload?.order_book_seq;
     const seq = typeof rawSeq === "number" ? rawSeq : Number(rawSeq);
     if (!Number.isFinite(seq)) continue;
-    const agg = bySeq.get(seq) ?? { total: 0, filled: 0, members: [] };
+    const agg = bySeq.get(seq) ?? { total: 0, filled: 0, members: [], sources: new Set<string>() };
     agg.total += 1;
     if (r.status === "filled") agg.filled += 1;
+    if (r.source) agg.sources.add(r.source);
     agg.members.push(toMember(r));
     bySeq.set(seq, agg);
   }
 
-  const books = (bookRows as Array<{ sequence: number; released_at: string; released_by: string | null; member_count: number }>).map(
+  const books = (bookRows as Array<{ sequence: number; released_at: string; released_by: string | null; member_count: number }>)
+    .filter((b) => {
+      if (!sourceFilter) return true;
+      const agg = bySeq.get(b.sequence);
+      if (!agg) return false;
+      for (const s of agg.sources) if (sourceFilter.has(s)) return true;
+      return false;
+    })
+    .map(
     (b) => {
-      const agg = bySeq.get(b.sequence) ?? { total: 0, filled: 0, members: [] };
+      const agg = bySeq.get(b.sequence) ?? { total: 0, filled: 0, members: [], sources: new Set<string>() };
       return {
         sequence: b.sequence,
         released_at: b.released_at,
@@ -181,6 +198,7 @@ export async function GET() {
         total_count: agg.total,
         filled_count: agg.filled,
         fully_filled: agg.total > 0 && agg.filled === agg.total,
+        sources: [...agg.sources],
         // Members are returned so the archive row can be expanded to show what
         // actually executed. Without this a fully-filled book rendered as
         // "Order Book 2: <date> · 1/1 filled" and nothing else — the fill price,

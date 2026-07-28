@@ -49,8 +49,9 @@ function fmtReleasedAt(iso: string): string {
  * phase, matching how "Capture snapshot" / "Strate BIR export" are
  * already stubbed elsewhere on this admin page.
  */
-export function ActiveOrderBooks() {
-  const { data } = usePolling<OrderBooksPayload>("/api/admin/orderbook/order-books", { interval: 5_000 });
+export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
+  const query = sources && sources.length ? `?source=${encodeURIComponent(sources.join(","))}` : "";
+  const { data } = usePolling<OrderBooksPayload>(`/api/admin/orderbook/order-books${query}`, { interval: 5_000 });
   const books = (data?.books ?? []).filter((b) => b.fully_filled);
   const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
   const toggle = (seq: number) =>

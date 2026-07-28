@@ -163,7 +163,7 @@ export default function OrderBookPage() {
               key={`orderbook-manual-${uatRefresh}`}
               sources={["MANUAL_CLIENT_ORDER", "UAT_ADHOC_ORDER"]}
             />
-            <ActiveOrderBooks />
+            <ActiveOrderBooks sources={["MANUAL_CLIENT_ORDER", "UAT_ADHOC_ORDER"]} />
           </TabsContent>
         ) : tab === "cancelled" ? (
           <TabsContent value="cancelled" className="mt-3">
@@ -176,7 +176,7 @@ export default function OrderBookPage() {
           // orders stay on the Manual Orders tab.
           <TabsContent value="active" className="mt-3 space-y-3">
             <ExecutionView key="orderbook-active" sources={["MINT_CLIENT_ORDER"]} />
-            <ActiveOrderBooks />
+            <ActiveOrderBooks sources={["MINT_CLIENT_ORDER"]} />
           </TabsContent>
         ) : (
         <TabsContent value={tab} className="mt-3">

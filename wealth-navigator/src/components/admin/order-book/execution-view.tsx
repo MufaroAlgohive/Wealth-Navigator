@@ -429,6 +429,9 @@ export interface OrderBookSummary {
    *  Optional because an older cached response won't carry it. */
   members?: OrderBookMember[];
   filled_value_rands?: number | null;
+  /** Distinct order sources across this book's members — lets the archive be
+   *  split by app vs manual/UAT. Optional for older cached responses. */
+  sources?: string[];
 }
 
 /**
