@@ -68,6 +68,16 @@ export interface ObservedFill {
    * getting it wrong debits a client twice.
    */
   holdingId: string | null;
+  /**
+   * `oems_order_audit.quantity` — what was ORDERED, immutable. The poller
+   * rewrites only payload/result_payload/status, never this column.
+   *
+   * Needed because `filled` alone cannot tell an under-fill from a full fill:
+   * a 100-share leg that trades 60 and then expires leaves the pre-booked lot
+   * reading 100, now stamped with a real avg_fill so it renders as a confirmed
+   * position. The client holds 40 shares nobody bought.
+   */
+  orderedQty: number;
 }
 
 /** What a settlement would do, or did. Amounts in the units named. */
@@ -81,6 +91,8 @@ export interface SettlementPlan {
   alreadySettledQty: number;
   /** Signed rands already moved for this order before this run (running total). */
   alreadySettledCash: number;
+  /** True when a ledger row already exists — decides INSERT vs compare-and-swap. */
+  ledgerExists: boolean;
   /** Signed rands total after this run — what the ledger must record. */
   settledCashAfter: number;
   /** Quantity this run applies. Zero means nothing to do. */
@@ -178,6 +190,7 @@ export async function planSettlement(
     side: fill.side,
     alreadySettledQty: 0,
     alreadySettledCash: 0,
+    ledgerExists: false,
     settledCashAfter: 0,
     deltaQty: 0,
     avgFillCents: fill.avgFillCents,
@@ -213,8 +226,8 @@ export async function planSettlement(
      Negative = debited (buy). This is a running total, not the last delta —
      the whole correctness argument below depends on that. */
   const alreadySettledCash = Number((ledger as LedgerRow | null)?.settled_cash_rands ?? 0);
+  const ledgerExists = ledger != null;
   const deltaQty = fill.filledQty - alreadySettledQty;
-  if (deltaQty <= 0) return { ...base, alreadySettledQty, deltaQty: 0 };
 
   /* AvgPrc is the volume-weighted average over the WHOLE order, and it is the
      authoritative price. Andre Pietersen (IRESS), 2026-07-27: on a full fill it
@@ -241,6 +254,26 @@ export async function planSettlement(
   const targetSigned = fill.side === "buy" ? -targetTotalMagnitude : targetTotalMagnitude;
   const cashDeltaRands = toCents2(targetSigned - alreadySettledCash);
 
+  /* CASH-ONLY RECOVERY. `deltaQty <= 0` used to return immediately, which made
+     a PARTIALLY APPLIED buy a permanent dead end: the lot INSERT succeeds, the
+     wallet write then loses its compare-and-swap, and abort() records
+     settled_qty at the full filled quantity while leaving settled_cash_rands
+     where it was. The client keeps real shares and is never charged. Every
+     later cycle computed deltaQty = 0 and returned before looking at the cash,
+     so it could never heal — the only signal was one console.error.
+
+     A shortfall in cash with the quantity already applied is exactly the state
+     this must recover from, so let it through when the cash is genuinely short.
+     RECONCILE is excluded deliberately: it parks settled_cash_rands at 0 by
+     design because the app already took the money, and "recovering" that gap
+     would debit the client a second time. */
+  const cashShortfall = Math.abs(toCents2(targetSigned - alreadySettledCash));
+  const reconcileMode = fill.side === "buy" && fill.holdingId != null;
+  const cashOnly = deltaQty <= 0 && !reconcileMode && cashShortfall >= 0.01;
+  if (deltaQty <= 0 && !cashOnly) {
+    return { ...base, alreadySettledQty, alreadySettledCash, ledgerExists, deltaQty: 0 };
+  }
+
   /* The average price of just the shares that arrived in THIS slice, backed out
      of the running average. On the example above: (11 000 - 4 000) / 60 =
      116,67 — what those 60 shares actually cost, not the 110 order-wide figure.
@@ -249,6 +282,9 @@ export async function planSettlement(
      to filledQty * avgPx and the client's cost basis is right. */
   const marginalFillCents =
     deltaQty > 0 ? Math.round((Math.abs(cashDeltaRands) * 100) / deltaQty) : fill.avgFillCents;
+  // A cash-only pass moves money for shares that are ALREADY in RETAIL, so it
+  // must not open, close or split any lot — only the wallet leg runs.
+  const cashOnlyPass = cashOnly && deltaQty <= 0;
 
   /* `wallets` is unique on (user_id, status), not on user_id — a user can hold
      an 'active' AND a 'test' wallet. A bare .maybeSingle() on user_id throws for
@@ -262,11 +298,11 @@ export async function planSettlement(
     .eq("user_id", fill.userId)
     .order("status", { ascending: true })
     .limit(2);
-  if (walletErr) return { ...base, alreadySettledQty, deltaQty, blocked: `wallet read failed: ${walletErr.message}` };
+  if (walletErr) return { ...base, alreadySettledQty, ledgerExists, deltaQty, blocked: `wallet read failed: ${walletErr.message}` };
   const walletRows = (wallets ?? []) as Array<{ id: string; balance: number; status: string }>;
   const wallet = walletRows.find((w) => w.status === "active") ?? walletRows[0];
   if (!wallet) {
-    return { ...base, alreadySettledQty, deltaQty, blocked: `no wallet for user ${fill.userId}` };
+    return { ...base, alreadySettledQty, ledgerExists, deltaQty, blocked: `no wallet for user ${fill.userId}` };
   }
   const walletId = wallet.id;
   const walletBefore = Number(wallet.balance) || 0;
@@ -276,6 +312,7 @@ export async function planSettlement(
     ...base,
     alreadySettledQty,
     alreadySettledCash,
+    ledgerExists,
     settledCashAfter: toCents2(targetSigned),
     deltaQty,
     marginalFillCents,
@@ -314,6 +351,17 @@ export async function planSettlement(
       ...plan,
       mode: "reconcile",
       reconcileHoldingId: row.id,
+      /* The reconcile lot is the WHOLE order, so its cost basis is the ORDER-WIDE
+         VWAP. `marginalFillCents` — the price of just this slice — is meaningful
+         only in the OPEN branch, where each slice becomes its own lot.
+
+         Using it here corrupts the basis on every partial, because reconcile
+         parks settled_cash_rands at 0 (see the confirm below), so the derived
+         slice price diverges further with each cycle. Reproduced by executing
+         this module: a 100-share leg filling 40 @ 100c then completing at avgPx
+         110c stamped avg_fill = 183c on a live client lot. The client's cost
+         basis would read R1,83 a share against a true R1,10. */
+      marginalFillCents: fill.avgFillCents,
       // No wallet movement in this mode.
       cashDeltaRands: 0,
       walletAfter: walletBefore,
@@ -343,36 +391,70 @@ export async function planSettlement(
     // Settlement records reality.
     return {
       ...plan,
-      lotsToOpen: [{ quantity: deltaQty, avgFillCents: marginalFillCents, unitMarkCents }],
+      lotsToOpen: cashOnlyPass
+        ? []
+        : [{ quantity: deltaQty, avgFillCents: marginalFillCents, unitMarkCents }],
     };
   }
 
   // SELL — close active lots FIFO for this (user, security).
-  /* Scoped to the ACCOUNT HOLDER'S OWN lots.
-     
+  /* SCOPE THE FIFO TO THE OWNER OF THE LOT THE ORDER CAME FROM.
+
      A minor's holdings live under the PARENT's user_id, distinguished only by
-     family_member_id. Live data: user b215eb9a… holds both own and child lots on
-     six securities, with identical created_at values on some pairs. Without the
-     family_member_id filter a parent's sell FIFOs straight into a child's shares
-     and credits the parent's wallet — liquidating a minor's assets to pay an
-     adult. The OEMS order payload cannot express a family member at all, so the
-     only honest scope is the holder's own lots; a family-member sale has to come
-     through a path that knows whose it is.
-     
+     family_member_id, so user_id alone cannot tell the two apart. Live data:
+     user b215eb9a holds both own and child lots on six securities, with
+     identical created_at on some pairs.
+
+     A fixed `.is("family_member_id", null)` fixes only half of it. It stops a
+     parent's sell reaching a child's shares, but a MINOR's sell then FIFOs
+     straight into the PARENT's lots — the mirror image, and worse, because it
+     also permanently blocks the parent's own leg of the same basket. Live ADH.JO
+     under b215eb9a: own lot d37ca645 (2 @ 4706c) and minor lot 8cab5090
+     (1 @ 4678c). Both flip to SELL, both go out; if IRESS returns the minor's
+     row first, settlement takes a share from the PARENT's lot.
+
+     Every order the app or the desk book raises carries payload.holding_id
+     (send-to-market route.ts:739, client-order route.ts). Derive the scope from
+     that lot's own family_member_id, so a sell can only ever consume lots
+     belonging to whoever the order was raised for. */
+  let ownerFamilyId: string | null = null;
+  if (fill.holdingId) {
+    const { data: srcLot, error: srcErr } = await deps.retail
+      .from("stock_holdings_c")
+      .select("family_member_id")
+      .eq("id", fill.holdingId)
+      .maybeSingle();
+    if (srcErr) return { ...plan, blocked: `source lot read failed: ${srcErr.message}` };
+    if (!srcLot) return { ...plan, blocked: `sell names holding ${fill.holdingId}, which does not exist` };
+    ownerFamilyId = (srcLot as { family_member_id: string | null }).family_member_id ?? null;
+  }
+
+  /* `trade_side` DESC puts pending sells first. request-sell.js models a pending
+     sell by leaving the row active and stamping trade_side='SELL' — on a partial
+     it inserts a NEW row with created_at = now and shrinks the original BUY lot.
+     A plain created_at FIFO therefore closes the older BUY remainder the client
+     chose to KEEP and leaves the flagged SELL row active, which the order book
+     then re-dispatches as a second sell of shares already sold. "SELL" > "BUY"
+     lexically, so descending consumes what the client actually put up for sale.
+
      created_at alone is not a deterministic sort — the ties above are real — so
      id breaks them, making FIFO reproducible and the realised cost basis stable. */
-  const { data: lots, error: lotErr } = await deps.retail
+  let lotQuery = deps.retail
     .from("stock_holdings_c")
-    .select("id, quantity, avg_fill, created_at")
+    .select("id, quantity, avg_fill, created_at, trade_side")
     .eq("user_id", fill.userId)
     .eq("security_id", fill.securityId)
-    .eq("is_active", true)
-    .is("family_member_id", null)
+    .eq("is_active", true);
+  lotQuery = ownerFamilyId
+    ? lotQuery.eq("family_member_id", ownerFamilyId)
+    : lotQuery.is("family_member_id", null);
+  const { data: lots, error: lotErr } = await lotQuery
+    .order("trade_side", { ascending: false })
     .order("created_at", { ascending: true })
     .order("id", { ascending: true });
   if (lotErr) return { ...plan, blocked: `holdings read failed: ${lotErr.message}` };
 
-  let remaining = deltaQty;
+  let remaining = cashOnlyPass ? 0 : deltaQty;
   const lotsToClose: SettlementPlan["lotsToClose"] = [];
   for (const lot of (lots ?? []) as LotRow[]) {
     if (remaining <= 0) break;
@@ -410,7 +492,13 @@ export async function settleFill(deps: SettlementDeps, fill: ObservedFill): Prom
     );
     return noop;
   }
-  if (plan.deltaQty <= 0) return { ...noop, error: null };
+  /* A zero delta with cash still owed is the PARTIALLY APPLIED recovery case —
+     the lot landed but the wallet write lost its compare-and-swap. Returning
+     here is what made that state permanent. Let it through so the wallet leg
+     can run on its own. */
+  if (plan.deltaQty <= 0 && Math.abs(plan.cashDeltaRands) < 0.01) {
+    return { ...noop, error: null };
+  }
 
   if (deps.dryRun) {
     console.info(
@@ -433,28 +521,79 @@ export async function settleFill(deps: SettlementDeps, fill: ObservedFill): Prom
     return { plan, applied: false, dryRun: true, error: null };
   }
 
-  // ---- CLAIM. Advance the ledger BEFORE touching money. -------------------
+  /* ---- CLAIM. Advance the ledger BEFORE touching money. -------------------
+
+     COMPARE-AND-SWAP, not a blind upsert. Two processes can settle the same
+     order concurrently — a Railway rolling deploy overlaps the old and new
+     main-prod containers for several seconds, and the poll loop only tests
+     `shuttingDown` between iterations. Both read settled_qty=0 in
+     planSettlement, and a bare upsert lets BOTH claim the same quantity. Both
+     then insert a lot, while only one wins the wallet CAS: two shares booked,
+     one paid for.
+
+     The claim must land only if settled_qty is still what we planned against.
+     Postgres serialises the two UPDATEs on the row lock and re-evaluates the
+     predicate for the loser under READ COMMITTED, so exactly one gets a row
+     back. The INSERT arm is for a first sighting; a unique violation there means
+     another process inserted first, which is the same lost race. */
   const claimedQty = plan.alreadySettledQty + plan.deltaQty;
-  const { error: claimErr } = await deps.institutional.from("oems_fill_settlement_c").upsert(
-    {
-      order_id: plan.orderId,
-      user_id: plan.userId,
-      security_id: plan.securityId,
-      symbol: plan.symbol,
-      side: plan.side,
-      settled_qty: claimedQty,
-      // RUNNING TOTAL, not this slice's delta. planSettlement subtracts this
-      // from filledQty * avgPx to get the next delta, so recording a delta here
-      // would make every partial fill after the first mis-price itself.
-      settled_cash_rands: plan.settledCashAfter,
-      last_error: "claim in flight",
-      last_settled_at: new Date().toISOString(),
-    },
-    { onConflict: "order_id" },
-  );
-  if (claimErr) {
-    // Could not claim → do not touch money. Nothing has changed anywhere.
-    return { plan, applied: false, dryRun: false, error: `settlement claim failed: ${claimErr.message}` };
+  const nowClaim = new Date().toISOString();
+  let claimWon = false;
+  if (plan.alreadySettledQty === 0 && !plan.ledgerExists) {
+    const { data: inserted, error: insErr } = await deps.institutional
+      .from("oems_fill_settlement_c")
+      .insert({
+        order_id: plan.orderId,
+        user_id: plan.userId,
+        security_id: plan.securityId,
+        symbol: plan.symbol,
+        side: plan.side,
+        settled_qty: claimedQty,
+        // RUNNING TOTAL, not this slice's delta. planSettlement subtracts this
+        // from filledQty * avgPx to get the next delta, so recording a delta
+        // here would make every partial fill after the first mis-price itself.
+        settled_cash_rands: plan.settledCashAfter,
+        last_error: "claim in flight",
+        last_settled_at: nowClaim,
+      })
+      .select("order_id");
+    if (insErr) {
+      // 23505 = another process inserted this order_id first. Not an error to
+      // retry into — it means we lost the race, so we must NOT touch money.
+      return {
+        plan,
+        applied: false,
+        dryRun: false,
+        error: `settlement claim lost or failed: ${insErr.message}`,
+      };
+    }
+    claimWon = (inserted ?? []).length > 0;
+  } else {
+    const { data: swapped, error: casErr } = await deps.institutional
+      .from("oems_fill_settlement_c")
+      .update({
+        settled_qty: claimedQty,
+        settled_cash_rands: plan.settledCashAfter,
+        last_error: "claim in flight",
+        last_settled_at: nowClaim,
+      })
+      .eq("order_id", plan.orderId)
+      .eq("settled_qty", plan.alreadySettledQty) // <-- the compare
+      .select("order_id");
+    if (casErr) {
+      return { plan, applied: false, dryRun: false, error: `settlement claim failed: ${casErr.message}` };
+    }
+    claimWon = (swapped ?? []).length > 0;
+  }
+  if (!claimWon) {
+    // Another process moved settled_qty between our read and our write. It owns
+    // this delta. Do not touch money; the next cycle re-plans against the truth.
+    return {
+      plan,
+      applied: false,
+      dryRun: false,
+      error: "settlement claim lost to a concurrent settler — will re-plan next cycle",
+    };
   }
 
   // ---- APPLY to RETAIL. ----------------------------------------------------
@@ -754,6 +893,7 @@ export function observedFillFromAudit(row: {
   symbol: string | null;
   side: string | null;
   status: string;
+  quantity?: number | null;
   payload: Record<string, unknown> | null;
 }): ObservedFill | null {
   if (row.status !== "filled" && row.status !== "partial") return null;
@@ -774,6 +914,227 @@ export function observedFillFromAudit(row: {
     filledQty,
     avgFillCents,
     strategy: typeof p.strategy === "string" ? p.strategy : null,
+    orderedQty: Number(row.quantity) || 0,
     holdingId: typeof p.holding_id === "string" ? p.holding_id : null,
+  };
+}
+
+/** Terminal states where anything not filled will never fill. */
+const DEAD_STATES = new Set(["cancelled", "rejected", "expired", "failed"]);
+
+export interface VoidResult {
+  orderId: string;
+  applied: boolean;
+  dryRun: boolean;
+  /** Shares that will never arrive. */
+  unfilledQty: number;
+  /** Rands returned to the wallet. */
+  refundRands: number;
+  /** True when the lot was closed outright rather than trimmed. */
+  lotVoided: boolean;
+  error: string | null;
+}
+
+/**
+ * Reverse the part of an app-raised order that will never fill.
+ *
+ * `settleFill` only ever ADDS what happened. Nothing undid what did not. The
+ * MINT app books the lot and debits the wallet at PURCHASE time, so an order
+ * the broker rejects — or a DAY order that expires having traded 60 of 100 —
+ * leaves the client holding shares nobody bought and out of pocket for them.
+ * The lot stays `is_active=true, Status='active'` and renders in Total Value
+ * and `mint_account_pnl()` as a real position. The desk sees REJECTED and
+ * reasonably assumes nothing happened.
+ *
+ * Only touches orders carrying `payload.holding_id` — a desk-raised order has
+ * no pre-booked lot and nothing to reverse.
+ *
+ * The refund is the unfilled shares at the price the client was ACTUALLY
+ * charged for that leg (`Expected_fill`, RANDS per share), never a share of
+ * `transactions.amount`: record-investment.js writes ONE transaction per basket
+ * and stamps its id on every constituent lot, so refunding from the transaction
+ * would return the whole basket's cost for a single leg.
+ *
+ * Idempotent through the same ledger as settleFill, under a `void:<orderId>`
+ * key, so re-running is a no-op rather than a second refund.
+ */
+export async function voidUnfilledRemainder(
+  deps: SettlementDeps,
+  row: {
+    order_id: string;
+    status: string;
+    quantity: number | null;
+    payload: Record<string, unknown> | null;
+  },
+): Promise<VoidResult> {
+  const nil: VoidResult = {
+    orderId: row.order_id,
+    applied: false,
+    dryRun: deps.dryRun,
+    unfilledQty: 0,
+    refundRands: 0,
+    lotVoided: false,
+    error: null,
+  };
+  if (!deps.enabled) return nil;
+  if (!DEAD_STATES.has(row.status)) return nil;
+
+  const p = row.payload ?? {};
+  const holdingId = typeof p.holding_id === "string" ? p.holding_id : null;
+  const userId = typeof p.user_id === "string" ? p.user_id : "";
+  if (!holdingId || !userId) return nil; // desk order — no pre-booked lot
+
+  const orderedQty = Number(row.quantity) || 0;
+  const filledQty = Number(p.filled) || 0;
+  const unfilled = orderedQty - filledQty;
+  if (!(unfilled > 0)) return nil; // fully filled — settleFill owns it
+
+  const voidKey = `void:${row.order_id}`;
+  const { data: seen, error: seenErr } = await deps.institutional
+    .from("oems_fill_settlement_c")
+    .select("order_id")
+    .eq("order_id", voidKey)
+    .maybeSingle();
+  if (seenErr) return { ...nil, error: `void ledger read failed: ${seenErr.message}` };
+  if (seen) return nil; // already reversed
+
+  const { data: lot, error: lotErr } = await deps.retail
+    .from("stock_holdings_c")
+    .select('id, quantity, "Expected_fill", is_active')
+    .eq("id", holdingId)
+    .maybeSingle();
+  if (lotErr) return { ...nil, error: `void lot read failed: ${lotErr.message}` };
+  if (!lot) return { ...nil, error: `void names holding ${holdingId}, which does not exist` };
+  const l = lot as { id: string; quantity: number; Expected_fill: number | null; is_active: boolean };
+  if (!l.is_active) return nil; // already closed by something else
+
+  const chargedPerShare = Number(l.Expected_fill);
+  if (!(chargedPerShare > 0)) {
+    return { ...nil, error: `holding ${holdingId} has no Expected_fill — refusing to guess a refund` };
+  }
+  const refundRands = toCents2(unfilled * chargedPerShare);
+  const voidWholeLot = filledQty <= 0;
+
+  if (deps.dryRun) {
+    console.info(
+      JSON.stringify({
+        level: "info",
+        event: "settlement_void_dry_run",
+        order: row.order_id,
+        status: row.status,
+        orderedQty,
+        filledQty,
+        unfilled,
+        refundRands,
+        voidWholeLot,
+        holding: holdingId,
+      }),
+    );
+    return { ...nil, unfilledQty: unfilled, refundRands, lotVoided: voidWholeLot };
+  }
+
+  // CLAIM FIRST, same argument as settleFill: under-refunding is visible and
+  // correctable; refunding twice is a silent loss to MINT.
+  const nowIso = new Date().toISOString();
+  const { data: claimed, error: claimErr } = await deps.institutional
+    .from("oems_fill_settlement_c")
+    .insert({
+      order_id: voidKey,
+      user_id: userId,
+      security_id: typeof p.security_id === "string" ? p.security_id : null,
+      symbol: null,
+      side: "buy",
+      settled_qty: unfilled,
+      settled_cash_rands: refundRands,
+      last_error: "void in flight",
+      last_settled_at: nowIso,
+    })
+    .select("order_id");
+  if (claimErr) return { ...nil, error: `void claim lost or failed: ${claimErr.message}` };
+  if (!(claimed ?? []).length) return nil;
+
+  const unclaim = async (reason: string): Promise<VoidResult> => {
+    await deps.institutional
+      .from("oems_fill_settlement_c")
+      .update({ last_error: reason })
+      .eq("order_id", voidKey);
+    console.error(
+      JSON.stringify({ level: "error", event: "settlement_void_failed", order: row.order_id, reason }),
+    );
+    return { ...nil, unfilledQty: unfilled, refundRands, error: reason };
+  };
+
+  if (voidWholeLot) {
+    const { error: closeErr } = await deps.retail
+      .from("stock_holdings_c")
+      .update({
+        is_active: false,
+        Status: "cancelled",
+        closed_at: nowIso,
+        closed_reason: `iress-void:${row.order_id} (${row.status})`,
+        updated_at: nowIso,
+      })
+      .eq("id", holdingId)
+      .eq("is_active", true);
+    if (closeErr) return unclaim(`void lot close failed: ${closeErr.message}`);
+  } else {
+    // Partial fill: keep what traded, remove what did not.
+    const { error: trimErr } = await deps.retail
+      .from("stock_holdings_c")
+      .update({ quantity: filledQty, updated_at: nowIso })
+      .eq("id", holdingId)
+      .eq("is_active", true);
+    if (trimErr) return unclaim(`void lot trim failed: ${trimErr.message}`);
+  }
+
+  // Refund LAST, and only against the balance we read, so a concurrent deposit
+  // is never clobbered. A lost race leaves the position corrected and the cash
+  // pending, which last_error makes visible.
+  const { data: wallets, error: wErr } = await deps.retail
+    .from("wallets")
+    .select("id, balance, status")
+    .eq("user_id", userId)
+    .order("status", { ascending: true })
+    .limit(2);
+  if (wErr) return unclaim(`void wallet read failed: ${wErr.message}`);
+  const wRows = (wallets ?? []) as Array<{ id: string; balance: number; status: string }>;
+  const w = wRows.find((x) => x.status === "active") ?? wRows[0];
+  if (!w) return unclaim(`no wallet for user ${userId}`);
+  const before = Number(w.balance) || 0;
+  const { data: moved, error: mErr } = await deps.retail
+    .from("wallets")
+    .update({ balance: toCents2(before + refundRands), updated_at: nowIso })
+    .eq("id", w.id)
+    .eq("balance", before)
+    .select("id");
+  if (mErr) return unclaim(`void refund failed: ${mErr.message}`);
+  if (!(moved ?? []).length) return unclaim("wallet moved between read and refund — retrying next cycle");
+
+  await deps.institutional
+    .from("oems_fill_settlement_c")
+    .update({ last_error: null, holding_ids: [holdingId], last_settled_at: nowIso })
+    .eq("order_id", voidKey);
+
+  console.info(
+    JSON.stringify({
+      level: "info",
+      event: "settlement_void_applied",
+      order: row.order_id,
+      status: row.status,
+      unfilled,
+      refundRands,
+      walletBefore: before,
+      walletAfter: toCents2(before + refundRands),
+      lotVoided: voidWholeLot,
+    }),
+  );
+  return {
+    orderId: row.order_id,
+    applied: true,
+    dryRun: false,
+    unfilledQty: unfilled,
+    refundRands,
+    lotVoided: voidWholeLot,
+    error: null,
   };
 }
