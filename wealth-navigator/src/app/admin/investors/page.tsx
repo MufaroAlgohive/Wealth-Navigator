@@ -200,6 +200,14 @@ export default function InvestorsPage() {
       const navKey=scope(userId,null,strategyId);
       const nav = (navByUser[navKey] || []).filter((r) => r.basket_value != null).map((r) => ({ date: r.as_of_date, v: Number(r.basket_value) }));
       const latestNav = (navByUser[navKey] || [])[(navByUser[navKey] || []).length - 1];
+      // Prefer the canonical published return (same field YTD reads) over the
+      // self-computed live-price retPct below — mirrors MyMintAdmin's
+      // investors.html, which prefers repairRow.gross_strategy_twr_pct and only
+      // falls back to (pnl/invested) when no canonical figure exists yet. Without
+      // this, the displayed "all-time" return ticks with every live price poll
+      // and visibly disagrees with the fixed, once-daily-published YTD figure
+      // shown right next to it on the same card.
+      const canonicalRetPct = latestNav?.inception_pct;
       const prof = profById.get(userId);
       const familyMember = familyMemberId ? familyById.get(familyMemberId) : null;
       const parentName = familyMember && prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0,8) : null;
@@ -208,7 +216,7 @@ export default function InvestorsPage() {
         key,userId,familyMemberId,strategyId,strategy:strategyId?(strategyById.get(strategyId)?.short_name||strategyById.get(strategyId)?.name||"Strategy"):null, name:displayName,parentName,
         email: prof?.email || "", mintNumber: prof?.mint_number || null, computershare: familyMember?.computershare_number || prof?.computershare_number || null,
         investedCents: investedStableCents, currentCents, residualCents, bufferCents, realizedCents, valueCents, pnlCents,
-        retPct: investedStableCents > 0 ? (pnlCents / investedStableCents) * 100 : 0,
+        retPct: canonicalRetPct != null ? Number(canonicalRetPct) : (investedStableCents > 0 ? (pnlCents / investedStableCents) * 100 : 0),
         ytdPct: latestNav?.ytd_pct ?? null, inceptionPct: latestNav?.inception_pct ?? null,
         nav, holdings: Object.values(bysecurity).sort((a, b) => b.valueCents - a.valueCents), txns: txnByUser[userId] || [],
       });
