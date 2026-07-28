@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { usePolling } from "@/lib/hooks/use-polling";
 import { cn } from "@/lib/cn";
+import { CrmOrderBreakdown } from "./crm-order-breakdown";
 import type { OrderBookSummary } from "./execution-view";
 
 interface OrderBooksPayload {
@@ -190,7 +191,8 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                         </thead>
                         <tbody>
                           {members.map((m) => (
-                            <tr key={m.id} className="border-t border-border/30">
+                            <React.Fragment key={m.id}>
+                            <tr className="border-t border-border/30">
                               <td className="py-1.5 pr-3 font-mono text-[10px]">{m.order_id ?? "—"}</td>
                               <td className="max-w-[180px] truncate py-1.5 pr-3" title={m.client_account ?? ""}>
                                 {m.client_account ?? "—"}
@@ -221,6 +223,14 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                               </td>
                               <td className="py-1.5 pr-3 text-muted-foreground">{fmtReleasedAt(m.filled_at ?? "")}</td>
                             </tr>
+                            {m.crm_details ? (
+                              <tr>
+                                <td colSpan={13} className="p-0">
+                                  <CrmOrderBreakdown member={m} />
+                                </td>
+                              </tr>
+                            ) : null}
+                            </React.Fragment>
                           ))}
                         </tbody>
                       </table>
