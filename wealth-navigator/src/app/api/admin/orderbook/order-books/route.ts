@@ -152,6 +152,31 @@ function crmMember(row: Record<string, unknown>, index: number, bookId: string):
   };
 }
 
+function crmOwnerIds(row: Record<string, unknown>): string[] {
+  const ids: string[] = [];
+  const add = (value: unknown) => {
+    const id = str(value);
+    if (id) ids.push(id);
+  };
+  add(row.userId);
+  for (const value of Array.isArray(row.strategyUsers) ? row.strategyUsers : []) {
+    if (!value || typeof value !== "object") continue;
+    const owner = value as Record<string, unknown>;
+    add(owner.userId ?? owner.user_id ?? owner.id);
+  }
+  for (const value of Array.isArray(row.strategyHoldings) ? row.strategyHoldings : []) {
+    if (!value || typeof value !== "object") continue;
+    const owner = value as Record<string, unknown>;
+    add(owner.userId ?? owner.user_id);
+  }
+  for (const value of Array.isArray(row.bndRows) ? row.bndRows : []) {
+    if (!value || typeof value !== "object") continue;
+    const owner = value as Record<string, unknown>;
+    add(owner.userId ?? owner.user_id);
+  }
+  return ids;
+}
+
 export async function GET(req?: Request) {
   const auth = await getAdminContext();
   if (auth.status === "no-session") {
@@ -280,7 +305,12 @@ export async function GET(req?: Request) {
   let crmBooks: Array<Record<string, unknown>> = [];
   let crmNotice: string | undefined;
   try {
-    if (sourceFilter && !sourceFilter.has("CRM")) {
+    const wantsCrm =
+      !sourceFilter ||
+      sourceFilter.has("CRM") ||
+      sourceFilter.has("CRM_LIVE") ||
+      sourceFilter.has("CRM_UAT");
+    if (!wantsCrm) {
       return NextResponse.json({ ok: true, books: books.map((book) => ({
         ...book,
         archive_id: `oem-${book.sequence}`,
@@ -288,6 +318,14 @@ export async function GET(req?: Request) {
       })) });
     }
     const retail = createRetailServiceRoleClient();
+    const [{ data: testProfiles }, { data: testWallets }] = await Promise.all([
+      retail.from("profiles").select("id").eq("is_test", true),
+      retail.from("wallets").select("user_id").eq("status", "test"),
+    ]);
+    const testUserIds = new Set<string>([
+      ...(testProfiles ?? []).map((row) => String((row as { id: string }).id)).filter(Boolean),
+      ...(testWallets ?? []).map((row) => String((row as { user_id: string }).user_id)).filter(Boolean),
+    ]);
     const crmResult = await retail
       .from("orderbook_email_runs")
       .select("run_date,status,sent_at,error_message,created_at,updated_at,sequence_number,title,date_label,snapshot_rows,closed_at,closed_by")
@@ -315,6 +353,9 @@ export async function GET(req?: Request) {
         const snapshotRows = Array.isArray(row.snapshot_rows)
           ? row.snapshot_rows.filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
           : [];
+        const owners = snapshotRows.flatMap(crmOwnerIds);
+        const isUat = owners.length > 0 && owners.every((ownerId) => testUserIds.has(ownerId));
+        const crmSource = isUat ? "CRM_UAT" : "CRM_LIVE";
         const members = snapshotRows.map((item, index) => crmMember(item, index, archiveId));
         const filledCount = members.filter((member) => member.status === "filled").length;
         return {
@@ -332,11 +373,11 @@ export async function GET(req?: Request) {
           total_count: members.length,
           filled_count: filledCount,
           fully_filled: members.length > 0 && filledCount === members.length,
-          sources: ["CRM"],
+          sources: [crmSource],
           members,
           filled_value_rands: members.reduce((sum, member) => sum + (member.value_rands ?? 0), 0),
         };
-      });
+      }).filter((book) => !sourceFilter || book.sources.some((source) => sourceFilter.has(source) || sourceFilter.has("CRM")));
     }
   } catch (error) {
     crmNotice = `CRM archive unavailable: ${error instanceof Error ? error.message : String(error)}`;

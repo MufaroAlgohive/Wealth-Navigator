@@ -9,10 +9,12 @@ import { ExecutionView } from "@/components/admin/order-book/execution-view";
 import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-books";
 import { ClosedBooks } from "@/components/admin/order-book/closed-books";
 import { CancelledOrders } from "@/components/admin/order-book/cancelled-orders";
+import { Button } from "@/components/ui/button";
 
 export default function OrderBookPage() {
   const [tab, setTab] = React.useState("active");
   const [uatRefresh, setUatRefresh] = React.useState(0);
+  const [activeEnvironment, setActiveEnvironment] = React.useState<"live" | "uat">("live");
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
@@ -53,17 +55,43 @@ export default function OrderBookPage() {
           // but scoped to app orders (MINT_CLIENT_ORDER) only; manual/UAT desk
           // orders stay on the Manual Orders tab.
           <TabsContent value="active" className="mt-3 space-y-3">
-            <UatBanner />
-            <UatOrderTicket mode="uat" onPlaced={() => setUatRefresh((n) => n + 1)} />
+            <div className="flex justify-end">
+              <div className="inline-flex rounded-md border border-border bg-background p-0.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activeEnvironment === "live" ? "secondary" : "ghost"}
+                  onClick={() => setActiveEnvironment("live")}
+                  aria-pressed={activeEnvironment === "live"}
+                >
+                  Live orders
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={activeEnvironment === "uat" ? "warning" : "ghost"}
+                  onClick={() => setActiveEnvironment("uat")}
+                  aria-pressed={activeEnvironment === "uat"}
+                >
+                  UAT orders
+                </Button>
+              </div>
+            </div>
             <ExecutionView
-              key={`orderbook-active-${uatRefresh}`}
-              sources={["MINT_CLIENT_ORDER", "UAT_ADHOC_ORDER"]}
+              key={`orderbook-active-${activeEnvironment}`}
+              sources={activeEnvironment === "uat" ? ["UAT_ADHOC_ORDER"] : ["MINT_CLIENT_ORDER"]}
             />
             {/* The archive is shared across order-entry lanes. Older books and
                 releases made through the desk/UAT routes do not carry the
                 MINT_CLIENT_ORDER source, so filtering here can hide the only
                 place from which an admin can close them. */}
-            <ActiveOrderBooks />
+            <ActiveOrderBooks
+              sources={
+                activeEnvironment === "uat"
+                  ? ["UAT_ADHOC_ORDER", "CRM_UAT"]
+                  : ["MINT_CLIENT_ORDER", "CRM_LIVE"]
+              }
+            />
           </TabsContent>
         ) : (
           // Closed Books — CRM-style archive of books an admin has explicitly
