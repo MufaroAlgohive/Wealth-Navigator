@@ -429,6 +429,16 @@ export interface OrderBookSummary {
    *  Optional because an older cached response won't carry it. */
   members?: OrderBookMember[];
   filled_value_rands?: number | null;
+  /** Distinct order sources across this book's members — lets the archive be
+   *  split by app vs manual/UAT. Optional for older cached responses. */
+  sources?: string[];
+  /** "Move to Closed Book" state — shared across admins. null = still in
+   *  Active/Manual Order Books. Optional for pre-migration responses. */
+  closed_at?: string | null;
+  closed_by?: string | null;
+  email_status?: "sent" | "failed" | null;
+  email_error?: string | null;
+  email_sent_at?: string | null;
 }
 
 /**
@@ -566,6 +576,9 @@ interface OrderActions {
   cancelInFlight: Record<string, boolean>;
   cancelError: Record<string, string>;
   handleCancel: (row: ExecutionRow) => void;
+  fillInFlight: Record<string, boolean>;
+  fillError: Record<string, string>;
+  handleFillUat: (row: ExecutionRow) => void;
   amendOpen: Record<string, boolean>;
   amendForm: Record<string, { priceRands: string; volume: string; tif: "DAY" | "GTC" | "IOC" | "FOK" }>;
   setAmendForm: React.Dispatch<
@@ -613,6 +626,9 @@ function GroupRow({
     cancelInFlight,
     cancelError,
     handleCancel,
+    fillInFlight,
+    fillError,
+    handleFillUat,
     amendOpen,
     amendForm,
     setAmendForm,
@@ -755,6 +771,34 @@ function GroupRow({
           </div>
         </td>
         <td className="px-3 py-1.5 whitespace-nowrap">
+          {/* Fill (UAT) — self-fill in the OEM, never sent to the broker. Shown
+              for UAT-lane orders that aren't terminal. See handleFillUat. */}
+          {r.source === "UAT_ADHOC_ORDER" && !TERMINAL_STATES.has(r.state) ? (
+            <div className="mb-1 flex flex-col gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!!fillInFlight[r.id]}
+                onClick={() => void handleFillUat(r)}
+                className="h-7 px-2 text-[10px] uppercase tracking-wider text-success hover:bg-success/10"
+                title="Self-fill this UAT order in the OEM (fills from us — never sent to LONGMARK)."
+              >
+                {fillInFlight[r.id] ? (
+                  <>
+                    <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />
+                    filling…
+                  </>
+                ) : (
+                  "Fill (UAT)"
+                )}
+              </Button>
+              {fillError[r.id] ? (
+                <span className="text-[9px] text-destructive" title={fillError[r.id] ?? undefined}>
+                  {fillError[r.id]}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           {isCancellable(r.state) ? (
             <div className="flex flex-col gap-1">
               <div className="flex gap-1">
@@ -1185,6 +1229,11 @@ export function ExecutionView({ sources }: { sources: string[] }) {
     for (const k of keys) {
       const ov = liveOverrides[k];
       if (!ov) continue;
+      // A confirmed-CANCELLED override must drop off the live blotter — the poll
+      // now excludes cancelled rows (they live on the Cancelled tab), so keeping
+      // the optimistic override would leave a ghost the poll never refreshes.
+      // CANCEL_PENDING stays: that order is still at the broker until confirmed.
+      if (ov.state === "CANCELLED") continue;
       const p = byId.get(k) ?? byOrderId.get((ov.order_id || "").trim());
       if (!p) {
         out[k] = ov;
@@ -1356,6 +1405,49 @@ export function ExecutionView({ sources }: { sources: string[] }) {
   // /orders/cancel (OrderDelete). The handler optimistically flips the
   // row to CANCEL_PENDING in `liveOverrides` so the UI updates instantly;
   // the SSE delta from the worker confirms the transition on the next push.
+  // Fill (UAT) — self-fill a UAT order in the OEM, exactly like the CRM does.
+  // Posts to /api/admin/orderbook/fills (a pure DB write) — NO worker/IRESS/
+  // broker contact. UAT orders can only ever be filled this way (see
+  // uat-guard.ts: they are structurally refused by every send-to-broker path).
+  const [fillInFlight, setFillInFlight] = React.useState<Record<string, boolean>>({});
+  const [fillError, setFillError] = React.useState<Record<string, string>>({});
+  const handleFillUat = React.useCallback(async (row: ExecutionRow) => {
+    const orderId = (row.order_id || "").trim();
+    if (!orderId) {
+      setFillError((p) => ({ ...p, [row.id]: "No order id to fill against." }));
+      return;
+    }
+    // Fill price (Rands): prefer the order's limit, else the last/avg price,
+    // else ask. Market UAT orders (no limit) prompt for a self-fill price.
+    let priceRands = row.limit_price ?? row.avg_fill_price ?? null;
+    if (priceRands == null || !(priceRands > 0)) {
+      const entered = typeof window !== "undefined" ? window.prompt(`Self-fill price in Rands for ${row.symbol} (UAT)?`) : null;
+      const n = entered == null ? Number.NaN : Number(entered);
+      if (!Number.isFinite(n) || n <= 0) return;
+      priceRands = n;
+    }
+    setFillInFlight((p) => ({ ...p, [row.id]: true }));
+    setFillError((p) => ({ ...p, [row.id]: "" }));
+    try {
+      const res = await fetch("/api/admin/orderbook/fills", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          order_id: orderId,
+          fills: [{ symbol: row.symbol, qty: row.qty, avg_fill_price_cents: Math.round(priceRands * 100), timestamp: new Date().toISOString() }],
+        }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok === false) {
+        setFillError((p) => ({ ...p, [row.id]: body.error ?? `Fill returned ${res.status}` }));
+      }
+    } catch (err) {
+      setFillError((p) => ({ ...p, [row.id]: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setFillInFlight((p) => ({ ...p, [row.id]: false }));
+    }
+  }, []);
+
   const [cancelInFlight, setCancelInFlight] = React.useState<Record<string, boolean>>({});
   const [cancelError, setCancelError] = React.useState<Record<string, string>>({});
   const handleCancel = React.useCallback(async (row: ExecutionRow) => {
@@ -1533,6 +1625,9 @@ export function ExecutionView({ sources }: { sources: string[] }) {
     cancelInFlight,
     cancelError,
     handleCancel,
+    fillInFlight,
+    fillError,
+    handleFillUat,
     amendOpen,
     amendForm,
     setAmendForm,

@@ -37,6 +37,7 @@ import type {
   SubmitResult,
 } from "@/lib/orders/types";
 import { preflight } from "@/lib/orders/preflight";
+import { isUatBrokerBlocked, UAT_BROKER_BLOCKED_MESSAGE } from "@/lib/orders/uat-guard";
 
 export interface SubmitOrderOptions {
   /** Book id / strategy_name_snapshot; written to `payload.book_id`. */
@@ -379,6 +380,28 @@ export async function submitOrder(
   input: SubmitInput,
   opts: SubmitOrderOptions = {},
 ): Promise<SubmitResult> {
+  // ── 0. UAT never reaches the broker. A UAT order (source UAT_ADHOC_ORDER,
+  // or opts.uatTest) is PARKED with zero broker/worker/preflight contact and
+  // must be self-filled via /api/admin/orderbook/fills. This is the structural
+  // "UAT never touches LONGMARK" guarantee — submitOrder physically cannot fan
+  // a UAT order out to the worker. ──
+  if (isUatBrokerBlocked({ source: input.source, payload: null }) || opts.uatTest === true) {
+    const parked = await parkOrder(supabase, input, opts);
+    return {
+      ok: parked.ok,
+      order_audit_id: parked.order_audit_id,
+      order_id: parked.order_id,
+      status: parked.ok ? "parked" : undefined,
+      error: parked.error,
+      preflight: {
+        ok: true,
+        verdict: "pass",
+        code: "pass",
+        message: "UAT order parked for self-fill — never sent to the broker.",
+      },
+    };
+  }
+
   // ── 1. Preflight (unless caller already ran a bulk preflight) ──
   let preflightResult: PreflightResult;
   if (opts.skipPreflight) {
@@ -472,6 +495,22 @@ export async function releaseOrder(
         verdict: "blocked_unverifiable",
         code: "sell_guard_unavailable",
         message: rowErr?.message ?? `Parked order ${auditId} not found.`,
+      },
+    };
+  }
+
+  // UAT orders can never be released to the broker — self-fill only. This is the
+  // release-side half of the guard in submitOrder: even a parked UAT order that
+  // somehow reaches "Send to Market" is refused here, before any worker call.
+  if (isUatBrokerBlocked(row)) {
+    return {
+      ok: false,
+      order_audit_id: auditId,
+      preflight: {
+        ok: false,
+        verdict: "blocked_unverifiable",
+        code: "sell_guard_unavailable",
+        message: UAT_BROKER_BLOCKED_MESSAGE,
       },
     };
   }

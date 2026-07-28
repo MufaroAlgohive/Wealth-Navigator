@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { cn } from "@/lib/cn";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
+import { buildMandatePdfReport } from "@/lib/pdf/mandate";
 
 type Kyc = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
 type KycFilter = "all" | Kyc;
@@ -167,7 +168,30 @@ export default function ClientsPage() {
           added += 1;
         }
       }
-      zip.file("manifest.json", JSON.stringify({ profile_id: sel.id, client: sel.name, generated_at: new Date().toISOString(), document_count: added }, null, 2));
+      // Bundle the Computershare account-creation PDF into the pack (mirrors
+      // the CRM, which includes it in the client pack download). Best-effort:
+      // a generation failure must never sink the rest of the pack.
+      let computershareIncluded = false;
+      let mandateIncluded = false;
+      if (detail) {
+        try {
+          const report = await buildComputersharePdf(p, ob, detail.onboarding_pack ?? {});
+          zip.file(report.filename, report.doc.output("blob"));
+          computershareIncluded = true;
+          added += 1;
+        } catch (csErr) {
+          console.error("Computershare PDF for pack failed:", csErr);
+        }
+        try {
+          const mandateReport = await buildMandatePdfReport(p, ob, detail.onboarding_pack ?? {});
+          zip.file(mandateReport.filename, mandateReport.doc.output("blob"));
+          mandateIncluded = true;
+          added += 1;
+        } catch (mErr) {
+          console.error("Mandate PDF for pack failed:", mErr);
+        }
+      }
+      zip.file("manifest.json", JSON.stringify({ profile_id: sel.id, client: sel.name, generated_at: new Date().toISOString(), document_count: added, computershare_included: computershareIncluded, mandate_included: mandateIncluded }, null, 2));
       const blob = await zip.generateAsync({ type: "blob" });
       const objectUrl = URL.createObjectURL(blob);
       const anchor = window.document.createElement("a");
@@ -203,10 +227,10 @@ export default function ClientsPage() {
   };
 
   const openMandateDocument = async (mode: "view" | "download") => {
-    if (!detail?.mandate?.available) return;
+    if (!detail) return;
     setMandateBusy(true);
     try {
-      const report = await buildMandatePdf(p, ob, detail.mandate.data);
+      const report = await buildMandatePdfReport(p, ob, detail.onboarding_pack ?? {});
       if (mode === "download") report.doc.save(report.filename);
       else {
         const blobUrl = URL.createObjectURL(report.doc.output("blob"));
@@ -320,14 +344,17 @@ export default function ClientsPage() {
                   </TabsContent>
 
                   <TabsContent value="mandate" className="space-y-3">
-                    {!detail.mandate?.available ? <p className="rounded-xl border border-dashed border-border py-8 text-center text-xs text-muted-foreground">No captured mandate is available for this client.</p> : <>
-                      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-gradient-to-br from-primary/10 to-transparent p-3">
-                        <div><p className="text-xs font-semibold text-foreground">Client investment mandate</p><p className="text-[10px] text-muted-foreground">Captured authorisations, discretion and client acknowledgements</p></div>
-                        <div className="flex gap-2"><Button size="sm" variant="secondary" disabled={mandateBusy} onClick={()=>openMandateDocument("view")}><Eye />{mandateBusy?"Preparing…":"View mandate"}</Button><Button size="sm" disabled={mandateBusy} onClick={()=>openMandateDocument("download")}><Download />Download PDF</Button></div>
-                      </div>
-                      <MandateView data={detail.mandate.data} profile={p} />
-                      {detail.mandate.signed_agreement_url && <a href={detail.mandate.signed_agreement_url} target="_blank" rel="noreferrer" className="block text-[10px] text-primary underline underline-offset-2">Open separately stored signed agreement</a>}
-                    </>}
+                    {/* The Discretionary FSP Mandate PDF is generatable for every
+                        client — the document itself stamps a "not yet signed"
+                        banner when no mandate has been captured (mirrors the CRM,
+                        which offers the mandate download on every client). */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-gradient-to-br from-primary/10 to-transparent p-3">
+                      <div><p className="text-xs font-semibold text-foreground">Client investment mandate</p><p className="text-[10px] text-muted-foreground">Captured authorisations, discretion and client acknowledgements</p></div>
+                      <div className="flex gap-2"><Button size="sm" variant="secondary" disabled={mandateBusy} onClick={()=>openMandateDocument("view")}><Eye />{mandateBusy?"Preparing…":"View mandate"}</Button><Button size="sm" disabled={mandateBusy} onClick={()=>openMandateDocument("download")}><Download />Download PDF</Button></div>
+                    </div>
+                    {!detail.mandate?.available && <p className="rounded-xl border border-dashed border-border py-6 text-center text-xs text-muted-foreground">No captured mandate is on file yet — the PDF will generate with a &ldquo;not yet signed&rdquo; notice.</p>}
+                    {detail.mandate?.data && <MandateView data={detail.mandate.data} profile={p} />}
+                    {detail.mandate?.signed_agreement_url && <a href={detail.mandate.signed_agreement_url} target="_blank" rel="noreferrer" className="block text-[10px] text-primary underline underline-offset-2">Open separately stored signed agreement</a>}
                     {detail.onboarding_pack && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer text-xs font-semibold text-foreground">Captured onboarding pack</summary><dl className="mt-3 grid grid-cols-1 gap-px overflow-hidden rounded-lg bg-border sm:grid-cols-2">{Object.entries(detail.onboarding_pack).map(([key, value]) => <Row key={key} label={key.replaceAll("_", " ")} value={formatDetailValue(value)} />)}</dl></details>}
                   </TabsContent>
 
@@ -471,22 +498,6 @@ function MandateMetric({ label, value }: { label: string; value: string }) {
   return <div className="rounded-lg border border-border bg-card px-3 py-2"><p className="text-[8px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p><p className="mt-1 truncate text-xs font-semibold text-foreground">{value}</p></div>;
 }
 
-async function buildMandatePdf(profile: Record<string, unknown>, onboarding: Record<string, unknown>, mandate: Record<string, unknown>) {
-  const { jsPDF } = await import("jspdf");
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
-  const width=doc.internal.pageSize.getWidth(),height=doc.internal.pageSize.getHeight(),margin=44,content=width-margin*2;
-  const fullName=`${String(profile.first_name||"")} ${String(profile.last_name||"")}`.trim()||String(profile.email||"Client");
-  const {checked,details}=mandateEntries(mandate);let y=46;
-  const ensure=(needed:number)=>{if(y+needed>height-46){doc.addPage();y=46;}};
-  const heading=(title:string)=>{ensure(38);doc.setFillColor(38,20,74);doc.roundedRect(margin,y,content,28,4,4,"F");doc.setTextColor(255,255,255);doc.setFont("helvetica","bold");doc.setFontSize(11);doc.text(title.toUpperCase(),margin+10,y+18);doc.setTextColor(25,25,30);y+=38;};
-  const row=(label:string,value:string)=>{const valueLines=doc.splitTextToSize(value||"Not captured",content*0.62-16),h=Math.max(28,valueLines.length*12+12);ensure(h);doc.setDrawColor(220,220,228);doc.rect(margin,y,content*0.34,h);doc.rect(margin+content*0.34,y,content*0.66,h);doc.setFont("helvetica","bold");doc.setFontSize(8);doc.setTextColor(90,90,105);doc.text(label.toUpperCase(),margin+8,y+16);doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(25,25,30);doc.text(valueLines,margin+content*0.34+8,y+16);y+=h;};
-  doc.setFont("helvetica","bold");doc.setFontSize(17);doc.setTextColor(38,20,74);doc.text("DISCRETIONARY INVESTMENT MANAGEMENT MANDATE",width/2,y,{align:"center"});y+=22;doc.setFont("helvetica","normal");doc.setFontSize(8);doc.setTextColor(95,95,110);doc.text("Captured client mandate record · ALGOHIVE / MINT",width/2,y,{align:"center"});y+=30;
-  heading("Client details");row("Client",fullName);row("Email",String(profile.email||onboarding.email||"Not captured"));row("Identity number",String(profile.id_number||profile.identity_number||mandate.id_number||"Not captured"));row("MINT number",String(profile.mint_number||"Not captured"));row("Captured / signed at",String(mandate.signed_at||mandate.completed_at||onboarding.updated_at||onboarding.created_at||"Not captured"));
-  heading("Mandate authority and instructions");doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(45,45,55);const intro=doc.splitTextToSize("The client authorises ALGOHIVE to manage investments in accordance with the discretion, objectives, restrictions and acknowledgements captured below. This document is generated from the client’s stored onboarding mandate record.",content);doc.text(intro,margin,y);y+=intro.length*12+12;for(const [key,value] of details)row(mandateLabel(key),formatDetailValue(value));
-  heading("Client acknowledgements");if(!Object.keys(checked).length){row("Status","No checkbox acknowledgements were captured.");}else for(const [key,value] of Object.entries(checked))row(value===true||String(value).toLowerCase()==="true"?"Accepted":"Not accepted",mandateLabel(key));
-  ensure(75);y+=14;doc.setDrawColor(120,120,135);doc.line(margin,y,margin+190,y);doc.line(width-margin-190,y,width-margin,y);doc.setFontSize(8);doc.setTextColor(90,90,105);doc.text("Client signature / captured electronic acceptance",margin,y+13);doc.text("Authorised representative",width-margin-190,y+13);y+=35;doc.setFontSize(7);doc.text(`Generated ${new Date().toISOString()} · UID ${String(profile.id||"—")}`,margin,y);
-  return {doc,filename:`mandate-${safeFilename(fullName||String(profile.id||"client"))}.pdf`};
-}
 
 function extensionForDocument(document: ClientDocument, mimeType: string): string {
   if (/\.[a-zA-Z0-9]{2,5}$/.test(document.name)) return "";
@@ -522,23 +533,104 @@ function firstValue(values: unknown[], fallback = "N/A"): string {
   return found == null ? fallback : String(found).trim();
 }
 
-async function buildComputersharePdf(profile: Record<string, unknown>, onboarding: Record<string, unknown>, packValue: Record<string, unknown>) {
+// Computershare letterhead logo — same public asset the CRM's account-creation
+// PDF draws top-right (MyMintAdmin index.html COMPUTERSHARE_LOGO_URL).
+const COMPUTERSHARE_LOGO_URL =
+  "https://mfxnghmuccevsxwcetej.supabase.co/storage/v1/object/public/Mint%20Assets/tMOmeIOo4KE20Yh1bIuk8PFMlFHZ421rVESa2dcn.jpg";
+
+async function loadImageAsDataUrl(url: string): Promise<string> {
+  const imageUrl = String(url || "").trim();
+  if (!imageUrl) return "";
+  const response = await fetch(imageUrl);
+  if (!response.ok) throw new Error(`Logo request failed: ${response.status}`);
+  const blob = await response.blob();
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read logo data."));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Computershare "ACCOUNT DETAILS" account-creation PDF. A field-for-field,
+ * layout-for-layout port of MyMintAdmin's buildComputerSharePdfReport
+ * (public/index.html): same 16-row table, same logo top-right, same box
+ * borders and vertical rhythm, and the same data-mapping fallback chains so
+ * the same fields populate (rather than reading "N/A").
+ *
+ * When `existingDoc` is supplied, the ACCOUNT DETAILS page is appended to it
+ * (used to bundle this into the client pack ZIP) instead of a new document.
+ */
+async function buildComputersharePdf(
+  profile: Record<string, unknown>,
+  onboarding: Record<string, unknown>,
+  packValue: Record<string, unknown>,
+  existingDoc?: import("jspdf").jsPDF,
+) {
   const { jsPDF } = await import("jspdf");
   const pack = objectValue(packValue);
   const sumsubRaw = objectValue(onboarding.sumsub_raw);
   const mandate = objectValue(sumsubRaw.mandate_data);
   const tax = objectValue(sumsubRaw.tax_details);
   const bank = objectValue(sumsubRaw.bank_details);
+
   const firstName = firstValue([profile.first_name, pickPath(pack, ["info.firstName", "fixedInfo.firstName", "firstName"])], "");
   const lastName = firstValue([profile.last_name, pickPath(pack, ["info.lastName", "fixedInfo.lastName", "lastName"])], "");
   const fullName = `${firstName} ${lastName}`.trim() || firstValue([pickPath(pack, ["fullName", "info.fullName", "fixedInfo.fullName"])]);
-  const physicalAddress = firstValue([pickPath(pack, ["info.addresses.0.streetEn", "info.addresses.0.street", "fixedInfo.residentialAddress", "fixedInfo.address", "info.residentialAddress", "info.address"]), onboarding.physical_address, onboarding.residential_address, onboarding.address, profile.address]);
-  const postalAddress = firstValue([pickPath(pack, ["info.addresses.0.formattedAddress", "fixedInfo.postalAddress", "info.postalAddress"]), onboarding.postal_address, profile.postal_address], physicalAddress);
+
+  // De-duplicating multi-part address join (mirrors the CRM's composeAddress).
+  const composeAddress = (parts: unknown[]): string => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const part of parts) {
+      const value = String(part ?? "").trim();
+      if (!value || value.toLowerCase() === "n/a") continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+    }
+    return out.join("\n");
+  };
+
+  const physicalAddress = firstValue([
+    pickPath(pack, [
+      "info.addresses.0.streetEn", "info.addresses.0.street",
+      "info.idDocs.1.address.streetEn", "info.idDocs.1.address.street",
+      "fixedInfo.address", "fixedInfo.residentialAddress", "info.address", "info.residentialAddress",
+      "address.formattedAddress", "address.fullAddress", "address.street", "address.line1",
+      "addresses.residential.formatted", "addresses.residential.fullAddress", "addresses.residential.addressLine", "addresses.residential.street",
+      "addresses.0.streetEn", "addresses.0.street", "addresses.0.fullAddress", "addresses.0.formattedAddress", "addresses.0.addressLine",
+    ]),
+    onboarding.physical_address, onboarding.residential_address, onboarding.address, onboarding.street_address, onboarding.address_line_1, onboarding.address_line1, onboarding.line1,
+    profile.address, profile.street_address, profile.address_line_1, profile.address_line1, profile.line1,
+    composeAddress([
+      onboarding.address_line_2, onboarding.suburb, onboarding.city, onboarding.province, onboarding.postal_code, onboarding.country,
+      profile.suburb, profile.city, profile.province, profile.postal_code, profile.country,
+    ]),
+  ]);
+
+  const postalAddress = firstValue([
+    pickPath(pack, [
+      "info.addresses.0.formattedAddress", "info.idDocs.1.address.formattedAddress", "info.addresses.0.fullAddress",
+      "fixedInfo.postalAddress", "fixedInfo.address", "info.postalAddress", "info.address",
+      "addresses.postal.formatted", "addresses.postal.formattedAddress", "addresses.postal.fullAddress", "addresses.postal.addressLine", "addresses.postal.street",
+      "addresses.0.formattedAddress", "addresses.0.fullAddress", "addresses.0.addressLine", "address.postalAddress", "address.formattedAddress",
+    ]),
+    onboarding.postal_address, onboarding.postalAddress, onboarding.postal_line_1, onboarding.postal_line1,
+    profile.postal_address, profile.postalAddress, profile.postal_line_1, profile.postal_line1,
+    composeAddress([
+      onboarding.postal_line_2, onboarding.postal_suburb, onboarding.postal_city, onboarding.postal_province, onboarding.postal_code, onboarding.postal_country,
+      profile.postal_suburb, profile.postal_city, profile.postal_province, profile.postal_code, profile.postal_country,
+    ]),
+  ], physicalAddress);
+
   const rows: [string, string][] = [
     ["ASSET / FUND MANAGER", firstValue([onboarding.asset_fund_manager, onboarding.company_name, "MINT PLATFORMS (pty) Ltd"])],
     ["ACCOUNT NAME", fullName],
     ["CONTACT NAME", fullName],
-    ["IDENTITY / REGISTRATION NUMBER", firstValue([profile.identity_number, profile.id_number, onboarding.id_number, onboarding.identity_number, pickPath(pack, ["info.idNumber", "fixedInfo.idNumber", "idNumber"]), mandate.id_number])],
+    ["IDENTITY / REGISTRATION NUMBER", firstValue([profile.identity_number, profile.id_number, onboarding.id_number, onboarding.identity_number, pickPath(pack, ["info.idNumber", "info.identityNumber", "fixedInfo.idNumber", "fixedInfo.identityNumber", "idNumber"]), mandate.id_number])],
     ["INCOME TAX NUMBER", firstValue([tax.tax_number, sumsubRaw.tax_number, onboarding.tax_number, onboarding.income_tax_number, profile.tax_number, pickPath(pack, ["info.taxId", "fixedInfo.taxId"])])],
     ["PHYSICAL ADDRESS", physicalAddress],
     ["POSTAL ADDRESS", postalAddress],
@@ -549,18 +641,36 @@ async function buildComputersharePdf(profile: Record<string, unknown>, onboardin
     ["BANK ACCOUNT NUMBER", firstValue([onboarding.bank_account_number, profile.bank_account_number, profile.bank_account])],
     ["BRANCH NUMBER", firstValue([onboarding.bank_branch_code, onboarding.branch_code, profile.branch_number])],
     ["BANK NAME", firstValue([onboarding.bank_name, profile.bank_name])],
-    ["ACCOUNT NAME", firstValue([onboarding.bank_account_name, profile.bank_account_name, mandate.bank_account_name, mandate.account_name, fullName])],
-    ["ACCOUNT TYPE", firstValue([bank.bank_account_type, bank.account_type, onboarding.bank_account_type, profile.bank_account_type, mandate.bank_account_type, mandate.account_type])],
+    ["ACCOUNT NAME", firstValue([onboarding.bank_account_name, profile.bank_account_name, mandate.bank_account_name, mandate.account_name, mandate.account_holder_name, pickPath(pack, ["bankAccountName", "bank_account_name", "accountName", "account_name", "info.bankAccountName", "info.accountName"]), fullName])],
+    ["ACCOUNT TYPE", firstValue([bank.bank_account_type, bank.account_type, bank.type, onboarding.bank_account_type, profile.bank_account_type, onboarding.account_type, profile.account_type, mandate.bank_account_type, mandate.account_type, pickPath(pack, ["bankAccountType", "bank_account_type", "accountType", "account_type", "info.bankAccountType", "info.accountType"])])],
   ];
-  const doc = new jsPDF({ unit: "pt", format: "a4" });
+
+  const doc = existingDoc ?? new jsPDF({ unit: "pt", format: "a4" });
+  if (existingDoc) doc.addPage();
   const width = doc.internal.pageSize.getWidth();
   const height = doc.internal.pageSize.getHeight();
   const margin = 38;
   const contentWidth = width - margin * 2;
   const leftWidth = Math.round(contentWidth * 0.34);
   const rightWidth = contentWidth - leftWidth;
-  let y = margin + 70;
-  doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.text("ACCOUNT DETAILS", width / 2, y, { align: "center" }); y += 24;
+  let y = margin + 12;
+
+  // Logo top-right (170×44 JPEG), optional — never block the PDF on it.
+  try {
+    const logoDataUrl = await loadImageAsDataUrl(COMPUTERSHARE_LOGO_URL);
+    if (logoDataUrl) {
+      const logoWidth = 170;
+      const logoHeight = 44;
+      doc.addImage(logoDataUrl, "JPEG", width - margin - logoWidth, y, logoWidth, logoHeight);
+    }
+  } catch { /* logo optional */ }
+
+  y += 58;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("ACCOUNT DETAILS", width / 2, y + 10, { align: "center" });
+  y += 32;
+
   for (const [label, value] of rows) {
     const labelLines = doc.splitTextToSize(label, leftWidth - 16);
     const valueLines = doc.splitTextToSize(value || "N/A", rightWidth - 16);

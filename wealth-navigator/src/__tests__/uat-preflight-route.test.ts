@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 /**
  * BFF `/api/admin/orderbook/uat-order` — the UAT ad-hoc order tester.
  *
- * 2026-07-20 regression coverage:
- *   - The route runs a preflight BEFORE inserting the audit row, so a
- *     blocked verdict (e.g. naked-short on 150/100) returns 422 and the
- *     audit table is unchanged.
- *   - On pass, the audit row is written with the typed
- *     `broker_account_code` column stamped, the worker is fanned out to,
- *     and the resulting order number is returned.
+ * 2026-07-28: UAT orders NEVER reach the broker. A UAT order parks in the OEM
+ * (zero worker/IRESS/preflight contact) and is self-filled via
+ * /api/admin/orderbook/fills — the "fill from us" model. These tests assert
+ * that contract: a UAT order writes exactly one parked audit row and makes NO
+ * worker call, for buys, sells, and even an oversized sell (which used to be
+ * naked-short-blocked at the broker preflight — there is no broker preflight
+ * for UAT any more).
  *
  * These tests stub both the worker `callWorker()` and the Supabase
  * client so they run hermetically without a Railway connection.
@@ -170,53 +170,8 @@ beforeEach(() => {
 // Import AFTER vi.mock so the mocked modules are bound.
 const { POST } = await import("../app/api/admin/orderbook/uat-order/route");
 
-describe("POST /api/admin/orderbook/uat-order — preflight gate", () => {
-  it("returns 422 and writes NO audit row when the worker blocks the sell (naked short)", async () => {
-    preflightResults = [
-      // The route's explicit preflight returns blocked.
-      {
-        ok: false,
-        verdict: "blocked_naked_short",
-        code: "naked_short_blocked",
-        message:
-          "Sell blocked: 150 SOL exceeds available-to-sell 100 on account 56378 — held 100, 0 in open sells (IPS settled position 100).",
-        sell: {
-          held: 100,
-          inflight_sells: 0,
-          available: 100,
-          source: "ips",
-          note: "IPS settled position 100",
-        },
-      },
-    ];
-    const res = await POST(
-      new Request("http://localhost/api/admin/orderbook/uat-order", {
-        method: "POST",
-        body: JSON.stringify({ symbol: "SOL", side: "sell", qty: 150, price: 177 }),
-      }),
-    );
-    expect(res.status).toBe(422);
-    const body = await res.json();
-    expect(body.ok).toBe(false);
-    expect(body.code).toBe("naked_short_blocked");
-    expect(body.preflight?.verdict).toBe("blocked_naked_short");
-    expect(body.preflight?.sell?.available).toBe(100);
-    // The route calls preflight explicitly (and submitOrder internally);
-    // either way the audit table MUST be empty here.
-    expect(insertedRows).toEqual([]);
-  });
-
-  it("writes one audit row + fans out to /uat/send-to-market on a passing preflight", async () => {
-    preflightResults = [
-      // Route's explicit preflight: pass.
-      { ok: true, verdict: "pass", code: "pass", message: "ok" },
-      // submitOrder's internal preflight (still mocked): pass.
-      { ok: true, verdict: "pass", code: "pass", message: "ok" },
-    ];
-    workerResponses = [
-      // /uat/send-to-market response: ok with OrderNumber.
-      { ok: true, body: { ok: true, iressOrderNumber: "ORD-1", status: "working" } },
-    ];
+describe("POST /api/admin/orderbook/uat-order — self-fill, never the broker", () => {
+  it("parks a UAT buy with ZERO worker/broker contact", async () => {
     const res = await POST(
       new Request("http://localhost/api/admin/orderbook/uat-order", {
         method: "POST",
@@ -226,48 +181,38 @@ describe("POST /api/admin/orderbook/uat-order — preflight gate", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.ok).toBe(true);
-    expect(body.iressOrderNumber).toBe("ORD-1");
-    expect(body.orderAuditId).toBeDefined();
-    // Exactly one audit row inserted.
+    expect(body.status).toBe("parked");
+    expect(body.iressOrderNumber ?? null).toBeNull();
+    // Exactly one parked audit row, and the worker was NEVER called.
     expect(insertedRows.length).toBe(1);
-    // The send-to-market call carried the audit id.
-    expect(lastWorkerCall?.path).toBe("/uat/send-to-market");
-    const sendBody = (lastWorkerCall?.body ?? {}) as { order_audit_id?: string };
-    expect(sendBody.order_audit_id).toBe(insertedRows[0]?.id);
+    expect(lastWorkerCall).toBeNull();
   });
 
-  it("stamps the audit row 'rejected' when the worker fan-out fails post-insert", async () => {
-    preflightResults = [
-      { ok: true, verdict: "pass", code: "pass", message: "ok" },
-      { ok: true, verdict: "pass", code: "pass", message: "ok" },
-    ];
-    workerResponses = [
-      // Fan-out fails: worker rejects AFTER we wrote the row (e.g. race).
-      {
-        ok: false,
-        errorBody: {
-          ok: false,
-          message: "OrderCreate3 rejected by broker (25014): Not entitled",
-          code: "order_rejected",
-        },
-      },
-    ];
+  it("parks even an oversized sell — no broker naked-short preflight for UAT", async () => {
+    // 150 sell vs a notional 100 held would have been naked-short-blocked (422)
+    // under the old broker preflight. UAT self-fills, so it just parks.
     const res = await POST(
       new Request("http://localhost/api/admin/orderbook/uat-order", {
         method: "POST",
-        body: JSON.stringify({ symbol: "SOL", side: "sell", qty: 50, price: 177 }),
+        body: JSON.stringify({ symbol: "SOL", side: "sell", qty: 150, price: 177 }),
       }),
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.ok).toBe(false);
-    expect(body.status).toBe("rejected");
-    expect(body.code).toBe("order_rejected");
-    expect(body.error).toMatch(/Not entitled/);
-    expect(auditUpdateCalls.length).toBe(1);
-    expect(auditUpdateCalls[0]?.patch.status).toBe("rejected");
-    expect(
-      (auditUpdateCalls[0]?.patch.result_payload as { rejectReason?: string } | undefined)?.rejectReason,
-    ).toMatch(/Not entitled/);
+    expect(body.ok).toBe(true);
+    expect(body.status).toBe("parked");
+    expect(insertedRows.length).toBe(1);
+    // Never preflighted against the broker, never dispatched.
+    expect(lastWorkerCall).toBeNull();
+  });
+
+  it("never calls /uat/send-to-market for a UAT order", async () => {
+    await POST(
+      new Request("http://localhost/api/admin/orderbook/uat-order", {
+        method: "POST",
+        body: JSON.stringify({ symbol: "SOL", side: "buy", qty: 10, price: 100 }),
+      }),
+    );
+    expect(lastWorkerCall).toBeNull();
   });
 });

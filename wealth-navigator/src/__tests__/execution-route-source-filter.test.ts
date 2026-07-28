@@ -18,8 +18,10 @@ vi.mock("@/lib/admin/rbac", () => ({
   }),
 }));
 
-function makeMockSupabase(rows: Array<{ source: string; payload: Record<string, unknown> }>) {
+function makeMockSupabase(rows: Array<{ source: string; payload: Record<string, unknown>; status?: string }>) {
   let capturedSources: string[] | null = null;
+  const statusFilters: Array<{ op: "eq" | "neq"; value: string }> = [];
+  let seqFilter: string | null = null;
   const client = {
     from: () => {
       const obj: Record<string, unknown> = {};
@@ -28,24 +30,43 @@ function makeMockSupabase(rows: Array<{ source: string; payload: Record<string, 
         capturedSources = values;
         return obj;
       };
+      obj.eq = (col: string, value: string) => {
+        if (col === "status") statusFilters.push({ op: "eq", value });
+        else if (col === "payload->>order_book_seq") seqFilter = value;
+        return obj;
+      };
+      obj.neq = (col: string, value: string) => {
+        if (col === "status") statusFilters.push({ op: "neq", value });
+        return obj;
+      };
+      obj.or = () => obj;
       obj.order = () => obj;
       obj.limit = () =>
         Promise.resolve({
-          data: rows.map((r, i) => ({
-            id: `row-${i}`,
-            order_id: `ORD-${i}`,
-            client_account: "c@x.com",
-            symbol: "NPN",
-            side: "buy",
-            quantity: 1,
-            price_cents: null,
-            status: "parked",
-            source: r.source,
-            payload: r.payload,
-            result_payload: {},
-            created_at: "2026-07-23T00:00:00.000Z",
-            updated_at: "2026-07-23T00:00:00.000Z",
-          })),
+          // Apply the captured status + order_book_seq filters so the route's
+          // views (blotter / cancelled / one book's members) are exercised.
+          data: rows
+            .filter((r) =>
+              statusFilters.every((f) =>
+                f.op === "eq" ? (r.status ?? "parked") === f.value : (r.status ?? "parked") !== f.value,
+              ),
+            )
+            .filter((r) => seqFilter == null || String(r.payload.order_book_seq ?? "") === seqFilter)
+            .map((r, i) => ({
+              id: `row-${i}`,
+              order_id: `ORD-${i}`,
+              client_account: "c@x.com",
+              symbol: "NPN",
+              side: "buy",
+              quantity: 1,
+              price_cents: null,
+              status: r.status ?? "parked",
+              source: r.source,
+              payload: r.payload,
+              result_payload: {},
+              created_at: "2026-07-23T00:00:00.000Z",
+              updated_at: "2026-07-23T00:00:00.000Z",
+            })),
           error: null,
         });
       return obj;
@@ -80,5 +101,56 @@ describe("GET /api/admin/orderbook/execution?source=", () => {
     // filtered out just because it isn't a known book_id.
     expect(body.rows).toHaveLength(2);
     expect(body.rows.map((r) => r.strategy).sort()).toEqual(["UAT-ADHOC", "Yield Basket"]);
+  });
+
+  it("default (active) view hides cancelled orders from the blotter", async () => {
+    const mock = makeMockSupabase([
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "Yield Basket" }, status: "working" },
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "Yield Basket" }, status: "cancelled" },
+    ]);
+    vi.doMock("@/lib/supabase/server", () => ({ createInstitutionalServiceRoleClient: () => mock.client }));
+
+    const { GET } = await import("@/app/api/admin/orderbook/execution/route");
+    const res = await GET(new Request("http://x/execution?source=MINT_CLIENT_ORDER"));
+    const body = (await res.json()) as { ok: boolean; rows: Array<{ state: string }> };
+
+    expect(body.ok).toBe(true);
+    expect(body.rows).toHaveLength(1);
+    expect(body.rows[0]!.state).not.toBe("CANCELLED");
+  });
+
+  it("status=cancelled view returns ONLY cancelled orders", async () => {
+    const mock = makeMockSupabase([
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "Yield Basket" }, status: "working" },
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "Yield Basket" }, status: "cancelled" },
+    ]);
+    vi.doMock("@/lib/supabase/server", () => ({ createInstitutionalServiceRoleClient: () => mock.client }));
+
+    const { GET } = await import("@/app/api/admin/orderbook/execution/route");
+    const res = await GET(
+      new Request("http://x/execution?source=MINT_CLIENT_ORDER&status=cancelled"),
+    );
+    const body = (await res.json()) as { ok: boolean; rows: Array<{ state: string }> };
+
+    expect(body.ok).toBe(true);
+    expect(body.rows).toHaveLength(1);
+    expect(body.rows[0]!.state).toBe("CANCELLED");
+  });
+
+  it("order_book_seq view returns only that book's member orders", async () => {
+    const mock = makeMockSupabase([
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "Yield Basket", order_book_seq: 2 }, status: "filled" },
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "Yield Basket", order_book_seq: 2 }, status: "filled" },
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "Yield Basket", order_book_seq: 3 }, status: "filled" },
+    ]);
+    vi.doMock("@/lib/supabase/server", () => ({ createInstitutionalServiceRoleClient: () => mock.client }));
+
+    const { GET } = await import("@/app/api/admin/orderbook/execution/route");
+    const res = await GET(new Request("http://x/execution?order_book_seq=2"));
+    const body = (await res.json()) as { ok: boolean; rows: unknown[] };
+
+    expect(body.ok).toBe(true);
+    // Only the two members of book 2 — book 3's order is excluded.
+    expect(body.rows).toHaveLength(2);
   });
 });

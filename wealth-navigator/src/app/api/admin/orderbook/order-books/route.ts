@@ -117,7 +117,7 @@ function openInstitutional(): SupabaseClient | null {
   }
 }
 
-export async function GET() {
+export async function GET(req?: Request) {
   const auth = await getAdminContext();
   if (auth.status === "no-session") {
     return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
@@ -126,15 +126,40 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 
+  // Optional ?source=A,B — return only books whose members include one of these
+  // sources, so the Active tab shows app-order books and the Manual tab shows
+  // desk/UAT-order books, from the same archive.
+  const sourceParam = req ? (new URL(req.url).searchParams.get("source") ?? "").trim() : "";
+  const sourceFilter = sourceParam
+    ? new Set(sourceParam.split(",").map((s) => s.trim()).filter(Boolean))
+    : null;
+
   const db = openInstitutional();
   if (!db) {
     return NextResponse.json({ ok: true, books: [], notice: "INSTITUTIONAL database not configured." });
   }
 
-  const { data: bookRows, error: bookErr } = await db
-    .from("oems_order_book")
-    .select("sequence, released_at, released_by, member_count")
-    .order("sequence", { ascending: false });
+  let bookRows: Array<Record<string, unknown>> | null;
+  let bookErr: { code?: string; message: string } | null;
+  {
+    const res = await db
+      .from("oems_order_book")
+      .select("sequence, released_at, released_by, member_count, closed_at, closed_by, email_status, email_error, email_sent_at")
+      .order("sequence", { ascending: false });
+    bookRows = res.data;
+    bookErr = res.error;
+  }
+  // Closed-books columns not migrated yet (20260728000001) — fall back to the
+  // base column set so the archive still renders (just without close/email
+  // state) instead of erroring the whole panel on an undefined_column.
+  if (bookErr && String(bookErr.code) === "42703") {
+    const fallback = await db
+      .from("oems_order_book")
+      .select("sequence, released_at, released_by, member_count")
+      .order("sequence", { ascending: false });
+    bookRows = fallback.data;
+    bookErr = fallback.error;
+  }
   if (bookErr) {
     if (isSupabaseSchemaMissing(bookErr)) {
       return NextResponse.json({
@@ -159,28 +184,47 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: memberErr.message }, { status: 500 });
   }
 
-  const bySeq = new Map<number, { total: number; filled: number; members: BookMember[] }>();
+  const bySeq = new Map<number, { total: number; filled: number; members: BookMember[]; sources: Set<string> }>();
   for (const r of (memberRows ?? []) as MemberAuditRow[]) {
     const rawSeq = r.payload?.order_book_seq;
     const seq = typeof rawSeq === "number" ? rawSeq : Number(rawSeq);
     if (!Number.isFinite(seq)) continue;
-    const agg = bySeq.get(seq) ?? { total: 0, filled: 0, members: [] };
+    const agg = bySeq.get(seq) ?? { total: 0, filled: 0, members: [], sources: new Set<string>() };
     agg.total += 1;
     if (r.status === "filled") agg.filled += 1;
+    if (r.source) agg.sources.add(r.source);
     agg.members.push(toMember(r));
     bySeq.set(seq, agg);
   }
 
-  const books = (bookRows as Array<{ sequence: number; released_at: string; released_by: string | null; member_count: number }>).map(
+  const books = (bookRows as Array<{
+    sequence: number; released_at: string; released_by: string | null; member_count: number;
+    closed_at?: string | null; closed_by?: string | null;
+    email_status?: "sent" | "failed" | null; email_error?: string | null; email_sent_at?: string | null;
+  }>)
+    .filter((b) => {
+      if (!sourceFilter) return true;
+      const agg = bySeq.get(b.sequence);
+      if (!agg) return false;
+      for (const s of agg.sources) if (sourceFilter.has(s)) return true;
+      return false;
+    })
+    .map(
     (b) => {
-      const agg = bySeq.get(b.sequence) ?? { total: 0, filled: 0, members: [] };
+      const agg = bySeq.get(b.sequence) ?? { total: 0, filled: 0, members: [], sources: new Set<string>() };
       return {
         sequence: b.sequence,
         released_at: b.released_at,
         released_by: b.released_by,
+        closed_at: b.closed_at ?? null,
+        closed_by: b.closed_by ?? null,
+        email_status: b.email_status ?? null,
+        email_error: b.email_error ?? null,
+        email_sent_at: b.email_sent_at ?? null,
         total_count: agg.total,
         filled_count: agg.filled,
         fully_filled: agg.total > 0 && agg.filled === agg.total,
+        sources: [...agg.sources],
         // Members are returned so the archive row can be expanded to show what
         // actually executed. Without this a fully-filled book rendered as
         // "Order Book 2: <date> · 1/1 filled" and nothing else — the fill price,
