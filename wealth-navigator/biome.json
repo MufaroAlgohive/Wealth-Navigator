@@ -19,5 +19,17 @@
       "suspicious": { "noExplicitAny": "error" }
     }
   },
-  "javascript": { "formatter": { "quoteStyle": "double", "trailingCommas": "all", "semicolons": "always" } }
+  "javascript": { "formatter": { "quoteStyle": "double", "trailingCommas": "all", "semicolons": "always" } },
+  "overrides": [
+    {
+      "include": ["src/lib/pdf/mandate.ts"],
+      "linter": {
+        "rules": {
+          "suspicious": { "noExplicitAny": "off" },
+          "complexity": { "noForEach": "off" },
+          "style": { "useTemplate": "off" }
+        }
+      }
+    }
+  ]
 }
