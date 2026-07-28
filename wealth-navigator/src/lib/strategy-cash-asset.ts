@@ -23,3 +23,22 @@ export function strategyCashAsset(
     weight: invested > 0 ? (residualCashCents / invested) * 100 : 0,
   };
 }
+
+export interface StrategyCashReturnRow {
+  as_of_date: string;
+  continuity_cash_cents: number | null;
+  securities_value_cents: number | null;
+}
+
+export function strategyCashAssetFromCanonicalReturns(
+  rows: StrategyCashReturnRow[],
+): StrategyCashAsset | null {
+  const latest = [...rows]
+    .filter((row) => row.as_of_date)
+    .sort((a, b) => b.as_of_date.localeCompare(a.as_of_date))[0];
+  if (!latest) return null;
+  return strategyCashAsset(
+    Number(latest.continuity_cash_cents ?? 0),
+    Number(latest.securities_value_cents ?? 0),
+  );
+}
