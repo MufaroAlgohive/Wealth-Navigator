@@ -421,6 +421,7 @@ export interface OrderBookMember {
     strategy_name: string | null;
     holdings: Array<{
       id: string;
+      source_ids: string[];
       instrument: string;
       ticker: string;
       side: string;
@@ -432,6 +433,7 @@ export interface OrderBookMember {
     }>;
     investors: Array<{
       id: string;
+      source_ids: string[];
       name: string;
       account_id: string | null;
       family_relationship: string | null;
