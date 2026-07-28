@@ -178,6 +178,10 @@ async function insertAuditRow(
       security_id: sec.id,
       isin: sec.isin ?? null,
       holding_id: input.holding_id ?? null,
+      // Preserves parent-vs-child ownership inside the omnibus broker order.
+      // Internal settlement and CRM/OEM drill-downs must not collapse a
+      // child's purchase into the primary account holder.
+      family_member_id: input.family_member_id ?? null,
       // Drives resolveHolderKind in the worker: present => the pre-trade guard
       // checks THIS client's wallet and holdings instead of the desk omnibus.
       // Never sent to the broker — LONGMARK sees only the MINT account.

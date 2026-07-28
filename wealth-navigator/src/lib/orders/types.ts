@@ -129,6 +129,8 @@ export interface SubmitInput extends PreflightInput {
    * holding row (e.g. the ad-hoc UAT ticket).
    */
   holding_id?: string | null;
+  /** Child/family owner of the holding. Null means the primary account owner. */
+  family_member_id?: string | null;
   /**
    * The RETAIL auth user this order is FOR.
    *
