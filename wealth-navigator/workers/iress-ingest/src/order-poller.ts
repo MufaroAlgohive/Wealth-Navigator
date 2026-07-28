@@ -27,7 +27,14 @@ import { IressError, isIressSessionDeadError } from "../../../src/lib/iress/erro
 import { getIressClient } from "../../../src/lib/iress/index";
 import type { Order, OrderState } from "../../../src/types/iress";
 import { productionOrdersEnabled, type WorkerEnv } from "./env";
-import { observedFillFromAudit, settleFill } from "./settlement";
+import { observedFillFromAudit, settleFill, voidUnfilledRemainder } from "./settlement";
+import {
+  findGiftAuthorization,
+  applyGiftFill,
+  applyGiftTerminalNoFill,
+  GIFT_AUTH_STATUS,
+  GiftAuthTransition,
+} from "./giftAuthorizationSettlement";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 
@@ -175,6 +182,7 @@ interface AuditUpdate {
     side: string | null;
     status: string;
     payload: Record<string, unknown>;
+    quantity: number | null;
   };
 }
 
@@ -442,6 +450,11 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
         side: audit.side,
         status: state,
         payload: newPayload,
+        /* What was ORDERED. The poller never rewrites this column, so it is the
+           only trustworthy denominator for "did this fully fill?" — `filled`
+           alone cannot distinguish a completed order from one that traded 60 of
+           100 and then expired. */
+        quantity: audit.quantity,
       },
     });
   }
@@ -485,6 +498,29 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
      settlement problem must not stop fills being recorded. */
   if (opts.retailSupabase && opts.supabase && opts.env.retailSettlementEnabled) {
     for (const u of updates) {
+      /* A terminal order with unfilled quantity must be REVERSED, not settled.
+         settleFill only ever adds what happened; nothing undid what did not.
+         An app-raised order that is rejected — or a DAY order that expires
+         part-filled — leaves the client holding pre-booked shares nobody bought
+         and out of pocket for them. Runs before the fill path so a part-filled
+         expiry both settles what traded and refunds what did not. */
+      try {
+        await voidUnfilledRemainder(
+          {
+            institutional: opts.supabase,
+            retail: opts.retailSupabase,
+            enabled: true,
+            dryRun: opts.env.retailSettlementDryRun,
+          },
+          u.settleRow,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          JSON.stringify({ level: "error", event: "settlement_void_threw", order: u.settleRow.order_id, error: msg }),
+        );
+      }
+
       const fill = observedFillFromAudit(u.settleRow);
       if (!fill) {
         /* The commonest and most dangerous outcome, and it used to be silent.
@@ -511,6 +547,108 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
         }
         continue;
       }
+
+      // ── 2026-07-28 GIFT LIFECYCLE ─────────────────────────────────────────
+      // If this audit row came from the gift-registry/contribute handler
+      // (payload.gift_authorization_id is set), it takes the gift path
+      // instead of the regular buy/sell path. The gift settlement owns the
+      // wallet side; we do NOT call settleFill() afterwards. A successful
+      // within-ceiling fill returns "open_holding" which we use to mint the
+      // recipient's stock_holdings_c row directly below.
+      const p = (u.settleRow.payload ?? {}) as Record<string, unknown>;
+      const giftAuthId = typeof p.gift_authorization_id === "string" ? p.gift_authorization_id : null;
+      if (giftAuthId) {
+        const auth = await findGiftAuthorization(opts.retailSupabase, p);
+        if (auth) {
+          let giftTransition: GiftAuthTransition | null = null;
+          try {
+            if (u.settleRow.status === "filled" || u.settleRow.status === "partial") {
+              giftTransition = await applyGiftFill(
+                {
+                  institutional: opts.supabase,
+                  retail: opts.retailSupabase,
+                  dryRun: opts.env.retailSettlementDryRun,
+                },
+                auth,
+                fill,
+              );
+            } else if (u.settleRow.status === "cancelled" || u.settleRow.status === "rejected" ||
+                       u.settleRow.status === "expired" || u.settleRow.status === "failed") {
+              giftTransition = await applyGiftTerminalNoFill(
+                {
+                  retail: opts.retailSupabase,
+                  dryRun: opts.env.retailSettlementDryRun,
+                },
+                auth,
+                u.settleRow.status,
+                typeof p.rejectReason === "string" ? p.rejectReason : null,
+              );
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(
+              JSON.stringify({ level: "error", event: "gift_settlement_threw", order: fill.orderId, gift_authorization_id: giftAuthId, error: msg }),
+            );
+            continue;
+          }
+          if (giftTransition && giftTransition.action === "open_holding") {
+            // Mint the recipient's stock_holdings_c row at the fill price.
+            // The wallet was already debited by applyGiftFill; the lot must
+            // exist for the recipient's app to render the gift.
+            try {
+              const { error: lotErr } = await opts.retailSupabase
+                .from("stock_holdings_c")
+                .insert({
+                  user_id: auth.recipient_user_id ?? auth.gifter_user_id,
+                  security_id: fill.securityId,
+                  quantity: giftTransition.fillQuantity,
+                  avg_fill: giftTransition.fillPriceCents, // CENTS
+                  Expected_fill: giftTransition.fillPriceCents / 100, // RANDS
+                  market_value: giftTransition.fillPriceCents * giftTransition.fillQuantity,
+                  side: "buy",
+                  trade_side: "BUY",
+                  is_active: true,
+                  Status: "active",
+                  Fill_date: new Date().toISOString().slice(0, 10),
+                  strategy_name_snapshot: `GIFT-${auth.id}`,
+                  fill_set_by: `iress-settlement:${fill.orderId}`,
+                  fill_set_at: new Date().toISOString(),
+                  family_member_id: auth.recipient_family_member_id ?? null,
+                  // Attribution: the recipient is the lot owner. If the
+                  // recipient is a child registry (family_member_id) the lot
+                  // belongs to the child account directly.
+                })
+                .select("id");
+              if (lotErr) {
+                console.error(
+                  JSON.stringify({ level: "error", event: "gift_holding_insert_failed", gift_authorization_id: auth.id, error: lotErr.message }),
+                );
+              } else {
+                console.info(
+                  JSON.stringify({
+                    level: "info",
+                    event: "gift_holding_minted",
+                    gift_authorization_id: auth.id,
+                    qty: giftTransition.fillQuantity,
+                    fill_price_cents: giftTransition.fillPriceCents,
+                    order_id: fill.orderId,
+                  }),
+                );
+              }
+            } catch (e) {
+              console.error(
+                JSON.stringify({ level: "error", event: "gift_holding_insert_threw", gift_authorization_id: auth.id, error: (e as Error).message }),
+              );
+            }
+          }
+          // Whether open_holding, hold_for_approval, or stop — we do NOT
+          // call settleFill() afterwards. The gift lifecycle owns the
+          // wallet/holding side end-to-end.
+          continue;
+        }
+      }
+      // ── END GIFT LIFECYCLE ───────────────────────────────────────────────
+
       try {
         await settleFill(
           {

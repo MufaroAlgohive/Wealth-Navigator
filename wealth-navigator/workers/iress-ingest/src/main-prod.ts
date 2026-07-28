@@ -67,7 +67,7 @@ import {
   persistVendorCatalogMarker,
 } from "./news-ingest";
 import { getMarketDataSession, tearDownMarketDataSession } from "./market-data";
-import { syncRetailPrices } from "./retail-ingest";
+import { loadHotSymbols, syncRetailPrices } from "./retail-ingest";
 import { recordWorkerEvent } from "./events";
 import { LICENSE_RELEASE_DELAY_MS, WorkerSessionManager } from "./session";
 import { createInstitutionalSupabase, createRetailSupabase, writeHeartbeat } from "./supabase";
@@ -394,6 +394,58 @@ async function retailIngestLoop(): Promise<void> {
   }
 }
 
+/**
+ * FAST LANE. The full-universe sweep walks ~197 symbols and lands every ~374s
+ * measured against the live DB, so any price a client is looking at is minutes
+ * old and every freshness badge reads STALE — honestly. This loop sweeps only
+ * the symbols someone actually holds or a strategy tracks, which is a fraction
+ * of the universe and can run on a much tighter cadence.
+ *
+ * It runs ALONGSIDE the full sweep, never instead of it: the slow walk still
+ * covers everything, and if the hot-symbol query fails this loop skips the
+ * cycle rather than falling back to sweeping the universe twice.
+ *
+ * Off by default. IRESS_HOT_PRICE_INTERVAL_SEC=30 turns it on.
+ */
+async function hotPriceLoop(): Promise<void> {
+  const intervalSec = Number(process.env.IRESS_HOT_PRICE_INTERVAL_SEC ?? "0");
+  if (!(intervalSec > 0)) return;
+  if (process.env.IRESS_RETAIL_INGEST !== "1" || !retailSupabase) {
+    console.info("[iress-prod] hot price lane not started (needs IRESS_RETAIL_INGEST=1 + RETAIL Supabase).");
+    return;
+  }
+  const everySec = Math.max(15, intervalSec);
+  console.warn(`[iress-prod] HOT PRICE LANE on — held + strategy symbols every ${everySec}s`);
+  while (!shuttingDown) {
+    try {
+      const symbols = await loadHotSymbols(retailSupabase);
+      if (symbols.length === 0) {
+        // Empty means the query failed or nothing is held. Either way, do NOT
+        // fall through to a full sweep — that would double the load on the seat
+        // and is exactly what the slow loop is already doing.
+        console.info("[iress-prod] hot price lane: no hot symbols this cycle, skipping.");
+      } else {
+        const r = await syncRetailPrices({
+          env,
+          sessions,
+          retail: retailSupabase,
+          institutional: supabase,
+          symbols,
+        });
+        console.info(
+          `[iress-prod] hot price ${r.dryRun ? "(shadow)" : "(WRITE)"}: ` +
+            `${r.covered}/${r.requested} covered, ${r.written} written`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[iress-prod] hot price lane error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    await sleep(everySec * 1000);
+  }
+}
+
 void runHealthLoop({
   supabase,
   env,
@@ -404,6 +456,7 @@ void runHealthLoop({
 void newsIngestLoop();
 void orderFillLoop();
 void retailIngestLoop();
+void hotPriceLoop();
 
 if (process.env.IRESS_NEWS_INGEST === "1") {
   // Trigger prod market-data bring-up early so the startup log shows
@@ -558,3 +611,53 @@ setInterval(() => {
     /* best-effort */
   });
 }, 60_000).unref();
+
+// 2026-07-28 — gift-authorization sweepers. The new authorize-then-fill
+// lifecycle has two background flows that need a tick:
+//   1. PARKED authorizations that the operator never released. After
+//      `expires_at` they transition to EXPIRED and the wallet
+//      reservation is released so the funds come back to the gifter.
+//   2. PENDING_GIFTER_APPROVAL authorizations past the 30-min grace
+//      window. These auto-cancel and the reservation is released.
+// Both run on 5-min cadences. They're idempotent (the conditional
+// UPDATE prevents double-transition) and best-effort (a failure logs
+// loudly but does not stop the worker).
+// Importing as side-effect-free so the modules stay tree-shakeable.
+import {
+  sweepExpiredParkedAuthorizations,
+  sweepApprovalGraceExpired,
+} from "./giftAuthorizationSettlement";
+
+const SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 min
+// Sweepers read/write gift tables which live on RETAIL. Only run them when
+// the retail client is configured — running them with `retail=null` would
+// throw inside the sweepers, since they read gift_authorizations directly.
+if (retailSupabase) {
+  const sweepDeps = {
+    retail: retailSupabase,
+    dryRun: process.env.GIFT_AUTH_SWEEP_DRY_RUN === "1",
+  };
+  setInterval(() => {
+    if (shuttingDown) return;
+    void sweepExpiredParkedAuthorizations(sweepDeps).catch((err) => {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "gift_auth_parked_sweep_threw",
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    });
+    void sweepApprovalGraceExpired(sweepDeps).catch((err) => {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          event: "gift_auth_grace_sweep_threw",
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    });
+  }, SWEEP_INTERVAL_MS).unref();
+} else {
+  console.warn("[iress-prod] gift-auth sweepers disabled: no RETAIL Supabase client configured.");
+}
