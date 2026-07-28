@@ -57,6 +57,40 @@ export interface BookMember {
   last_action: string | null;
   filled_at: string | null;
   iress_error: string | null;
+  crm_details?: {
+    is_strategy: boolean;
+    strategy_name: string | null;
+    holdings: Array<{
+      id: string;
+      instrument: string;
+      ticker: string;
+      side: string;
+      qty: number;
+      avg_fill_rands: number | null;
+      expected_fill_rands: number | null;
+      market_value_rands: number | null;
+      pnl_rands: number | null;
+    }>;
+    investors: Array<{
+      id: string;
+      name: string;
+      account_id: string | null;
+      family_relationship: string | null;
+      holdings_count: number;
+      market_value_rands: number | null;
+    }>;
+    allocations: Array<{
+      id: string;
+      name: string;
+      account_id: string | null;
+      reference: string | null;
+      qty: number;
+      market_value_rands: number | null;
+      timestamp: string | null;
+      instruction_type: string | null;
+      settlement_ref: string | null;
+    }>;
+  };
 }
 
 function num(v: unknown): number | null {
@@ -131,10 +165,46 @@ function crmMember(row: Record<string, unknown>, index: number, bookId: string):
   const avgFill = num(row.avgFillNumber) ?? crmMoney(row.avgFill);
   const expected = crmMoney(row.actualFill);
   const sourceId = str(row.sourceId) ?? `${bookId}-${index + 1}`;
+  const strategyUsers = Array.isArray(row.strategyUsers)
+    ? row.strategyUsers.filter((value): value is Record<string, unknown> => !!value && typeof value === "object")
+    : [];
+  const strategyHoldings = Array.isArray(row.strategyHoldings)
+    ? row.strategyHoldings.filter((value): value is Record<string, unknown> => !!value && typeof value === "object")
+    : [];
+  const bndRows = Array.isArray(row.bndRows)
+    ? row.bndRows.filter((value): value is Record<string, unknown> => !!value && typeof value === "object")
+    : [];
+  const isStrategy = row.isStrategy === true || strategyUsers.length > 0 || strategyHoldings.length > 0;
+  const investors = strategyUsers.map((user, userIndex) => ({
+    id: str(user.userId ?? user.user_id ?? user.id) ?? `${sourceId}-investor-${userIndex}`,
+    name: str(user.clientName) ?? "Unknown client",
+    account_id: str(user.clientAccountId),
+    family_relationship: str(user.familyMemberRelationship),
+    holdings_count: num(user.holdingsCount) ?? 0,
+    market_value_rands: num(user.totalMarketValue) ?? crmMoney(user.marketValue),
+  }));
+  const allocations = bndRows.map((allocation, allocationIndex) => ({
+    id: str(allocation.sourceId) ?? `${sourceId}-allocation-${allocationIndex}`,
+    name: str(allocation.clientNameFull) ?? str(allocation.clientName) ?? "Unknown client",
+    account_id: str(allocation.clientAccountId),
+    reference: str(allocation.bndReference),
+    qty: num(allocation.quantityValue) ?? num(allocation.quantity) ?? 0,
+    market_value_rands: num(allocation.marketValueNumber) ?? crmMoney(allocation.marketValue),
+    timestamp: str(allocation.timestamp) ?? str(allocation.orderTimestamp),
+    instruction_type: str(allocation.instructionType) ?? str(allocation.orderType),
+    settlement_ref: str(allocation.settlementRef),
+  }));
+  const clientLabel =
+    str(row.clientAccountId) ??
+    str(row.clientNameFull) ??
+    str(row.clientName) ??
+    (investors.length === 1 ? investors[0]?.name : investors.length > 1 ? `${investors.length} investors` : null) ??
+    (allocations.length === 1 ? allocations[0]?.name : allocations.length > 1 ? `${allocations.length} clients` : null) ??
+    null;
   return {
     id: `crm-${sourceId}`,
     order_id: str(row.bndReference) ?? sourceId,
-    client_account: str(row.clientAccountId) ?? str(row.clientName) ?? null,
+    client_account: clientLabel,
     symbol: str(row.ticker) ?? str(row.instrumentName),
     side: (str(row.side) ?? "BUY").toUpperCase(),
     qty,
@@ -149,6 +219,23 @@ function crmMember(row: Record<string, unknown>, index: number, bookId: string):
     last_action: str(row.notificationStatus),
     filled_at: str(row.fillDate) ?? null,
     iress_error: null,
+    crm_details: {
+      is_strategy: isStrategy,
+      strategy_name: str(row.strategyName) ?? (isStrategy ? str(row.instrumentName) : null),
+      holdings: strategyHoldings.map((holding, holdingIndex) => ({
+        id: str(holding.sourceId) ?? `${sourceId}-holding-${holdingIndex}`,
+        instrument: str(holding.instrumentName) ?? "Unknown instrument",
+        ticker: str(holding.ticker) ?? "-",
+        side: (str(holding.side ?? holding.tradeSide) ?? "BUY").toUpperCase(),
+        qty: num(holding.quantityValue) ?? num(holding.totalQuantity) ?? 0,
+        avg_fill_rands: num(holding.avgFillNumber) ?? crmMoney(holding.avgFill),
+        expected_fill_rands: num(holding.actualFillNumber) ?? crmMoney(holding.actualFill),
+        market_value_rands: num(holding.marketValueNumber) ?? crmMoney(holding.marketValue),
+        pnl_rands: num(holding.unrealizedPnlNumber) ?? crmMoney(holding.unrealizedPnl),
+      })),
+      investors,
+      allocations,
+    },
   };
 }
 

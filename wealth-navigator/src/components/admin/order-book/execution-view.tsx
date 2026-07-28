@@ -416,6 +416,40 @@ export interface OrderBookMember {
   last_action: string | null;
   filled_at: string | null;
   iress_error: string | null;
+  crm_details?: {
+    is_strategy: boolean;
+    strategy_name: string | null;
+    holdings: Array<{
+      id: string;
+      instrument: string;
+      ticker: string;
+      side: string;
+      qty: number;
+      avg_fill_rands: number | null;
+      expected_fill_rands: number | null;
+      market_value_rands: number | null;
+      pnl_rands: number | null;
+    }>;
+    investors: Array<{
+      id: string;
+      name: string;
+      account_id: string | null;
+      family_relationship: string | null;
+      holdings_count: number;
+      market_value_rands: number | null;
+    }>;
+    allocations: Array<{
+      id: string;
+      name: string;
+      account_id: string | null;
+      reference: string | null;
+      qty: number;
+      market_value_rands: number | null;
+      timestamp: string | null;
+      instruction_type: string | null;
+      settlement_ref: string | null;
+    }>;
+  };
 }
 
 export interface OrderBookSummary {

@@ -167,7 +167,7 @@ export async function POST(req: Request) {
   // path exists to prevent. We were discarding a column already in hand.
   const { data: holding, error: holdingErr } = await supabase.retail
     .from("stock_holdings_c")
-    .select("id, user_id")
+    .select("id, user_id, family_member_id")
     .eq("id", holdingId)
     .maybeSingle();
   if (holdingErr || !holding) {
@@ -176,7 +176,7 @@ export async function POST(req: Request) {
       { status: 404 },
     );
   }
-  const holdingRow = holding as { id: string; user_id: string | null };
+  const holdingRow = holding as { id: string; user_id: string | null; family_member_id: string | null };
   if (!holdingRow.user_id) {
     // Fail loudly rather than park an unattributable order. A parked order we
     // cannot settle is worse than one we refuse to place: it reaches the market
@@ -188,6 +188,29 @@ export async function POST(req: Request) {
       },
       { status: 422 },
     );
+  }
+
+  let displayClient = clientEmail;
+  if (holdingRow.family_member_id) {
+    const { data: familyMember, error: familyErr } = await supabase.retail
+      .from("family_members")
+      .select("id, primary_user_id, first_name, last_name, relationship")
+      .eq("id", holdingRow.family_member_id)
+      .maybeSingle();
+    if (familyErr || !familyMember || familyMember.primary_user_id !== holdingRow.user_id) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Could not resolve child owner '${holdingRow.family_member_id}': ${familyErr?.message ?? "not found or owner mismatch"}`,
+        },
+        { status: 422 },
+      );
+    }
+    const childName =
+      [familyMember.first_name, familyMember.last_name].filter(Boolean).join(" ").trim() ||
+      familyMember.relationship ||
+      "Child account";
+    displayClient = `${childName} · ${clientEmail}`;
   }
 
   // No preflight here — this order PARKS with zero worker/IRESS contact.
@@ -207,7 +230,9 @@ export async function POST(req: Request) {
       source: "MINT_CLIENT_ORDER",
       book_id: bodyBookId,
       trader_email: clientEmail,
+      client_account: displayClient,
       holding_id: holdingId,
+      family_member_id: holdingRow.family_member_id,
       // Attribution. Without this the fill cannot be settled to a client.
       // security_id is NOT passed — parkOrder derives it from the symbol
       // lookup, which is the canonical resolution path.
