@@ -9,6 +9,8 @@ import { ExecutionView } from "@/components/admin/order-book/execution-view";
 import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-books";
 import { ClosedBooks } from "@/components/admin/order-book/closed-books";
 import { CancelledOrders } from "@/components/admin/order-book/cancelled-orders";
+import { RebalanceBooks } from "@/components/admin/order-book/rebalance-books";
+import { StrateBir } from "@/components/admin/order-book/strate-bir";
 import { Button } from "@/components/ui/button";
 
 export default function OrderBookPage() {
@@ -24,6 +26,8 @@ export default function OrderBookPage() {
           <TabsTrigger value="closed">Closed Books</TabsTrigger>
           <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
           <TabsTrigger value="uat-testing">Manual Orders</TabsTrigger>
+          <TabsTrigger value="rebalances">Rebalances</TabsTrigger>
+          <TabsTrigger value="strate-bir">STRATE BIR</TabsTrigger>
         </TabsList>
         {tab === "uat-testing" ? (
           <TabsContent value="uat-testing" className="mt-3 space-y-3">
@@ -92,6 +96,14 @@ export default function OrderBookPage() {
                   : ["MINT_CLIENT_ORDER", "CRM_LIVE"]
               }
             />
+          </TabsContent>
+        ) : tab === "rebalances" ? (
+          <TabsContent value="rebalances" className="mt-3">
+            <RebalanceBooks scope={activeEnvironment} />
+          </TabsContent>
+        ) : tab === "strate-bir" ? (
+          <TabsContent value="strate-bir" className="mt-3">
+            <StrateBir scope={activeEnvironment} />
           </TabsContent>
         ) : (
           // Closed Books — CRM-style archive of books an admin has explicitly
