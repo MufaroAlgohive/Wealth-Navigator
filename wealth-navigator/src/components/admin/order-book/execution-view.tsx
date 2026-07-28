@@ -432,6 +432,13 @@ export interface OrderBookSummary {
   /** Distinct order sources across this book's members — lets the archive be
    *  split by app vs manual/UAT. Optional for older cached responses. */
   sources?: string[];
+  /** "Move to Closed Book" state — shared across admins. null = still in
+   *  Active/Manual Order Books. Optional for pre-migration responses. */
+  closed_at?: string | null;
+  closed_by?: string | null;
+  email_status?: "sent" | "failed" | null;
+  email_error?: string | null;
+  email_sent_at?: string | null;
 }
 
 /**

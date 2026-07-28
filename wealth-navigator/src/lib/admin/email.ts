@@ -32,23 +32,30 @@ export async function logEmail(entry: {
 }
 
 export async function sendEmail(opts: {
-  to: string; subject: string; html: string; emailType: string; source?: string; metadata?: Record<string, unknown> | null;
+  to: string | string[]; subject: string; html: string; emailType: string; source?: string; metadata?: Record<string, unknown> | null;
+  /** Optional file attachments (e.g. a CSV export). content is base64. */
+  attachments?: Array<{ filename: string; content: string }>;
 }): Promise<{ id?: string }> {
   const key = process.env.RESEND_API_KEY;
   const from = process.env.ORDERBOOK_EMAIL_FROM || "noreply@mymint.co.za";
+  const recipients = Array.isArray(opts.to) ? opts.to : [opts.to];
+  const recipientLabel = recipients.join(", ");
   if (!key) {
-    await logEmail({ emailType: opts.emailType, recipient: opts.to, subject: opts.subject, status: "failed", triggerSource: opts.source, metadata: opts.metadata, errorMessage: "RESEND_API_KEY not configured" });
+    await logEmail({ emailType: opts.emailType, recipient: recipientLabel, subject: opts.subject, status: "failed", triggerSource: opts.source, metadata: opts.metadata, errorMessage: "RESEND_API_KEY not configured" });
     throw new Error("RESEND_API_KEY not configured");
   }
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to: [opts.to], subject: opts.subject, html: opts.html }),
+    body: JSON.stringify({
+      from, to: recipients, subject: opts.subject, html: opts.html,
+      ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
+    }),
   });
   const payload = (await resp.json().catch(() => ({}))) as { id?: string; message?: string; error?: string };
   const ok = resp.ok && !payload.error;
   await logEmail({
-    emailType: opts.emailType, recipient: opts.to, subject: opts.subject, resendId: payload.id ?? null,
+    emailType: opts.emailType, recipient: recipientLabel, subject: opts.subject, resendId: payload.id ?? null,
     status: ok ? "sent" : "failed", triggerSource: opts.source, metadata: opts.metadata,
     errorMessage: ok ? null : payload.message || payload.error || `HTTP ${resp.status}`,
   });

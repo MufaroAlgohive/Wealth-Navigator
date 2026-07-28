@@ -139,10 +139,27 @@ export async function GET(req?: Request) {
     return NextResponse.json({ ok: true, books: [], notice: "INSTITUTIONAL database not configured." });
   }
 
-  const { data: bookRows, error: bookErr } = await db
-    .from("oems_order_book")
-    .select("sequence, released_at, released_by, member_count")
-    .order("sequence", { ascending: false });
+  let bookRows: Array<Record<string, unknown>> | null;
+  let bookErr: { code?: string; message: string } | null;
+  {
+    const res = await db
+      .from("oems_order_book")
+      .select("sequence, released_at, released_by, member_count, closed_at, closed_by, email_status, email_error, email_sent_at")
+      .order("sequence", { ascending: false });
+    bookRows = res.data;
+    bookErr = res.error;
+  }
+  // Closed-books columns not migrated yet (20260728000001) — fall back to the
+  // base column set so the archive still renders (just without close/email
+  // state) instead of erroring the whole panel on an undefined_column.
+  if (bookErr && String(bookErr.code) === "42703") {
+    const fallback = await db
+      .from("oems_order_book")
+      .select("sequence, released_at, released_by, member_count")
+      .order("sequence", { ascending: false });
+    bookRows = fallback.data;
+    bookErr = fallback.error;
+  }
   if (bookErr) {
     if (isSupabaseSchemaMissing(bookErr)) {
       return NextResponse.json({
@@ -180,7 +197,11 @@ export async function GET(req?: Request) {
     bySeq.set(seq, agg);
   }
 
-  const books = (bookRows as Array<{ sequence: number; released_at: string; released_by: string | null; member_count: number }>)
+  const books = (bookRows as Array<{
+    sequence: number; released_at: string; released_by: string | null; member_count: number;
+    closed_at?: string | null; closed_by?: string | null;
+    email_status?: "sent" | "failed" | null; email_error?: string | null; email_sent_at?: string | null;
+  }>)
     .filter((b) => {
       if (!sourceFilter) return true;
       const agg = bySeq.get(b.sequence);
@@ -195,6 +216,11 @@ export async function GET(req?: Request) {
         sequence: b.sequence,
         released_at: b.released_at,
         released_by: b.released_by,
+        closed_at: b.closed_at ?? null,
+        closed_by: b.closed_by ?? null,
+        email_status: b.email_status ?? null,
+        email_error: b.email_error ?? null,
+        email_sent_at: b.email_sent_at ?? null,
         total_count: agg.total,
         filled_count: agg.filled,
         fully_filled: agg.total > 0 && agg.filled === agg.total,

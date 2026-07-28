@@ -50,9 +50,11 @@ function fmtReleasedAt(iso: string): string {
  * already stubbed elsewhere on this admin page.
  */
 export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
-  const query = sources && sources.length ? `?source=${encodeURIComponent(sources.join(","))}` : "";
-  const { data } = usePolling<OrderBooksPayload>(`/api/admin/orderbook/order-books${query}`, { interval: 5_000 });
-  const books = (data?.books ?? []).filter((b) => b.fully_filled);
+  const query = sources?.length ? `?source=${encodeURIComponent(sources.join(","))}` : "";
+  const { data, refresh } = usePolling<OrderBooksPayload>(`/api/admin/orderbook/order-books${query}`, { interval: 5_000 });
+  // Fully filled AND not yet moved to Closed Books — a closed book lives only
+  // on the Closed Books tab from here on.
+  const books = (data?.books ?? []).filter((b) => b.fully_filled && !b.closed_at);
   const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
   const toggle = (seq: number) =>
     setExpanded((prev) => {
@@ -62,7 +64,32 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
       return next;
     });
 
-  const deferred = (label: string) => toast.message(`${label} is deferred to the data phase (settlement writes).`);
+  const [closing, setClosing] = React.useState<Record<number, boolean>>({});
+  const moveToClosed = async (sequence: number) => {
+    setClosing((p) => ({ ...p, [sequence]: true }));
+    try {
+      const res = await fetch("/api/admin/orderbook/close-book", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sequence, closed: true }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; email_status?: string };
+      if (!res.ok || body.ok === false) {
+        toast.error(body.error ?? `Move to Closed Book failed (${res.status})`);
+        return;
+      }
+      toast.success(
+        body.email_status === "sent"
+          ? `Order Book ${sequence} closed — confirmation emailed.`
+          : `Order Book ${sequence} closed — confirmation email failed (retry from Closed Books).`,
+      );
+      await refresh?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Move to Closed Book failed");
+    } finally {
+      setClosing((p) => ({ ...p, [sequence]: false }));
+    }
+  };
 
   return (
     <div className="w-full rounded-xl border border-border bg-card/40 overflow-hidden">
@@ -108,15 +135,14 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                     <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                       {b.filled_count}/{b.total_count} filled
                     </span>
-                    <Badge
-                      variant="outline"
-                      className="text-[9px]"
-                      title="Deferred — real email sending lands with the data phase."
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={!!closing[b.sequence]}
+                      onClick={() => void moveToClosed(b.sequence)}
+                      title="Emails a CSV of this book's fills to the desk, then moves it to Closed Books."
                     >
-                      EMAIL SENT
-                    </Badge>
-                    <Button variant="secondary" size="sm" onClick={() => deferred("Move to Closed Book")}>
-                      Move to Closed Book
+                      {closing[b.sequence] ? "Closing…" : "Move to Closed Book"}
                     </Button>
                   </div>
                 </div>
