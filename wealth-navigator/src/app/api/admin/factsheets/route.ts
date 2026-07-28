@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
+import { buildCanonicalReturnIndex } from "@/lib/returns/canonical-index";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { strategyCashAsset } from "@/lib/strategy-cash-asset";
 
 /**
  * Factsheets (read-only). Gallery + single-strategy detail over strategies_c,
@@ -21,12 +23,21 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
-interface ReturnRow { strategy_id: string; as_of_date: string; ytd_pct: number | null; all_pct: number | null; basket_value: number | null; }
+interface ReturnRow {
+  strategy_id: string;
+  as_of_date: string;
+  ytd_pct: number | null;
+  all_pct: number | null;
+  "1d_pct": number | null;
+  basket_value: number | null;
+}
 
 export async function GET(req: Request) {
   const auth = await getAdminContext();
-  if (auth.status === "no-session") return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
-  if (auth.status === "not-member") return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  if (auth.status === "no-session")
+    return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
+  if (auth.status === "not-member")
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
 
   const url = new URL(req.url);
   const action = url.searchParams.get("action") || "list";
@@ -35,18 +46,31 @@ export async function GET(req: Request) {
   try {
     db = createRetailServiceRoleClient();
   } catch {
-    return NextResponse.json({ ok: true, strategies: [], returns: {}, securities: {}, investors: {}, notice: "RETAIL database not configured." });
+    return NextResponse.json({
+      ok: true,
+      strategies: [],
+      returns: {},
+      securities: {},
+      investors: {},
+      notice: "RETAIL database not configured.",
+    });
   }
 
   const securitiesFor = async (strategies: Array<{ holdings: unknown }>) => {
     const symbols = new Set<string>();
     for (const s of strategies) {
       const hs = Array.isArray(s.holdings) ? (s.holdings as Array<Record<string, unknown>>) : [];
-      for (const h of hs) { const sym = (h.ticker || h.symbol) as string | undefined; if (sym) symbols.add(String(sym)); }
+      for (const h of hs) {
+        const sym = (h.ticker || h.symbol) as string | undefined;
+        if (sym) symbols.add(String(sym));
+      }
     }
     const out: Record<string, unknown> = {};
     if (symbols.size) {
-      const { data } = await db!.from("securities_c").select("symbol, name, logo_url, last_price, change_percent").in("symbol", [...symbols]);
+      const { data } = await db!
+        .from("securities_c")
+        .select("symbol, name, logo_url, last_price, change_percent")
+        .in("symbol", [...symbols]);
       for (const sec of data ?? []) out[sec.symbol as string] = sec;
     }
     return out;
@@ -73,7 +97,7 @@ export async function GET(req: Request) {
     if (!strategy) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
     const { data: returns } = await db
       .from("strategy_returns_effective_c")
-      .select("strategy_id, as_of_date, ytd_pct, all_pct, basket_value")
+      .select('strategy_id, as_of_date, ytd_pct, all_pct, "1d_pct", basket_value')
       .eq("strategy_id", id)
       .order("as_of_date", { ascending: true })
       .limit(800);
@@ -90,7 +114,11 @@ export async function GET(req: Request) {
       (row) => row.user_id && !testIds.has(String(row.user_id)),
     );
     const userIds = [...new Set(realRows.map((row) => String(row.user_id)))];
-    const famIds = [...new Set(realRows.map((row) => (row.family_member_id ? String(row.family_member_id) : "")).filter(Boolean))];
+    const famIds = [
+      ...new Set(
+        realRows.map((row) => (row.family_member_id ? String(row.family_member_id) : "")).filter(Boolean),
+      ),
+    ];
     const [{ data: profiles }, { data: famRows }] = await Promise.all([
       userIds.length
         ? db.from("profiles").select("id,first_name,last_name,email,computershare_number").in("id", userIds)
@@ -105,10 +133,12 @@ export async function GET(req: Request) {
       const userId = String(row.user_id);
       const familyMemberId = row.family_member_id ? String(row.family_member_id) : null;
       const profile = profileMap.get(userId);
-      const parentName = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || profile?.email || userId;
+      const parentName =
+        [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || profile?.email || userId;
       const familyMember = familyMemberId ? famMap.get(familyMemberId) : null;
       const childName = familyMember
-        ? [familyMember.first_name, familyMember.last_name].filter(Boolean).join(" ") || familyMemberId!.slice(0, 8)
+        ? [familyMember.first_name, familyMember.last_name].filter(Boolean).join(" ") ||
+          familyMemberId!.slice(0, 8)
         : null;
       const value = Number(row.basket_value_cents || 0) / 100;
       const pnl = Number(row.inception_pnl_cents || 0) / 100;
@@ -134,34 +164,64 @@ export async function GET(req: Request) {
         asOf: row.as_of_date,
       };
     });
-    return NextResponse.json({ ok: true, strategy, returns: returns ?? [], securities, investors });
+    const securitiesValue = realRows.reduce((sum, row) => sum + Number(row.securities_value_cents || 0), 0);
+    const residualCash = realRows.reduce((sum, row) => sum + Number(row.residual_cash_cents || 0), 0);
+    const cashAsset = strategyCashAsset(residualCash, securitiesValue);
+    return NextResponse.json({
+      ok: true,
+      strategy,
+      returns: returns ?? [],
+      securities,
+      investors,
+      cashAsset,
+    });
   }
 
   if (action === "list") {
-    const { data: strategies, error } = await db.from("strategies_c").select("*").order("created_at", { ascending: false });
-    if (error) return NextResponse.json({ ok: true, strategies: [], returns: {}, securities: {}, investors: {}, notice: error.message });
+    const { data: strategies, error } = await db
+      .from("strategies_c")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error)
+      return NextResponse.json({
+        ok: true,
+        strategies: [],
+        returns: {},
+        securities: {},
+        investors: {},
+        notice: error.message,
+      });
     const rows = strategies ?? [];
 
     // Recent returns series grouped by strategy (newest-first fetch → ascending series).
     const { data: ret } = await db
       .from("strategy_returns_effective_c")
-      .select("strategy_id, as_of_date, ytd_pct, all_pct, basket_value")
+      .select('strategy_id, as_of_date, ytd_pct, all_pct, "1d_pct", basket_value')
       .order("as_of_date", { ascending: false })
       .limit(4000);
-    const returns: Record<string, { latest: ReturnRow | null; series: number[] }> = {};
+    const groupedReturns: Record<string, ReturnRow[]> = {};
     for (const r of (ret ?? []) as ReturnRow[]) {
-      const g = (returns[r.strategy_id] ||= { latest: null, series: [] });
-      if (!g.latest) g.latest = r; // first seen = newest
-      if (r.basket_value != null) g.series.push(Number(r.basket_value));
+      const rowsForStrategy = groupedReturns[r.strategy_id] ?? [];
+      rowsForStrategy.push(r);
+      groupedReturns[r.strategy_id] = rowsForStrategy;
     }
-    for (const g of Object.values(returns)) g.series.reverse(); // → ascending
+    const returns: Record<string, { latest: ReturnRow | null; series: number[] }> = {};
+    for (const [strategyId, strategyRows] of Object.entries(groupedReturns)) {
+      returns[strategyId] = {
+        latest: strategyRows[0] ?? null,
+        series: buildCanonicalReturnIndex([...strategyRows].reverse()).map((point) => point.value),
+      };
+    }
 
     // Investor counts (distinct real users per strategy) — the "latest"
     // view is already one row per user per strategy, so no manual dedup
     // needed, only the test-exclusion the raw table never had.
     const testIds = await testUserIds();
     const investors: Record<string, number> = {};
-    const { data: csr } = await db.from("client_strategy_returns_effective_latest_c").select("strategy_id, user_id").limit(5000);
+    const { data: csr } = await db
+      .from("client_strategy_returns_effective_latest_c")
+      .select("strategy_id, user_id")
+      .limit(5000);
     for (const c of (csr ?? []) as Array<{ strategy_id: string; user_id: string }>) {
       if (!c.user_id || testIds.has(c.user_id)) continue;
       investors[c.strategy_id] = (investors[c.strategy_id] || 0) + 1;

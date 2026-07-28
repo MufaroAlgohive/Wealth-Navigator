@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
+import { scopeRebalanceEvents } from "@/lib/oems/rebalance-scope";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -61,7 +62,7 @@ export async function GET(req: Request) {
     if (batchError || eventError) {
       return NextResponse.json({ ok: false, error: batchError?.message ?? eventError?.message }, { status: 500 });
     }
-    const scopedEvents = (events ?? []).filter((event) => inScope(event.user_id));
+    const scopedEvents = scopeRebalanceEvents(events ?? [], scope, testIds);
     const userIds = [...new Set(scopedEvents.map((event) => event.user_id).filter(Boolean))];
     const familyIds = [...new Set(scopedEvents.map((event) => event.family_member_id).filter(Boolean))];
     const securityIds = [...new Set(scopedEvents.map((event) => event.security_id).filter(Boolean))];
@@ -125,7 +126,9 @@ export async function GET(req: Request) {
           }),
         };
       })
-      .filter((batch) => batch.events.length > 0 || scope === "live");
+      // Never retain an empty shell after environment filtering: doing so made
+      // UAT-only batches appear on LIVE even though their test events were gone.
+      .filter((batch) => batch.events.length > 0);
     return NextResponse.json({ ok: true, batches: output });
   }
 

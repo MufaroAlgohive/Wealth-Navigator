@@ -11,6 +11,7 @@ import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassSection } from "@/components/oems/primitives/glass";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
+import { CashAssetIcon } from "@/components/strategies/cash-asset-icon";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatPct, formatZAR } from "@/lib/format";
@@ -43,7 +44,7 @@ interface StrategyRow {
   nav: number; // Rands
   investorCount: number;
   holdingsCount: number;
-  holdingsPreview: Array<{ symbol: string; logoUrl: string | null }>;
+  holdingsPreview: Array<{ symbol: string; logoUrl: string | null; isCash?: boolean }>;
   minValue: number;
   lastRebalanced: string; // "YYYY-MM-DD" or "—" (already formatted by the BFF)
   deployedAt: string | null;
@@ -278,10 +279,12 @@ function StrategyCard({ s, active, onSelect }: { s: StrategyRow; active: boolean
   );
 }
 
-function HoldingLogoStack({ holdings }: { holdings: Array<{ symbol: string; logoUrl: string | null }> }) {
+function HoldingLogoStack({
+  holdings,
+}: { holdings: Array<{ symbol: string; logoUrl: string | null; isCash?: boolean }> }) {
   const visible = holdings.slice(0, 3);
   const remainder = Math.max(0, holdings.length - visible.length);
-  return <div className="flex items-center -space-x-1.5" aria-label={`${holdings.length} strategy holdings`}>{visible.map((holding) => <div key={holding.symbol} title={holding.symbol} className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full border-2 border-card bg-primary/10 text-[7px] font-bold text-primary">{holding.logoUrl ? <img src={holding.logoUrl} alt={holding.symbol} className="h-full w-full object-cover" /> : holding.symbol.slice(0, 2)}</div>)}{remainder > 0 && <div className="flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-card bg-muted px-1 text-[8px] font-bold text-muted-foreground">+{remainder}</div>}</div>;
+  return <div className="flex items-center -space-x-1.5" aria-label={`${holdings.length} strategy holdings`}>{visible.map((holding) => holding.isCash ? <CashAssetIcon key={holding.symbol} className="h-6 w-6 border-2 border-card" /> : <div key={holding.symbol} title={holding.symbol} className="flex h-6 w-6 items-center justify-center overflow-hidden rounded-full border-2 border-card bg-primary/10 text-[7px] font-bold text-primary">{holding.logoUrl ? <img src={holding.logoUrl} alt={holding.symbol} className="h-full w-full object-cover" /> : holding.symbol.slice(0, 2)}</div>)}{remainder > 0 && <div className="flex h-6 min-w-6 items-center justify-center rounded-full border-2 border-card bg-muted px-1 text-[8px] font-bold text-muted-foreground">+{remainder}</div>}</div>;
 }
 
 function Stat({ label, value, positive }: { label: string; value: string; positive?: boolean }) {
