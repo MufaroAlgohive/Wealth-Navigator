@@ -61,11 +61,11 @@ let backoffUntil = 0;
  * Yahoo/UAT; orders unaffected) + reversible (set the flag back to 0), and the
  * ApplicationID is distinct (`Mint-OEMS-MarketData-<node>`) so the two sessions
  * never kick each other. Verify after enabling: /debug/market-data + orders up.
+ *
+ * 2026-07-29: see the new `marketDataProdEnabled()` declaration below for the
+ * single-seat override that turns this opt-in OFF automatically when the prod
+ * account has only one licence seat.
  */
-export function marketDataProdEnabled(): boolean {
-  const v = (process.env.IRESS_MARKET_DATA_PROD ?? "").trim().toLowerCase();
-  return v === "1" || v === "true";
-}
 
 /** Prod market-data endpoint (defaults to iressConfig.prodUrl = webservices.iress.co.za). */
 export function marketDataBaseUrl(): string {
@@ -136,6 +136,26 @@ export function noteMarketDataError(err: unknown): void {
 export function singleSeatEnforced(): boolean {
   const v = (process.env.IRESS_USE_SINGLE_SEAT ?? "1").trim().toLowerCase();
   return v !== "0" && v !== "false";
+}
+
+/**
+ * `true` when market-data calls should be routed to the prod endpoint via
+ * a dedicated 2nd wire session. Returns `false` (i.e. fall through to the
+ * orders session) in three cases:
+ *   1. `IRESS_MARKET_DATA_PROD` is unset / "0" — operator has opted out.
+ *   2. `IRESS_USE_SINGLE_SEAT=1` (the new default since the IRESS prod
+ *      account has one licence seat) — no 2nd session is allowed.
+ *   3. Bring-up already failed and we're inside the failure backoff.
+ *
+ * Callers use this to decide whether to use the dedicated prod session
+ * (`md.client`) or fall through to `getIressClient("live")` + the orders
+ * session key. Under single-seat, `marketDataProdEnabled()` is always
+ * `false`, so the fall-through path is the only path.
+ */
+export function marketDataProdEnabled(): boolean {
+  if (singleSeatEnforced()) return false;
+  const v = (process.env.IRESS_MARKET_DATA_PROD ?? "0").trim().toLowerCase();
+  return v === "1" || v === "true";
 }
 
 /**
