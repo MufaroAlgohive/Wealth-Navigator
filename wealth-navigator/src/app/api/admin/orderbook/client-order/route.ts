@@ -218,7 +218,25 @@ export async function POST(req: Request) {
   // releaseOrder), when the cash/naked-short snapshot is actually current.
   // `uatTest` is derived from the deployment lane (`isUatEnv()`) so the
   // audit row accurately tags production orders vs UAT test orders.
-  const uatTest = isUatEnv();
+  // Classify the order owner, not only the deployment. The production OEM
+  // receives both real and UAT app orders, so a deployment-only decision leaks
+  // test-user orders into the Live book.
+  const [{ data: ownerProfile }, { data: testWallet }] = await Promise.all([
+    supabase.retail
+      .from("profiles")
+      .select("id, is_test")
+      .eq("id", holdingRow.user_id)
+      .maybeSingle(),
+    supabase.retail
+      .from("wallets")
+      .select("user_id")
+      .eq("user_id", holdingRow.user_id)
+      .eq("status", "test")
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  const ownerIsTest = ownerProfile?.is_test === true || Boolean(testWallet?.user_id);
+  const uatTest = isUatEnv() || ownerIsTest;
   const result = await parkOrder(
     supabase,
     {

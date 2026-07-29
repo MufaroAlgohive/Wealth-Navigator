@@ -280,6 +280,7 @@ export default function TeamPage() {
   const [invRole, setInvRole] = React.useState("staff");
   const [invPages, setInvPages] = React.useState<Set<string>>(new Set());
   const [busy, setBusy] = React.useState(false);
+  const [resendingId, setResendingId] = React.useState<string | null>(null);
 
   const openInvite = () => {
     setInvName(""); setInvEmail(""); setInvRole("staff"); setInvPages(new Set());
@@ -303,6 +304,32 @@ export default function TeamPage() {
       } else toast.error(d.error || "Failed to invite member");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const resendAccessEmail = async (member: Member) => {
+    setResendingId(member.id);
+    try {
+      const response = await fetch("/api/admin/team?action=resend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: member.id }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        toast.error(data.error || data.emailReason || "Could not send access email.");
+        return;
+      }
+      await loadTeam();
+      if (data.emailSent) {
+        toast.success(data.existingAccount ? "Password/access email sent." : "Invitation email sent.");
+      } else {
+        toast.error(data.emailReason || "Access link was created, but the email was not sent.");
+      }
+    } catch {
+      toast.error("Could not send access email.");
+    } finally {
+      setResendingId(null);
     }
   };
 
@@ -552,6 +579,15 @@ export default function TeamPage() {
                           <div className="flex flex-wrap items-center gap-1.5">
                             <Button variant="secondary" size="sm" className="h-7 px-2 text-[11px]" onClick={() => openEdit(m)}>Role</Button>
                             <Button variant="secondary" size="sm" className="h-7 px-2 text-[11px]" onClick={() => openPerms(m)}>Permissions</Button>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              className="h-7 px-2 text-[11px]"
+                              disabled={resendingId === m.id}
+                              onClick={() => void resendAccessEmail(m)}
+                            >
+                              {resendingId === m.id ? "Sending…" : "Send Access Email"}
+                            </Button>
                             {!m.email.endsWith("@mymint.co.za") && (
                               <Button variant="secondary" size="sm" className="h-7 px-2 text-[11px]" onClick={() => openEmail(m)}>Update Email</Button>
                             )}

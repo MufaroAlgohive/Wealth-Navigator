@@ -18,7 +18,7 @@ vi.mock("@/lib/admin/rbac", () => ({
 
 const ORIGINAL_ENV = { ...process.env };
 
-function makeMockSupabase(opts: { holdingUserId: string }) {
+function makeMockSupabase(opts: { holdingUserId: string; profileIsTest?: boolean; walletIsTest?: boolean }) {
   const client = {
     from: (table: string) => {
       const obj: Record<string, unknown> = {};
@@ -34,6 +34,25 @@ function makeMockSupabase(opts: { holdingUserId: string }) {
         obj.select = () => obj;
         obj.eq = () => obj;
         obj.maybeSingle = async () => ({ data: { id: "holding-1", user_id: opts.holdingUserId }, error: null });
+        return obj;
+      }
+      if (table === "profiles") {
+        obj.select = () => obj;
+        obj.eq = () => obj;
+        obj.maybeSingle = async () => ({
+          data: { id: opts.holdingUserId, is_test: opts.profileIsTest === true },
+          error: null,
+        });
+        return obj;
+      }
+      if (table === "wallets") {
+        obj.select = () => obj;
+        obj.eq = () => obj;
+        obj.limit = () => obj;
+        obj.maybeSingle = async () => ({
+          data: opts.walletIsTest ? { user_id: opts.holdingUserId } : null,
+          error: null,
+        });
         return obj;
       }
       throw new Error(`unexpected table ${table}`);
@@ -90,14 +109,36 @@ describe("client-order parking — no CLIENT-DATA GUARD", () => {
 
   it("still parks a genuine test-account holding (unchanged)", async () => {
     process.env.MINT_CLIENT_ORDER_SECRET = "test-secret";
-    const client = makeMockSupabase({ holdingUserId: "test-user-1" });
+    const client = makeMockSupabase({ holdingUserId: "test-user-1", profileIsTest: true });
+    let parkedAsUat = false;
     vi.doMock("@/lib/orders", () => ({
       openSupabaseClients: async () => ({ retail: client, institutional: client }),
-      parkOrder: async () => ({ ok: true, order_audit_id: "audit-1", order_id: "ORD-1" }),
+      parkOrder: async (_clients: unknown, _order: unknown, options: { uatTest: boolean }) => {
+        parkedAsUat = options.uatTest;
+        return { ok: true, order_audit_id: "audit-1", order_id: "ORD-1" };
+      },
     }));
 
     const res = await postClientOrder();
     expect(res.status).toBe(200);
+    expect(parkedAsUat).toBe(true);
+  });
+
+  it("parks a wallet-only test account on UAT in a production deployment", async () => {
+    process.env.MINT_CLIENT_ORDER_SECRET = "test-secret";
+    const client = makeMockSupabase({ holdingUserId: "wallet-test-user", walletIsTest: true });
+    let parkedAsUat = false;
+    vi.doMock("@/lib/orders", () => ({
+      openSupabaseClients: async () => ({ retail: client, institutional: client }),
+      parkOrder: async (_clients: unknown, _order: unknown, options: { uatTest: boolean }) => {
+        parkedAsUat = options.uatTest;
+        return { ok: true, order_audit_id: "audit-2", order_id: "ORD-2" };
+      },
+    }));
+
+    const res = await postClientOrder();
+    expect(res.status).toBe(200);
+    expect(parkedAsUat).toBe(true);
   });
 
   it("still requires the shared secret (or an admin session) regardless of guard removal", async () => {

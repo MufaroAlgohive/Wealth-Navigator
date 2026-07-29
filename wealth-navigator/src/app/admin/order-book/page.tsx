@@ -83,7 +83,8 @@ export default function OrderBookPage() {
             </div>
             <ExecutionView
               key={`orderbook-active-${activeEnvironment}`}
-              sources={activeEnvironment === "uat" ? ["UAT_ADHOC_ORDER"] : ["MINT_CLIENT_ORDER"]}
+              sources={activeEnvironment === "uat" ? ["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"] : ["MINT_CLIENT_ORDER"]}
+              scope={activeEnvironment}
             />
             {/* The archive is shared across order-entry lanes. Older books and
                 releases made through the desk/UAT routes do not carry the

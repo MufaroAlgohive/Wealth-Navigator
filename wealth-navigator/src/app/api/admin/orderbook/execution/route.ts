@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
+import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * GET /api/admin/orderbook/execution?book_id=...  OR  ?source=A,B
@@ -360,6 +360,8 @@ export async function GET(req: Request) {
   const sources = sourceParam
     ? sourceParam.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
+  const scopeParam = (url.searchParams.get("scope") ?? "").trim().toLowerCase();
+  const scope = scopeParam === "uat" ? "uat" : scopeParam === "live" ? "live" : null;
   // order_book_seq: fetch the member orders of one archived/released order book
   // (release-to-market stamps `payload.order_book_seq` on every released row).
   // Lets "Active Order Books" expand a book to show the actual orders in it,
@@ -423,7 +425,7 @@ export async function GET(req: Request) {
   }
 
   const all = (data ?? []) as AuditRow[];
-  const filtered =
+  const sourceFiltered =
     orderBookSeq != null
       ? all.filter((r) => Number((r.payload ?? {}).order_book_seq) === orderBookSeq)
       : sources.length > 0
@@ -437,6 +439,38 @@ export async function GET(req: Request) {
               );
             })
           : all;
+  // Reclassify legacy app rows from their durable retail owner flags. This
+  // immediately moves orders created before owner-based tagging was fixed
+  // (including Lulama's) without rewriting or deleting their audit history.
+  const testOwnerIds = new Set<string>();
+  if (scope != null) {
+    const ownerIds = [...new Set(sourceFiltered
+      .filter((r) => r.source === "MINT_CLIENT_ORDER")
+      .map((r) => String((r.payload ?? {}).user_id ?? ""))
+      .filter(Boolean))];
+    if (ownerIds.length > 0) {
+      try {
+        const retail = createRetailServiceRoleClient();
+        const [{ data: testProfiles }, { data: testWallets }] = await Promise.all([
+          retail.from("profiles").select("id").eq("is_test", true).in("id", ownerIds),
+          retail.from("wallets").select("user_id").eq("status", "test").in("user_id", ownerIds),
+        ]);
+        for (const row of testProfiles ?? []) if (row.id) testOwnerIds.add(String(row.id));
+        for (const row of testWallets ?? []) if (row.user_id) testOwnerIds.add(String(row.user_id));
+      } catch {
+        // The persisted payload flag remains the fail-safe when RETAIL is not configured.
+      }
+    }
+  }
+  const filtered = scope == null
+    ? sourceFiltered
+    : sourceFiltered.filter((r) => {
+        const payload = r.payload ?? {};
+        const ownerId = String(payload.user_id ?? "");
+        const isUat = payload.uat_test === true
+          || (r.source === "MINT_CLIENT_ORDER" && testOwnerIds.has(ownerId));
+        return scope === "uat" ? isUat : !isUat;
+      });
 
   const rows = filtered.map(mapRow);
   return NextResponse.json({ ok: true, rows, count: rows.length });
