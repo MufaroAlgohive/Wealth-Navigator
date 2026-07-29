@@ -67,7 +67,22 @@ export async function GET() {
     famIds.length ? db.from("family_members").select("id, first_name, last_name, computershare_number").in("id", famIds).then((r) => r.data ?? []) : [],
     userIds.length ? db.from("strategy_rebalance_residuals").select("user_id, strategy_id, family_member_id, balance_cents").in("user_id", userIds).then((r) => r.data ?? []) : [],
     userIds.length ? db.from("stock_holdings_c").select("user_id, family_member_id, strategy_id, quantity, avg_fill, avg_exit").eq("is_active", false).in("user_id", userIds).then((r) => r.data ?? []) : [],
-    userIds.length ? db.from("client_strategy_returns_c").select("user_id, strategy_id, as_of_date, basket_value, ytd_pct, inception_pct, inception_pnl").in("user_id", userIds).order("as_of_date", { ascending: true }).then((r) => r.data ?? []) : [],
+    userIds.length
+      ? db
+          .from("client_strategy_returns_effective_c")
+          .select(
+            'user_id, family_member_id, strategy_id, as_of_date, basket_value_cents, ytd_pct, inception_pct, inception_pnl_cents, "1d_pct"',
+          )
+          .in("user_id", userIds)
+          .order("as_of_date", { ascending: true })
+          .then((r) =>
+            (r.data ?? []).map((row) => ({
+              ...row,
+              basket_value: row.basket_value_cents,
+              inception_pnl: row.inception_pnl_cents,
+            })),
+          )
+      : [],
   ]);
 
   // Merge intraday (cents) over stock_returns_c current_price.

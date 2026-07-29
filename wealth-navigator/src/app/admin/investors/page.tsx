@@ -13,7 +13,7 @@ import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge"
 /* ── Types (raw payload) ── */
 interface Holding { user_id: string; family_member_id: string | null; security_id: string; strategy_id: string | null; quantity: number; avg_fill: number | null; Expected_fill: number | null; transaction_id?: string | null; }
 interface ClosedHolding { user_id: string; family_member_id?: string | null; strategy_id?: string | null; quantity: number; avg_fill: number | null; avg_exit: number | null; }
-interface NavRow { user_id: string; strategy_id?: string | null; as_of_date: string; basket_value: number | null; ytd_pct: number | null; inception_pct: number | null; inception_pnl: number | null; }
+interface NavRow { user_id: string; family_member_id?: string | null; strategy_id?: string | null; as_of_date: string; basket_value: number | null; ytd_pct: number | null; inception_pct: number | null; inception_pnl: number | null; "1d_pct"?: number | null; }
 interface Profile { id: string; first_name: string | null; last_name: string | null; email: string | null; mint_number: string | null; computershare_number: string | null; }
 interface FamilyMember { id: string; first_name: string | null; last_name: string | null; computershare_number: string | null; }
 interface SecMeta { id: string; symbol: string; name: string | null; sector: string | null; logo_url: string | null; }
@@ -165,7 +165,7 @@ export default function InvestorsPage() {
       bufferByUser[key] = (bufferByUser[key] || 0) + (bufferByTxnId[h.transaction_id] || 0);
     }
     const navByUser: Record<string, NavRow[]> = {};
-    for (const r of data.stratHist) (navByUser[scope(r.user_id,null,r.strategy_id)] ||= []).push(r);
+    for (const r of data.stratHist) (navByUser[scope(r.user_id,r.family_member_id,r.strategy_id)] ||= []).push(r);
     const txnByUser: Record<string, Txn[]> = {};
     for (const t of data.txns) (txnByUser[t.user_id] ||= []).push(t);
     const holdsByUser: Record<string, Holding[]> = {};
@@ -197,9 +197,14 @@ export default function InvestorsPage() {
       const valueCents = currentCents + residualCents + bufferCents;
       const pnlCents = currentCents - investedCents + realizedCents;
       const investedStableCents = valueCents - pnlCents;
-      const navKey=scope(userId,null,strategyId);
-      const nav = (navByUser[navKey] || []).filter((r) => r.basket_value != null).map((r) => ({ date: r.as_of_date, v: Number(r.basket_value) }));
-      const latestNav = (navByUser[navKey] || [])[(navByUser[navKey] || []).length - 1];
+      const navKey=scope(userId,familyMemberId,strategyId);
+      const canonicalRows = navByUser[navKey] || [];
+      // Plot the canonical chain-linked return, never absolute basket value:
+      // cash flows and rebalance composition changes are not performance.
+      const nav = canonicalRows
+        .filter((r) => r.inception_pct != null && Number.isFinite(Number(r.inception_pct)))
+        .map((r) => ({ date: r.as_of_date, v: Number(r.inception_pct) }));
+      const latestNav = canonicalRows[canonicalRows.length - 1];
       // Prefer the canonical published return (same field YTD reads) over the
       // self-computed live-price retPct below — mirrors MyMintAdmin's
       // investors.html, which prefers repairRow.gross_strategy_twr_pct and only
@@ -207,7 +212,7 @@ export default function InvestorsPage() {
       // this, the displayed "all-time" return ticks with every live price poll
       // and visibly disagrees with the fixed, once-daily-published YTD figure
       // shown right next to it on the same card.
-      const canonicalRetPct = latestNav?.inception_pct;
+      const canonicalRetPct = latestNav?.inception_pct ?? latestNav?.ytd_pct;
       const prof = profById.get(userId);
       const familyMember = familyMemberId ? familyById.get(familyMemberId) : null;
       const parentName = familyMember && prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0,8) : null;
@@ -295,7 +300,7 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
   const [year, setYear] = React.useState<number | null>(null);
   const activeYear = year ?? (years.length ? Number(years[0]) : null);
 
-  const navChart = inv.nav.map((p) => ({ date: p.date, value: Math.round(p.v / 100) }));
+  const navChart = inv.nav.map((p) => ({ date: p.date, value: p.v }));
   const sectors = React.useMemo(() => {
     const m: Record<string, number> = {};
     for (const h of inv.holdings) m[h.sector] = (m[h.sector] || 0) + h.valueCents;
@@ -318,6 +323,9 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
         </div>
         <div className="text-right">
           <div className="text-2xl font-bold text-foreground">{R(inv.valueCents)}</div>
+          <div className={cn("text-[11px] font-semibold", pctCls(inv.inceptionPct ?? inv.ytdPct))}>
+            {pctStr(inv.inceptionPct ?? inv.ytdPct)} all-time
+          </div>
           <div className="text-[11px] text-muted-foreground">Holdings {R(inv.currentCents)} · Residual {R(inv.residualCents)} · Reserve {R(inv.bufferCents)}</div>
         </div>
       </div>
@@ -345,7 +353,7 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={navChart} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
                   <XAxis dataKey="date" hide /><YAxis hide domain={["auto", "auto"]} />
-                  <Tooltip formatter={(v: number) => `R ${v.toLocaleString("en-ZA")}`} labelFormatter={(l) => String(l)} contentStyle={{ fontSize: 11 }} />
+                  <Tooltip formatter={(v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`} labelFormatter={(l) => String(l)} contentStyle={{ fontSize: 11 }} />
                   <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>

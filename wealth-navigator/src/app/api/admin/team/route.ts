@@ -38,23 +38,40 @@ async function sendInvite(
   req: Request,
   email: string,
   role: string,
-): Promise<{ emailSent: boolean; signupLink: string | null; emailReason: string | null }> {
+): Promise<{ emailSent: boolean; signupLink: string | null; emailReason: string | null; existingAccount: boolean; userId: string | null }> {
   const origin = new URL(req.url).origin;
-  const redirectTo = `${origin}/auth/callback?next=/signup`;
+  let existingUser: { id: string; email?: string } | null = null;
+  for (let page = 1; page <= 20 && !existingUser; page += 1) {
+    const { data, error } = await db.auth.admin.listUsers({ page, perPage: 100 });
+    if (error) break;
+    existingUser = data.users.find((user) => user.email?.toLowerCase() === email) ?? null;
+    if (data.users.length < 100) break;
+  }
+  const linkType = existingUser ? "recovery" : "invite";
+  const next = existingUser ? "/reset-password" : "/signup";
   let link: string | null = null;
   try {
-    const { data, error } = await db.auth.admin.generateLink({ type: "invite", email, options: { redirectTo } });
+    const { data, error } = await db.auth.admin.generateLink({ type: linkType, email });
     if (error) throw error;
-    link = (data as { properties?: { action_link?: string } } | null)?.properties?.action_link ?? null;
+    const properties = (data as { properties?: { hashed_token?: string } } | null)?.properties;
+    if (properties?.hashed_token) {
+      link = `${origin}/auth/confirm?token_hash=${encodeURIComponent(properties.hashed_token)}&type=${linkType}&next=${encodeURIComponent(next)}`;
+    }
   } catch (e) {
-    return { emailSent: false, signupLink: null, emailReason: `Could not generate invite link: ${(e as Error).message}` };
+    return { emailSent: false, signupLink: null, emailReason: `Could not generate access link: ${(e as Error).message}`, existingAccount: !!existingUser, userId: existingUser?.id ?? null };
   }
-  if (!link) return { emailSent: false, signupLink: null, emailReason: "No invite link generated" };
+  if (!link) return { emailSent: false, signupLink: null, emailReason: "No access link generated", existingAccount: !!existingUser, userId: existingUser?.id ?? null };
   try {
-    await sendEmail({ to: email, subject: "You're invited to the Mint Admin team", html: buildInviteHtml({ link, role }), emailType: "admin_invite", source: "team-invite" });
-    return { emailSent: true, signupLink: link, emailReason: null };
+    await sendEmail({
+      to: email,
+      subject: existingUser ? "Restore your Mint Admin access" : "You're invited to the Mint Admin team",
+      html: buildInviteHtml({ link, role }),
+      emailType: existingUser ? "admin_access_restore" : "admin_invite",
+      source: existingUser ? "team-reinvite" : "team-invite",
+    });
+    return { emailSent: true, signupLink: link, emailReason: null, existingAccount: !!existingUser, userId: existingUser?.id ?? null };
   } catch (e) {
-    return { emailSent: false, signupLink: link, emailReason: (e as Error).message };
+    return { emailSent: false, signupLink: link, emailReason: (e as Error).message, existingAccount: !!existingUser, userId: existingUser?.id ?? null };
   }
 }
 
@@ -143,6 +160,12 @@ export async function POST(req: Request) {
       .upsert({ email, full_name, role, page_access, status: "pending" }, { onConflict: "email" });
     if (error) return NextResponse.json({ ok: false, error: error.message });
     const invite = await sendInvite(db, req, email, role);
+    if (invite.existingAccount && invite.userId) {
+      await db
+        .from("admin_team")
+        .update({ user_id: invite.userId, status: "active" })
+        .ilike("email", email);
+    }
     await writeAudit(db, { action: "invite", target_email: email, actor_email: ctx!.email, details: { role, page_access, email_sent: invite.emailSent } });
     return NextResponse.json({ ok: true, ...invite });
   }
@@ -153,6 +176,9 @@ export async function POST(req: Request) {
     const { data: m } = await db.from("admin_team").select("email, role").eq("id", id).maybeSingle();
     if (!m?.email) return NextResponse.json({ ok: false, error: "Member not found" }, { status: 404 });
     const invite = await sendInvite(db, req, m.email as string, (m.role as string) || "staff");
+    if (invite.existingAccount && invite.userId) {
+      await db.from("admin_team").update({ user_id: invite.userId, status: "active" }).eq("id", id);
+    }
     return NextResponse.json({ ok: true, ...invite });
   }
 
