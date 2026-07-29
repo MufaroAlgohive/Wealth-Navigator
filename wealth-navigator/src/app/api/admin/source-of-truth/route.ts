@@ -15,9 +15,19 @@ export const maxDuration = 300;
 
 type Db = ReturnType<typeof createRetailServiceRoleClient>;
 type Row = Record<string, unknown>;
+type SurfaceCheck = {
+  surface: string;
+  status: "ok" | "warning" | "urgent";
+  latencyMs: number;
+  actual: string;
+  expected: string;
+  difference?: string;
+  evidence: string[];
+};
 
 const num = (value: unknown) => (Number.isFinite(Number(value)) ? Number(value) : 0);
 const text = (value: unknown) => String(value ?? "").trim();
+const moneyText = (cents: number) => `R ${(cents / 100).toFixed(2)}`;
 const ownerKey = (userId: unknown, familyId: unknown, strategyId: unknown) =>
   `${text(userId)}:${text(familyId)}:${text(strategyId)}`;
 const chained = (rows: Row[]) =>
@@ -378,7 +388,7 @@ async function clientTruth(db: Db, userId: string) {
     };
   });
   return {
-    kind: "client",
+    kind: "client" as const,
     generatedAt: new Date().toISOString(),
     provider: "Yahoo Finance live chart API",
     profile,
@@ -458,7 +468,7 @@ async function strategyTruth(db: Db, strategyId: string) {
   };
   const severity = classifyDifference(differences.completeCents, num(canonical?.complete_value_cents));
   return {
-    kind: "strategy",
+    kind: "strategy" as const,
     generatedAt: new Date().toISOString(),
     provider: "Yahoo Finance live chart API",
     strategy,
@@ -544,7 +554,7 @@ async function generalTruth(db: Db) {
     ),
   ];
   return {
-    kind: "general",
+    kind: "general" as const,
     startedAt,
     generatedAt: new Date().toISOString(),
     auditedClients: clientIds.length,
@@ -556,6 +566,247 @@ async function generalTruth(db: Db) {
       ok: findings.filter((row) => row.severity === "ok").length,
     },
   };
+}
+
+async function probeJson(
+  req: Request,
+  path: string,
+): Promise<{ ok: boolean; status: number; latencyMs: number; body: Row; error?: string }> {
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25_000);
+  try {
+    const response = await fetch(new URL(path, req.url), {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: { cookie: req.headers.get("cookie") ?? "" },
+    });
+    const body = (await response.json().catch(() => ({}))) as Row;
+    return { ok: response.ok, status: response.status, latencyMs: Date.now() - started, body };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      latencyMs: Date.now() - started,
+      body: {},
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function auditSurfaces(
+  req: Request,
+  truth: Awaited<
+    ReturnType<typeof clientTruth> | ReturnType<typeof strategyTruth> | ReturnType<typeof generalTruth>
+  >,
+): Promise<SurfaceCheck[]> {
+  const strategyId =
+    truth.kind === "strategy"
+      ? text(truth.strategy.id)
+      : truth.kind === "client"
+        ? text(truth.positions[0]?.strategyId)
+        : "";
+  const clientId = truth.kind === "client" ? text(truth.profile.id) : "";
+  const factsheetPath = strategyId
+    ? `/api/admin/factsheets?action=detail&id=${encodeURIComponent(strategyId)}`
+    : "/api/admin/factsheets?action=list";
+  const [strategyPage, factsheet, investors, iress] = await Promise.all([
+    probeJson(req, "/api/strategies?part=core"),
+    probeJson(req, factsheetPath),
+    probeJson(req, "/api/admin/investors/data"),
+    probeJson(req, "/api/iress/health"),
+  ]);
+  const checks: SurfaceCheck[] = [];
+  const strategyRows = Array.isArray(strategyPage.body.strategies)
+    ? (strategyPage.body.strategies as Row[])
+    : [];
+  const strategyPageRow = strategyRows.find((row) => text(row.id) === strategyId);
+  const strategyVisible = !strategyId || Boolean(strategyPageRow);
+  const expectedYtd =
+    truth.kind === "strategy"
+      ? num(truth.canonical?.ytd_pct)
+      : truth.kind === "client"
+        ? num(truth.positions[0]?.returns.ytdPct)
+        : null;
+  const strategyYtdDifference =
+    expectedYtd == null || !strategyPageRow ? null : num(strategyPageRow.ytd) - expectedYtd;
+  const strategyValueMismatch = strategyYtdDifference != null && Math.abs(strategyYtdDifference) > 0.01;
+  checks.push({
+    surface: "Strategy page",
+    status:
+      !strategyPage.ok || !strategyVisible || strategyValueMismatch
+        ? "urgent"
+        : strategyPage.latencyMs > 10_000
+          ? "warning"
+          : "ok",
+    latencyMs: strategyPage.latencyMs,
+    actual: strategyPage.ok
+      ? `${strategyRows.length} strategy records; source ${text(strategyPage.body.source) || "unknown"}`
+      : `HTTP ${strategyPage.status}`,
+    expected: strategyId
+      ? `Strategy ${strategyId} must be present with canonical return and CA inputs`
+      : "All live strategies must load",
+    difference: !strategyVisible
+      ? "Selected strategy is absent from the page API"
+      : strategyValueMismatch
+        ? `Page YTD differs from canonical by ${strategyYtdDifference?.toFixed(4)} percentage points`
+        : "Selected strategy and YTD agree with the effective canonical contract",
+    evidence: [
+      "endpoint=/api/strategies?part=core",
+      `selected_strategy_present=${strategyVisible}`,
+      `page_ytd=${strategyPageRow?.ytd ?? "n/a"}`,
+      `expected_ytd=${expectedYtd ?? "n/a"}`,
+      `latency_ms=${strategyPage.latencyMs}`,
+      ...(strategyPage.error ? [`error=${strategyPage.error}`] : []),
+    ],
+  });
+  const factsheetOk = factsheet.ok && factsheet.body.ok !== false;
+  const factsheetStrategy = factsheet.body.strategy as Row | undefined;
+  const factsheetVisible = !strategyId || text(factsheetStrategy?.id) === strategyId;
+  const factsheetReturns = Array.isArray(factsheet.body.returns) ? (factsheet.body.returns as Row[]) : [];
+  const factsheetLatest = factsheetReturns.at(-1);
+  const factsheetYtdDifference =
+    expectedYtd == null || !factsheetLatest ? null : num(factsheetLatest.ytd_pct) - expectedYtd;
+  const expectedStrategyCa = truth.kind === "strategy" ? num(truth.canonical?.continuity_cash_cents) : null;
+  const factsheetCash = factsheet.body.cashAsset as Row | undefined;
+  const factsheetCaCents = factsheetCash ? num(factsheetCash.value) * 100 : null;
+  const factsheetValueMismatch =
+    (factsheetYtdDifference != null && Math.abs(factsheetYtdDifference) > 0.01) ||
+    (expectedStrategyCa != null &&
+      factsheetCaCents != null &&
+      Math.abs(factsheetCaCents - expectedStrategyCa) > 1);
+  checks.push({
+    surface: "Factsheet",
+    status:
+      !factsheetOk || !factsheetVisible || factsheetValueMismatch
+        ? "urgent"
+        : factsheet.latencyMs > 10_000
+          ? "warning"
+          : "ok",
+    latencyMs: factsheet.latencyMs,
+    actual: factsheetOk
+      ? strategyId
+        ? `Strategy ${text(factsheetStrategy?.id)}; ${(factsheet.body.returns as unknown[] | undefined)?.length ?? 0} canonical history rows`
+        : `${(factsheet.body.strategies as unknown[] | undefined)?.length ?? 0} strategies`
+      : `HTTP ${factsheet.status}`,
+    expected: "Effective canonical return history, strategy CA, securities and real investors",
+    difference: !factsheetVisible
+      ? "Selected strategy detail is missing"
+      : factsheetValueMismatch
+        ? `Mismatch: YTD delta ${factsheetYtdDifference?.toFixed(4) ?? "n/a"} pp; CA delta ${
+            expectedStrategyCa == null || factsheetCaCents == null
+              ? "n/a"
+              : moneyText(factsheetCaCents - expectedStrategyCa)
+          }`
+        : "Factsheet YTD and strategy CA agree with canonical truth",
+    evidence: [
+      `endpoint=${factsheetPath}`,
+      `selected_strategy_present=${factsheetVisible}`,
+      `cash_asset_present=${Boolean(factsheet.body.cashAsset)}`,
+      `factsheet_ytd=${factsheetLatest?.ytd_pct ?? "n/a"}`,
+      `expected_ytd=${expectedYtd ?? "n/a"}`,
+      `factsheet_ca_cents=${factsheetCaCents ?? "n/a"}`,
+      `expected_ca_cents=${expectedStrategyCa ?? "n/a"}`,
+      `latency_ms=${factsheet.latencyMs}`,
+      ...(factsheet.error ? [`error=${factsheet.error}`] : []),
+    ],
+  });
+  const investorHoldings = Array.isArray(investors.body.holdings) ? (investors.body.holdings as Row[]) : [];
+  const investorVisible = !clientId || investorHoldings.some((row) => text(row.user_id) === clientId);
+  const investorHistory = Array.isArray(investors.body.stratHist)
+    ? (investors.body.stratHist as Row[]).filter(
+        (row) =>
+          (!clientId || text(row.user_id) === clientId) &&
+          (!strategyId || text(row.strategy_id) === strategyId),
+      )
+    : [];
+  const investorLatest = investorHistory
+    .sort((a, b) => text(a.as_of_date).localeCompare(text(b.as_of_date)))
+    .at(-1);
+  const expectedClientValue = truth.kind === "client" ? num(truth.positions[0]?.canonicalValueCents) : null;
+  const investorValueDifference =
+    expectedClientValue == null || !investorLatest
+      ? null
+      : num(investorLatest.basket_value_cents ?? investorLatest.basket_value) - expectedClientValue;
+  const investorValueMismatch = investorValueDifference != null && Math.abs(investorValueDifference) > 1;
+  checks.push({
+    surface: "Investors",
+    status:
+      !investors.ok || !investorVisible || investorValueMismatch
+        ? "urgent"
+        : investors.latencyMs > 10_000
+          ? "warning"
+          : "ok",
+    latencyMs: investors.latencyMs,
+    actual: investors.ok
+      ? `${investorHoldings.length} active holding rows; ${(investors.body.stratHist as unknown[] | undefined)?.length ?? 0} canonical history rows`
+      : `HTTP ${investors.status}`,
+    expected: clientId
+      ? `Client ${clientId} holdings and effective return history must be present`
+      : "All real invested clients must load",
+    difference: !investorVisible
+      ? "Selected client is absent from Investors data"
+      : investorValueMismatch
+        ? `Investors page contract differs from canonical by ${moneyText(investorValueDifference ?? 0)}`
+        : "Selected client value agrees with canonical truth",
+    evidence: [
+      "endpoint=/api/admin/investors/data",
+      `selected_client_present=${investorVisible}`,
+      `investors_value_cents=${investorLatest?.basket_value_cents ?? investorLatest?.basket_value ?? "n/a"}`,
+      `expected_value_cents=${expectedClientValue ?? "n/a"}`,
+      `latency_ms=${investors.latencyMs}`,
+      ...(investors.error ? [`error=${investors.error}`] : []),
+    ],
+  });
+  const iressHealthy = iress.ok && iress.body.ok === true;
+  checks.push({
+    surface: "IRESS",
+    status: iressHealthy ? (text(iress.body.mode) === "mock" ? "warning" : "ok") : "urgent",
+    latencyMs: iress.latencyMs,
+    actual: iressHealthy
+      ? `${text(iress.body.mode)} mode; session ${iress.body.sessionStarted ? "started" : "not started"}`
+      : text(iress.body.error) || `HTTP ${iress.status}`,
+    expected: "Live mode with a valid authenticated service session",
+    difference:
+      text(iress.body.mode) === "mock" ? "Mock mode does not prove live IRESS connectivity" : undefined,
+    evidence: [
+      "endpoint=/api/iress/health",
+      `mode=${text(iress.body.mode)}`,
+      `session_started=${Boolean(iress.body.sessionStarted)}`,
+      `latency_ms=${iress.latencyMs}`,
+      ...(iress.error ? [`error=${iress.error}`] : []),
+    ],
+  });
+  const yahooEvidence =
+    truth.kind === "client"
+      ? truth.positions.flatMap((position) => position.holdings.map((holding) => holding.quote))
+      : truth.kind === "strategy"
+        ? truth.holdings.map((holding) => holding.quote)
+        : [];
+  checks.push({
+    surface: "Yahoo Finance",
+    status:
+      truth.kind === "general"
+        ? truth.summary.urgent > 0
+          ? "warning"
+          : "ok"
+        : yahooEvidence.length
+          ? "ok"
+          : "urgent",
+    latencyMs: 0,
+    actual:
+      truth.kind === "general"
+        ? `Used by ${truth.auditedClients} client and ${truth.auditedStrategies} strategy audits`
+        : `${yahooEvidence.length} fresh quote records`,
+    expected: "Every priced holding must have a positive no-cache quote and exchange timestamp",
+    evidence:
+      yahooEvidence.length > 0
+        ? yahooEvidence.map((quote) => `${quote.yahooSymbol}@${quote.exchangeTime}`).slice(0, 50)
+        : ["General audit quote failures are surfaced as Urgent entity findings"],
+  });
+  return checks;
 }
 
 export async function GET() {
@@ -582,12 +833,13 @@ export async function POST(req: Request) {
   }
   try {
     const id = body.id ?? "";
-    const truth =
+    const calculated =
       body.kind === "general"
         ? await generalTruth(access.db)
         : body.kind === "client"
           ? await clientTruth(access.db, id)
           : await strategyTruth(access.db, id);
+    const truth = { ...calculated, surfaceChecks: await auditSurfaces(req, calculated) };
     return NextResponse.json({ ok: true, truth });
   } catch (error) {
     return NextResponse.json(

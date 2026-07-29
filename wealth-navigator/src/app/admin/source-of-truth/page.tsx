@@ -69,6 +69,15 @@ type LiveHolding = {
   formula: string;
   quote: Quote;
 };
+type SurfaceCheck = {
+  surface: string;
+  status: "ok" | "warning" | "urgent";
+  latencyMs: number;
+  actual: string;
+  expected: string;
+  difference?: string;
+  evidence: string[];
+};
 type TruthPosition = {
   key: string;
   strategy: string;
@@ -125,6 +134,7 @@ type ClientTruth = {
     reserveConsumedCents: number;
     reversed?: boolean;
   }>;
+  surfaceChecks: SurfaceCheck[];
 };
 type StrategyTruth = {
   kind: "strategy";
@@ -152,6 +162,7 @@ type StrategyTruth = {
     ytdPct: number;
     allTimePct: number;
   }>;
+  surfaceChecks: SurfaceCheck[];
 };
 type GeneralTruth = {
   kind: "general";
@@ -167,6 +178,7 @@ type GeneralTruth = {
     differenceCents: number;
     message: string;
   }>;
+  surfaceChecks: SurfaceCheck[];
 };
 type Truth = ClientTruth | StrategyTruth | GeneralTruth;
 
@@ -574,6 +586,73 @@ function DeveloperLog({ lines }: { lines: string[] }) {
   );
 }
 
+function SurfaceMatrix({ checks }: { checks: SurfaceCheck[] }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-black/10 p-3">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <div className="text-sm font-semibold">Live surface accuracy matrix</div>
+          <div className="text-xs text-muted-foreground">
+            What each page/provider is showing versus what its contract must supply
+          </div>
+        </div>
+        <div className="flex gap-1">
+          {checks.map((check) => (
+            <span
+              key={check.surface}
+              title={`${check.surface}: ${check.status}`}
+              className={`h-3 w-3 rounded-full ${
+                check.status === "ok"
+                  ? "bg-emerald-400"
+                  : check.status === "warning"
+                    ? "bg-amber-400"
+                    : "animate-pulse bg-red-500"
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[620px] text-xs">
+          <thead className="border-b border-white/10 text-left text-[10px] uppercase text-muted-foreground">
+            <tr>
+              <th className="p-2">Surface</th>
+              <th className="p-2">Now showing</th>
+              <th className="p-2">Should show</th>
+              <th className="p-2">Result</th>
+              <th className="p-2">Latency</th>
+            </tr>
+          </thead>
+          <tbody>
+            {checks.map((check) => (
+              <tr key={check.surface} className="border-b border-white/5 align-top">
+                <td className="p-2 font-semibold">{check.surface}</td>
+                <td className="p-2">{check.actual}</td>
+                <td className="p-2 text-muted-foreground">{check.expected}</td>
+                <td className="p-2">
+                  <StatusLight severity={check.status} />
+                  {check.difference && <div className="mt-1 max-w-48 text-red-300">{check.difference}</div>}
+                </td>
+                <td className="p-2 tabular-nums">{check.latencyMs ? `${check.latencyMs} ms` : "inline"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <details className="mt-3 rounded-lg border border-white/10 p-2">
+        <summary className="cursor-pointer font-mono text-[10px] text-cyan-300">
+          Surface probe evidence
+        </summary>
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-cyan-100/70">
+          {checks
+            .flatMap((check) => [`[${check.surface}] status=${check.status}`, ...check.evidence])
+            .join("\n")}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
 function TruthResult({ truth }: { truth: Truth }) {
   if (truth.kind === "general") {
     const order = { urgent: 0, warning: 1, ok: 2 };
@@ -607,6 +686,7 @@ function TruthResult({ truth }: { truth: Truth }) {
               </div>
             ))}
         </div>
+        <SurfaceMatrix checks={truth.surfaceChecks} />
         <DeveloperLog
           lines={[
             `generated_at=${truth.generatedAt}`,
@@ -629,6 +709,7 @@ function TruthResult({ truth }: { truth: Truth }) {
           <StatusLight severity={truth.severity} />
         </div>
         <ReturnStrip returns={truth.returns} />
+        <SurfaceMatrix checks={truth.surfaceChecks} />
         <div className="grid grid-cols-2 gap-2">
           <Stat label="Live securities" value={money(truth.live.securitiesCents)} />
           <Stat
@@ -719,6 +800,7 @@ function TruthResult({ truth }: { truth: Truth }) {
         <Stat label="Residual / CA" value={money(t.residualCents)} className="text-emerald-400" />
         <Stat label="Reserve / liability" value={`${money(t.reserveCents)} / ${money(t.liabilityCents)}`} />
       </div>
+      <SurfaceMatrix checks={truth.surfaceChecks} />
       <div className="h-60 rounded-xl border border-white/10 p-3">
         <div className="text-xs font-semibold">Every cent of live value</div>
         <ResponsiveContainer width="100%" height="90%">
