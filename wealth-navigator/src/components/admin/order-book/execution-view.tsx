@@ -1111,7 +1111,7 @@ function GroupRow({
 // open-ended, but these two sentinel labels are fixed regardless.
 const RAW_BOOK_IDS = ["UAT-ADHOC", "CLIENT-BUY"];
 
-export function ExecutionView({ sources }: { sources: string[] }) {
+export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "live" | "uat" }) {
   // 2026-07-23: fetch by SOURCE, not book_id — book_id/strategy is open-
   // ended (any basket's display name), so a fixed list of book ids to poll
   // can never cover a new strategy. `source` is a small, stable dimension
@@ -1119,9 +1119,10 @@ export function ExecutionView({ sources }: { sources: string[] }) {
   // every current AND future strategy's orders in ONE query with zero code
   // change when a new basket is bought. See execution/route.ts.
   const sourceParam = sources.join(",");
+  const scopeParam = scope ? `&scope=${scope}` : "";
   const executions = usePolling<ExecutionPayload>(
-    `/api/admin/orderbook/execution?source=${encodeURIComponent(sourceParam)}`,
-    { interval: 2_000, deps: [sourceParam] },
+    `/api/admin/orderbook/execution?source=${encodeURIComponent(sourceParam)}${scopeParam}`,
+    { interval: 2_000, deps: [sourceParam, scope] },
   );
 
   // CRM-style order-book numbering (2026-07-23). Books change far less

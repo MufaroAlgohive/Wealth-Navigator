@@ -103,6 +103,36 @@ describe("GET /api/admin/orderbook/execution?source=", () => {
     expect(body.rows.map((r) => r.strategy).sort()).toEqual(["UAT-ADHOC", "Yield Basket"]);
   });
 
+  it("keeps MINT app orders exclusive to their requested Live/UAT scope", async () => {
+    const mock = makeMockSupabase([
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "Live Basket", uat_test: false } },
+      { source: "MINT_CLIENT_ORDER", payload: { strategy: "UAT Basket", uat_test: false, user_id: "test-user" } },
+    ]);
+    const retail = {
+      from: (table: string) => ({
+        select: () => ({
+          eq: () => ({
+            in: async () => ({
+              data: table === "profiles" ? [{ id: "test-user" }] : [{ user_id: "test-user" }],
+              error: null,
+            }),
+          }),
+        }),
+      }),
+    } as unknown as SupabaseClient;
+    vi.doMock("@/lib/supabase/server", () => ({
+      createInstitutionalServiceRoleClient: () => mock.client,
+      createRetailServiceRoleClient: () => retail,
+    }));
+
+    const { GET } = await import("@/app/api/admin/orderbook/execution/route");
+    const res = await GET(new Request("http://x/execution?source=MINT_CLIENT_ORDER&scope=uat"));
+    const body = (await res.json()) as { ok: boolean; rows: Array<{ strategy: string | null }> };
+
+    expect(body.ok).toBe(true);
+    expect(body.rows.map((row) => row.strategy)).toEqual(["UAT Basket"]);
+  });
+
   it("default (active) view hides cancelled orders from the blotter", async () => {
     const mock = makeMockSupabase([
       { source: "MINT_CLIENT_ORDER", payload: { strategy: "Yield Basket" }, status: "working" },
