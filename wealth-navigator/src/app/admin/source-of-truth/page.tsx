@@ -1,10 +1,21 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, DatabaseZap, Download, RefreshCw, Search } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  DatabaseZap,
+  Download,
+  RefreshCw,
+  Search,
+  Sparkles,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
   Cell,
   Legend,
@@ -286,6 +297,44 @@ export default function SourceOfTruthPage() {
     );
   }, [mode, positions, query, strategies]);
 
+  const preflight = useMemo(() => {
+    const now = Date.now();
+    const enriched = positions.map((row) => {
+      const equationCents =
+        Number(row.securitiesCents) +
+        Number(row.residualCents) +
+        Number(row.reserveCents) -
+        Number(row.liabilityCents);
+      const differenceCents = equationCents - Number(row.currentCents);
+      const ageDays = row.asOf ? Math.floor((now - new Date(row.asOf).getTime()) / 86_400_000) : 999;
+      return { ...row, differenceCents, ageDays };
+    });
+    const warnings = enriched.filter((row) => Math.abs(row.differenceCents) > 1 || row.ageDays > 3);
+    const uniqueClients = new Set(positions.map((row) => row.userId)).size;
+    const strategyExposure = new Map<string, number>();
+    for (const row of positions) {
+      strategyExposure.set(
+        row.strategy,
+        (strategyExposure.get(row.strategy) ?? 0) + Number(row.currentCents),
+      );
+    }
+    return {
+      uniqueClients,
+      warnings,
+      stale: enriched.filter((row) => row.ageDays > 3).length,
+      currentCents: positions.reduce((sum, row) => sum + Number(row.currentCents), 0),
+      residualCents: positions.reduce((sum, row) => sum + Number(row.residualCents), 0),
+      reserveCents: positions.reduce((sum, row) => sum + Number(row.reserveCents), 0),
+      topAffected: [...warnings]
+        .sort(
+          (a, b) =>
+            Math.abs(b.differenceCents) + b.ageDays * 100 - (Math.abs(a.differenceCents) + a.ageDays * 100),
+        )
+        .slice(0, 5),
+      strategyExposure: [...strategyExposure].map(([name, cents]) => ({ name, cents })),
+    };
+  }, [positions]);
+
   const runTruth = async (general = false) => {
     if (!general && !selected) return;
     setRunning(true);
@@ -337,8 +386,140 @@ export default function SourceOfTruthPage() {
         </div>
       </header>
 
-      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_680px]">
-        <section className="min-w-0 rounded-2xl border border-white/10 bg-card/70">
+      <section className="relative overflow-hidden rounded-2xl border border-violet-400/20 bg-card/70 p-4">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px animate-pulse bg-gradient-to-r from-transparent via-cyan-300 to-transparent" />
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Sparkles className="h-4 w-4 text-cyan-300" />
+              Canonical command centre
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Immediate preflight from stored canonical records. Run health audit for live Yahoo, IRESS and
+              page-contract verification.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="relative flex h-3 w-3">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-50" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-emerald-400" />
+            </span>
+            Canonical index loaded
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          {[
+            ["Invested clients", String(preflight.uniqueClients), "text-cyan-300"],
+            ["Strategy positions", String(positions.length), "text-violet-300"],
+            ["Canonical book", money(preflight.currentCents), ""],
+            ["CA / residual", money(preflight.residualCents), "text-emerald-400"],
+            ["Execution reserve", money(preflight.reserveCents), "text-sky-300"],
+            [
+              "Preflight flags",
+              String(preflight.warnings.length),
+              preflight.warnings.length ? "text-red-400" : "text-emerald-400",
+            ],
+          ].map(([label, value, colour]) => (
+            <div
+              key={label}
+              className="group rounded-xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-transparent p-4 transition-all duration-300 hover:-translate-y-1 hover:border-violet-400/35 hover:shadow-[0_12px_40px_-20px_rgba(139,92,246,.8)]"
+            >
+              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                {label}
+              </div>
+              <div className={`mt-2 text-xl font-semibold tabular-nums ${colour}`}>{value}</div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(360px,.85fr)]">
+        <details open className="group rounded-2xl border border-white/10 bg-card/70">
+          <summary className="flex cursor-pointer list-none items-center justify-between p-4">
+            <div>
+              <div className="font-semibold">Book exposure</div>
+              <div className="text-xs text-muted-foreground">Canonical value by invested strategy</div>
+            </div>
+            <ChevronDown className="h-4 w-4 transition-transform duration-300 group-open:rotate-180" />
+          </summary>
+          <div className="h-72 border-t border-white/10 p-4">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={preflight.strategyExposure}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" />
+                <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={(value) => `R${Math.round(value / 100)}`} />
+                <Tooltip formatter={(value) => money(Number(value))} />
+                <Bar
+                  dataKey="cents"
+                  name="Canonical value"
+                  fill="#8b5cf6"
+                  radius={[6, 6, 0, 0]}
+                  animationDuration={1200}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </details>
+
+        <details open className="group rounded-2xl border border-white/10 bg-card/70">
+          <summary className="flex cursor-pointer list-none items-center justify-between p-4">
+            <div>
+              <div className="flex items-center gap-2 font-semibold">
+                Preflight watchlist
+                <span
+                  className={`rounded-full px-2 py-0.5 text-xs ${preflight.warnings.length ? "bg-red-500/15 text-red-300" : "bg-emerald-500/15 text-emerald-300"}`}
+                >
+                  {preflight.warnings.length}
+                </span>
+              </div>
+              <div className="text-xs text-muted-foreground">Most affected clients before a live run</div>
+            </div>
+            <ChevronDown className="h-4 w-4 transition-transform duration-300 group-open:rotate-180" />
+          </summary>
+          <div className="space-y-2 border-t border-white/10 p-4">
+            {preflight.topAffected.length ? (
+              preflight.topAffected.map((row) => (
+                <button
+                  type="button"
+                  key={row.key}
+                  onClick={() => {
+                    setMode("client");
+                    setSelected({ id: row.userId, label: row.client });
+                  }}
+                  className="flex w-full items-center justify-between rounded-xl border border-red-400/15 bg-red-500/[0.06] p-3 text-left transition hover:border-red-400/35 hover:bg-red-500/10"
+                >
+                  <div>
+                    <div className="text-sm font-medium">{row.client}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {row.strategy} · canonical age {row.ageDays}d
+                    </div>
+                  </div>
+                  <div className="text-right text-xs text-red-300">
+                    <div>{money(row.differenceCents)} equation delta</div>
+                    <div>Inspect →</div>
+                  </div>
+                </button>
+              ))
+            ) : (
+              <div className="rounded-xl border border-emerald-400/15 bg-emerald-400/[0.06] p-6 text-center text-sm text-emerald-300">
+                No canonical equation or freshness flags. Run the live audit to verify providers.
+              </div>
+            )}
+          </div>
+        </details>
+      </div>
+
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <details open className="group min-w-0 rounded-2xl border border-white/10 bg-card/70">
+          <summary className="flex cursor-pointer list-none items-center justify-between border-b border-white/10 p-4">
+            <div>
+              <div className="font-semibold">Invested book directory</div>
+              <div className="text-xs text-muted-foreground">
+                Select a client or strategy for forensic truth
+              </div>
+            </div>
+            <ChevronDown className="h-4 w-4 transition-transform duration-300 group-open:rotate-180" />
+          </summary>
           <div className="flex flex-col gap-3 border-b border-white/10 p-4 md:flex-row md:items-center md:justify-between">
             <div className="flex rounded-lg border border-white/10 bg-black/15 p-1">
               {(["client", "strategy"] as const).map((item) => (
@@ -457,7 +638,7 @@ export default function SourceOfTruthPage() {
               </table>
             )}
           </div>
-        </section>
+        </details>
 
         <aside className="rounded-2xl border border-violet-400/20 bg-card p-4 xl:sticky xl:top-4">
           <div className="flex items-center justify-between gap-3">
@@ -482,9 +663,37 @@ export default function SourceOfTruthPage() {
               {error}
             </div>
           )}
-          {truth && <TruthResult truth={truth} />}
+          {truth && (
+            <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-3 text-xs text-emerald-300">
+              Truth run complete. The full forensic report is open below.
+            </div>
+          )}
         </aside>
       </div>
+
+      {truth && (
+        <details
+          open
+          className="group overflow-hidden rounded-2xl border border-violet-400/25 bg-card/80 shadow-[0_24px_80px_-45px_rgba(139,92,246,.9)]"
+        >
+          <summary className="flex cursor-pointer list-none items-center justify-between bg-gradient-to-r from-violet-500/10 to-cyan-500/5 p-5">
+            <div>
+              <div className="flex items-center gap-2 font-semibold">
+                <Sparkles className="h-4 w-4 animate-pulse text-cyan-300" />
+                Live forensic report
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {truth.kind === "general" ? "Whole-book health audit" : selected?.label} · generated{" "}
+                {when(truth.generatedAt)}
+              </div>
+            </div>
+            <ChevronDown className="h-5 w-5 transition-transform duration-300 group-open:rotate-180" />
+          </summary>
+          <div className="border-t border-white/10 p-4 md:p-5">
+            <TruthResult truth={truth} />
+          </div>
+        </details>
+      )}
     </main>
   );
 }
