@@ -3,12 +3,23 @@
  *
  * The worker runs ORDERS on the UAT endpoint (MINT_CT) through the main
  * `WorkerSessionManager`, which this module NEVER touches. When
- * `IRESS_MARKET_DATA_PROD=1`, market-data reads (quotes / timeseries / news)
- * instead use a SECOND IRESSSession opened against the PRODUCTION endpoint,
- * with its OWN client, its OWN stable ApplicationID (distinct from the orders
- * seat so the two never kick each other), and graceful failure: on any error
- * (no seat / not entitled / network) it returns null and callers fall back to
- * their existing Yahoo / UAT behaviour. Orders are never affected.
+ * `IRESS_MARKET_DATA_PROD=1` and `IRESS_USE_SINGLE_SEAT` is NOT "1",
+ * market-data reads (quotes / timeseries / news) instead use a SECOND
+ * IRESSSession opened against the PRODUCTION endpoint, with its OWN client,
+ * its OWN stable ApplicationID (distinct from the orders seat so the two
+ * never kick each other), and graceful failure: on any error (no seat / not
+ * entitled / network) it returns null and callers fall back to their
+ * existing Yahoo / UAT behaviour. Orders are never affected.
+ *
+ * 2026-07-29: IRESS-issued a single licence seat per login. The 2-session
+ * split only works when the account has 2+ concurrent session quota. To
+ * enforce the single-seat contract, set `IRESS_USE_SINGLE_SEAT=1` (this is
+ * the new default — `IRESS_MARKET_DATA_PROD=1` is now ignored unless
+ * `IRESS_USE_SINGLE_SEAT=0` is explicitly set). When single-seat is on,
+ * every market-data caller falls through to the orders session via
+ * `getIressClient("live")` + the OrderSessionManager's sessionKey (the same
+ * path the orders side already uses). That guarantees the worker holds at
+ * most ONE wire session at a time.
  *
  * Market data runs on the base Iress-service session only, so this does NO
  * ServiceSessionStart and needs no IOS server value.
@@ -73,8 +84,13 @@ export function invalidateMarketDataSession(): void {
  * base Iress session), and parks `backoffUntil` so a late caller can't re-mint
  * mid-shutdown. Never throws. No-op when nothing was established (e.g. the split
  * is disabled — IRESS_MARKET_DATA_PROD unset — which is the case today).
+ *
+ * 2026-07-29: single-seat mode (default since the IRESS prod account has
+ * exactly one seat) makes this a no-op — there is no 2nd session to tear
+ * down.
  */
 export async function tearDownMarketDataSession(): Promise<void> {
+  if (singleSeatEnforced()) return;
   if (inflight) {
     try {
       await inflight;
@@ -105,11 +121,34 @@ export function noteMarketDataError(err: unknown): void {
 }
 
 /**
+ * Single-seat enforcement. 2026-07-29: the IRESS prod account has exactly
+ * one licence seat. Opening a 2nd wire session (the original prod
+ * market-data split) gets a "No more licenses available" error and
+ * orphans the seat. To prevent re-introducing the leak, default
+ * `IRESS_USE_SINGLE_SEAT` to "1" — operators only get the split back by
+ * explicitly setting `IRESS_USE_SINGLE_SEAT=0`. When single-seat is on,
+ * this function never opens a 2nd session and simply returns null;
+ * callers fall through to the orders session.
+ *
+ * The check is sync and cheap (one env read + one log) so the
+ * background loops pay no extra roundtrip.
+ */
+export function singleSeatEnforced(): boolean {
+  const v = (process.env.IRESS_USE_SINGLE_SEAT ?? "1").trim().toLowerCase();
+  return v !== "0" && v !== "false";
+}
+
+/**
  * Prod market-data client + session key, or `null` when the split is disabled
  * or the prod session cannot be established (callers then keep their fallback).
  * Never throws.
  */
 export async function getMarketDataSession(): Promise<MarketDataSession | null> {
+  if (singleSeatEnforced()) {
+    // Single-seat mode: NEVER open a 2nd wire session. Callers fall through
+    // to the orders session (via getIressClient("live") + session.iressSessionKey).
+    return null;
+  }
   if (!marketDataProdEnabled()) return null;
   if (Date.now() < backoffUntil) return null;
   if (cache && Date.now() < cache.expiresAt - EXPIRY_BUFFER_MS) return cache.session;
