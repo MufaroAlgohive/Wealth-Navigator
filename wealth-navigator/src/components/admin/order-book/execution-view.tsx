@@ -33,7 +33,7 @@
  * the tab is hidden.
  */
 
-import { ChevronRight, Loader2, Radio, SendHorizontal } from "lucide-react";
+import { ChevronRight, Loader2, Pencil, Radio, SendHorizontal } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -44,6 +44,7 @@ import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge"
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
 import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
+import { allowsMarketRelease, allowsUatSelfFill } from "@/lib/oems/orderbook-lane-actions";
 import { isAmendable, isAwaitingBrokerAck, isCancellable } from "./format";
 import { InvestorFilterTable, type InvestorAgg } from "./investor-filter-table";
 
@@ -618,6 +619,7 @@ interface OrderActions {
   fillInFlight: Record<string, boolean>;
   fillError: Record<string, string>;
   handleFillUat: (row: ExecutionRow) => void;
+  uatScope: boolean;
   amendOpen: Record<string, boolean>;
   amendForm: Record<string, { priceRands: string; volume: string; tif: "DAY" | "GTC" | "IOC" | "FOK" }>;
   setAmendForm: React.Dispatch<
@@ -668,6 +670,7 @@ function GroupRow({
     fillInFlight,
     fillError,
     handleFillUat,
+    uatScope,
     amendOpen,
     amendForm,
     setAmendForm,
@@ -812,7 +815,7 @@ function GroupRow({
         <td className="px-3 py-1.5 whitespace-nowrap">
           {/* Fill (UAT) — self-fill in the OEM, never sent to the broker. Shown
               for UAT-lane orders that aren't terminal. See handleFillUat. */}
-          {r.source === "UAT_ADHOC_ORDER" && !TERMINAL_STATES.has(r.state) ? (
+          {allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) && !TERMINAL_STATES.has(r.state) ? (
             <div className="mb-1 flex flex-col gap-1">
               <Button
                 variant="ghost"
@@ -828,7 +831,10 @@ function GroupRow({
                     filling…
                   </>
                 ) : (
-                  "Fill (UAT)"
+                  <>
+                    <Pencil className="mr-1 h-3 w-3" />
+                    Fill
+                  </>
                 )}
               </Button>
               {fillError[r.id] ? (
@@ -1668,6 +1674,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     fillInFlight,
     fillError,
     handleFillUat,
+    uatScope: scope === "uat",
     amendOpen,
     amendForm,
     setAmendForm,
@@ -1781,16 +1788,18 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
               ticking…
             </span>
           )}
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={SEND_TO_MARKET_LOCKED || parkedCount === 0 || releasing}
-            onClick={() => void handleRelease()}
-            title={SEND_TO_MARKET_LOCKED ? SEND_TO_MARKET_LOCKED_MESSAGE : "Release every parked mint client-order to the worker/IRESS."}
-          >
-            <SendHorizontal className="h-3.5 w-3.5" />
-            {releasing ? "Sending..." : SEND_TO_MARKET_LOCKED ? "Send to Market (locked)" : `Send to Market (${parkedCount})`}
-          </Button>
+          {allowsMarketRelease(scope) ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={SEND_TO_MARKET_LOCKED || parkedCount === 0 || releasing}
+              onClick={() => void handleRelease()}
+              title={SEND_TO_MARKET_LOCKED ? SEND_TO_MARKET_LOCKED_MESSAGE : "Release every parked mint client-order to the worker/IRESS."}
+            >
+              <SendHorizontal className="h-3.5 w-3.5" />
+              {releasing ? "Sending..." : SEND_TO_MARKET_LOCKED ? "Send to Market (locked)" : `Send to Market (${parkedCount})`}
+            </Button>
+          ) : null}
           <Button variant="ghost" size="sm" onClick={refreshAll}>
             Refresh
           </Button>
