@@ -1,14 +1,25 @@
 import type { Order, OrderState } from "@/types/iress";
 
 export type BlotterStatusFilter = "WORKING" | "FILLED" | "CANCELLED" | "REJECTED";
-export type BlotterDateMode = "ALL" | "DATE" | "MONTH" | "YEAR";
+export type BlotterDateMode = "ALL" | "TODAY" | "DATE" | "MONTH" | "YEAR";
 
-export function isLiveBlotterAuditRow(row: {
-  source?: string | null;
-  payload?: Record<string, unknown> | null;
-}): boolean {
+export function isLiveBlotterAuditRow(
+  row: {
+    source?: string | null;
+    payload?: Record<string, unknown> | null;
+  },
+  testUserIds: ReadonlySet<string> = new Set(),
+  testEmails: ReadonlySet<string> = new Set(),
+): boolean {
   if (String(row.source ?? "").toUpperCase() === "UAT_ADHOC_ORDER") return false;
-  return row.payload?.uat_test !== true;
+  const payload = row.payload ?? {};
+  if (payload.uat_test === true) return false;
+  const userId = String(payload.user_id ?? "");
+  if (userId && testUserIds.has(userId)) return false;
+  const email = String(payload.client_email ?? payload.trader ?? "")
+    .trim()
+    .toLowerCase();
+  return !email || !testEmails.has(email);
 }
 
 export function matchesBlotterStatus(state: OrderState, selected: ReadonlySet<BlotterStatusFilter>): boolean {
@@ -18,10 +29,24 @@ export function matchesBlotterStatus(state: OrderState, selected: ReadonlySet<Bl
 }
 
 export function matchesBlotterDate(ts: number, mode: BlotterDateMode, value: string): boolean {
-  if (mode === "ALL" || !value) return true;
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return false;
-  const day = date.toISOString().slice(0, 10);
+  const day = [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+  if (mode === "ALL") return true;
+  if (mode === "TODAY") {
+    const now = new Date();
+    const today = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+    ].join("-");
+    return day === today;
+  }
+  if (!value) return true;
   if (mode === "DATE") return day === value;
   if (mode === "MONTH") return day.slice(0, 7) === value;
   return day.slice(0, 4) === value;

@@ -209,12 +209,13 @@ export default function BlotterPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">Any date</SelectItem>
+              <SelectItem value="TODAY">Today</SelectItem>
               <SelectItem value="DATE">Date</SelectItem>
               <SelectItem value="MONTH">Month</SelectItem>
               <SelectItem value="YEAR">Year</SelectItem>
             </SelectContent>
           </Select>
-          {dateMode !== "ALL" && (
+          {dateMode !== "ALL" && dateMode !== "TODAY" && (
             <Input
               type={dateMode === "DATE" ? "date" : dateMode === "MONTH" ? "month" : "number"}
               min={dateMode === "YEAR" ? "2000" : undefined}

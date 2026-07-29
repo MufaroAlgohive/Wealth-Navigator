@@ -11,6 +11,22 @@ describe("Live OEM blotter scope", () => {
     expect(isLiveBlotterAuditRow({ source: "UAT_ADHOC_ORDER", payload: {} })).toBe(false);
     expect(isLiveBlotterAuditRow({ source: "MINT_CLIENT_ORDER", payload: { uat_test: true } })).toBe(false);
     expect(isLiveBlotterAuditRow({ source: "MINT_CLIENT_ORDER", payload: { uat_test: false } })).toBe(true);
+    expect(
+      isLiveBlotterAuditRow(
+        {
+          source: "MINT_CLIENT_ORDER",
+          payload: { uat_test: false, trader: "lulamasw@gmail.com" },
+        },
+        new Set(["uat-user"]),
+        new Set(["lulamasw@gmail.com"]),
+      ),
+    ).toBe(false);
+    expect(
+      isLiveBlotterAuditRow(
+        { source: "MINT_CLIENT_ORDER", payload: { user_id: "uat-user" } },
+        new Set(["uat-user"]),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -29,5 +45,10 @@ describe("OEM blotter filters", () => {
     expect(matchesBlotterDate(ts, "MONTH", "2026-07")).toBe(true);
     expect(matchesBlotterDate(ts, "YEAR", "2026")).toBe(true);
     expect(matchesBlotterDate(ts, "MONTH", "2026-06")).toBe(false);
+  });
+
+  it("supports a one-click Today filter", () => {
+    expect(matchesBlotterDate(Date.now(), "TODAY", "")).toBe(true);
+    expect(matchesBlotterDate(Date.now() - 48 * 60 * 60 * 1000, "TODAY", "")).toBe(false);
   });
 });
