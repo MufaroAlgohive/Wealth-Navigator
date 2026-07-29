@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
-import { buildCanonicalReturnIndex } from "@/lib/returns/canonical-index";
+import { buildCanonicalYtdSeries } from "@/lib/returns/canonical-index";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { strategyCashAssetFromCanonicalReturns } from "@/lib/strategy-cash-asset";
 
@@ -216,7 +216,7 @@ export async function GET(req: Request) {
     for (const [strategyId, strategyRows] of Object.entries(groupedReturns)) {
       returns[strategyId] = {
         latest: strategyRows[0] ?? null,
-        series: buildCanonicalReturnIndex([...strategyRows].reverse()).map((point) => point.value),
+        series: buildCanonicalYtdSeries([...strategyRows].reverse()).map((point) => point.value),
       };
     }
 

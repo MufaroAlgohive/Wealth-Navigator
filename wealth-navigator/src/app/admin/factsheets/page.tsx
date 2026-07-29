@@ -9,7 +9,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { CASH_ASSET_NAME, CASH_ASSET_SYMBOL, CashAssetIcon } from "@/components/strategies/cash-asset-icon";
 import { cn } from "@/lib/cn";
-import { buildCanonicalReturnIndex } from "@/lib/returns/canonical-index";
+import { buildCanonicalCalendarReturns, buildCanonicalYtdSeries } from "@/lib/returns/canonical-index";
 
 interface Sec {
   symbol: string;
@@ -365,36 +365,23 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
   const min = calcMin(hs, secMap);
   const latest = returns[returns.length - 1] ?? null;
 
-  // Compound the approved canonical daily chain. Absolute basket values and
-  // legacy all_pct can jump when a rebalance changes composition.
-  const series = buildCanonicalReturnIndex(returns);
-  const daily: number[] = [];
-  for (let i = 1; i < series.length; i++) {
-    const prev = series[i - 1]!.value;
-    const cur = series[i]!.value;
-    if (prev > 0) daily.push((cur / prev - 1) * 100);
-  }
+  // Canonical cumulative YTD is already chain-linked through rebalances.
+  // Do not reconstruct the chart from basket values or legacy daily resets.
+  const series = buildCanonicalYtdSeries(returns);
+  const daily = returns
+    .map((row) => row["1d_pct"])
+    .filter((value): value is number => value != null && Number.isFinite(Number(value)))
+    .map(Number);
   const best = daily.length ? Math.max(...daily) : null;
   const worst = daily.length ? Math.min(...daily) : null;
   const avg = daily.length ? daily.reduce((a, b) => a + b, 0) / daily.length : null;
 
-  // Calendar: monthly returns from end-of-month cumulative return.
-  const monthEnd: Record<string, number> = {};
-  for (const r of series) {
-    const ym = r.asOfDate.slice(0, 7);
-    monthEnd[ym] = r.value;
-  }
-  const yms = Object.keys(monthEnd).sort();
-  const monthly: Record<string, Record<number, number>> = {};
-  for (let i = 1; i < yms.length; i++) {
-    const [y, m] = yms[i]!.split("-").map(Number);
-    const ret = (monthEnd[yms[i]!]! / monthEnd[yms[i - 1]!]! - 1) * 100;
-    (monthly[String(y)] ||= {})[m! - 1] = ret;
-  }
+  const monthly = buildCanonicalCalendarReturns(returns);
   const years = Object.keys(monthly).sort().reverse();
   const activeYear = year ?? (years.length ? Number(years[0]) : null);
 
   const cashWeight = Math.max(0, Math.min(100, Number(data.cashAsset?.weight || 0)));
+  const canonicalMin = data.cashAsset && cashWeight > 0 ? data.cashAsset.value / (cashWeight / 100) : min;
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <button
@@ -428,7 +415,10 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
 
         <div className="mt-5 grid grid-cols-3 gap-3">
           <Kpi label="Holdings" value={String(hs.length + (data.cashAsset ? 1 : 0))} />
-          <Kpi label="Min. Investment" value={min ? fmtR(min, s.base_currency || "ZAR") : "N/A"} />
+          <Kpi
+            label="Min. Investment"
+            value={canonicalMin ? fmtR(canonicalMin, s.base_currency || "ZAR") : "N/A"}
+          />
           <Kpi
             label="All-time Return"
             value={pctStr(latest?.all_pct ?? null)}
@@ -447,6 +437,8 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
         <Kpi label="Avg Daily" value={pctStr(avg)} valueCls={pctCls(avg)} />
         <Kpi label="YTD" value={pctStr(latest?.ytd_pct ?? null)} valueCls={pctCls(latest?.ytd_pct ?? null)} />
       </div>
+
+      <PerformanceChart series={series} />
 
       {/* Holdings */}
       <div className="rounded-2xl border border-border bg-card p-5">
@@ -479,17 +471,17 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
             );
           })}
           {data.cashAsset && data.cashAsset.value > 0 && (
-          <div className="flex items-center gap-3 py-2.5">
-            <CashAssetIcon className="h-9 w-9" />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold text-success">{CASH_ASSET_SYMBOL}</p>
-              <p className="text-xs text-muted-foreground">{CASH_ASSET_NAME}</p>
+            <div className="flex items-center gap-3 py-2.5">
+              <CashAssetIcon className="h-9 w-9" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-success">{CASH_ASSET_SYMBOL}</p>
+                <p className="text-xs text-muted-foreground">{CASH_ASSET_NAME}</p>
+              </div>
+              <div className="text-right text-xs text-muted-foreground">{fmtR(data.cashAsset.value)}</div>
+              <div className="w-16 text-right text-xs font-semibold text-success">
+                {cashWeight.toFixed(1)}%
+              </div>
             </div>
-            <div className="text-right text-xs text-muted-foreground">
-              {fmtR(data.cashAsset.value)}
-            </div>
-            <div className="w-16 text-right text-xs font-semibold text-success">{cashWeight.toFixed(1)}%</div>
-          </div>
           )}
         </div>
       </div>
@@ -571,6 +563,71 @@ function Spark({ series }: { series: number[] }) {
         strokeWidth={1.5}
       />
     </svg>
+  );
+}
+
+function PerformanceChart({ series }: { series: Array<{ asOfDate: string; value: number }> }) {
+  if (series.length < 2) {
+    return (
+      <div className="rounded-2xl border border-border bg-card p-5 text-sm text-muted-foreground">
+        Performance history is not yet available.
+      </div>
+    );
+  }
+  const width = 900;
+  const height = 260;
+  const pad = 24;
+  const values = series.map((point) => point.value);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const d = series
+    .map((point, index) => {
+      const x = pad + (index / (series.length - 1)) * (width - pad * 2);
+      const y = pad + ((max - point.value) / range) * (height - pad * 2);
+      return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const latest = series[series.length - 1];
+  if (!latest) return null;
+  const change = latest.value - 100;
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-foreground">Performance</h3>
+          <p className="text-xs text-muted-foreground">Canonical YTD return, indexed to 100</p>
+        </div>
+        <div className={cn("text-sm font-bold", pctCls(change))}>{pctStr(change)}</div>
+      </div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="h-64 w-full"
+        role="img"
+        aria-label="Canonical strategy performance chart"
+      >
+        <line
+          x1={pad}
+          y1={height / 2}
+          x2={width - pad}
+          y2={height / 2}
+          stroke="currentColor"
+          className="text-border"
+          strokeDasharray="5 5"
+        />
+        <path
+          d={d}
+          fill="none"
+          stroke="hsl(var(--primary))"
+          strokeWidth="3"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <div className="flex justify-between text-[10px] text-muted-foreground">
+        <span>{series[0]?.asOfDate}</span>
+        <span>{latest.asOfDate}</span>
+      </div>
+    </div>
   );
 }
 function Kpi({
