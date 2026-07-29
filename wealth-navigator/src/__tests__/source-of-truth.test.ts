@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { calculatePositionTruth, calculateStrategyCashAsset } from "@/lib/truth/calculations";
+import {
+  calculatePositionTruth,
+  calculateStrategyCashAsset,
+  classifyDifference,
+  possibleDifferenceReasons,
+} from "@/lib/truth/calculations";
 import { yahooPriceToCents } from "@/lib/truth/yahoo-live";
 
 describe("source-of-truth calculations", () => {
@@ -29,5 +34,27 @@ describe("source-of-truth calculations", () => {
   it("normalises Yahoo JSE and major-currency prices to cents", () => {
     expect(yahooPriceToCents("BHG.JO", 701.71)).toBe(702);
     expect(yahooPriceToCents("AAPL", 215.4)).toBe(21_540);
+  });
+
+  it("escalates material cent and percentage differences", () => {
+    expect(classifyDifference(0, 100_000)).toBe("ok");
+    expect(classifyDifference(500, 100_000)).toBe("warning");
+    expect(classifyDifference(2_100, 100_000)).toBe("urgent");
+    expect(classifyDifference(10_000, 2_000_000)).toBe("urgent");
+  });
+
+  it("explains timing, reserve and liability evidence without claiming certainty", () => {
+    const reasons = possibleDifferenceReasons({
+      differenceCents: 250,
+      canonicalAsOf: "2026-07-28",
+      quoteTime: "2026-07-29T12:00:00Z",
+      residualUpdatedAt: "2026-07-29T10:00:00Z",
+      hasReserve: true,
+      hasLiability: true,
+    });
+    expect(reasons.join(" ")).toContain("newer than the canonical");
+    expect(reasons.join(" ")).toContain("Residual cash changed");
+    expect(reasons.join(" ")).toContain("execution reserve");
+    expect(reasons.join(" ")).toContain("accrued fees");
   });
 });

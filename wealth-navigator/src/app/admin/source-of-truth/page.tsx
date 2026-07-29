@@ -1,7 +1,22 @@
 "use client";
 
+import { AlertTriangle, CheckCircle2, DatabaseZap, Download, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, DatabaseZap, RefreshCw, Search } from "lucide-react";
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -72,6 +87,22 @@ type TruthPosition = {
   canonicalValueCents: number;
   canonicalPnlCents: number;
   differenceCents: number;
+  appDisplayedValueCents: number;
+  appDisplayedPnlCents: number;
+  severity: "ok" | "warning" | "urgent";
+  reasons: string[];
+  returns: { fiveDayPct?: number; mtdPct?: number; ytdPct?: number; allTimePct?: number };
+  history: Array<{
+    date: string;
+    valueCents: number;
+    securitiesCents: number;
+    residualCents: number;
+    reserveCents: number;
+    pnlCents: number;
+    ytdPct: number;
+    allTimePct: number;
+  }>;
+  ledger: Array<{ cell: string; label: string; formula: string; cents: number }>;
   formula: string;
 };
 type ClientTruth = {
@@ -81,6 +112,19 @@ type ClientTruth = {
   profile: { first_name?: string; last_name?: string; email?: string; mint_number?: string };
   positions: TruthPosition[];
   totals: Record<string, number>;
+  audit: { severity: "ok" | "warning" | "urgent"; urgent: number; warnings: number };
+  activity: Array<{
+    id: string;
+    date: string;
+    direction?: string;
+    name?: string;
+    description?: string;
+    status?: string;
+    amountCents: number;
+    reserveCents: number;
+    reserveConsumedCents: number;
+    reversed?: boolean;
+  }>;
 };
 type StrategyTruth = {
   kind: "strategy";
@@ -97,8 +141,34 @@ type StrategyTruth = {
   };
   canonical?: Record<string, string | number | null>;
   differences: Record<string, number>;
+  severity: "ok" | "warning" | "urgent";
+  reasons: string[];
+  returns: { fiveDayPct?: number; mtdPct?: number; ytdPct?: number; allTimePct?: number };
+  history: Array<{
+    date: string;
+    valueCents: number;
+    securitiesCents: number;
+    caCents: number;
+    ytdPct: number;
+    allTimePct: number;
+  }>;
 };
-type Truth = ClientTruth | StrategyTruth;
+type GeneralTruth = {
+  kind: "general";
+  generatedAt: string;
+  auditedClients: number;
+  auditedStrategies: number;
+  summary: { urgent: number; warning: number; ok: number };
+  findings: Array<{
+    kind: string;
+    id: string;
+    label: string;
+    severity: "ok" | "warning" | "urgent";
+    differenceCents: number;
+    message: string;
+  }>;
+};
+type Truth = ClientTruth | StrategyTruth | GeneralTruth;
 
 const money = (cents: number | null | undefined) =>
   new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR" }).format(Number(cents ?? 0) / 100);
@@ -204,8 +274,8 @@ export default function SourceOfTruthPage() {
     );
   }, [mode, positions, query, strategies]);
 
-  const runTruth = async () => {
-    if (!selected) return;
+  const runTruth = async (general = false) => {
+    if (!general && !selected) return;
     setRunning(true);
     setError("");
     setTruth(null);
@@ -213,7 +283,7 @@ export default function SourceOfTruthPage() {
       const response = await fetch("/api/admin/source-of-truth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: mode, id: selected.id }),
+        body: JSON.stringify(general ? { kind: "general" } : { kind: mode, id: selected?.id }),
       });
       const body = await response.json();
       if (!response.ok || !body.ok) throw new Error(body.error || "Live truth calculation failed");
@@ -235,21 +305,27 @@ export default function SourceOfTruthPage() {
   return (
     <main className="mx-auto max-w-[1700px] space-y-5 p-4 md:p-6">
       <header className="rounded-2xl border border-violet-400/20 bg-gradient-to-br from-violet-500/10 to-transparent p-5">
-        <div className="flex items-start gap-3">
-          <div className="rounded-xl bg-violet-500/15 p-2.5 text-violet-300">
-            <DatabaseZap className="h-5 w-5" />
+        <div className="flex flex-col justify-between gap-4 md:flex-row md:items-start">
+          <div className="flex items-start gap-3">
+            <div className="rounded-xl bg-violet-500/15 p-2.5 text-violet-300">
+              <DatabaseZap className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-semibold">Source of Truth</h1>
+              <p className="mt-1 max-w-4xl text-sm text-muted-foreground">
+                Inspect canonical client and strategy records, then independently revalue every priced holding
+                from Yahoo Finance. Live runs are calculated on demand and never overwrite canonical data.
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-2xl font-semibold">Source of Truth</h1>
-            <p className="mt-1 max-w-4xl text-sm text-muted-foreground">
-              Inspect canonical client and strategy records, then independently revalue every priced holding
-              from Yahoo Finance. Live runs are calculated on demand and never overwrite canonical data.
-            </p>
-          </div>
+          <Button variant="outline" disabled={running} onClick={() => void runTruth(true)}>
+            <DatabaseZap className="mr-2 h-4 w-4" />
+            Run general health audit
+          </Button>
         </div>
       </header>
 
-      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_460px]">
+      <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_680px]">
         <section className="min-w-0 rounded-2xl border border-white/10 bg-card/70">
           <div className="flex flex-col gap-3 border-b border-white/10 p-4 md:flex-row md:items-center md:justify-between">
             <div className="flex rounded-lg border border-white/10 bg-black/15 p-1">
@@ -379,7 +455,7 @@ export default function SourceOfTruthPage() {
               </div>
               <h2 className="mt-1 text-lg font-semibold">{selected?.label || "Select a record"}</h2>
             </div>
-            <Button disabled={!selected || running} onClick={runTruth}>
+            <Button disabled={!selected || running} onClick={() => void runTruth(false)}>
               <RefreshCw className={`mr-2 h-4 w-4 ${running ? "animate-spin" : ""}`} />
               {running ? "Computing…" : "Get truth"}
             </Button>
@@ -401,7 +477,148 @@ export default function SourceOfTruthPage() {
   );
 }
 
+const severityStyle = {
+  ok: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300",
+  warning: "border-amber-400/30 bg-amber-400/10 text-amber-200",
+  urgent: "border-red-500/40 bg-red-500/15 text-red-300",
+};
+
+function StatusLight({ severity }: { severity: "ok" | "warning" | "urgent" }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-bold uppercase ${severityStyle[severity]}`}
+    >
+      <span
+        className={`h-2.5 w-2.5 rounded-full ${severity === "ok" ? "bg-emerald-400" : severity === "warning" ? "bg-amber-400" : "animate-pulse bg-red-500"}`}
+      />
+      {severity}
+    </span>
+  );
+}
+
+function ReturnStrip({
+  returns,
+}: { returns: { fiveDayPct?: number; mtdPct?: number; ytdPct?: number; allTimePct?: number } }) {
+  return (
+    <div className="grid grid-cols-4 gap-2">
+      <Stat label="5D" value={pct(returns.fiveDayPct)} />
+      <Stat label="MTD" value={pct(returns.mtdPct)} />
+      <Stat label="YTD" value={pct(returns.ytdPct)} />
+      <Stat label="All time" value={pct(returns.allTimePct)} />
+    </div>
+  );
+}
+
+function HistoryChart({
+  data,
+}: {
+  data: Array<{
+    date: string;
+    valueCents: number;
+    securitiesCents: number;
+    residualCents?: number;
+    caCents?: number;
+  }>;
+}) {
+  return (
+    <div className="h-64 rounded-xl border border-white/10 bg-black/10 p-3">
+      <div className="mb-2 text-xs font-semibold">Canonical basket history</div>
+      <ResponsiveContainer width="100%" height="90%">
+        <AreaChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" />
+          <XAxis dataKey="date" tick={{ fontSize: 9 }} minTickGap={28} />
+          <YAxis tick={{ fontSize: 9 }} tickFormatter={(value) => `R${Math.round(value / 100)}`} />
+          <Tooltip formatter={(value) => money(Number(value))} />
+          <Legend />
+          <Area type="monotone" dataKey="valueCents" name="Total" stroke="#8b5cf6" fill="#8b5cf633" />
+          <Line type="monotone" dataKey="securitiesCents" name="Securities" stroke="#38bdf8" dot={false} />
+          <Line type="monotone" dataKey="residualCents" name="CA" stroke="#22c55e" dot={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+async function exportWorkbook(truth: ClientTruth) {
+  const XLSX = await import("xlsx");
+  const book = XLSX.utils.book_new();
+  for (const position of truth.positions) {
+    XLSX.utils.book_append_sheet(
+      book,
+      XLSX.utils.json_to_sheet(
+        position.ledger.map((row) => ({
+          Cell: row.cell,
+          Description: row.label,
+          Formula: row.formula,
+          Cents: row.cents,
+          Rands: row.cents / 100,
+        })),
+      ),
+      position.strategy.slice(0, 28),
+    );
+  }
+  XLSX.writeFile(
+    book,
+    `truth-${truth.profile.mint_number || "client"}-${truth.generatedAt.slice(0, 10)}.xlsx`,
+  );
+}
+
+function DeveloperLog({ lines }: { lines: string[] }) {
+  return (
+    <details className="rounded-xl border border-white/10 bg-black/40 p-3">
+      <summary className="cursor-pointer font-mono text-xs text-cyan-300">Developer evidence log</summary>
+      <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-5 text-cyan-100/70">
+        {lines.join("\n")}
+      </pre>
+    </details>
+  );
+}
+
 function TruthResult({ truth }: { truth: Truth }) {
+  if (truth.kind === "general") {
+    const order = { urgent: 0, warning: 1, ok: 2 };
+    return (
+      <div className="mt-5 space-y-4">
+        <div className="grid grid-cols-3 gap-2">
+          <Stat label="Urgent" value={String(truth.summary.urgent)} className="text-red-400" />
+          <Stat label="Warnings" value={String(truth.summary.warning)} className="text-amber-400" />
+          <Stat label="Healthy" value={String(truth.summary.ok)} className="text-emerald-400" />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Freshly audited {truth.auditedClients} clients and {truth.auditedStrategies} strategies at{" "}
+          {when(truth.generatedAt)}.
+        </p>
+        <div className="max-h-[640px] space-y-2 overflow-y-auto">
+          {[...truth.findings]
+            .sort((a, b) => order[a.severity] - order[b.severity])
+            .map((finding) => (
+              <div
+                key={`${finding.kind}-${finding.id}`}
+                className={`rounded-xl border p-3 ${severityStyle[finding.severity]}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <strong>{finding.label}</strong>
+                  <StatusLight severity={finding.severity} />
+                </div>
+                <div className="mt-1 text-xs">
+                  {finding.kind} · absolute variance {money(finding.differenceCents)}
+                </div>
+                <div className="mt-1 text-xs opacity-80">{finding.message}</div>
+              </div>
+            ))}
+        </div>
+        <DeveloperLog
+          lines={[
+            `generated_at=${truth.generatedAt}`,
+            `audited_clients=${truth.auditedClients}`,
+            `audited_strategies=${truth.auditedStrategies}`,
+            `urgent=${truth.summary.urgent}`,
+            `warnings=${truth.summary.warning}`,
+          ]}
+        />
+      </div>
+    );
+  }
   if (truth.kind === "strategy") {
     const canonical = truth.canonical;
     return (
@@ -409,7 +626,9 @@ function TruthResult({ truth }: { truth: Truth }) {
         <div className="flex items-center gap-2 text-xs text-emerald-400">
           <CheckCircle2 className="h-4 w-4" />
           Computed {when(truth.generatedAt)}
+          <StatusLight severity={truth.severity} />
         </div>
+        <ReturnStrip returns={truth.returns} />
         <div className="grid grid-cols-2 gap-2">
           <Stat label="Live securities" value={money(truth.live.securitiesCents)} />
           <Stat
@@ -429,6 +648,39 @@ function TruthResult({ truth }: { truth: Truth }) {
             className={tone(truth.differences.caCents)}
           />
         </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <HistoryChart data={truth.history} />
+          <div className="h-64 rounded-xl border border-white/10 p-3">
+            <div className="text-xs font-semibold">What makes up the strategy</div>
+            <ResponsiveContainer width="100%" height="90%">
+              <PieChart>
+                <Pie
+                  data={[
+                    { name: "Securities", value: truth.live.securitiesCents },
+                    { name: "CA", value: truth.live.strategyCaCents },
+                  ]}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius={45}
+                  outerRadius={75}
+                >
+                  <Cell fill="#8b5cf6" />
+                  <Cell fill="#22c55e" />
+                </Pie>
+                <Tooltip formatter={(value) => money(Number(value))} />
+                <Legend />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+        <div className={`rounded-xl border p-3 ${severityStyle[truth.severity]}`}>
+          <div className="font-semibold">Possible reasons for the difference</div>
+          <ul className="mt-2 list-disc space-y-1 pl-4 text-xs">
+            {truth.reasons.map((reason) => (
+              <li key={reason}>{reason}</li>
+            ))}
+          </ul>
+        </div>
         <div className="rounded-xl border border-white/10 p-3 text-xs">
           <div className="font-semibold">Formula</div>
           <div className="mt-1 text-muted-foreground">
@@ -436,6 +688,15 @@ function TruthResult({ truth }: { truth: Truth }) {
           </div>
         </div>
         <HoldingRows rows={truth.holdings} />
+        <DeveloperLog
+          lines={[
+            `provider=${truth.provider}`,
+            `generated_at=${truth.generatedAt}`,
+            `canonical_as_of=${truth.canonical?.as_of_date}`,
+            `formula=${truth.live.formula}`,
+            `complete_variance_cents=${truth.differences.completeCents}`,
+          ]}
+        />
       </div>
     );
   }
@@ -445,6 +706,10 @@ function TruthResult({ truth }: { truth: Truth }) {
       <div className="flex items-center gap-2 text-xs text-emerald-400">
         <CheckCircle2 className="h-4 w-4" />
         Computed {when(truth.generatedAt)}
+        <StatusLight severity={truth.audit.severity} />
+        <Button size="sm" variant="outline" onClick={() => void exportWorkbook(truth)}>
+          <Download className="mr-1 h-3.5 w-3.5" /> Excel ledger
+        </Button>
       </div>
       <div className="grid grid-cols-2 gap-2">
         <Stat label="Live value" value={money(t.liveValueCents)} />
@@ -454,8 +719,38 @@ function TruthResult({ truth }: { truth: Truth }) {
         <Stat label="Residual / CA" value={money(t.residualCents)} className="text-emerald-400" />
         <Stat label="Reserve / liability" value={`${money(t.reserveCents)} / ${money(t.liabilityCents)}`} />
       </div>
+      <div className="h-60 rounded-xl border border-white/10 p-3">
+        <div className="text-xs font-semibold">Every cent of live value</div>
+        <ResponsiveContainer width="100%" height="90%">
+          <PieChart>
+            <Pie
+              data={[
+                { name: "Securities", value: t.securitiesCents },
+                { name: "CA / residual", value: t.residualCents },
+                { name: "Reserve", value: t.reserveCents },
+                { name: "Liability", value: t.liabilityCents },
+              ]}
+              dataKey="value"
+              nameKey="name"
+              innerRadius={45}
+              outerRadius={72}
+            >
+              <Cell fill="#8b5cf6" />
+              <Cell fill="#22c55e" />
+              <Cell fill="#38bdf8" />
+              <Cell fill="#ef4444" />
+            </Pie>
+            <Tooltip formatter={(value) => money(Number(value))} />
+            <Legend />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
       {truth.positions.map((position) => (
-        <details key={position.key} open className="rounded-xl border border-white/10 p-3">
+        <details
+          key={position.key}
+          open
+          className={`rounded-xl border p-3 ${severityStyle[position.severity]}`}
+        >
           <summary className="cursor-pointer list-none">
             <div className="flex justify-between gap-3">
               <div>
@@ -465,11 +760,18 @@ function TruthResult({ truth }: { truth: Truth }) {
                 </div>
               </div>
               <div className="text-right text-sm">
+                <StatusLight severity={position.severity} />
                 <div>{money(position.liveValueCents)}</div>
                 <div className={tone(position.differenceCents)}>Δ {money(position.differenceCents)}</div>
               </div>
             </div>
           </summary>
+          <div className="mt-3">
+            <ReturnStrip returns={position.returns} />
+          </div>
+          <div className="mt-3">
+            <HistoryChart data={position.history} />
+          </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Stat
               label="Live P&L / return"
@@ -484,9 +786,81 @@ function TruthResult({ truth }: { truth: Truth }) {
           <div className="my-3 rounded-lg bg-white/[0.035] p-2 text-xs text-muted-foreground">
             {position.formula}. Invested basis = canonical value − canonical inception P&amp;L.
           </div>
+          <div className="mb-3 grid gap-3 md:grid-cols-2">
+            <div className="rounded-xl border border-white/10 bg-black/10 p-3 text-xs">
+              <div className="font-semibold">Plain-English calculation</div>
+              <p className="mt-2 leading-5 text-muted-foreground">
+                Every active quantity is multiplied by its fresh Yahoo price. We add this strategy&apos;s own
+                CA/residual and unused execution reserve, subtract open fee liabilities, then compare the
+                result with the canonical value currently supplied to the app.
+              </p>
+              <ul className="mt-2 list-disc space-y-1 pl-4">
+                {position.reasons.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="overflow-hidden rounded-xl border border-white/10">
+              <table className="w-full text-xs">
+                <thead className="bg-white/5">
+                  <tr>
+                    <th className="p-2 text-left">Cell</th>
+                    <th className="p-2 text-left">Line</th>
+                    <th className="p-2 text-left">Formula</th>
+                    <th className="p-2 text-right">Value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {position.ledger.map((row) => (
+                    <tr key={row.cell} className="border-t border-white/5">
+                      <td className="p-2 font-mono text-violet-300">{row.cell}</td>
+                      <td className="p-2">{row.label}</td>
+                      <td className="p-2 font-mono text-[10px]">{row.formula}</td>
+                      <td className="p-2 text-right">{money(row.cents)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
           <HoldingRows rows={position.holdings} />
         </details>
       ))}
+      <div className="rounded-xl border border-white/10 p-3">
+        <div className="text-xs font-semibold">Client activity timeline</div>
+        <div className="mt-3 max-h-64 space-y-3 overflow-y-auto">
+          {truth.activity.map((event) => (
+            <div
+              key={event.id}
+              className="grid grid-cols-[105px_1fr_auto] gap-2 border-l-2 border-violet-500/40 pl-3 text-xs"
+            >
+              <div className="text-muted-foreground">{when(event.date)}</div>
+              <div>
+                <div className="font-medium">{event.name || event.direction || "Activity"}</div>
+                <div className="text-muted-foreground">
+                  {event.description} · {event.status}
+                  {event.reversed ? " · REVERSED" : ""}
+                </div>
+              </div>
+              <div>{money(event.amountCents)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <DeveloperLog
+        lines={[
+          `provider=${truth.provider}`,
+          `generated_at=${truth.generatedAt}`,
+          `positions=${truth.positions.length}`,
+          `urgent=${truth.audit.urgent}`,
+          `warnings=${truth.audit.warnings}`,
+          ...truth.positions.flatMap((position) => [
+            `${position.strategy}.canonical_as_of=${position.asOf}`,
+            `${position.strategy}.difference_cents=${position.differenceCents}`,
+            `${position.strategy}.residual_updated_at=${position.residualUpdatedAt}`,
+          ]),
+        ]}
+      />
     </div>
   );
 }

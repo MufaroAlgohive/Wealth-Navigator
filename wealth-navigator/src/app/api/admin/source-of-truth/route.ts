@@ -2,11 +2,16 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
-import { calculatePositionTruth, calculateStrategyCashAsset } from "@/lib/truth/calculations";
+import {
+  calculatePositionTruth,
+  calculateStrategyCashAsset,
+  classifyDifference,
+  possibleDifferenceReasons,
+} from "@/lib/truth/calculations";
 import { fetchYahooTruthQuote } from "@/lib/truth/yahoo-live";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 type Db = ReturnType<typeof createRetailServiceRoleClient>;
 type Row = Record<string, unknown>;
@@ -15,6 +20,21 @@ const num = (value: unknown) => (Number.isFinite(Number(value)) ? Number(value) 
 const text = (value: unknown) => String(value ?? "").trim();
 const ownerKey = (userId: unknown, familyId: unknown, strategyId: unknown) =>
   `${text(userId)}:${text(familyId)}:${text(strategyId)}`;
+const chained = (rows: Row[]) =>
+  rows.reduce((total, row) => total * (1 + num(row["1d_pct"]) / 100), 1) * 100 - 100;
+const periodReturns = (rows: Row[]) => {
+  const sorted = [...rows].sort((a, b) => text(a.as_of_date).localeCompare(text(b.as_of_date)));
+  const latestDate = text(sorted.at(-1)?.as_of_date);
+  const month = latestDate.slice(0, 7);
+  const five = sorted.slice(-5);
+  const mtd = sorted.filter((row) => text(row.as_of_date).startsWith(month));
+  return {
+    fiveDayPct: five.length ? chained(five) : null,
+    mtdPct: mtd.length ? chained(mtd) : null,
+    ytdPct: sorted.length ? num(sorted.at(-1)?.ytd_pct) : null,
+    allTimePct: sorted.length ? num(sorted.at(-1)?.inception_pct ?? sorted.at(-1)?.all_pct) : null,
+  };
+};
 
 async function staffDb(): Promise<{ db?: Db; response?: NextResponse }> {
   const auth = await getAdminContext();
@@ -103,12 +123,21 @@ async function quoteMap(symbols: string[]) {
   const quotes = new Map<string, Awaited<ReturnType<typeof fetchYahooTruthQuote>>>();
   const errors: string[] = [];
   settled.forEach((result, index) => {
-    const symbol = unique[index]!;
+    const symbol = unique[index] ?? "";
     if (result.status === "fulfilled") quotes.set(symbol, result.value);
     else errors.push(`${symbol}: ${result.reason instanceof Error ? result.reason.message : result.reason}`);
   });
   if (errors.length) throw new Error(`Live truth blocked—missing Yahoo quote(s): ${errors.join("; ")}`);
   return quotes;
+}
+
+function requiredQuote(
+  quotes: Map<string, Awaited<ReturnType<typeof fetchYahooTruthQuote>>>,
+  symbol: string,
+) {
+  const quote = quotes.get(symbol);
+  if (!quote) throw new Error(`Live truth blocked—quote map has no ${symbol}`);
+  return quote;
 }
 
 async function clientTruth(db: Db, userId: string) {
@@ -169,6 +198,23 @@ async function clientTruth(db: Db, userId: string) {
           .is("segment_end_date", null)
       : Promise.resolve({ data: [] }),
   ]);
+  const [{ data: history }, { data: activity }] = await Promise.all([
+    db
+      .from("client_strategy_returns_effective_c")
+      .select(
+        'user_id,family_member_id,strategy_id,as_of_date,basket_value_cents,securities_value_cents,residual_cash_cents,unused_reserve_cents,accrued_liability_cents,inception_pnl_cents,inception_pct,ytd_pct,"1d_pct",source_kind',
+      )
+      .eq("user_id", userId)
+      .order("as_of_date", { ascending: true }),
+    db
+      .from("transactions")
+      .select(
+        "id,user_id,family_member_id,amount,base_amount_cents,direction,name,description,status,transaction_date,created_at,buffer_cents,buffer_consumed_cents,reversed",
+      )
+      .eq("user_id", userId)
+      .order("transaction_date", { ascending: false })
+      .limit(250),
+  ]);
   const secMap = new Map((securities ?? []).map((row) => [text(row.id), row]));
   const stratMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
   const symbols = (holdings ?? []).map((row) => text(secMap.get(text(row.security_id))?.symbol));
@@ -176,7 +222,7 @@ async function clientTruth(db: Db, userId: string) {
   const rows = (holdings ?? []).map((holding) => {
     const security = secMap.get(text(holding.security_id));
     const symbol = text(security?.symbol);
-    const quote = quotes.get(symbol)!;
+    const quote = requiredQuote(quotes, symbol);
     const quantity = num(holding.quantity);
     const expected = num(holding.Expected_fill);
     const rawFill = expected > 0 ? expected : num(holding.avg_fill);
@@ -241,6 +287,24 @@ async function clientTruth(db: Db, userId: string) {
       canonicalValueCents,
       canonicalPnlCents,
     });
+    const positionHistory = ((history ?? []) as Row[]).filter(
+      (row) =>
+        text(row.strategy_id) === text(position.strategy_id) &&
+        text(row.family_member_id) === text(position.family_member_id),
+    );
+    const quoteTime = positionHoldings
+      .map((row) => row.quote.exchangeTime)
+      .sort()
+      .at(-1);
+    const severity = classifyDifference(calculated.differenceCents, canonicalValueCents);
+    const reasons = possibleDifferenceReasons({
+      differenceCents: calculated.differenceCents,
+      canonicalAsOf: text(position.as_of_date),
+      quoteTime,
+      residualUpdatedAt: text(residual.updated_at),
+      hasReserve: reserveCents > 0,
+      hasLiability: liabilityCents > 0,
+    });
     return {
       key,
       strategyId: position.strategy_id,
@@ -258,6 +322,58 @@ async function clientTruth(db: Db, userId: string) {
       ...calculated,
       canonicalValueCents,
       canonicalPnlCents,
+      appDisplayedValueCents: canonicalValueCents,
+      appDisplayedPnlCents: canonicalPnlCents,
+      severity,
+      reasons,
+      returns: periodReturns(positionHistory),
+      history: positionHistory.map((row) => ({
+        date: row.as_of_date,
+        valueCents: row.basket_value_cents,
+        securitiesCents: row.securities_value_cents,
+        residualCents: row.residual_cash_cents,
+        reserveCents: row.unused_reserve_cents,
+        pnlCents: row.inception_pnl_cents,
+        ytdPct: row.ytd_pct,
+        allTimePct: row.inception_pct,
+        dailyPct: row["1d_pct"],
+        source: row.source_kind,
+      })),
+      ledger: [
+        {
+          cell: "B2",
+          label: "Yahoo-priced securities",
+          formula: "SUM(quantity * YahooPrice)",
+          cents: securitiesCents,
+        },
+        { cell: "B3", label: "Strategy residual / CA", formula: "ResidualBalance", cents: residualCents },
+        {
+          cell: "B4",
+          label: "Unused execution reserve",
+          formula: "SUM(Buffer-Consumed)",
+          cents: reserveCents,
+        },
+        { cell: "B5", label: "Accrued liabilities", formula: "SUM(OpenFees)", cents: liabilityCents },
+        {
+          cell: "B6",
+          label: "Independent live value",
+          formula: "=B2+B3+B4-B5",
+          cents: calculated.liveValueCents,
+        },
+        {
+          cell: "B7",
+          label: "Invested basis",
+          formula: "=AppValue-AppInceptionPnL",
+          cents: calculated.investedCents,
+        },
+        { cell: "B8", label: "Independent live P&L", formula: "=B6-B7", cents: calculated.livePnlCents },
+        {
+          cell: "B9",
+          label: "Difference vs app",
+          formula: "=B6-AppValue",
+          cents: calculated.differenceCents,
+        },
+      ],
       formula: "Yahoo securities + residual + unused reserve − accrued liability",
     };
   });
@@ -267,6 +383,27 @@ async function clientTruth(db: Db, userId: string) {
     provider: "Yahoo Finance live chart API",
     profile,
     positions: byPosition,
+    activity: (activity ?? []).map((row) => ({
+      id: row.id,
+      date: row.transaction_date || row.created_at,
+      direction: row.direction,
+      name: row.name,
+      description: row.description,
+      status: row.status,
+      amountCents: row.base_amount_cents ?? row.amount,
+      reserveCents: row.buffer_cents,
+      reserveConsumedCents: row.buffer_consumed_cents,
+      reversed: row.reversed,
+    })),
+    audit: {
+      severity: byPosition.some((row) => row.severity === "urgent")
+        ? "urgent"
+        : byPosition.some((row) => row.severity === "warning")
+          ? "warning"
+          : "ok",
+      urgent: byPosition.filter((row) => row.severity === "urgent").length,
+      warnings: byPosition.filter((row) => row.severity === "warning").length,
+    },
     totals: {
       securitiesCents: byPosition.reduce((sum, row) => sum + row.securitiesCents, 0),
       residualCents: byPosition.reduce((sum, row) => sum + row.residualCents, 0),
@@ -291,7 +428,7 @@ async function strategyTruth(db: Db, strategyId: string) {
   const quotes = await quoteMap(symbols);
   const rows = holdings.map((holding) => {
     const symbol = text(holding.ticker || holding.symbol);
-    const quote = quotes.get(symbol)!;
+    const quote = requiredQuote(quotes, symbol);
     const quantity = num(holding.shares || holding.quantity || 1);
     return {
       symbol,
@@ -305,15 +442,21 @@ async function strategyTruth(db: Db, strategyId: string) {
   });
   const securitiesCents = rows.reduce((sum, row) => sum + row.marketValueCents, 0);
   const cash = calculateStrategyCashAsset(securitiesCents, num(strategy.min_investment));
-  const { data: canonical } = await db
+  const { data: canonicalHistory } = await db
     .from("strategy_returns_effective_c")
     .select(
-      "as_of_date,securities_value_cents,continuity_cash_cents,complete_value_cents,ytd_pct,all_pct,source_kind",
+      'as_of_date,securities_value_cents,continuity_cash_cents,complete_value_cents,basket_value_cents,ytd_pct,all_pct,"1d_pct",source_kind',
     )
     .eq("strategy_id", strategyId)
     .order("as_of_date", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(1000);
+  const canonical = canonicalHistory?.[0];
+  const differences = {
+    securitiesCents: securitiesCents - num(canonical?.securities_value_cents),
+    caCents: cash.strategyCaCents - num(canonical?.continuity_cash_cents),
+    completeCents: cash.modelCapitalCents - num(canonical?.complete_value_cents),
+  };
+  const severity = classifyDifference(differences.completeCents, num(canonical?.complete_value_cents));
   return {
     kind: "strategy",
     generatedAt: new Date().toISOString(),
@@ -326,17 +469,99 @@ async function strategyTruth(db: Db, strategyId: string) {
       formula: "max(model capital, actual securities) − actual securities",
     },
     canonical,
-    differences: {
-      securitiesCents: securitiesCents - num(canonical?.securities_value_cents),
-      caCents: cash.strategyCaCents - num(canonical?.continuity_cash_cents),
-      completeCents: cash.modelCapitalCents - num(canonical?.complete_value_cents),
+    differences,
+    severity,
+    reasons: possibleDifferenceReasons({
+      differenceCents: differences.completeCents,
+      canonicalAsOf: text(canonical?.as_of_date),
+      quoteTime: rows
+        .map((row) => row.quote.exchangeTime)
+        .sort()
+        .at(-1),
+      hasReserve: false,
+      hasLiability: false,
+    }),
+    returns: periodReturns([...(canonicalHistory ?? [])].reverse() as Row[]),
+    history: [...(canonicalHistory ?? [])].reverse().map((row) => ({
+      date: row.as_of_date,
+      valueCents: row.complete_value_cents || row.basket_value_cents,
+      securitiesCents: row.securities_value_cents,
+      caCents: row.continuity_cash_cents,
+      ytdPct: row.ytd_pct,
+      allTimePct: row.all_pct,
+      dailyPct: row["1d_pct"],
+      source: row.source_kind,
+    })),
+  };
+}
+
+async function generalTruth(db: Db) {
+  const truthIndex = await listTruth(db);
+  const clientIds = [...new Set(truthIndex.positions.map((row) => text(row.userId)))];
+  const startedAt = new Date().toISOString();
+  const clientRuns = await Promise.allSettled(clientIds.map((id) => clientTruth(db, id)));
+  const strategyRuns = await Promise.allSettled(
+    truthIndex.strategies.map((row) => strategyTruth(db, text(row.id))),
+  );
+  const findings = [
+    ...clientRuns.map((run, position) =>
+      run.status === "fulfilled"
+        ? {
+            kind: "client",
+            id: clientIds[position],
+            label: run.value.profile.email || clientIds[position],
+            severity: run.value.audit.severity,
+            differenceCents: run.value.positions.reduce((sum, row) => sum + Math.abs(row.differenceCents), 0),
+            message: `${run.value.audit.urgent} urgent and ${run.value.audit.warnings} warning position(s)`,
+          }
+        : {
+            kind: "client",
+            id: clientIds[position],
+            label: clientIds[position],
+            severity: "urgent",
+            differenceCents: 0,
+            message: run.reason instanceof Error ? run.reason.message : String(run.reason),
+          },
+    ),
+    ...strategyRuns.map((run, position) =>
+      run.status === "fulfilled"
+        ? {
+            kind: "strategy",
+            id: truthIndex.strategies[position]?.id,
+            label: truthIndex.strategies[position]?.name,
+            severity: run.value.severity,
+            differenceCents: Math.abs(run.value.differences.completeCents),
+            message: run.value.reasons[0],
+          }
+        : {
+            kind: "strategy",
+            id: truthIndex.strategies[position]?.id,
+            label: truthIndex.strategies[position]?.name,
+            severity: "urgent",
+            differenceCents: 0,
+            message: run.reason instanceof Error ? run.reason.message : String(run.reason),
+          },
+    ),
+  ];
+  return {
+    kind: "general",
+    startedAt,
+    generatedAt: new Date().toISOString(),
+    auditedClients: clientIds.length,
+    auditedStrategies: truthIndex.strategies.length,
+    findings,
+    summary: {
+      urgent: findings.filter((row) => row.severity === "urgent").length,
+      warning: findings.filter((row) => row.severity === "warning").length,
+      ok: findings.filter((row) => row.severity === "ok").length,
     },
   };
 }
 
 export async function GET() {
   const access = await staffDb();
-  if (!access.db) return access.response!;
+  if (!access.db)
+    return access.response ?? NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   try {
     return NextResponse.json({ ok: true, ...(await listTruth(access.db)) });
   } catch (error) {
@@ -349,16 +574,20 @@ export async function GET() {
 
 export async function POST(req: Request) {
   const access = await staffDb();
-  if (!access.db) return access.response!;
+  if (!access.db)
+    return access.response ?? NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   const body = (await req.json().catch(() => ({}))) as { kind?: string; id?: string };
-  if (!body.id || !["client", "strategy"].includes(body.kind ?? "")) {
+  if (!["client", "strategy", "general"].includes(body.kind ?? "") || (body.kind !== "general" && !body.id)) {
     return NextResponse.json({ ok: false, error: "kind and id are required" }, { status: 400 });
   }
   try {
+    const id = body.id ?? "";
     const truth =
-      body.kind === "client"
-        ? await clientTruth(access.db, body.id)
-        : await strategyTruth(access.db, body.id);
+      body.kind === "general"
+        ? await generalTruth(access.db)
+        : body.kind === "client"
+          ? await clientTruth(access.db, id)
+          : await strategyTruth(access.db, id);
     return NextResponse.json({ ok: true, truth });
   } catch (error) {
     return NextResponse.json(
