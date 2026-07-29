@@ -6,6 +6,7 @@ import {
   Cable,
   CalendarClock,
   ClipboardList,
+  DatabaseZap,
   FileText,
   Globe2,
   Landmark,
@@ -140,6 +141,7 @@ export const PLATFORM_NAV: NavSection[] = [
   {
     title: "Governance & Platform",
     items: [
+      { label: "Source of Truth", href: "/admin/source-of-truth", icon: DatabaseZap, roles: [] },
       { label: "Approvals & Compliance", href: "/compliance", icon: Shield, roles: [] },
       {
         label: "Cyber Compliance",

@@ -1,0 +1,33 @@
+import { describe, expect, it } from "vitest";
+
+import { calculatePositionTruth, calculateStrategyCashAsset } from "@/lib/truth/calculations";
+import { yahooPriceToCents } from "@/lib/truth/yahoo-live";
+
+describe("source-of-truth calculations", () => {
+  it("keeps residual and execution reserve separate in client value", () => {
+    const result = calculatePositionTruth({
+      securitiesCents: 127_772,
+      residualCents: 14_847,
+      reserveCents: 8_413,
+      liabilityCents: 0,
+      canonicalValueCents: 151_032,
+      canonicalPnlCents: -5_251,
+    });
+    expect(result.liveValueCents).toBe(151_032);
+    expect(result.investedCents).toBe(156_283);
+    expect(result.livePnlCents).toBe(-5_251);
+    expect(result.differenceCents).toBe(0);
+  });
+
+  it("derives strategy CA only from that strategy model", () => {
+    expect(calculateStrategyCashAsset(151_153, 2_000)).toMatchObject({
+      modelCapitalCents: 200_000,
+      strategyCaCents: 48_847,
+    });
+  });
+
+  it("normalises Yahoo JSE and major-currency prices to cents", () => {
+    expect(yahooPriceToCents("BHG.JO", 701.71)).toBe(702);
+    expect(yahooPriceToCents("AAPL", 215.4)).toBe(21_540);
+  });
+});
