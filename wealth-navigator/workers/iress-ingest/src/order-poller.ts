@@ -595,11 +595,54 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
             // Mint the recipient's stock_holdings_c row at the fill price.
             // The wallet was already debited by applyGiftFill; the lot must
             // exist for the recipient's app to render the gift.
+            //
+            // 2026-07-29 FIX: child-recipient resolution. When the gift is for
+            // a child (family_member_id set, recipient_user_id null) the lot
+            // must be owned by the parent's primary_user_id (look up via
+            // family_members.parent_user_id). The previous behaviour fell
+            // back to auth.gifter_user_id, which misrouted child gifts onto
+            // the gifter's account and left the actual child without a
+            // holding. Self / OTHER-adult recipient paths still work — when
+            // recipient_user_id is set, that is the lot owner.
+            let lotOwnerUserId = auth.recipient_user_id;
+            if (!lotOwnerUserId && auth.recipient_family_member_id) {
+              const { data: fam, error: famErr } = await opts.retailSupabase
+                .from("family_members")
+                .select("parent_user_id")
+                .eq("id", auth.recipient_family_member_id)
+                .maybeSingle();
+              if (famErr) {
+                console.error(
+                  JSON.stringify({
+                    level: "error",
+                    event: "gift_holding_family_lookup_failed",
+                    gift_authorization_id: auth.id,
+                    family_member_id: auth.recipient_family_member_id,
+                    error: famErr.message,
+                  }),
+                );
+              }
+              lotOwnerUserId = fam?.parent_user_id ?? null;
+            }
+            if (!lotOwnerUserId) {
+              // Last-resort safety: only if neither recipient_user_id nor
+              // parent_user_id can be resolved, fall back to the gifter. This
+              // should never trigger in normal operation; we log prominently
+              // so an operator can fix the underlying data.
+              console.error(
+                JSON.stringify({
+                  level: "error",
+                  event: "gift_holding_no_lot_owner",
+                  gift_authorization_id: auth.id,
+                }),
+              );
+              lotOwnerUserId = auth.gifter_user_id;
+            }
             try {
               const { error: lotErr } = await opts.retailSupabase
                 .from("stock_holdings_c")
                 .insert({
-                  user_id: auth.recipient_user_id ?? auth.gifter_user_id,
+                  user_id: lotOwnerUserId,
                   security_id: fill.securityId,
                   quantity: giftTransition.fillQuantity,
                   avg_fill: giftTransition.fillPriceCents, // CENTS
@@ -616,7 +659,9 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
                   family_member_id: auth.recipient_family_member_id ?? null,
                   // Attribution: the recipient is the lot owner. If the
                   // recipient is a child registry (family_member_id) the lot
-                  // belongs to the child account directly.
+                  // belongs to the parent_user_id (resolved above) with the
+                  // child's family_member_id attached so the UI shows the
+                  // child as the beneficiary.
                 })
                 .select("id");
               if (lotErr) {
