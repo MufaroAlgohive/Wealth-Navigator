@@ -1,5 +1,6 @@
 import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
+import { isLiveBlotterAuditRow } from "@/lib/orders/blotter-filters";
 import type { Order, OrderDestination, OrderSide, OrderState, OrderTIF, OrderType } from "@/types/iress";
 
 export const runtime = "nodejs";
@@ -151,7 +152,9 @@ export async function GET(req: Request) {
     );
   }
 
-  let orders = ((data ?? []) as AuditRow[]).map(mapAuditRow);
+  // This is the production blotter. UAT rows remain available in the
+  // order-book UAT views but must never leak into this Live execution tape.
+  let orders = ((data ?? []) as AuditRow[]).filter(isLiveBlotterAuditRow).map(mapAuditRow);
 
   if (stateFilter && stateFilter !== "ALL") {
     orders = orders.filter((o) => o.state === stateFilter);
