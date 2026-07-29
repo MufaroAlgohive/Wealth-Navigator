@@ -55,6 +55,7 @@ const NAV: { title: string; items: NavItem[] }[] = [
       { to: "/oems/news",          label: "News & SENS" },
       { to: "/oems/research-lab",  label: "Research Lab" },
       { to: "/oems/security",      label: "Security" },
+      { to: "/canvas",             label: "Canvas (beta)" },
     ],
   },
   {

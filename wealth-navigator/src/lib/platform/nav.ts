@@ -127,6 +127,7 @@ export const PLATFORM_NAV: NavSection[] = [
       { label: "Rebalance Builder", href: "/oems/rebalance", icon: Scale, roles: [DESK, STRAT] },
       { label: "Investment Cmte.", href: "/oems/committee", icon: Vote, roles: [DESK, STRAT] },
       { label: "Desk Rhythm", href: "/oems/rhythm", icon: CalendarClock, roles: [DESK, STRAT] },
+      { label: "Canvas (beta)", href: "/canvas", icon: BrainCircuit, roles: [DESK, STRAT, WM, BIZ] },
     ],
   },
   {

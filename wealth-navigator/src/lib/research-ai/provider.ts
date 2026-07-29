@@ -47,7 +47,15 @@ export type {
 export const RESEARCH_DISCLAIMER =
   "AI-generated research for internal use only — not financial advice. Must be reviewed and signed off by the investment committee before any client-facing use or action.";
 
-type AuthStyle = "bearer" | "x-api-key";
+export type AuthStyle = "bearer" | "x-api-key";
+
+export interface ResearchAiConfig {
+  provider: ResearchAiProvider;
+  base: string;
+  apiKey: string | null;
+  authStyle: AuthStyle;
+  model: string;
+}
 
 interface ProviderConfig {
   provider: ResearchAiProvider;
@@ -86,6 +94,16 @@ export function isResearchAiConfigured(): boolean {
   return Boolean(resolveProviderConfig().apiKey);
 }
 
+/**
+ * Active provider + base URL + api key for server-side model calls.
+ *
+ * Note: this may return `apiKey: null` when the provider is not configured.
+ * Callers should guard with `isResearchAiConfigured()`.
+ */
+export function getResearchAiConfig(): ResearchAiConfig {
+  return resolveProviderConfig();
+}
+
 /** Active provider + model labels (for the response, even when deferred). */
 export function getResearchAiProvider(): { provider: ResearchAiProvider; model: string } {
   const cfg = resolveProviderConfig();
@@ -99,6 +117,8 @@ interface CallModelArgs {
   model: string;
   system: string;
   prompt: string;
+  /** Override default 2048 when the task needs a longer structured answer. */
+  maxTokens?: number;
 }
 
 /** Anthropic Messages content-block shape we care about (text blocks). */
@@ -117,6 +137,7 @@ export async function callModel({
   model,
   system,
   prompt,
+  maxTokens = 2048,
 }: CallModelArgs): Promise<string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (authStyle === "bearer") {
@@ -131,7 +152,7 @@ export async function callModel({
     headers,
     body: JSON.stringify({
       model,
-      max_tokens: 2048,
+      max_tokens: maxTokens,
       system,
       messages: [{ role: "user", content: prompt }],
     }),
