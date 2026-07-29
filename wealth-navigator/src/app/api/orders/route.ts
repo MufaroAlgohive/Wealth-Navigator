@@ -166,8 +166,15 @@ export async function GET(req: Request) {
     ...((testProfiles ?? []) as Array<{ id: string }>).map((profile) => profile.id),
     ...((testWallets ?? []) as Array<{ user_id: string }>).map((wallet) => wallet.user_id),
   ]);
+  const walletOnlyIds = ((testWallets ?? []) as Array<{ user_id: string }>).map((wallet) => wallet.user_id);
+  const { data: walletTestProfiles } = walletOnlyIds.length
+    ? await retail.from("profiles").select("email").in("id", walletOnlyIds)
+    : { data: [] };
   const testEmails = new Set<string>(
-    ((testProfiles ?? []) as Array<{ email: string | null }>)
+    [
+      ...((testProfiles ?? []) as Array<{ email: string | null }>),
+      ...((walletTestProfiles ?? []) as Array<{ email: string | null }>),
+    ]
       .map((profile) => profile.email?.trim().toLowerCase() ?? "")
       .filter(Boolean),
   );
