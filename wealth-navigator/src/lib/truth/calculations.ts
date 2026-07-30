@@ -84,3 +84,26 @@ export function returnScopeBenchmarks(clientYtd: number | null, strategyYtd: num
     factsheetExpectedYtd: strategyYtd,
   };
 }
+
+export function reconstructClientHistoryPoint(input: {
+  securitiesCents: number | null;
+  residualCents: number | null;
+  reserveCents: number | null;
+  liabilityCents: number | null;
+}) {
+  if (Object.values(input).some((value) => value == null)) return null;
+  return (
+    Number(input.securitiesCents) +
+    Number(input.residualCents) +
+    Number(input.reserveCents) -
+    Number(input.liabilityCents)
+  );
+}
+
+export function reconstructStrategyHistoryPoint(
+  securitiesCents: number | null,
+  strategyCaCents: number | null,
+) {
+  if (securitiesCents == null || strategyCaCents == null) return null;
+  return Number(securitiesCents) + Number(strategyCaCents);
+}

@@ -23,6 +23,7 @@ import {
   LineChart,
   Pie,
   PieChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -134,7 +135,10 @@ type TruthPosition = {
     pnlCents: number;
     ytdPct: number;
     allTimePct: number;
+    reconstructedCents: number | null;
+    reconstructionProvable?: boolean;
   }>;
+  rawHistory: Array<{ date: string; valueCents: number; dailyPnlCents?: number; ytdPnlCents?: number }>;
   ledger: Array<{ cell: string; label: string; formula: string; cents: number }>;
   formula: string;
 };
@@ -148,6 +152,21 @@ type ClientTruth = {
     string,
     { asOf?: string; ytdPct?: number; allTimePct?: number; caCents?: number; completeValueCents?: number }
   >;
+  strategyModelHistory: Record<
+    string,
+    Array<{
+      date: string;
+      valueCents: number;
+      securitiesCents: number;
+      caCents: number;
+      ytdPct: number;
+      allTimePct: number;
+      dailyPct: number;
+      reconstructedCents: number | null;
+      reconstructionProvable?: boolean;
+    }>
+  >;
+  rawStrategyHistory: Record<string, Array<{ date: string; valueCents: number; ytdPct?: number }>>;
   totals: Record<string, number>;
   audit: { severity: "ok" | "warning" | "urgent"; urgent: number; warnings: number };
   activity: Array<{
@@ -161,6 +180,25 @@ type ClientTruth = {
     reserveCents: number;
     reserveConsumedCents: number;
     reversed?: boolean;
+  }>;
+  rebalances: Array<{
+    id: string;
+    strategyId: string;
+    strategy?: string;
+    date: string;
+    status?: string;
+    settlementState?: string;
+    reversedAt?: string;
+    reversedReason?: string;
+    events?: Array<{
+      id: string;
+      date: string;
+      side: string;
+      securityId: string;
+      quantity: number;
+      priceCents: number;
+      reason?: string;
+    }>;
   }>;
   surfaceChecks: SurfaceCheck[];
 };
@@ -189,6 +227,28 @@ type StrategyTruth = {
     caCents: number;
     ytdPct: number;
     allTimePct: number;
+    reconstructedCents: number | null;
+    reconstructionProvable?: boolean;
+  }>;
+  rawHistory: Array<{ date: string; valueCents: number; ytdPct?: number }>;
+  rebalances: Array<{
+    id: string;
+    strategyId: string;
+    strategy?: string;
+    date: string;
+    status?: string;
+    settlementState?: string;
+    reversedAt?: string;
+    reversedReason?: string;
+    events?: Array<{
+      id: string;
+      date: string;
+      side: string;
+      securityId: string;
+      quantity: number;
+      priceCents: number;
+      reason?: string;
+    }>;
   }>;
   surfaceChecks: SurfaceCheck[];
 };
@@ -812,19 +872,63 @@ function HistoryChart({
     securitiesCents: number;
     residualCents?: number;
     caCents?: number;
+    reconstructedCents?: number | null;
   }>;
 }) {
+  const [view, setView] = useState<"canonical" | "actual">("canonical");
+  const chartData = data.map((row) => ({
+    ...row,
+    displayedCents:
+      view === "actual"
+        ? Number(
+            row.reconstructedCents ?? row.securitiesCents + Number(row.residualCents ?? row.caCents ?? 0),
+          )
+        : Number(row.valueCents),
+  }));
   return (
-    <div className="h-64 rounded-xl border border-white/10 bg-black/10 p-3">
-      <div className="mb-2 text-xs font-semibold">Canonical basket history</div>
-      <ResponsiveContainer width="100%" height="90%">
-        <AreaChart data={data}>
+    <div className="h-72 rounded-xl border border-white/10 bg-black/10 p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold">
+            {view === "canonical" ? "Canonical basket history" : "Actual basket value chart"}
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            {view === "canonical"
+              ? "Published effective complete value"
+              : "Recalculated per date: securities + CA/residual + reserve − liabilities"}
+          </div>
+        </div>
+        <div className="flex rounded-md border border-white/10 bg-black/20 p-0.5">
+          <button
+            type="button"
+            onClick={() => setView("canonical")}
+            className={`rounded px-2 py-1 text-[10px] ${view === "canonical" ? "bg-violet-500 text-white" : "text-muted-foreground"}`}
+          >
+            Canonical
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("actual")}
+            className={`rounded px-2 py-1 text-[10px] ${view === "actual" ? "bg-cyan-500 text-white" : "text-muted-foreground"}`}
+          >
+            Actual basket value
+          </button>
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height="82%">
+        <AreaChart data={chartData}>
           <CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" />
           <XAxis dataKey="date" tick={{ fontSize: 9 }} minTickGap={28} />
           <YAxis tick={{ fontSize: 9 }} tickFormatter={(value) => `R${Math.round(value / 100)}`} />
           <Tooltip formatter={(value) => money(Number(value))} />
           <Legend />
-          <Area type="monotone" dataKey="valueCents" name="Total" stroke="#8b5cf6" fill="#8b5cf633" />
+          <Area
+            type="monotone"
+            dataKey="displayedCents"
+            name={view === "canonical" ? "Canonical total" : "Recalculated actual"}
+            stroke={view === "canonical" ? "#8b5cf6" : "#22d3ee"}
+            fill={view === "canonical" ? "#8b5cf633" : "#22d3ee22"}
+          />
           <Line type="monotone" dataKey="securitiesCents" name="Securities" stroke="#38bdf8" dot={false} />
           <Line type="monotone" dataKey="residualCents" name="CA" stroke="#22c55e" dot={false} />
         </AreaChart>
@@ -1109,6 +1213,326 @@ function ClientAppCardAccuracy({ truth }: { truth: ClientTruth }) {
   );
 }
 
+function ForensicHistoryLab({ truth }: { truth: ClientTruth | StrategyTruth }) {
+  const canShowClient = truth.kind === "client";
+  const [scope, setScope] = useState<"basket" | "client">(canShowClient ? "client" : "basket");
+  const [method, setMethod] = useState<"raw" | "canonical" | "reconstructed">("canonical");
+  const position = truth.kind === "client" ? truth.positions[0] : null;
+  const strategyId = truth.kind === "client" ? (position?.strategyId ?? "") : "";
+  const raw =
+    truth.kind === "strategy"
+      ? truth.rawHistory
+      : scope === "client"
+        ? (position?.rawHistory ?? [])
+        : (truth.rawStrategyHistory[strategyId] ?? []);
+  const canonical =
+    truth.kind === "strategy"
+      ? truth.history
+      : scope === "client"
+        ? (position?.history ?? [])
+        : (truth.strategyModelHistory[strategyId] ?? []);
+  const currentCents =
+    truth.kind === "strategy"
+      ? truth.live.modelCapitalCents
+      : scope === "client"
+        ? position?.liveValueCents
+        : Number(truth.strategyBenchmarks[strategyId]?.completeValueCents ?? 0);
+  const reconstructed = [
+    ...canonical
+      .filter((row) => row.reconstructionProvable !== false && row.reconstructedCents != null)
+      .map((row) => ({
+        date: row.date,
+        valueCents: Number(row.reconstructedCents),
+      })),
+    ...(currentCents
+      ? [{ date: truth.generatedAt.slice(0, 10), valueCents: Number(currentCents), current: true }]
+      : []),
+  ];
+  const selected =
+    method === "raw"
+      ? raw.map((row) => ({ date: row.date, valueCents: Number(row.valueCents) }))
+      : method === "canonical"
+        ? canonical.map((row) => ({ date: row.date, valueCents: Number(row.valueCents) }))
+        : reconstructed;
+  const rebalances = truth.rebalances.filter((row) => !strategyId || String(row.strategyId) === strategyId);
+  const colour = method === "raw" ? "#ef4444" : method === "canonical" ? "#22c55e" : "#94a3b8";
+  const latest = selected.at(-1);
+  const unprovableDates = canonical.filter(
+    (row) => row.reconstructionProvable === false || row.reconstructedCents == null,
+  ).length;
+  const purchaseLog =
+    truth.kind === "client"
+      ? [
+          ...truth.activity.map((event) => ({
+            date: event.date,
+            type: event.direction || "TRANSACTION",
+            description: event.name || event.description || "Client transaction",
+            value: event.amountCents,
+            status: event.reversed ? "REVERSED" : event.status,
+          })),
+          ...rebalances.flatMap((rebalance) =>
+            (rebalance.events ?? []).map((event) => ({
+              date: event.date || rebalance.date,
+              type: `REBALANCE ${event.side}`,
+              description: `${event.quantity} units · security ${event.securityId}`,
+              value: Number(event.quantity) * Number(event.priceCents),
+              status: rebalance.settlementState || rebalance.status,
+            })),
+          ),
+        ].sort((a, b) => String(b.date).localeCompare(String(a.date)))
+      : [];
+
+  const download = async () => {
+    const XLSX = await import("xlsx");
+    const book = XLSX.utils.book_new();
+    const exportSeries = (rows: Array<{ date: string; valueCents: number }>, exportMethod: string) =>
+      rows.map((row) => ({
+        Date: row.date,
+        ValueCents: row.valueCents,
+        ValueRands: row.valueCents / 100,
+        Method: exportMethod,
+        Scope: scope,
+      }));
+    XLSX.utils.book_append_sheet(
+      book,
+      XLSX.utils.json_to_sheet([
+        {
+          Scope: scope,
+          GeneratedAt: truth.generatedAt,
+          TrustedMethod: "Canonical chain-preserved effective history",
+          ReconstructionFormula: "Securities + strategy CA or client residual + unused reserve - liabilities",
+          RawWarning: "Raw unchained values are diagnostic only and are not valid performance.",
+          Rebalances: rebalances.length,
+        },
+      ]),
+      "Read me",
+    );
+    XLSX.utils.book_append_sheet(
+      book,
+      XLSX.utils.json_to_sheet(
+        exportSeries(
+          canonical.map((row) => ({ date: row.date, valueCents: Number(row.valueCents) })),
+          "CANONICAL_TRUSTED",
+        ),
+      ),
+      "Canonical correct",
+    );
+    XLSX.utils.book_append_sheet(
+      book,
+      XLSX.utils.json_to_sheet(exportSeries(reconstructed, "RECONSTRUCTED_ACCOUNTING")),
+      "Reconstructed",
+    );
+    XLSX.utils.book_append_sheet(
+      book,
+      XLSX.utils.json_to_sheet(
+        exportSeries(
+          raw.map((row) => ({ date: row.date, valueCents: Number(row.valueCents) })),
+          "RAW_DIAGNOSTIC_NOT_PERFORMANCE",
+        ),
+      ),
+      "Raw diagnostic",
+    );
+    XLSX.utils.book_append_sheet(
+      book,
+      XLSX.utils.json_to_sheet(
+        rebalances.flatMap((rebalance) =>
+          rebalance.events?.length
+            ? rebalance.events.map((event) => ({
+                Batch: rebalance.id,
+                BatchDate: rebalance.date,
+                Settlement: rebalance.settlementState,
+                Side: event.side,
+                EventDate: event.date,
+                SecurityId: event.securityId,
+                Quantity: event.quantity,
+                PriceCents: event.priceCents,
+              }))
+            : [
+                {
+                  Batch: rebalance.id,
+                  BatchDate: rebalance.date,
+                  Settlement: rebalance.settlementState,
+                },
+              ],
+        ),
+      ),
+      "Rebalances",
+    );
+    if (truth.kind === "client") {
+      XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(truth.activity), "Client activity");
+    }
+    XLSX.writeFile(book, `forensic-${scope}-complete-${truth.generatedAt.slice(0, 10)}.xlsx`);
+  };
+
+  return (
+    <details open className="group rounded-xl border border-white/10 bg-black/10">
+      <summary className="flex cursor-pointer list-none items-center justify-between p-4">
+        <div>
+          <div className="font-semibold">Forensic history laboratory</div>
+          <div className="text-xs text-muted-foreground">
+            Raw legacy, canonical chain-preserved and independently reconstructed paths
+          </div>
+        </div>
+        <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="space-y-4 border-t border-white/10 p-4">
+        <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+          <div className="flex flex-wrap gap-2">
+            <div className="flex rounded-lg border border-white/10 p-1">
+              <button
+                type="button"
+                onClick={() => setScope("basket")}
+                className={`rounded px-3 py-1.5 text-xs ${scope === "basket" ? "bg-violet-500 text-white" : "text-muted-foreground"}`}
+              >
+                Basket
+              </button>
+              <button
+                type="button"
+                disabled={!canShowClient}
+                onClick={() => setScope("client")}
+                className={`rounded px-3 py-1.5 text-xs disabled:opacity-30 ${scope === "client" ? "bg-violet-500 text-white" : "text-muted-foreground"}`}
+              >
+                Individual client
+              </button>
+            </div>
+            <div className="flex rounded-lg border border-white/10 p-1">
+              {(["raw", "canonical", "reconstructed"] as const).map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setMethod(item)}
+                  className={`rounded px-3 py-1.5 text-xs capitalize ${
+                    method === item
+                      ? item === "raw"
+                        ? "bg-red-500 text-white"
+                        : item === "canonical"
+                          ? "bg-emerald-500 text-white"
+                          : "bg-slate-500 text-white"
+                      : "text-muted-foreground"
+                  }`}
+                >
+                  {item === "raw" ? "Raw / unchained" : item}
+                </button>
+              ))}
+            </div>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => void download()}>
+            <Download className="mr-2 h-4 w-4" />
+            Download correct report
+          </Button>
+        </div>
+        <div
+          className={`rounded-lg border p-3 text-xs ${
+            method === "raw"
+              ? "border-red-400/25 bg-red-500/10 text-red-200"
+              : method === "canonical"
+                ? "border-emerald-400/25 bg-emerald-500/10 text-emerald-200"
+                : "border-slate-400/25 bg-slate-500/10 text-slate-200"
+          }`}
+        >
+          {method === "raw"
+            ? "Diagnostic only: raw basket values do not preserve the return chain across cash flows and rebalances, so this red line must not be used as performance."
+            : method === "canonical"
+              ? "Approved chain-preserved effective history. This green line is the trusted performance and reporting path."
+              : "Grey reconstruction recalculates each dated accounting equation from securities and cash components, then appends the fresh current truth point. Missing historical components remain unprovable."}
+        </div>
+        <div className="h-80 rounded-xl border border-white/10 p-3">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={selected}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" />
+              <XAxis dataKey="date" tick={{ fontSize: 9 }} minTickGap={25} />
+              <YAxis tick={{ fontSize: 9 }} tickFormatter={(value) => `R${Math.round(value / 100)}`} />
+              <Tooltip formatter={(value) => money(Number(value))} />
+              {rebalances.map((rebalance) => (
+                <ReferenceLine
+                  key={rebalance.id}
+                  x={String(rebalance.date).slice(0, 10)}
+                  stroke="#f59e0b"
+                  strokeDasharray="3 3"
+                  label={{ value: "R", fill: "#f59e0b", fontSize: 9 }}
+                />
+              ))}
+              <Area
+                type="monotone"
+                dataKey="valueCents"
+                name={`${scope} ${method}`}
+                stroke={colour}
+                fill={`${colour}22`}
+                strokeWidth={2}
+                animationDuration={900}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-4">
+          <Stat
+            label={method === "reconstructed" ? "Points proved" : "History points"}
+            value={String(selected.length)}
+          />
+          <Stat label="Latest value" value={money(latest?.valueCents)} />
+          <Stat label="Rebalances marked" value={String(rebalances.length)} />
+          <Stat
+            label="Method status"
+            value={
+              method === "raw"
+                ? "Wrong for returns"
+                : method === "canonical"
+                  ? "Trusted"
+                  : unprovableDates
+                    ? `${unprovableDates} gaps`
+                    : "Reconciled"
+            }
+            className={
+              method === "raw"
+                ? "text-red-400"
+                : method === "canonical"
+                  ? "text-emerald-400"
+                  : "text-slate-300"
+            }
+          />
+        </div>
+        {truth.kind === "client" && (
+          <details open className="group rounded-xl border border-white/10">
+            <summary className="flex cursor-pointer list-none items-center justify-between p-3">
+              <div>
+                <div className="text-xs font-semibold">Complete purchase and rebalance log</div>
+                <div className="text-[10px] text-muted-foreground">
+                  Transactions and lot-changing rebalance events in one dated ledger
+                </div>
+              </div>
+              <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+            </summary>
+            <div className="max-h-80 overflow-auto border-t border-white/10">
+              <table className="w-full min-w-[700px] text-xs">
+                <thead className="sticky top-0 bg-card text-left text-[10px] uppercase text-muted-foreground">
+                  <tr>
+                    <th className="p-2">Date</th>
+                    <th className="p-2">Activity</th>
+                    <th className="p-2">Description</th>
+                    <th className="p-2 text-right">Value</th>
+                    <th className="p-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {purchaseLog.map((event, index) => (
+                    <tr key={`${event.date}-${event.type}-${index}`} className="border-t border-white/5">
+                      <td className="p-2">{when(event.date)}</td>
+                      <td className="p-2 font-medium">{event.type}</td>
+                      <td className="p-2 text-muted-foreground">{event.description}</td>
+                      <td className="p-2 text-right tabular-nums">{money(event.value)}</td>
+                      <td className="p-2">{event.status || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        )}
+      </div>
+    </details>
+  );
+}
+
 function TruthResult({ truth }: { truth: Truth }) {
   if (truth.kind === "general") {
     const order = { urgent: 0, warning: 1, ok: 2 };
@@ -1210,6 +1634,7 @@ function TruthResult({ truth }: { truth: Truth }) {
             </ResponsiveContainer>
           </div>
         </div>
+        <ForensicHistoryLab truth={truth} />
         <div className={`rounded-xl border p-3 ${severityStyle[truth.severity]}`}>
           <div className="font-semibold">Possible reasons for the difference</div>
           <ul className="mt-2 list-disc space-y-1 pl-4 text-xs">
@@ -1364,6 +1789,7 @@ function TruthResult({ truth }: { truth: Truth }) {
           <HoldingRows rows={position.holdings} />
         </details>
       ))}
+      <ForensicHistoryLab truth={truth} />
       <div className="rounded-xl border border-white/10 p-3">
         <div className="text-xs font-semibold">Client activity timeline</div>
         <div className="mt-3 max-h-64 space-y-3 overflow-y-auto">

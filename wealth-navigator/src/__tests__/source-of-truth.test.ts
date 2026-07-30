@@ -5,6 +5,8 @@ import {
   calculateStrategyCashAsset,
   classifyDifference,
   possibleDifferenceReasons,
+  reconstructClientHistoryPoint,
+  reconstructStrategyHistoryPoint,
   returnScopeBenchmarks,
 } from "@/lib/truth/calculations";
 import { yahooPriceToCents } from "@/lib/truth/yahoo-live";
@@ -65,5 +67,29 @@ describe("source-of-truth calculations", () => {
       strategyPageExpectedYtd: 5.274,
       factsheetExpectedYtd: 5.274,
     });
+  });
+
+  it("reconstructs dated client and strategy values without merging CA and reserve", () => {
+    expect(
+      reconstructClientHistoryPoint({
+        securitiesCents: 127_772,
+        residualCents: 14_847,
+        reserveCents: 8_413,
+        liabilityCents: 100,
+      }),
+    ).toBe(150_932);
+    expect(reconstructStrategyHistoryPoint(151_153, 48_847)).toBe(200_000);
+  });
+
+  it("refuses to invent a historical value when a component is missing", () => {
+    expect(
+      reconstructClientHistoryPoint({
+        securitiesCents: 127_772,
+        residualCents: null,
+        reserveCents: 8_413,
+        liabilityCents: 0,
+      }),
+    ).toBeNull();
+    expect(reconstructStrategyHistoryPoint(151_153, null)).toBeNull();
   });
 });

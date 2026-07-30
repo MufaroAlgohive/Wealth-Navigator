@@ -7,6 +7,8 @@ import {
   calculateStrategyCashAsset,
   classifyDifference,
   possibleDifferenceReasons,
+  reconstructClientHistoryPoint,
+  reconstructStrategyHistoryPoint,
   returnScopeBenchmarks,
 } from "@/lib/truth/calculations";
 import { fetchYahooTruthQuote } from "@/lib/truth/yahoo-live";
@@ -267,7 +269,15 @@ async function clientTruth(db: Db, userId: string) {
           .is("segment_end_date", null)
       : Promise.resolve({ data: [] }),
   ]);
-  const [{ data: history }, { data: activity }, { data: strategyHistory }] = await Promise.all([
+  const [
+    { data: history },
+    { data: activity },
+    { data: strategyHistory },
+    { data: rawHistory },
+    { data: rebalanceBatches },
+    { data: rebalanceEvents },
+    { data: rawStrategyHistory },
+  ] = await Promise.all([
     db
       .from("client_strategy_returns_effective_c")
       .select(
@@ -286,10 +296,40 @@ async function clientTruth(db: Db, userId: string) {
     strategyIds.length
       ? db
           .from("strategy_returns_effective_c")
-          .select("strategy_id,as_of_date,ytd_pct,all_pct,continuity_cash_cents,complete_value_cents")
+          .select(
+            'strategy_id,as_of_date,ytd_pct,all_pct,"1d_pct",securities_value_cents,continuity_cash_cents,complete_value_cents',
+          )
           .in("strategy_id", strategyIds)
           .order("as_of_date", { ascending: false })
           .limit(2000)
+      : Promise.resolve({ data: [] }),
+    db
+      .from("client_strategy_returns_c")
+      .select('user_id,strategy_id,as_of_date,basket_value,"1d_pnl",ytd_pnl')
+      .eq("user_id", userId)
+      .order("as_of_date", { ascending: true }),
+    strategyIds.length
+      ? db
+          .from("rebalance_batch")
+          .select(
+            "id,strategy_id,status,settlement_state,effective_date,strategy_name_snapshot,created_at,settled_at,reversed_at,reversed_reason",
+          )
+          .in("strategy_id", strategyIds)
+          .order("created_at", { ascending: true })
+      : Promise.resolve({ data: [] }),
+    db
+      .from("rebalance_event")
+      .select(
+        "id,batch_id,user_id,family_member_id,security_id,trade_side,quantity,price_at_commit,avg_fill,fill_date,closed_reason,created_at",
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+    strategyIds.length
+      ? db
+          .from("strategies_returns_c")
+          .select("strategy_id,as_of_date,basket_value,ytd_pct")
+          .in("strategy_id", strategyIds)
+          .order("as_of_date", { ascending: true })
       : Promise.resolve({ data: [] }),
   ]);
   const secMap = new Map((securities ?? []).map((row) => [text(row.id), row]));
@@ -420,7 +460,26 @@ async function clientTruth(db: Db, userId: string) {
         allTimePct: row.inception_pct,
         dailyPct: row["1d_pct"],
         source: row.source_kind,
+        reconstructionProvable:
+          row.securities_value_cents != null &&
+          row.residual_cash_cents != null &&
+          row.unused_reserve_cents != null &&
+          row.accrued_liability_cents != null,
+        reconstructedCents: reconstructClientHistoryPoint({
+          securitiesCents: row.securities_value_cents == null ? null : num(row.securities_value_cents),
+          residualCents: row.residual_cash_cents == null ? null : num(row.residual_cash_cents),
+          reserveCents: row.unused_reserve_cents == null ? null : num(row.unused_reserve_cents),
+          liabilityCents: row.accrued_liability_cents == null ? null : num(row.accrued_liability_cents),
+        }),
       })),
+      rawHistory: ((rawHistory ?? []) as Row[])
+        .filter((row) => text(row.strategy_id) === text(position.strategy_id))
+        .map((row) => ({
+          date: row.as_of_date,
+          valueCents: row.basket_value,
+          dailyPnlCents: row["1d_pnl"],
+          ytdPnlCents: row.ytd_pnl,
+        })),
       ledger: [
         {
           cell: "B2",
@@ -477,6 +536,62 @@ async function clientTruth(db: Db, userId: string) {
         },
       ]),
     ),
+    strategyModelHistory: Object.fromEntries(
+      strategyIds.map((id) => [
+        id,
+        ((strategyHistory ?? []) as Row[])
+          .filter((row) => text(row.strategy_id) === id)
+          .reverse()
+          .map((row) => ({
+            date: row.as_of_date,
+            valueCents: row.complete_value_cents,
+            securitiesCents: row.securities_value_cents,
+            caCents: row.continuity_cash_cents,
+            ytdPct: row.ytd_pct,
+            allTimePct: row.all_pct,
+            dailyPct: row["1d_pct"],
+            reconstructionProvable: row.securities_value_cents != null && row.continuity_cash_cents != null,
+            reconstructedCents: reconstructStrategyHistoryPoint(
+              row.securities_value_cents == null ? null : num(row.securities_value_cents),
+              row.continuity_cash_cents == null ? null : num(row.continuity_cash_cents),
+            ),
+          })),
+      ]),
+    ),
+    rawStrategyHistory: Object.fromEntries(
+      strategyIds.map((id) => [
+        id,
+        ((rawStrategyHistory ?? []) as Row[])
+          .filter((row) => text(row.strategy_id) === id)
+          .map((row) => ({
+            date: row.as_of_date,
+            valueCents: row.basket_value,
+            ytdPct: row.ytd_pct,
+          })),
+      ]),
+    ),
+    rebalances: (rebalanceBatches ?? []).map((batch) => {
+      const events = (rebalanceEvents ?? []).filter((event) => text(event.batch_id) === text(batch.id));
+      return {
+        id: batch.id,
+        strategyId: batch.strategy_id,
+        strategy: batch.strategy_name_snapshot,
+        date: batch.settled_at || batch.effective_date || batch.created_at,
+        status: batch.status,
+        settlementState: batch.settlement_state,
+        reversedAt: batch.reversed_at,
+        reversedReason: batch.reversed_reason,
+        events: events.map((event) => ({
+          id: event.id,
+          date: event.fill_date || event.created_at,
+          side: event.trade_side,
+          securityId: event.security_id,
+          quantity: event.quantity,
+          priceCents: event.avg_fill || event.price_at_commit,
+          reason: event.closed_reason,
+        })),
+      };
+    }),
     activity: (activity ?? []).map((row) => ({
       id: row.id,
       date: row.transaction_date || row.created_at,
@@ -544,6 +659,21 @@ async function strategyTruth(db: Db, strategyId: string) {
     .eq("strategy_id", strategyId)
     .order("as_of_date", { ascending: false })
     .limit(1000);
+  const [{ data: rawHistory }, { data: rebalances }] = await Promise.all([
+    db
+      .from("strategies_returns_c")
+      .select("strategy_id,as_of_date,basket_value,ytd_pct")
+      .eq("strategy_id", strategyId)
+      .order("as_of_date", { ascending: true })
+      .limit(1000),
+    db
+      .from("rebalance_batch")
+      .select(
+        "id,strategy_id,status,settlement_state,effective_date,strategy_name_snapshot,created_at,settled_at,reversed_at,reversed_reason",
+      )
+      .eq("strategy_id", strategyId)
+      .order("created_at", { ascending: true }),
+  ]);
   const canonical = canonicalHistory?.[0];
   const differences = {
     securitiesCents: securitiesCents - num(canonical?.securities_value_cents),
@@ -585,6 +715,26 @@ async function strategyTruth(db: Db, strategyId: string) {
       allTimePct: row.all_pct,
       dailyPct: row["1d_pct"],
       source: row.source_kind,
+      reconstructionProvable: row.securities_value_cents != null && row.continuity_cash_cents != null,
+      reconstructedCents: reconstructStrategyHistoryPoint(
+        row.securities_value_cents == null ? null : num(row.securities_value_cents),
+        row.continuity_cash_cents == null ? null : num(row.continuity_cash_cents),
+      ),
+    })),
+    rawHistory: (rawHistory ?? []).map((row) => ({
+      date: row.as_of_date,
+      valueCents: row.basket_value,
+      ytdPct: row.ytd_pct,
+    })),
+    rebalances: (rebalances ?? []).map((batch) => ({
+      id: batch.id,
+      strategyId: batch.strategy_id,
+      strategy: batch.strategy_name_snapshot,
+      date: batch.settled_at || batch.effective_date || batch.created_at,
+      status: batch.status,
+      settlementState: batch.settlement_state,
+      reversedAt: batch.reversed_at,
+      reversedReason: batch.reversed_reason,
     })),
   };
 }
