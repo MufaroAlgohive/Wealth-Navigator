@@ -8,8 +8,8 @@ import { strategyCashAssetFromCanonicalReturns } from "@/lib/strategy-cash-asset
 /**
  * Factsheets (read-only). Gallery + single-strategy detail over strategies_c,
  * strategy_returns_effective_c, securities_c, client_strategy_returns_effective_latest_c
- * (RETAIL). Daily returns are derived from the basket_value series (the
- * per-period pct columns are digit-prefixed and awkward in PostgREST).
+ * (RETAIL). Performance is read only from the effective canonical return
+ * chain; raw basket-value moves are never interpreted as returns.
  *
  * 2026-07-21: was reading the raw legacy strategies_returns_c /
  * client_strategy_returns_c tables directly — pre-repair, pre-guarded-
@@ -29,9 +29,16 @@ interface ReturnRow {
   ytd_pct: number | null;
   all_pct: number | null;
   "1d_pct": number | null;
+  "5d_pct": number | null;
+  "1m_pct": number | null;
+  mtd_pct: number | null;
+  "6m_pct": number | null;
+  "1y_pct": number | null;
   basket_value: number | null;
+  complete_value_cents: number | null;
   continuity_cash_cents: number | null;
   securities_value_cents: number | null;
+  source_kind: string | null;
 }
 
 export async function GET(req: Request) {
@@ -71,9 +78,41 @@ export async function GET(req: Request) {
     if (symbols.size) {
       const { data } = await db!
         .from("securities_c")
-        .select("symbol, name, logo_url, last_price, change_percent")
+        .select("id, symbol, name, logo_url, last_price, change_percent")
         .in("symbol", [...symbols]);
-      for (const sec of data ?? []) out[sec.symbol as string] = sec;
+      const securityIds = (data ?? []).map((row) => row.id).filter(Boolean);
+      const { data: intraday } = securityIds.length
+        ? await db!
+            .from("stock_intraday_c")
+            .select('security_id,current_price,"1d_pct",timestamp')
+            .in("security_id", securityIds)
+            .order("timestamp", { ascending: false })
+            .limit(5000)
+        : { data: [] };
+      const latestIntraday = new Map<string, Record<string, unknown>>();
+      for (const row of (intraday ?? []) as Array<Record<string, unknown>>) {
+        const securityId = String(row.security_id || "");
+        if (securityId && !latestIntraday.has(securityId)) latestIntraday.set(securityId, row);
+      }
+      for (const sec of data ?? []) {
+        const live = latestIntraday.get(String(sec.id));
+        const priceCents =
+          live?.current_price != null ? Number(live.current_price) : Number(sec.last_price || 0);
+        out[sec.symbol as string] = {
+          symbol: sec.symbol,
+          name: sec.name,
+          logo_url: sec.logo_url,
+          price_rands: priceCents > 0 ? priceCents / 100 : null,
+          day_pct:
+            live?.["1d_pct"] != null
+              ? Number(live["1d_pct"])
+              : sec.change_percent == null
+                ? null
+                : Number(sec.change_percent),
+          price_as_of: live?.timestamp ?? null,
+          price_source: live ? "stock_intraday_c" : "securities_c",
+        };
+      }
     }
     return out;
   };
@@ -100,7 +139,7 @@ export async function GET(req: Request) {
     const { data: returns } = await db
       .from("strategy_returns_effective_c")
       .select(
-        'strategy_id, as_of_date, ytd_pct, all_pct, "1d_pct", basket_value,continuity_cash_cents,securities_value_cents',
+        'strategy_id,as_of_date,ytd_pct,all_pct,"1d_pct","5d_pct","1m_pct",mtd_pct,"6m_pct","1y_pct",basket_value,complete_value_cents,continuity_cash_cents,securities_value_cents,source_kind',
       )
       .eq("strategy_id", id)
       .order("as_of_date", { ascending: true })
@@ -202,7 +241,7 @@ export async function GET(req: Request) {
     const { data: ret } = await db
       .from("strategy_returns_effective_c")
       .select(
-        'strategy_id, as_of_date, ytd_pct, all_pct, "1d_pct", basket_value,continuity_cash_cents,securities_value_cents',
+        'strategy_id,as_of_date,ytd_pct,all_pct,"1d_pct","5d_pct","1m_pct",mtd_pct,"6m_pct","1y_pct",basket_value,complete_value_cents,continuity_cash_cents,securities_value_cents,source_kind',
       )
       .order("as_of_date", { ascending: false })
       .limit(4000);

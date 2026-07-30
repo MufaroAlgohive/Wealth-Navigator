@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildCanonicalCalendarReturns,
+  buildCanonicalPeriodSeries,
   buildCanonicalReturnIndex,
   buildCanonicalYtdSeries,
+  canonicalDailyPnlCents,
 } from "@/lib/returns/canonical-index";
 
 describe("buildCanonicalReturnIndex", () => {
@@ -45,5 +47,24 @@ describe("factsheet canonical cumulative returns", () => {
     expect(calendar["2025"]?.[11]).toBeCloseTo(10);
     expect(calendar["2026"]?.[0]).toBeCloseTo(2);
     expect(calendar["2026"]?.[1]).toBeCloseTo(1);
+  });
+
+  it("rebases requested chart windows from the canonical all-time chain", () => {
+    const points = buildCanonicalPeriodSeries(
+      [
+        { as_of_date: "2026-01-02", ytd_pct: 0, all_pct: 10 },
+        { as_of_date: "2026-04-30", ytd_pct: 5, all_pct: 15.5 },
+        { as_of_date: "2026-07-30", ytd_pct: 10, all_pct: 21 },
+      ],
+      "3M",
+    );
+
+    expect(points[0]?.value).toBe(100);
+    expect(points.at(-1)?.value).toBeCloseTo((1.21 / 1.155) * 100);
+  });
+
+  it("derives monetary daily P&L from complete value and canonical 1D return", () => {
+    expect(canonicalDailyPnlCents(110_000, 10)).toBe(10_000);
+    expect(canonicalDailyPnlCents(110_000, null)).toBeNull();
   });
 });

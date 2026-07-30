@@ -9,14 +9,21 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { CASH_ASSET_NAME, CASH_ASSET_SYMBOL, CashAssetIcon } from "@/components/strategies/cash-asset-icon";
 import { cn } from "@/lib/cn";
-import { buildCanonicalCalendarReturns, buildCanonicalYtdSeries } from "@/lib/returns/canonical-index";
+import {
+  buildCanonicalCalendarReturns,
+  buildCanonicalPeriodSeries,
+  canonicalDailyPnlCents,
+  type CanonicalChartRange,
+} from "@/lib/returns/canonical-index";
 
 interface Sec {
   symbol: string;
   name: string | null;
   logo_url: string | null;
-  last_price: number | null;
-  change_percent?: number | null;
+  price_rands: number | null;
+  day_pct?: number | null;
+  price_as_of?: string | null;
+  price_source?: string;
 }
 interface Holding {
   symbol?: string;
@@ -44,7 +51,16 @@ interface ReturnRow {
   ytd_pct: number | null;
   all_pct: number | null;
   "1d_pct": number | null;
+  "5d_pct": number | null;
+  "1m_pct": number | null;
+  mtd_pct: number | null;
+  "6m_pct": number | null;
+  "1y_pct": number | null;
   basket_value: number | null;
+  complete_value_cents: number | null;
+  continuity_cash_cents: number | null;
+  securities_value_cents: number | null;
+  source_kind: string | null;
 }
 interface ListReturns {
   latest: { ytd_pct: number | null; all_pct: number | null } | null;
@@ -67,14 +83,15 @@ const FEES = [
 
 const normalize = (s: string) =>
   typeof s === "string" && s.trim() ? s.trim().split(".")[0]!.toUpperCase() : s;
-const fmtR = (v: number | null, ccy = "ZAR") => {
+const fmtR = (v: number | null, ccy = "ZAR", decimals = 0) => {
   const n = Number(v);
-  if (!n || Number.isNaN(n)) return "N/A";
+  if (v == null || Number.isNaN(n)) return "N/A";
   try {
     return new Intl.NumberFormat("en-ZA", {
       style: "currency",
       currency: ccy,
-      maximumFractionDigits: 0,
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
     }).format(n);
   } catch {
     return `R ${n.toLocaleString()}`;
@@ -89,8 +106,8 @@ function calcMin(holdings: Holding[], secMap: Map<string, Sec>): number | null {
   for (const h of holdings) {
     const sym = String(h.ticker || h.symbol || "");
     const sec = secMap.get(sym) || secMap.get(normalize(sym));
-    if (sec && sec.last_price != null) {
-      total += Number(h.shares || h.quantity || 1) * Number(sec.last_price);
+    if (sec && sec.price_rands != null) {
+      total += Number(h.shares || h.quantity || 1) * Number(sec.price_rands);
       matched++;
     }
   }
@@ -312,6 +329,7 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
   } | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   const [year, setYear] = React.useState<number | null>(null);
+  const [chartRange, setChartRange] = React.useState<CanonicalChartRange>("YTD");
 
   React.useEffect(() => {
     (async () => {
@@ -319,19 +337,10 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
         .then((r) => r.json())
         .catch(() => ({ ok: false }));
       if (d.ok) {
-        // securities_c.last_price is stored in CENTS; this view renders Rands
-        // (holding value, min investment). Normalise to Rands once at ingestion.
-        const rawSecs: Record<string, Sec> = d.securities || {};
-        const securities: Record<string, Sec> = {};
-        for (const k in rawSecs) {
-          const sc = rawSecs[k];
-          if (!sc) continue;
-          securities[k] = sc.last_price != null ? { ...sc, last_price: Number(sc.last_price) / 100 } : sc;
-        }
         setData({
           strategy: d.strategy,
           returns: d.returns || [],
-          securities,
+          securities: d.securities || {},
           cashAsset: d.cashAsset || null,
         });
       } else setNotFound(true);
@@ -367,7 +376,7 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
 
   // Canonical cumulative YTD is already chain-linked through rebalances.
   // Do not reconstruct the chart from basket values or legacy daily resets.
-  const series = buildCanonicalYtdSeries(returns);
+  const series = buildCanonicalPeriodSeries(returns, chartRange);
   const daily = returns
     .map((row) => row["1d_pct"])
     .filter((value): value is number => value != null && Number.isFinite(Number(value)))
@@ -381,7 +390,14 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
   const activeYear = year ?? (years.length ? Number(years[0]) : null);
 
   const cashWeight = Math.max(0, Math.min(100, Number(data.cashAsset?.weight || 0)));
-  const canonicalMin = data.cashAsset && cashWeight > 0 ? data.cashAsset.value / (cashWeight / 100) : min;
+  const completeValueCents =
+    latest?.complete_value_cents ??
+    (latest
+      ? Number(latest.securities_value_cents || 0) + Number(latest.continuity_cash_cents || 0)
+      : null);
+  const canonicalModelValue =
+    completeValueCents != null && completeValueCents > 0 ? completeValueCents / 100 : min;
+  const dayPnlCents = canonicalDailyPnlCents(completeValueCents, latest?.["1d_pct"]);
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <button
@@ -413,11 +429,24 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
         </div>
         {s.description && <p className="mt-4 text-sm text-foreground/80">{s.description}</p>}
 
-        <div className="mt-5 grid grid-cols-3 gap-3">
+        <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Kpi label="Holdings" value={String(hs.length + (data.cashAsset ? 1 : 0))} />
           <Kpi
-            label="Min. Investment"
-            value={canonicalMin ? fmtR(canonicalMin, s.base_currency || "ZAR") : "N/A"}
+            label="Model Basket Value"
+            value={
+              canonicalModelValue
+                ? fmtR(canonicalModelValue, s.base_currency || "ZAR", 2)
+                : "N/A"
+            }
+          />
+          <Kpi
+            label="Cash Asset (CA)"
+            value={
+              data.cashAsset
+                ? fmtR(data.cashAsset.value, s.base_currency || "ZAR", 2)
+                : fmtR(0, s.base_currency || "ZAR", 2)
+            }
+            valueCls="text-success"
           />
           <Kpi
             label="All-time Return"
@@ -431,14 +460,36 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
       <div className="flex justify-end">
         <DataSourceBadge source="supabase" db="retail" />
       </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <Kpi
+          label="1D"
+          value={pctStr(latest?.["1d_pct"] ?? null)}
+          valueCls={pctCls(latest?.["1d_pct"] ?? null)}
+        />
+        <Kpi
+          label="Daily P&L / Basket"
+          value={dayPnlCents == null ? "—" : fmtR(dayPnlCents / 100, s.base_currency || "ZAR", 2)}
+          valueCls={pctCls(dayPnlCents)}
+        />
+        <Kpi
+          label="5D"
+          value={pctStr(latest?.["5d_pct"] ?? null)}
+          valueCls={pctCls(latest?.["5d_pct"] ?? null)}
+        />
+        <Kpi label="MTD" value={pctStr(latest?.mtd_pct ?? null)} valueCls={pctCls(latest?.mtd_pct ?? null)} />
+        <Kpi label="YTD" value={pctStr(latest?.ytd_pct ?? null)} valueCls={pctCls(latest?.ytd_pct ?? null)} />
+        <Kpi label="All-time" value={pctStr(latest?.all_pct ?? null)} valueCls={pctCls(latest?.all_pct ?? null)} />
+      </div>
+      <div className="grid grid-cols-3 gap-3">
         <Kpi label="Best Day" value={pctStr(best)} valueCls={pctCls(best)} />
         <Kpi label="Worst Day" value={pctStr(worst)} valueCls={pctCls(worst)} />
         <Kpi label="Avg Daily" value={pctStr(avg)} valueCls={pctCls(avg)} />
-        <Kpi label="YTD" value={pctStr(latest?.ytd_pct ?? null)} valueCls={pctCls(latest?.ytd_pct ?? null)} />
+      </div>
+      <div className="text-right text-[10px] text-muted-foreground">
+        Canonical valuation as of {latest?.as_of_date || "—"} · {latest?.source_kind || "effective return view"}
       </div>
 
-      <PerformanceChart series={series} />
+      <PerformanceChart series={series} range={chartRange} onRangeChange={setChartRange} />
 
       {/* Holdings */}
       <div className="rounded-2xl border border-border bg-card p-5">
@@ -450,10 +501,10 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
           {hs.map((h, i) => {
             const sym = String(h.ticker || h.symbol || "");
             const sec = secMap.get(sym) || secMap.get(normalize(sym));
-            const price = sec?.last_price ? Number(sec.last_price) : 0;
+            const price = sec?.price_rands ? Number(sec.price_rands) : 0;
             const shares = Number(h.shares || h.quantity || 1);
             const wNorm = tw > 0 ? ((Number(h.weight) || 0) / tw) * (100 - cashWeight) : 0;
-            const chg = sec?.change_percent != null ? Number(sec.change_percent) : null;
+            const chg = sec?.day_pct != null ? Number(sec.day_pct) : null;
             return (
               <div key={`${sym}-${i}`} className="flex items-center gap-3 py-2.5">
                 <div className="min-w-0 flex-1">
@@ -566,11 +617,41 @@ function Spark({ series }: { series: number[] }) {
   );
 }
 
-function PerformanceChart({ series }: { series: Array<{ asOfDate: string; value: number }> }) {
+function PerformanceChart({
+  series,
+  range,
+  onRangeChange,
+}: {
+  series: Array<{ asOfDate: string; value: number }>;
+  range: CanonicalChartRange;
+  onRangeChange: (range: CanonicalChartRange) => void;
+}) {
+  const rangeButtons = (
+    <div className="flex flex-wrap gap-1">
+      {(["YTD", "3M", "6M", "1Y", "ALL"] as CanonicalChartRange[]).map((option) => (
+        <button
+          key={option}
+          type="button"
+          onClick={() => onRangeChange(option)}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-[11px] font-semibold",
+            range === option
+              ? "bg-primary text-primary-foreground"
+              : "bg-muted text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
   if (series.length < 2) {
     return (
-      <div className="rounded-2xl border border-border bg-card p-5 text-sm text-muted-foreground">
-        Performance history is not yet available.
+      <div className="space-y-3 rounded-2xl border border-border bg-card p-5">
+        {rangeButtons}
+        <div className="text-sm text-muted-foreground">
+          Performance history is not yet available for {range}.
+        </div>
       </div>
     );
   }
@@ -580,11 +661,11 @@ function PerformanceChart({ series }: { series: Array<{ asOfDate: string; value:
   const values = series.map((point) => point.value);
   const min = Math.min(...values);
   const max = Math.max(...values);
-  const range = max - min || 1;
+  const plotRange = max - min || 1;
   const d = series
     .map((point, index) => {
       const x = pad + (index / (series.length - 1)) * (width - pad * 2);
-      const y = pad + ((max - point.value) / range) * (height - pad * 2);
+      const y = pad + ((max - point.value) / plotRange) * (height - pad * 2);
       return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
     })
     .join(" ");
@@ -596,10 +677,13 @@ function PerformanceChart({ series }: { series: Array<{ asOfDate: string; value:
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-bold text-foreground">Performance</h3>
-          <p className="text-xs text-muted-foreground">Canonical YTD return, indexed to 100</p>
+          <p className="text-xs text-muted-foreground">
+            Canonical {range} return chain, indexed to 100 · rebalance neutral
+          </p>
         </div>
         <div className={cn("text-sm font-bold", pctCls(change))}>{pctStr(change)}</div>
       </div>
+      <div className="mb-3">{rangeButtons}</div>
       <svg
         viewBox={`0 0 ${width} ${height}`}
         className="h-64 w-full"
