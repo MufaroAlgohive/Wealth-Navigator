@@ -7,11 +7,12 @@ import {
   DatabaseZap,
   Download,
   ExternalLink,
+  Info,
   RefreshCw,
   Search,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -33,6 +34,11 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Tooltip as HelpTooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 type Position = {
   key: string;
@@ -288,6 +294,26 @@ const when = (value: string | null | undefined) =>
 const tone = (value: number | null | undefined) =>
   Number(value ?? 0) === 0 ? "text-emerald-400" : "text-amber-400";
 
+function InfoHint({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <HelpTooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={`About ${label}`}
+          onClick={(event) => event.stopPropagation()}
+          className="inline-flex h-5 w-5 shrink-0 cursor-help items-center justify-center rounded-full border border-white/15 bg-white/[0.04] text-muted-foreground transition hover:border-cyan-300/40 hover:text-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50"
+        >
+          <Info className="h-3 w-3" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-80 text-xs leading-relaxed">
+        {children}
+      </TooltipContent>
+    </HelpTooltip>
+  );
+}
+
 function Stat({ label, value, className = "" }: { label: string; value: string; className?: string }) {
   return (
     <div className="rounded-xl border border-white/10 bg-white/[0.035] p-3">
@@ -493,6 +519,10 @@ export default function SourceOfTruthPage() {
             <div className="flex items-center gap-2 text-sm font-semibold">
               <Sparkles className="h-4 w-4 text-cyan-300" />
               Canonical command centre
+              <InfoHint label="Canonical command centre">
+                A stored-data overview of the invested book before any live checks run. It separates
+                securities, client residual cash, and execution reserve so the totals can be understood.
+              </InfoHint>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
               Immediate preflight from stored canonical records. Run health audit for live Yahoo, IRESS and
@@ -537,8 +567,13 @@ export default function SourceOfTruthPage() {
         <details open className="group rounded-2xl border border-white/10 bg-card/70">
           <summary className="flex cursor-pointer list-none items-center justify-between p-4">
             <div>
-              <div className="font-semibold">
+              <div className="flex items-center gap-2 font-semibold">
                 {exposureView === "clients" ? "Total client exposure" : "Actual basket model value"}
+                <InfoHint label="Book exposure">
+                  Client exposure adds every investor position in a strategy. Basket model value shows one
+                  strategy model unit only, including that strategy&apos;s CA. These are different scopes and
+                  should not have the same value.
+                </InfoHint>
               </div>
               <div className="text-xs text-muted-foreground">
                 {exposureView === "clients"
@@ -608,6 +643,11 @@ export default function SourceOfTruthPage() {
             <div>
               <div className="flex items-center gap-2 font-semibold">
                 Preflight watchlist
+                <InfoHint label="Preflight watchlist">
+                  Quick warnings found in stored canonical records, such as an old valuation date or an
+                  accounting equation that does not balance. Live prices and page checks only run after Get
+                  Truth or the general health audit.
+                </InfoHint>
                 <span
                   className={`rounded-full px-2 py-0.5 text-xs ${preflight.warnings.length ? "bg-red-500/15 text-red-300" : "bg-emerald-500/15 text-emerald-300"}`}
                 >
@@ -655,7 +695,13 @@ export default function SourceOfTruthPage() {
         <details open className="group min-w-0 rounded-2xl border border-white/10 bg-card/70">
           <summary className="flex cursor-pointer list-none items-center justify-between border-b border-white/10 p-4">
             <div>
-              <div className="font-semibold">Invested book directory</div>
+              <div className="flex items-center gap-2 font-semibold">
+                Invested book directory
+                <InfoHint label="Invested book directory">
+                  Every real invested client and strategy available for inspection. Client rows separate
+                  securities, residual CA, reserve, liabilities, P&amp;L, and personal YTD.
+                </InfoHint>
+              </div>
               <div className="text-xs text-muted-foreground">
                 Select a client or strategy for forensic truth
               </div>
@@ -785,8 +831,13 @@ export default function SourceOfTruthPage() {
         <aside className="rounded-2xl border border-violet-400/20 bg-card p-4 xl:sticky xl:top-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-violet-300">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-violet-300">
                 Get truth
+                <InfoHint label="Get Truth">
+                  Reprices the selected record now using fresh Yahoo requests, rebuilds the accounting
+                  equation, and compares the answer with canonical records and connected application pages.
+                  It does not change client data.
+                </InfoHint>
               </div>
               <h2 className="mt-1 text-lg font-semibold">{selected?.label || "Select a record"}</h2>
             </div>
@@ -823,6 +874,10 @@ export default function SourceOfTruthPage() {
               <div className="flex items-center gap-2 font-semibold">
                 <Sparkles className="h-4 w-4 animate-pulse text-cyan-300" />
                 Live forensic report
+                <InfoHint label="Live forensic report">
+                  The expandable result of the latest live calculation. Green means within tolerance, amber
+                  needs review, and red means a material mismatch or unavailable required source.
+                </InfoHint>
               </div>
               <div className="mt-1 text-xs text-muted-foreground">
                 {truth.kind === "general" ? "Whole-book health audit" : selected?.label} · generated{" "}
@@ -898,8 +953,13 @@ function HistoryChart({
     <div className="h-72 rounded-xl border border-white/10 bg-black/10 p-3">
       <div className="mb-2 flex items-center justify-between gap-3">
         <div>
-          <div className="text-xs font-semibold">
+          <div className="flex items-center gap-2 text-xs font-semibold">
             {view === "canonical" ? "Canonical basket history" : "Actual basket value chart"}
+            <InfoHint label="Basket history chart">
+              Canonical shows the published trusted history. Actual recalculates each date from the financial
+              components that were recorded for that date. A gap means the historical components were not
+              sufficient to prove that point.
+            </InfoHint>
           </div>
           <div className="text-[10px] text-muted-foreground">
             {view === "canonical"
@@ -973,7 +1033,13 @@ async function exportWorkbook(truth: ClientTruth) {
 function DeveloperLog({ lines }: { lines: string[] }) {
   return (
     <details className="rounded-xl border border-white/10 bg-black/40 p-3">
-      <summary className="cursor-pointer font-mono text-xs text-cyan-300">Developer evidence log</summary>
+      <summary className="flex cursor-pointer list-none items-center gap-2 font-mono text-xs text-cyan-300">
+        Developer evidence log
+        <InfoHint label="Developer evidence log">
+          Technical source names, timestamps, formulas, and variances used to diagnose a failed calculation.
+          This section is mainly for developers and auditors.
+        </InfoHint>
+      </summary>
       <pre className="mt-3 max-h-52 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-5 text-cyan-100/70">
         {lines.join("\n")}
       </pre>
@@ -986,7 +1052,13 @@ function SurfaceMatrix({ checks }: { checks: SurfaceCheck[] }) {
     <div className="rounded-xl border border-white/10 bg-black/10 p-3">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <div className="text-sm font-semibold">Live surface accuracy matrix</div>
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            Live surface accuracy matrix
+            <InfoHint label="Live surface accuracy matrix">
+              Compares what each connected OEM, factsheet, investor, IRESS, or Mint app surface currently
+              returns with the value that surface is contractually expected to show. It also reports latency.
+            </InfoHint>
+          </div>
           <div className="text-xs text-muted-foreground">
             What each page/provider is showing versus what its contract must supply
           </div>
@@ -1209,6 +1281,10 @@ function ClientAppCardAccuracy({ truth }: { truth: ClientTruth }) {
         <div>
           <div className="flex items-center gap-2 font-semibold">
             Client App Card Accuracy
+            <InfoHint label="Client App Card Accuracy">
+              Authenticates against the actual Mint DEV and LIVE deployments, finds this client&apos;s selected
+              strategy card, and compares its value and personal return with canonical client truth.
+            </InfoHint>
             <span className="rounded-full bg-cyan-400/10 px-2 py-0.5 text-[10px] uppercase text-cyan-300">
               Dev + Live
             </span>
@@ -1451,7 +1527,13 @@ function ForensicHistoryLab({ truth }: { truth: ClientTruth | StrategyTruth }) {
     <details open className="group rounded-xl border border-white/10 bg-black/10">
       <summary className="flex cursor-pointer list-none items-center justify-between p-4">
         <div>
-          <div className="font-semibold">Forensic history laboratory</div>
+          <div className="flex items-center gap-2 font-semibold">
+            Forensic history laboratory
+            <InfoHint label="Forensic history laboratory">
+              Switch between the unsafe raw value path, the trusted chain-preserved performance path, and an
+              accounting reconstruction. Rebalance markers explain where basket composition changed.
+            </InfoHint>
+          </div>
           <div className="text-xs text-muted-foreground">
             Raw legacy, canonical chain-preserved and independently reconstructed paths
           </div>
@@ -1578,7 +1660,13 @@ function ForensicHistoryLab({ truth }: { truth: ClientTruth | StrategyTruth }) {
           <details open className="group rounded-xl border border-white/10">
             <summary className="flex cursor-pointer list-none items-center justify-between p-3">
               <div>
-                <div className="text-xs font-semibold">Complete purchase and rebalance log</div>
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  Complete purchase and rebalance log
+                  <InfoHint label="Purchase and rebalance log">
+                    A dated ledger of client funding, purchases, sales, and rebalance events used to explain
+                    how quantities, cash, and the investment trail changed over time.
+                  </InfoHint>
+                </div>
                 <div className="text-[10px] text-muted-foreground">
                   Transactions and lot-changing rebalance events in one dated ledger
                 </div>
@@ -1695,7 +1783,13 @@ function TruthResult({ truth }: { truth: Truth }) {
         <div className="grid gap-3 md:grid-cols-2">
           <HistoryChart data={truth.history} />
           <div className="h-64 rounded-xl border border-white/10 p-3">
-            <div className="text-xs font-semibold">What makes up the strategy</div>
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              What makes up the strategy
+              <InfoHint label="Strategy composition">
+                The independently priced securities plus this strategy model&apos;s own CA. It is one model
+                basket—not the sum of cash belonging to every investor.
+              </InfoHint>
+            </div>
             <ResponsiveContainer width="100%" height="90%">
               <PieChart>
                 <Pie
@@ -1719,7 +1813,13 @@ function TruthResult({ truth }: { truth: Truth }) {
         </div>
         <ForensicHistoryLab truth={truth} />
         <div className={`rounded-xl border p-3 ${severityStyle[truth.severity]}`}>
-          <div className="font-semibold">Possible reasons for the difference</div>
+          <div className="flex items-center gap-2 font-semibold">
+            Possible reasons for the difference
+            <InfoHint label="Possible variance reasons">
+              Evidence-based explanations to investigate, such as different valuation times, missing quotes,
+              rebalance settlement, or cash changes. These are diagnostic possibilities, not automatic proof.
+            </InfoHint>
+          </div>
           <ul className="mt-2 list-disc space-y-1 pl-4 text-xs">
             {truth.reasons.map((reason) => (
               <li key={reason}>{reason}</li>
@@ -1727,7 +1827,13 @@ function TruthResult({ truth }: { truth: Truth }) {
           </ul>
         </div>
         <div className="rounded-xl border border-white/10 p-3 text-xs">
-          <div className="font-semibold">Formula</div>
+          <div className="flex items-center gap-2 font-semibold">
+            Formula
+            <InfoHint label="Strategy truth formula">
+              The accounting equation used for this result. CA belongs to the selected strategy model and is
+              kept separate from client execution reserve.
+            </InfoHint>
+          </div>
           <div className="mt-1 text-muted-foreground">
             {truth.live.formula}. CA belongs to this strategy model only.
           </div>
@@ -1766,7 +1872,13 @@ function TruthResult({ truth }: { truth: Truth }) {
       </div>
       <SurfaceMatrix checks={truth.surfaceChecks} />
       <div className="h-60 rounded-xl border border-white/10 p-3">
-        <div className="text-xs font-semibold">Every cent of live value</div>
+        <div className="flex items-center gap-2 text-xs font-semibold">
+          Every cent of live value
+          <InfoHint label="Every cent of live value">
+            A complete client-value split: priced securities plus residual CA plus unused reserve, less open
+            liabilities. These pieces should reconcile to the live total.
+          </InfoHint>
+        </div>
         <ResponsiveContainer width="100%" height="90%">
           <PieChart>
             <Pie
@@ -1834,7 +1946,13 @@ function TruthResult({ truth }: { truth: Truth }) {
           </div>
           <div className="mb-3 grid gap-3 md:grid-cols-2">
             <div className="rounded-xl border border-white/10 bg-black/10 p-3 text-xs">
-              <div className="font-semibold">Plain-English calculation</div>
+              <div className="flex items-center gap-2 font-semibold">
+                Plain-English calculation
+                <InfoHint label="Plain-English calculation">
+                  A non-technical explanation of how fresh prices, quantities, cash, reserve, and liabilities
+                  produce the client value and the reported difference.
+                </InfoHint>
+              </div>
               <p className="mt-2 leading-5 text-muted-foreground">
                 Every active quantity is multiplied by its fresh Yahoo price. We add this strategy&apos;s own
                 CA/residual and unused execution reserve, subtract open fee liabilities, then compare the
@@ -1874,7 +1992,13 @@ function TruthResult({ truth }: { truth: Truth }) {
       ))}
       <ForensicHistoryLab truth={truth} />
       <div className="rounded-xl border border-white/10 p-3">
-        <div className="text-xs font-semibold">Client activity timeline</div>
+        <div className="flex items-center gap-2 text-xs font-semibold">
+          Client activity timeline
+          <InfoHint label="Client activity timeline">
+            The dated cash and investment events associated with this client. Use it to connect value changes
+            to purchases, reversals, deposits, or other recorded activity.
+          </InfoHint>
+        </div>
         <div className="mt-3 max-h-64 space-y-3 overflow-y-auto">
           {truth.activity.map((event) => (
             <div
