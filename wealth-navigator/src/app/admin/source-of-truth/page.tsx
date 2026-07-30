@@ -57,6 +57,10 @@ type Strategy = {
   minInvestment: number;
   status?: string;
   investedPositions: number;
+  modelValueCents?: number | null;
+  modelSecuritiesCents?: number | null;
+  modelCaCents?: number | null;
+  modelAsOf?: string | null;
 };
 type Quote = {
   yahooSymbol: string;
@@ -283,6 +287,7 @@ export default function SourceOfTruthPage() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
+  const [exposureView, setExposureView] = useState<"clients" | "model">("clients");
 
   useEffect(() => {
     void fetch("/api/admin/source-of-truth", { cache: "no-store" })
@@ -345,8 +350,21 @@ export default function SourceOfTruthPage() {
         )
         .slice(0, 5),
       strategyExposure: [...strategyExposure].map(([name, cents]) => ({ name, cents })),
+      modelExposure: strategies
+        .filter((strategy) => Number(strategy.modelValueCents) > 0)
+        .map((strategy) => ({
+          name: strategy.name,
+          cents: Number(strategy.modelValueCents),
+          caCents: Number(strategy.modelCaCents ?? 0),
+          asOf: strategy.modelAsOf,
+        })),
+      modelLatestAsOf: strategies
+        .map((strategy) => strategy.modelAsOf)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1),
     };
-  }, [positions]);
+  }, [positions, strategies]);
 
   const runTruth = async (general = false) => {
     if (!general && !selected) return;
@@ -450,27 +468,69 @@ export default function SourceOfTruthPage() {
         <details open className="group rounded-2xl border border-white/10 bg-card/70">
           <summary className="flex cursor-pointer list-none items-center justify-between p-4">
             <div>
-              <div className="font-semibold">Book exposure</div>
-              <div className="text-xs text-muted-foreground">Canonical value by invested strategy</div>
+              <div className="font-semibold">
+                {exposureView === "clients" ? "Total client exposure" : "Actual basket model value"}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {exposureView === "clients"
+                  ? "Sum of every client position by strategy"
+                  : "Latest canonical complete value for one strategy basket, including model CA"}
+              </div>
             </div>
             <ChevronDown className="h-4 w-4 transition-transform duration-300 group-open:rotate-180" />
           </summary>
-          <div className="h-72 border-t border-white/10 p-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={preflight.strategyExposure}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" />
-                <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} tickFormatter={(value) => `R${Math.round(value / 100)}`} />
-                <Tooltip formatter={(value) => money(Number(value))} />
-                <Bar
-                  dataKey="cents"
-                  name="Canonical value"
-                  fill="#8b5cf6"
-                  radius={[6, 6, 0, 0]}
-                  animationDuration={1200}
-                />
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="border-t border-white/10 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="flex rounded-lg border border-white/10 bg-black/15 p-1">
+                {(["clients", "model"] as const).map((view) => (
+                  <button
+                    key={view}
+                    type="button"
+                    onClick={() => setExposureView(view)}
+                    className={`rounded-md px-3 py-1.5 text-xs transition ${
+                      exposureView === view
+                        ? "bg-violet-500 text-white shadow-lg shadow-violet-500/20"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {view === "clients" ? "Client exposure" : "Basket model value"}
+                  </button>
+                ))}
+              </div>
+              <div className="text-right text-[10px] text-muted-foreground">
+                {exposureView === "clients"
+                  ? "Includes each client’s residual and reserve"
+                  : `Model securities + strategy CA · latest ${preflight.modelLatestAsOf || "unavailable"}`}
+              </div>
+            </div>
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={exposureView === "clients" ? preflight.strategyExposure : preflight.modelExposure}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" />
+                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} tickFormatter={(value) => `R${Math.round(value / 100)}`} />
+                  <Tooltip formatter={(value) => money(Number(value))} />
+                  <Bar
+                    dataKey="cents"
+                    name={exposureView === "clients" ? "Total client exposure" : "Basket model value"}
+                    fill="#8b5cf6"
+                    radius={[6, 6, 0, 0]}
+                    animationDuration={1200}
+                  />
+                  {exposureView === "model" && (
+                    <Bar
+                      dataKey="caCents"
+                      name="Strategy CA included"
+                      fill="#22c55e"
+                      radius={[6, 6, 0, 0]}
+                      animationDuration={1200}
+                    />
+                  )}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         </details>
 

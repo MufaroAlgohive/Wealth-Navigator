@@ -107,7 +107,13 @@ async function testUsers(db: Db) {
 }
 
 async function listTruth(db: Db) {
-  const [{ data: latest, error }, { data: profiles }, { data: strategies }, excluded] = await Promise.all([
+  const [
+    { data: latest, error },
+    { data: profiles },
+    { data: strategies },
+    { data: strategyReturns },
+    excluded,
+  ] = await Promise.all([
     db
       .from("client_strategy_returns_effective_latest_c")
       .select(
@@ -115,11 +121,23 @@ async function listTruth(db: Db) {
       ),
     db.from("profiles").select("id,first_name,last_name,email,mint_number,created_at"),
     db.from("strategies_c").select("id,name,short_name,min_investment,status"),
+    db
+      .from("strategy_returns_effective_c")
+      .select(
+        "strategy_id,as_of_date,complete_value_cents,basket_value_cents,securities_value_cents,continuity_cash_cents",
+      )
+      .order("as_of_date", { ascending: false })
+      .limit(4000),
     testUsers(db),
   ]);
   if (error) throw new Error(error.message);
   const profileMap = new Map((profiles ?? []).map((row) => [text(row.id), row]));
   const strategyMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
+  const latestStrategyReturn = new Map<string, Row>();
+  for (const row of (strategyReturns ?? []) as Row[]) {
+    const id = text(row.strategy_id);
+    if (id && !latestStrategyReturn.has(id)) latestStrategyReturn.set(id, row);
+  }
   const positions = ((latest ?? []) as Row[])
     .filter((row) => !excluded.has(text(row.user_id)) && num(row.basket_value_cents) > 0)
     .map((row) => {
@@ -150,13 +168,20 @@ async function listTruth(db: Db) {
     });
   return {
     positions,
-    strategies: (strategies ?? []).map((strategy) => ({
-      id: strategy.id,
-      name: strategy.short_name || strategy.name,
-      minInvestment: strategy.min_investment,
-      status: strategy.status,
-      investedPositions: positions.filter((position) => position.strategyId === strategy.id).length,
-    })),
+    strategies: (strategies ?? []).map((strategy) => {
+      const model = latestStrategyReturn.get(text(strategy.id));
+      return {
+        id: strategy.id,
+        name: strategy.short_name || strategy.name,
+        minInvestment: strategy.min_investment,
+        status: strategy.status,
+        investedPositions: positions.filter((position) => position.strategyId === strategy.id).length,
+        modelValueCents: model?.complete_value_cents ?? model?.basket_value_cents ?? null,
+        modelSecuritiesCents: model?.securities_value_cents ?? null,
+        modelCaCents: model?.continuity_cash_cents ?? null,
+        modelAsOf: model?.as_of_date ?? null,
+      };
+    }),
   };
 }
 
