@@ -6,6 +6,7 @@ import {
   ChevronDown,
   DatabaseZap,
   Download,
+  ExternalLink,
   RefreshCw,
   Search,
   Sparkles,
@@ -87,6 +88,8 @@ type LiveHolding = {
 };
 type SurfaceCheck = {
   surface: string;
+  sourcePage?: string;
+  sourceEndpoint?: string;
   status: "ok" | "warning" | "urgent";
   latencyMs: number;
   actual: string;
@@ -146,7 +149,13 @@ type ClientTruth = {
   kind: "client";
   generatedAt: string;
   provider: string;
-  profile: { first_name?: string; last_name?: string; email?: string; mint_number?: string };
+  profile: {
+    id: string;
+    first_name?: string;
+    last_name?: string;
+    email?: string;
+    mint_number?: string;
+  };
   positions: TruthPosition[];
   strategyBenchmarks: Record<
     string,
@@ -1096,6 +1105,7 @@ function ClientAppCardAccuracy({ truth }: { truth: ClientTruth }) {
   );
   const [changes, setChanges] = useState<string[]>([]);
   const [hadPrevious, setHadPrevious] = useState(false);
+  const [openingPreview, setOpeningPreview] = useState<"dev" | "live" | null>(null);
   const strategyId = truth.positions[0]?.strategyId ?? "all";
   const snapshotKey = `mint-truth-card:${truth.profile.email || truth.profile.mint_number}:${strategyId}`;
 
@@ -1145,9 +1155,56 @@ function ClientAppCardAccuracy({ truth }: { truth: ClientTruth }) {
     }
   }, [checks, snapshotKey]);
 
+  const openVisualPreview = async (target: "dev" | "live") => {
+    const preview = window.open("/admin/studio/preview?loading=1", "_blank");
+    if (preview) {
+      preview.document.title = "Preparing client card preview";
+      preview.document.body.innerHTML =
+        '<div style="font-family:system-ui;padding:32px;color:#8b5cf6">Preparing secure Mint client view...</div>';
+    }
+    setOpeningPreview(target);
+    try {
+      const [portfolio, session] = await Promise.all([
+        fetch(`/api/admin/studio?action=portfolio&user_id=${encodeURIComponent(truth.profile.id)}`)
+          .then((response) => response.json()),
+        fetch("/api/admin/studio?action=impersonate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: truth.profile.id, target }),
+        }).then((response) => response.json()),
+      ]);
+      if (!session.ok || !session.actionLink) {
+        throw new Error(session.error || "Could not open the Mint client view");
+      }
+      const client = {
+        id: truth.profile.id,
+        name:
+          `${truth.profile.first_name || ""} ${truth.profile.last_name || ""}`.trim() ||
+          truth.profile.email ||
+          "Client",
+        email: truth.profile.email || null,
+      };
+      const payload = {
+        actionLink: session.actionLink,
+        environment: target,
+        client,
+        portfolio: portfolio.ok ? portfolio : null,
+      };
+      const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+      const previewUrl = `/admin/studio/preview#payload=${encodeURIComponent(encoded)}`;
+      if (preview) preview.location.href = previewUrl;
+      else window.open(previewUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      preview?.close();
+      window.alert(error instanceof Error ? error.message : "Could not open the Mint client view");
+    } finally {
+      setOpeningPreview(null);
+    }
+  };
+
   if (!checks.length) return null;
   return (
-    <details open className="group rounded-xl border border-cyan-400/20 bg-cyan-400/[0.035]">
+    <details className="group rounded-xl border border-cyan-400/20 bg-cyan-400/[0.035]">
       <summary className="flex cursor-pointer list-none items-center justify-between p-4">
         <div>
           <div className="flex items-center gap-2 font-semibold">
@@ -1157,7 +1214,8 @@ function ClientAppCardAccuracy({ truth }: { truth: ClientTruth }) {
             </span>
           </div>
           <div className="mt-1 text-xs text-muted-foreground">
-            Actual app card payloads versus this client&apos;s canonical position, including CA
+            Mint home-dashboard strategy cards versus this client&apos;s canonical position, including
+            CA. Open this panel only when you need the deployment-by-deployment evidence.
           </div>
         </div>
         <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
@@ -1169,6 +1227,18 @@ function ClientAppCardAccuracy({ truth }: { truth: ClientTruth }) {
               <div className="flex items-center justify-between gap-2">
                 <div className="font-semibold">{check.surface}</div>
                 <StatusLight severity={check.status} />
+              </div>
+              <div className="mt-2 rounded-lg border border-white/10 bg-black/10 p-2 text-[10px]">
+                <div className="font-semibold uppercase tracking-wide opacity-60">Source page</div>
+                <div className="mt-1">Mint {check.surface.includes("DEV") ? "DEV" : "LIVE"} home dashboard · strategy carousel</div>
+                {check.sourcePage && (
+                  <div className="mt-1 truncate font-mono text-cyan-200/80">{check.sourcePage}</div>
+                )}
+                {check.sourceEndpoint && (
+                  <div className="mt-1 truncate font-mono opacity-60">
+                    Data contract: {check.sourceEndpoint}
+                  </div>
+                )}
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                 <div>
@@ -1183,6 +1253,19 @@ function ClientAppCardAccuracy({ truth }: { truth: ClientTruth }) {
               {check.difference && (
                 <div className="mt-3 rounded-lg bg-black/15 p-2 text-xs">{check.difference}</div>
               )}
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="mt-3 h-8 text-xs"
+                disabled={openingPreview !== null}
+                onClick={() => openVisualPreview(check.surface.includes("DEV") ? "dev" : "live")}
+              >
+                <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                {openingPreview === (check.surface.includes("DEV") ? "dev" : "live")
+                  ? "Opening visual view..."
+                  : "Open visual client card"}
+              </Button>
             </div>
           ))}
         </div>

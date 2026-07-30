@@ -20,6 +20,8 @@ type Db = ReturnType<typeof createRetailServiceRoleClient>;
 type Row = Record<string, unknown>;
 type SurfaceCheck = {
   surface: string;
+  sourcePage?: string;
+  sourceEndpoint?: string;
   status: "ok" | "warning" | "urgent";
   latencyMs: number;
   actual: string;
@@ -830,7 +832,42 @@ async function probeJson(
   }
 }
 
-async function probeDeployment(req: Request, baseUrl: string | undefined, path: string) {
+async function issueClientAuditToken(email: string) {
+  if (!email) return { token: null, error: "Client email is unavailable" };
+  try {
+    const db = createRetailServiceRoleClient();
+    const { data: link, error: linkError } = await db.auth.admin.generateLink({
+      type: "magiclink",
+      email,
+    });
+    const tokenHash = (
+      link as { properties?: { hashed_token?: string } } | null
+    )?.properties?.hashed_token;
+    if (linkError || !tokenHash) {
+      return { token: null, error: linkError?.message || "Could not create an audit session" };
+    }
+    const { data: verified, error: verifyError } = await db.auth.verifyOtp({
+      token_hash: tokenHash,
+      type: "magiclink",
+    });
+    return {
+      token: verified.session?.access_token ?? null,
+      error: verifyError?.message,
+    };
+  } catch (error) {
+    return {
+      token: null,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function probeClientDeployment(
+  baseUrl: string | undefined,
+  path: string,
+  accessToken: string | null,
+  authError?: string,
+) {
   if (!baseUrl) {
     return {
       ok: false,
@@ -840,6 +877,15 @@ async function probeDeployment(req: Request, baseUrl: string | undefined, path: 
       error: "Deployment URL is not configured",
     };
   }
+  if (!accessToken) {
+    return {
+      ok: false,
+      status: 0,
+      latencyMs: 0,
+      body: {} as Row,
+      error: authError || "Could not create the read-only client audit session",
+    };
+  }
   const started = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 25_000);
@@ -847,7 +893,7 @@ async function probeDeployment(req: Request, baseUrl: string | undefined, path: 
     const response = await fetch(new URL(path, baseUrl), {
       cache: "no-store",
       signal: controller.signal,
-      headers: { cookie: req.headers.get("cookie") ?? "" },
+      headers: { Authorization: `Bearer ${accessToken}` },
     });
     const body = (await response.json().catch(() => ({}))) as Row;
     return { ok: response.ok, status: response.status, latencyMs: Date.now() - started, body };
@@ -880,17 +926,33 @@ async function auditSurfaces(
   const factsheetPath = strategyId
     ? `/api/admin/factsheets?action=detail&id=${encodeURIComponent(strategyId)}`
     : "/api/admin/factsheets?action=list";
-  const clientCardPath = clientId ? `/api/overall-portfolio?investor=${encodeURIComponent(clientId)}` : "";
+  // The Mint home carousel is fed by this authenticated retail endpoint.
+  // `/api/overall-portfolio` belongs to OEM and must never be probed on Mint.
+  const clientCardPath = clientId ? "/api/user/strategies" : "";
+  const clientAuditSession =
+    truth.kind === "client"
+      ? await issueClientAuditToken(text(truth.profile.email))
+      : { token: null, error: undefined };
   const [strategyPage, factsheet, investors, iress, devClientCard, liveClientCard] = await Promise.all([
     probeJson(req, "/api/strategies?part=core"),
     probeJson(req, factsheetPath),
     probeJson(req, "/api/admin/investors/data"),
     probeJson(req, "/api/iress/health"),
     clientCardPath
-      ? probeDeployment(req, process.env.MINT_APP_URL_DEV, clientCardPath)
+      ? probeClientDeployment(
+          process.env.MINT_APP_URL_DEV,
+          clientCardPath,
+          clientAuditSession.token,
+          clientAuditSession.error,
+        )
       : Promise.resolve(null),
     clientCardPath
-      ? probeDeployment(req, process.env.MINT_APP_URL_LIVE, clientCardPath)
+      ? probeClientDeployment(
+          process.env.MINT_APP_URL_LIVE,
+          clientCardPath,
+          clientAuditSession.token,
+          clientAuditSession.error,
+        )
       : Promise.resolve(null),
   ]);
   const checks: SurfaceCheck[] = [];
@@ -1106,17 +1168,31 @@ async function auditSurfaces(
       configuredUrl: string | undefined,
     ) => {
       const cardRows = Array.isArray(probe.body.strategies) ? (probe.body.strategies as Row[]) : [];
-      const card = cardRows.find((row) => text(row.strategyId) === strategyId);
+      const card = cardRows.find(
+        (row) => text(row.strategyId || row.id) === strategyId,
+      );
+      const cardValueRands = card
+        ? num(card.currentMarketValue ?? card.currentValue)
+        : null;
+      const cardInvestedRands = card ? num(card.investedAmount) : null;
+      const cardReturnPct =
+        cardValueRands != null && cardInvestedRands != null && cardInvestedRands > 0
+          ? ((cardValueRands - cardInvestedRands) / cardInvestedRands) * 100
+          : null;
+      const expectedReturnPct =
+        expectedPosition.investedCents > 0
+          ? (expectedPosition.canonicalPnlCents / expectedPosition.investedCents) * 100
+          : null;
       const valueComparison = comparison(
         "Client card current value",
-        card ? Math.round(num(card.basketValue) * 100) : null,
+        cardValueRands == null ? null : Math.round(cardValueRands * 100),
         expectedPosition.canonicalValueCents,
         "cents",
       );
-      const ytdComparison = comparison(
-        "Client card personal YTD",
-        card?.ytdPct == null ? null : num(card.ytdPct),
-        returnScopes.investorsExpectedYtd,
+      const returnComparison = comparison(
+        "Client card all-time return",
+        cardReturnPct,
+        expectedReturnPct,
         "percent",
       );
       const caComparison = comparison(
@@ -1125,23 +1201,27 @@ async function auditSurfaces(
         expectedPosition.residualCents,
         "cents",
       );
-      const comparisons = [valueComparison, ytdComparison, caComparison];
+      const comparisons = [valueComparison, returnComparison, caComparison];
       const hasUrgent = comparisons.some((row) => row.status === "urgent");
       const hasWarning = comparisons.some((row) => row.status === "warning");
       checks.push({
         surface: `Client app ${label} card`,
+        sourcePage: `${configuredUrl?.replace(/\/$/, "") || ""}/`,
+        sourceEndpoint: `${configuredUrl?.replace(/\/$/, "") || ""}${clientCardPath}`,
         status: !probe.ok || !card || hasUrgent ? "urgent" : hasWarning ? "warning" : "ok",
         latencyMs: probe.latencyMs,
         actual: !probe.ok
           ? probe.error || `HTTP ${probe.status}`
           : card
-            ? `${moneyText(Math.round(num(card.basketValue) * 100))}; personal YTD ${
-                card.ytdPct == null ? "not supplied" : `${num(card.ytdPct).toFixed(2)}%`
+            ? `${moneyText(Math.round((cardValueRands ?? 0) * 100))}; all-time return ${
+                cardReturnPct == null ? "not supplied" : `${cardReturnPct.toFixed(2)}%`
               }`
             : "Selected strategy card is missing",
         expected: `${moneyText(expectedPosition.canonicalValueCents)} including ${moneyText(
           expectedPosition.residualCents,
-        )} CA; personal YTD ${returnScopes.investorsExpectedYtd?.toFixed(2) ?? "n/a"}%`,
+        )} CA and ${moneyText(expectedPosition.reserveCents)} reserve; all-time return ${
+          expectedReturnPct?.toFixed(2) ?? "n/a"
+        }%`,
         difference: !card
           ? "The selected client strategy card is absent"
           : caComparison.actual == null && expectedPosition.residualCents > 0
