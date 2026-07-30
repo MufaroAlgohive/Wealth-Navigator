@@ -88,9 +88,18 @@ type SurfaceCheck = {
   expected: string;
   difference?: string;
   evidence: string[];
+  comparisons: Array<{
+    metric: string;
+    actual: number | null;
+    expected: number | null;
+    difference: number | null;
+    unit: "percent" | "cents";
+    status: "ok" | "warning" | "urgent";
+  }>;
 };
 type TruthPosition = {
   key: string;
+  strategyId: string;
   strategy: string;
   familyMemberId?: string;
   asOf?: string;
@@ -131,6 +140,10 @@ type ClientTruth = {
   provider: string;
   profile: { first_name?: string; last_name?: string; email?: string; mint_number?: string };
   positions: TruthPosition[];
+  strategyBenchmarks: Record<
+    string,
+    { asOf?: string; ytdPct?: number; allTimePct?: number; caCents?: number; completeValueCents?: number }
+  >;
   totals: Record<string, number>;
   audit: { severity: "ok" | "warning" | "urgent"; urgent: number; warnings: number };
   activity: Array<{
@@ -848,6 +861,56 @@ function SurfaceMatrix({ checks }: { checks: SurfaceCheck[] }) {
           </tbody>
         </table>
       </div>
+      <div className="mt-4 space-y-3">
+        {checks
+          .filter((check) => check.comparisons.length > 0)
+          .map((check) => (
+            <details
+              key={`${check.surface}-comparisons`}
+              open
+              className="group rounded-lg border border-white/10"
+            >
+              <summary className="flex cursor-pointer list-none items-center justify-between p-3 text-xs font-semibold">
+                <span>{check.surface} accuracy comparisons</span>
+                <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="overflow-x-auto border-t border-white/10">
+                <table className="w-full min-w-[560px] text-xs">
+                  <thead className="bg-white/[0.035] text-left text-[10px] uppercase text-muted-foreground">
+                    <tr>
+                      <th className="p-2">Metric</th>
+                      <th className="p-2 text-right">Page currently shows</th>
+                      <th className="p-2 text-right">Canonical should show</th>
+                      <th className="p-2 text-right">Difference</th>
+                      <th className="p-2">Accuracy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {check.comparisons.map((row) => {
+                      const format = (value: number | null) =>
+                        value == null ? "Not available" : row.unit === "cents" ? money(value) : pct(value);
+                      return (
+                        <tr key={row.metric} className="border-t border-white/5">
+                          <td className="p-2 font-medium">{row.metric}</td>
+                          <td className="p-2 text-right tabular-nums">{format(row.actual)}</td>
+                          <td className="p-2 text-right tabular-nums">{format(row.expected)}</td>
+                          <td
+                            className={`p-2 text-right tabular-nums ${row.status === "urgent" ? "text-red-400" : row.status === "warning" ? "text-amber-400" : "text-emerald-400"}`}
+                          >
+                            {format(row.difference)}
+                          </td>
+                          <td className="p-2">
+                            <StatusLight severity={row.status} />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          ))}
+      </div>
       <details className="mt-3 rounded-lg border border-white/10 p-2">
         <summary className="cursor-pointer font-mono text-[10px] text-cyan-300">
           Surface probe evidence
@@ -859,6 +922,130 @@ function SurfaceMatrix({ checks }: { checks: SurfaceCheck[] }) {
         </pre>
       </details>
     </div>
+  );
+}
+
+function ClientAppCardAccuracy({ truth }: { truth: ClientTruth }) {
+  const checks = useMemo(
+    () => truth.surfaceChecks.filter((check) => check.surface.startsWith("Client app ")),
+    [truth.surfaceChecks],
+  );
+  const [changes, setChanges] = useState<string[]>([]);
+  const [hadPrevious, setHadPrevious] = useState(false);
+  const strategyId = truth.positions[0]?.strategyId ?? "all";
+  const snapshotKey = `mint-truth-card:${truth.profile.email || truth.profile.mint_number}:${strategyId}`;
+
+  useEffect(() => {
+    const current = checks.map((check) => ({
+      surface: check.surface,
+      actual: check.actual,
+      comparisons: check.comparisons.map((row) => ({
+        metric: row.metric,
+        actual: row.actual,
+        expected: row.expected,
+      })),
+    }));
+    try {
+      const previous = JSON.parse(window.localStorage.getItem(snapshotKey) || "null") as
+        | typeof current
+        | null;
+      const detected: string[] = [];
+      setHadPrevious(Boolean(previous));
+      if (previous) {
+        for (const surface of current) {
+          const oldSurface = previous.find((row) => row.surface === surface.surface);
+          if (!oldSurface) {
+            detected.push(`${surface.surface} appeared for the first time.`);
+            continue;
+          }
+          for (const row of surface.comparisons) {
+            const old = oldSurface.comparisons.find((item) => item.metric === row.metric);
+            if (old?.actual !== row.actual) {
+              const format = (value: number | null | undefined) =>
+                value == null
+                  ? "not available"
+                  : row.metric.includes("YTD")
+                    ? `${value.toFixed(4)}%`
+                    : money(value);
+              detected.push(
+                `${surface.surface} · ${row.metric}: ${format(old?.actual)} → ${format(row.actual)}`,
+              );
+            }
+          }
+        }
+      }
+      setChanges(detected);
+      window.localStorage.setItem(snapshotKey, JSON.stringify(current));
+    } catch {
+      setChanges(["This browser could not persist the previous card fingerprint."]);
+    }
+  }, [checks, snapshotKey]);
+
+  if (!checks.length) return null;
+  return (
+    <details open className="group rounded-xl border border-cyan-400/20 bg-cyan-400/[0.035]">
+      <summary className="flex cursor-pointer list-none items-center justify-between p-4">
+        <div>
+          <div className="flex items-center gap-2 font-semibold">
+            Client App Card Accuracy
+            <span className="rounded-full bg-cyan-400/10 px-2 py-0.5 text-[10px] uppercase text-cyan-300">
+              Dev + Live
+            </span>
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            Actual app card payloads versus this client&apos;s canonical position, including CA
+          </div>
+        </div>
+        <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="space-y-4 border-t border-white/10 p-4">
+        <div className="grid gap-3 lg:grid-cols-2">
+          {checks.map((check) => (
+            <div key={check.surface} className={`rounded-xl border p-4 ${severityStyle[check.status]}`}>
+              <div className="flex items-center justify-between gap-2">
+                <div className="font-semibold">{check.surface}</div>
+                <StatusLight severity={check.status} />
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <div className="text-[10px] uppercase opacity-60">App currently shows</div>
+                  <div className="mt-1 font-medium">{check.actual}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase opacity-60">Canonical should show</div>
+                  <div className="mt-1 font-medium">{check.expected}</div>
+                </div>
+              </div>
+              {check.difference && (
+                <div className="mt-3 rounded-lg bg-black/15 p-2 text-xs">{check.difference}</div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="rounded-xl border border-white/10 bg-black/15 p-3">
+          <div className="text-xs font-semibold">Card change detector</div>
+          {changes.length ? (
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-amber-200">
+              {changes.map((change) => (
+                <li key={change}>{change}</li>
+              ))}
+            </ul>
+          ) : hadPrevious ? (
+            <div className="mt-2 text-xs text-emerald-300">
+              No card-field change detected since the previous truth run in this browser.
+            </div>
+          ) : (
+            <div className="mt-2 text-xs text-cyan-300">
+              Initial dev/live card baseline recorded. The next truth run will show field-level changes.
+            </div>
+          )}
+          <div className="mt-2 text-[10px] text-muted-foreground">
+            Fingerprint recorded at {when(truth.generatedAt)}. Expected market-value movement is shown as a
+            change, while accuracy status still depends on the canonical comparison.
+          </div>
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -1152,6 +1339,7 @@ function TruthResult({ truth }: { truth: Truth }) {
           ]),
         ]}
       />
+      <ClientAppCardAccuracy truth={truth} />
     </div>
   );
 }

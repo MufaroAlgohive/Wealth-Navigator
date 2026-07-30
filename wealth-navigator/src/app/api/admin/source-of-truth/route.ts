@@ -7,6 +7,7 @@ import {
   calculateStrategyCashAsset,
   classifyDifference,
   possibleDifferenceReasons,
+  returnScopeBenchmarks,
 } from "@/lib/truth/calculations";
 import { fetchYahooTruthQuote } from "@/lib/truth/yahoo-live";
 
@@ -23,11 +24,44 @@ type SurfaceCheck = {
   expected: string;
   difference?: string;
   evidence: string[];
+  comparisons: Array<{
+    metric: string;
+    actual: number | null;
+    expected: number | null;
+    difference: number | null;
+    unit: "percent" | "cents";
+    status: "ok" | "warning" | "urgent";
+  }>;
 };
 
 const num = (value: unknown) => (Number.isFinite(Number(value)) ? Number(value) : 0);
 const text = (value: unknown) => String(value ?? "").trim();
 const moneyText = (cents: number) => `R ${(cents / 100).toFixed(2)}`;
+const comparison = (
+  metric: string,
+  actual: number | null,
+  expected: number | null,
+  unit: "percent" | "cents",
+) => {
+  const difference = actual == null || expected == null ? null : actual - expected;
+  const tolerance = unit === "percent" ? 0.01 : 1;
+  const urgent = unit === "percent" ? 0.25 : Math.max(100, Math.abs(expected ?? 0) * 0.0025);
+  return {
+    metric,
+    actual,
+    expected,
+    difference,
+    unit,
+    status:
+      difference == null
+        ? ("warning" as const)
+        : Math.abs(difference) > urgent
+          ? ("urgent" as const)
+          : Math.abs(difference) > tolerance
+            ? ("warning" as const)
+            : ("ok" as const),
+  };
+};
 const ownerKey = (userId: unknown, familyId: unknown, strategyId: unknown) =>
   `${text(userId)}:${text(familyId)}:${text(strategyId)}`;
 const chained = (rows: Row[]) =>
@@ -208,7 +242,7 @@ async function clientTruth(db: Db, userId: string) {
           .is("segment_end_date", null)
       : Promise.resolve({ data: [] }),
   ]);
-  const [{ data: history }, { data: activity }] = await Promise.all([
+  const [{ data: history }, { data: activity }, { data: strategyHistory }] = await Promise.all([
     db
       .from("client_strategy_returns_effective_c")
       .select(
@@ -224,6 +258,14 @@ async function clientTruth(db: Db, userId: string) {
       .eq("user_id", userId)
       .order("transaction_date", { ascending: false })
       .limit(250),
+    strategyIds.length
+      ? db
+          .from("strategy_returns_effective_c")
+          .select("strategy_id,as_of_date,ytd_pct,all_pct,continuity_cash_cents,complete_value_cents")
+          .in("strategy_id", strategyIds)
+          .order("as_of_date", { ascending: false })
+          .limit(2000)
+      : Promise.resolve({ data: [] }),
   ]);
   const secMap = new Map((securities ?? []).map((row) => [text(row.id), row]));
   const stratMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
@@ -259,6 +301,11 @@ async function clientTruth(db: Db, userId: string) {
     };
   });
   const transactionMap = new Map((transactions ?? []).map((row) => [text(row.id), row]));
+  const strategyBenchmarks = new Map<string, Row>();
+  for (const row of (strategyHistory ?? []) as Row[]) {
+    const id = text(row.strategy_id);
+    if (id && !strategyBenchmarks.has(id)) strategyBenchmarks.set(id, row);
+  }
   const byPosition = ((canonical ?? []) as Row[]).map((position) => {
     const key = ownerKey(position.user_id, position.family_member_id, position.strategy_id);
     const positionHoldings = rows.filter(
@@ -393,6 +440,18 @@ async function clientTruth(db: Db, userId: string) {
     provider: "Yahoo Finance live chart API",
     profile,
     positions: byPosition,
+    strategyBenchmarks: Object.fromEntries(
+      [...strategyBenchmarks].map(([id, row]) => [
+        id,
+        {
+          asOf: row.as_of_date,
+          ytdPct: row.ytd_pct,
+          allTimePct: row.all_pct,
+          caCents: row.continuity_cash_cents,
+          completeValueCents: row.complete_value_cents,
+        },
+      ]),
+    ),
     activity: (activity ?? []).map((row) => ({
       id: row.id,
       date: row.transaction_date || row.created_at,
@@ -596,6 +655,40 @@ async function probeJson(
   }
 }
 
+async function probeDeployment(req: Request, baseUrl: string | undefined, path: string) {
+  if (!baseUrl) {
+    return {
+      ok: false,
+      status: 0,
+      latencyMs: 0,
+      body: {} as Row,
+      error: "Deployment URL is not configured",
+    };
+  }
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25_000);
+  try {
+    const response = await fetch(new URL(path, baseUrl), {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: { cookie: req.headers.get("cookie") ?? "" },
+    });
+    const body = (await response.json().catch(() => ({}))) as Row;
+    return { ok: response.ok, status: response.status, latencyMs: Date.now() - started, body };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      latencyMs: Date.now() - started,
+      body: {} as Row,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function auditSurfaces(
   req: Request,
   truth: Awaited<
@@ -612,11 +705,18 @@ async function auditSurfaces(
   const factsheetPath = strategyId
     ? `/api/admin/factsheets?action=detail&id=${encodeURIComponent(strategyId)}`
     : "/api/admin/factsheets?action=list";
-  const [strategyPage, factsheet, investors, iress] = await Promise.all([
+  const clientCardPath = clientId ? `/api/overall-portfolio?investor=${encodeURIComponent(clientId)}` : "";
+  const [strategyPage, factsheet, investors, iress, devClientCard, liveClientCard] = await Promise.all([
     probeJson(req, "/api/strategies?part=core"),
     probeJson(req, factsheetPath),
     probeJson(req, "/api/admin/investors/data"),
     probeJson(req, "/api/iress/health"),
+    clientCardPath
+      ? probeDeployment(req, process.env.MINT_APP_URL_DEV, clientCardPath)
+      : Promise.resolve(null),
+    clientCardPath
+      ? probeDeployment(req, process.env.MINT_APP_URL_LIVE, clientCardPath)
+      : Promise.resolve(null),
   ]);
   const checks: SurfaceCheck[] = [];
   const strategyRows = Array.isArray(strategyPage.body.strategies)
@@ -624,21 +724,28 @@ async function auditSurfaces(
     : [];
   const strategyPageRow = strategyRows.find((row) => text(row.id) === strategyId);
   const strategyVisible = !strategyId || Boolean(strategyPageRow);
-  const expectedYtd =
+  const clientStrategyBenchmark =
+    truth.kind === "client" ? ((truth.strategyBenchmarks[strategyId] ?? {}) as Row) : null;
+  const expectedStrategyYtd =
     truth.kind === "strategy"
       ? num(truth.canonical?.ytd_pct)
       : truth.kind === "client"
-        ? num(truth.positions[0]?.returns.ytdPct)
+        ? num(clientStrategyBenchmark?.ytdPct)
         : null;
+  const expectedClientYtd = truth.kind === "client" ? num(truth.positions[0]?.returns.ytdPct) : null;
+  const returnScopes = returnScopeBenchmarks(expectedClientYtd, expectedStrategyYtd);
   const strategyYtdDifference =
-    expectedYtd == null || !strategyPageRow ? null : num(strategyPageRow.ytd) - expectedYtd;
+    returnScopes.strategyPageExpectedYtd == null || !strategyPageRow
+      ? null
+      : num(strategyPageRow.ytd) - returnScopes.strategyPageExpectedYtd;
   const strategyValueMismatch = strategyYtdDifference != null && Math.abs(strategyYtdDifference) > 0.01;
+  const strategyValueCritical = strategyYtdDifference != null && Math.abs(strategyYtdDifference) > 0.25;
   checks.push({
     surface: "Strategy page",
     status:
-      !strategyPage.ok || !strategyVisible || strategyValueMismatch
+      !strategyPage.ok || !strategyVisible || strategyValueCritical
         ? "urgent"
-        : strategyPage.latencyMs > 10_000
+        : strategyValueMismatch || strategyPage.latencyMs > 10_000
           ? "warning"
           : "ok",
     latencyMs: strategyPage.latencyMs,
@@ -657,9 +764,17 @@ async function auditSurfaces(
       "endpoint=/api/strategies?part=core",
       `selected_strategy_present=${strategyVisible}`,
       `page_ytd=${strategyPageRow?.ytd ?? "n/a"}`,
-      `expected_ytd=${expectedYtd ?? "n/a"}`,
+      `expected_strategy_ytd=${expectedStrategyYtd ?? "n/a"}`,
       `latency_ms=${strategyPage.latencyMs}`,
       ...(strategyPage.error ? [`error=${strategyPage.error}`] : []),
+    ],
+    comparisons: [
+      comparison(
+        "Model strategy YTD",
+        strategyPageRow ? num(strategyPageRow.ytd) : null,
+        returnScopes.strategyPageExpectedYtd,
+        "percent",
+      ),
     ],
   });
   const factsheetOk = factsheet.ok && factsheet.body.ok !== false;
@@ -668,8 +783,15 @@ async function auditSurfaces(
   const factsheetReturns = Array.isArray(factsheet.body.returns) ? (factsheet.body.returns as Row[]) : [];
   const factsheetLatest = factsheetReturns.at(-1);
   const factsheetYtdDifference =
-    expectedYtd == null || !factsheetLatest ? null : num(factsheetLatest.ytd_pct) - expectedYtd;
-  const expectedStrategyCa = truth.kind === "strategy" ? num(truth.canonical?.continuity_cash_cents) : null;
+    returnScopes.factsheetExpectedYtd == null || !factsheetLatest
+      ? null
+      : num(factsheetLatest.ytd_pct) - returnScopes.factsheetExpectedYtd;
+  const expectedStrategyCa =
+    truth.kind === "strategy"
+      ? num(truth.canonical?.continuity_cash_cents)
+      : truth.kind === "client"
+        ? num(clientStrategyBenchmark?.caCents)
+        : null;
   const factsheetCash = factsheet.body.cashAsset as Row | undefined;
   const factsheetCaCents = factsheetCash ? num(factsheetCash.value) * 100 : null;
   const factsheetValueMismatch =
@@ -677,12 +799,17 @@ async function auditSurfaces(
     (expectedStrategyCa != null &&
       factsheetCaCents != null &&
       Math.abs(factsheetCaCents - expectedStrategyCa) > 1);
+  const factsheetValueCritical =
+    (factsheetYtdDifference != null && Math.abs(factsheetYtdDifference) > 0.25) ||
+    (expectedStrategyCa != null &&
+      factsheetCaCents != null &&
+      Math.abs(factsheetCaCents - expectedStrategyCa) > Math.max(100, Math.abs(expectedStrategyCa) * 0.0025));
   checks.push({
     surface: "Factsheet",
     status:
-      !factsheetOk || !factsheetVisible || factsheetValueMismatch
+      !factsheetOk || !factsheetVisible || factsheetValueCritical
         ? "urgent"
-        : factsheet.latencyMs > 10_000
+        : factsheetValueMismatch || factsheet.latencyMs > 10_000
           ? "warning"
           : "ok",
     latencyMs: factsheet.latencyMs,
@@ -706,11 +833,20 @@ async function auditSurfaces(
       `selected_strategy_present=${factsheetVisible}`,
       `cash_asset_present=${Boolean(factsheet.body.cashAsset)}`,
       `factsheet_ytd=${factsheetLatest?.ytd_pct ?? "n/a"}`,
-      `expected_ytd=${expectedYtd ?? "n/a"}`,
+      `expected_strategy_ytd=${expectedStrategyYtd ?? "n/a"}`,
       `factsheet_ca_cents=${factsheetCaCents ?? "n/a"}`,
       `expected_ca_cents=${expectedStrategyCa ?? "n/a"}`,
       `latency_ms=${factsheet.latencyMs}`,
       ...(factsheet.error ? [`error=${factsheet.error}`] : []),
+    ],
+    comparisons: [
+      comparison(
+        "Model strategy YTD",
+        factsheetLatest ? num(factsheetLatest.ytd_pct) : null,
+        returnScopes.factsheetExpectedYtd,
+        "percent",
+      ),
+      comparison("Strategy CA", factsheetCaCents, expectedStrategyCa, "cents"),
     ],
   });
   const investorHoldings = Array.isArray(investors.body.holdings) ? (investors.body.holdings as Row[]) : [];
@@ -731,12 +867,21 @@ async function auditSurfaces(
       ? null
       : num(investorLatest.basket_value_cents ?? investorLatest.basket_value) - expectedClientValue;
   const investorValueMismatch = investorValueDifference != null && Math.abs(investorValueDifference) > 1;
+  const investorYtdDifference =
+    returnScopes.investorsExpectedYtd == null || !investorLatest
+      ? null
+      : num(investorLatest.ytd_pct) - returnScopes.investorsExpectedYtd;
+  const investorYtdMismatch = investorYtdDifference != null && Math.abs(investorYtdDifference) > 0.01;
+  const investorCritical =
+    (investorValueDifference != null &&
+      Math.abs(investorValueDifference) > Math.max(100, Math.abs(expectedClientValue ?? 0) * 0.0025)) ||
+    (investorYtdDifference != null && Math.abs(investorYtdDifference) > 0.25);
   checks.push({
     surface: "Investors",
     status:
-      !investors.ok || !investorVisible || investorValueMismatch
+      !investors.ok || !investorVisible || investorCritical
         ? "urgent"
-        : investors.latencyMs > 10_000
+        : investorValueMismatch || investorYtdMismatch || investors.latencyMs > 10_000
           ? "warning"
           : "ok",
     latencyMs: investors.latencyMs,
@@ -748,18 +893,102 @@ async function auditSurfaces(
       : "All real invested clients must load",
     difference: !investorVisible
       ? "Selected client is absent from Investors data"
-      : investorValueMismatch
-        ? `Investors page contract differs from canonical by ${moneyText(investorValueDifference ?? 0)}`
+      : investorValueMismatch || investorYtdMismatch
+        ? `Investors differs: value ${moneyText(investorValueDifference ?? 0)}; personal YTD ${
+            investorYtdDifference?.toFixed(4) ?? "n/a"
+          } pp`
         : "Selected client value agrees with canonical truth",
     evidence: [
       "endpoint=/api/admin/investors/data",
       `selected_client_present=${investorVisible}`,
       `investors_value_cents=${investorLatest?.basket_value_cents ?? investorLatest?.basket_value ?? "n/a"}`,
       `expected_value_cents=${expectedClientValue ?? "n/a"}`,
+      `investors_personal_ytd=${investorLatest?.ytd_pct ?? "n/a"}`,
+      `expected_client_ytd=${expectedClientYtd ?? "n/a"}`,
       `latency_ms=${investors.latencyMs}`,
       ...(investors.error ? [`error=${investors.error}`] : []),
     ],
+    comparisons: [
+      comparison(
+        "Client basket value",
+        investorLatest ? num(investorLatest.basket_value_cents ?? investorLatest.basket_value) : null,
+        expectedClientValue,
+        "cents",
+      ),
+      comparison(
+        "Client personal YTD",
+        investorLatest ? num(investorLatest.ytd_pct) : null,
+        returnScopes.investorsExpectedYtd,
+        "percent",
+      ),
+    ],
   });
+  if (truth.kind === "client" && strategyId && truth.positions[0]) {
+    const expectedPosition = truth.positions[0];
+    const appendClientCardCheck = (
+      label: "DEV" | "LIVE",
+      probe: NonNullable<typeof devClientCard>,
+      configuredUrl: string | undefined,
+    ) => {
+      const cardRows = Array.isArray(probe.body.strategies) ? (probe.body.strategies as Row[]) : [];
+      const card = cardRows.find((row) => text(row.strategyId) === strategyId);
+      const valueComparison = comparison(
+        "Client card current value",
+        card ? Math.round(num(card.basketValue) * 100) : null,
+        expectedPosition.canonicalValueCents,
+        "cents",
+      );
+      const ytdComparison = comparison(
+        "Client card personal YTD",
+        card?.ytdPct == null ? null : num(card.ytdPct),
+        returnScopes.investorsExpectedYtd,
+        "percent",
+      );
+      const caComparison = comparison(
+        "Client strategy CA / residual",
+        null,
+        expectedPosition.residualCents,
+        "cents",
+      );
+      const comparisons = [valueComparison, ytdComparison, caComparison];
+      const hasUrgent = comparisons.some((row) => row.status === "urgent");
+      const hasWarning = comparisons.some((row) => row.status === "warning");
+      checks.push({
+        surface: `Client app ${label} card`,
+        status: !probe.ok || !card || hasUrgent ? "urgent" : hasWarning ? "warning" : "ok",
+        latencyMs: probe.latencyMs,
+        actual: !probe.ok
+          ? probe.error || `HTTP ${probe.status}`
+          : card
+            ? `${moneyText(Math.round(num(card.basketValue) * 100))}; personal YTD ${
+                card.ytdPct == null ? "not supplied" : `${num(card.ytdPct).toFixed(2)}%`
+              }`
+            : "Selected strategy card is missing",
+        expected: `${moneyText(expectedPosition.canonicalValueCents)} including ${moneyText(
+          expectedPosition.residualCents,
+        )} CA; personal YTD ${returnScopes.investorsExpectedYtd?.toFixed(2) ?? "n/a"}%`,
+        difference: !card
+          ? "The selected client strategy card is absent"
+          : caComparison.actual == null && expectedPosition.residualCents > 0
+            ? "The app contract does not expose CA separately, so its inclusion cannot be proven from the card payload"
+            : "Card fields agree with canonical client truth",
+        evidence: [
+          `deployment=${label}`,
+          `base_url=${configuredUrl || "not configured"}`,
+          `endpoint=${clientCardPath}`,
+          `source=${text(probe.body.source)}`,
+          `as_of=${text(probe.body.asOf)}`,
+          `strategy_id=${strategyId}`,
+          `card_present=${Boolean(card)}`,
+          `latency_ms=${probe.latencyMs}`,
+          ...(probe.error ? [`error=${probe.error}`] : []),
+        ],
+        comparisons,
+      });
+    };
+    if (devClientCard) appendClientCardCheck("DEV", devClientCard, process.env.MINT_APP_URL_DEV);
+    if (liveClientCard) appendClientCardCheck("LIVE", liveClientCard, process.env.MINT_APP_URL_LIVE);
+  }
   const iressHealthy = iress.ok && iress.body.ok === true;
   checks.push({
     surface: "IRESS",
@@ -778,6 +1007,7 @@ async function auditSurfaces(
       `latency_ms=${iress.latencyMs}`,
       ...(iress.error ? [`error=${iress.error}`] : []),
     ],
+    comparisons: [],
   });
   const yahooEvidence =
     truth.kind === "client"
@@ -805,6 +1035,7 @@ async function auditSurfaces(
       yahooEvidence.length > 0
         ? yahooEvidence.map((quote) => `${quote.yahooSymbol}@${quote.exchangeTime}`).slice(0, 50)
         : ["General audit quote failures are surfaced as Urgent entity findings"],
+    comparisons: [],
   });
   return checks;
 }

@@ -5,6 +5,7 @@ import {
   calculateStrategyCashAsset,
   classifyDifference,
   possibleDifferenceReasons,
+  returnScopeBenchmarks,
 } from "@/lib/truth/calculations";
 import { yahooPriceToCents } from "@/lib/truth/yahoo-live";
 
@@ -56,5 +57,13 @@ describe("source-of-truth calculations", () => {
     expect(reasons.join(" ")).toContain("Residual cash changed");
     expect(reasons.join(" ")).toContain("execution reserve");
     expect(reasons.join(" ")).toContain("accrued fees");
+  });
+
+  it("never compares personal client YTD with strategy-page or factsheet YTD", () => {
+    expect(returnScopeBenchmarks(-5.08, 5.274)).toEqual({
+      investorsExpectedYtd: -5.08,
+      strategyPageExpectedYtd: 5.274,
+      factsheetExpectedYtd: 5.274,
+    });
   });
 });

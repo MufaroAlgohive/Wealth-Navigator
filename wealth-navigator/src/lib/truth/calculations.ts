@@ -76,3 +76,11 @@ export function possibleDifferenceReasons(input: {
   );
   return reasons;
 }
+
+export function returnScopeBenchmarks(clientYtd: number | null, strategyYtd: number | null) {
+  return {
+    investorsExpectedYtd: clientYtd,
+    strategyPageExpectedYtd: strategyYtd,
+    factsheetExpectedYtd: strategyYtd,
+  };
+}
