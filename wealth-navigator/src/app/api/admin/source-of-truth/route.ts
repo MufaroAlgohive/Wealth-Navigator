@@ -833,7 +833,7 @@ async function probeJson(
 }
 
 async function issueClientAuditToken(email: string) {
-  if (!email) return { token: null, error: "Client email is unavailable" };
+  if (!email) return { token: null, userId: null, error: "Client email is unavailable" };
   try {
     const db = createRetailServiceRoleClient();
     const { data: link, error: linkError } = await db.auth.admin.generateLink({
@@ -844,7 +844,11 @@ async function issueClientAuditToken(email: string) {
       link as { properties?: { hashed_token?: string } } | null
     )?.properties?.hashed_token;
     if (linkError || !tokenHash) {
-      return { token: null, error: linkError?.message || "Could not create an audit session" };
+      return {
+        token: null,
+        userId: null,
+        error: linkError?.message || "Could not create an audit session",
+      };
     }
     const { data: verified, error: verifyError } = await db.auth.verifyOtp({
       token_hash: tokenHash,
@@ -852,11 +856,13 @@ async function issueClientAuditToken(email: string) {
     });
     return {
       token: verified.session?.access_token ?? null,
+      userId: verified.user?.id ?? null,
       error: verifyError?.message,
     };
   } catch (error) {
     return {
       token: null,
+      userId: null,
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -932,7 +938,15 @@ async function auditSurfaces(
   const clientAuditSession =
     truth.kind === "client"
       ? await issueClientAuditToken(text(truth.profile.email))
-      : { token: null, error: undefined };
+      : { token: null, userId: null, error: undefined };
+  if (
+    truth.kind === "client" &&
+    clientAuditSession.userId &&
+    clientAuditSession.userId !== clientId
+  ) {
+    clientAuditSession.token = null;
+    clientAuditSession.error = `Audit session resolved to ${clientAuditSession.userId}, expected ${clientId}`;
+  }
   const [strategyPage, factsheet, investors, iress, devClientCard, liveClientCard] = await Promise.all([
     probeJson(req, "/api/strategies?part=core"),
     probeJson(req, factsheetPath),
@@ -1031,13 +1045,17 @@ async function auditSurfaces(
         : null;
   const factsheetCash = factsheet.body.cashAsset as Row | undefined;
   const factsheetCaCents = factsheetCash ? num(factsheetCash.value) * 100 : null;
+  const factsheetCaMissing =
+    expectedStrategyCa != null && expectedStrategyCa > 0 && factsheetCaCents == null;
   const factsheetValueMismatch =
     (factsheetYtdDifference != null && Math.abs(factsheetYtdDifference) > 0.01) ||
+    factsheetCaMissing ||
     (expectedStrategyCa != null &&
       factsheetCaCents != null &&
       Math.abs(factsheetCaCents - expectedStrategyCa) > 1);
   const factsheetValueCritical =
     (factsheetYtdDifference != null && Math.abs(factsheetYtdDifference) > 0.25) ||
+    factsheetCaMissing ||
     (expectedStrategyCa != null &&
       factsheetCaCents != null &&
       Math.abs(factsheetCaCents - expectedStrategyCa) > Math.max(100, Math.abs(expectedStrategyCa) * 0.0025));
@@ -1060,8 +1078,10 @@ async function auditSurfaces(
       ? "Selected strategy detail is missing"
       : factsheetValueMismatch
         ? `Mismatch: YTD delta ${factsheetYtdDifference?.toFixed(4) ?? "n/a"} pp; CA delta ${
-            expectedStrategyCa == null || factsheetCaCents == null
-              ? "n/a"
+            factsheetCaMissing
+              ? "missing from factsheet"
+              : expectedStrategyCa == null || factsheetCaCents == null
+                ? "n/a"
               : moneyText(factsheetCaCents - expectedStrategyCa)
           }`
         : "Factsheet YTD and strategy CA agree with canonical truth",
@@ -1167,14 +1187,30 @@ async function auditSurfaces(
       probe: NonNullable<typeof devClientCard>,
       configuredUrl: string | undefined,
     ) => {
-      const cardRows = Array.isArray(probe.body.strategies) ? (probe.body.strategies as Row[]) : [];
+      const nestedData = (probe.body.data ?? {}) as Row;
+      const nestedPortfolio = (probe.body.portfolio ?? {}) as Row;
+      const cardRows = Array.isArray(probe.body.strategies)
+        ? (probe.body.strategies as Row[])
+        : Array.isArray(nestedData.strategies)
+          ? (nestedData.strategies as Row[])
+          : Array.isArray(nestedPortfolio.strategies)
+            ? (nestedPortfolio.strategies as Row[])
+            : [];
       const card = cardRows.find(
-        (row) => text(row.strategyId || row.id) === strategyId,
+        (row) => text(row.strategyId || row.strategy_id || row.id) === strategyId,
       );
       const cardValueRands = card
-        ? num(card.currentMarketValue ?? card.currentValue)
+        ? num(
+            card.currentMarketValue ??
+              card.currentValue ??
+              card.current_value ??
+              card.basketValue ??
+              card.basket_value,
+          )
         : null;
-      const cardInvestedRands = card ? num(card.investedAmount) : null;
+      const cardInvestedRands = card
+        ? num(card.investedAmount ?? card.invested_amount ?? card.invested)
+        : null;
       const cardReturnPct =
         cardValueRands != null && cardInvestedRands != null && cardInvestedRands > 0
           ? ((cardValueRands - cardInvestedRands) / cardInvestedRands) * 100
@@ -1234,6 +1270,11 @@ async function auditSurfaces(
           `source=${text(probe.body.source)}`,
           `as_of=${text(probe.body.asOf)}`,
           `strategy_id=${strategyId}`,
+          `audit_session_user_id=${clientAuditSession.userId || "unavailable"}`,
+          `returned_card_ids=${cardRows
+            .map((row) => text(row.strategyId || row.strategy_id || row.id))
+            .filter(Boolean)
+            .join(",") || "none"}`,
           `card_present=${Boolean(card)}`,
           `latency_ms=${probe.latencyMs}`,
           ...(probe.error ? [`error=${probe.error}`] : []),
