@@ -1184,6 +1184,158 @@ function HistoryChart({
   );
 }
 
+function ClientStrategyComparison({
+  position,
+  modelHistory,
+}: {
+  position: TruthPosition;
+  modelHistory: ClientTruth["strategyModelHistory"][string];
+}) {
+  const comparison = useMemo(() => {
+    const clientRows = [...position.history]
+      .filter((row) => row.date && Number.isFinite(Number(row.allTimePct)))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const strategyRows = [...(modelHistory ?? [])]
+      .filter((row) => row.date && Number.isFinite(Number(row.allTimePct)))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (!clientRows.length || !strategyRows.length) return [];
+
+    let strategyIndex = -1;
+    const aligned = clientRows.flatMap((client) => {
+      while (true) {
+        const nextStrategy = strategyRows[strategyIndex + 1];
+        if (!nextStrategy || nextStrategy.date > client.date) break;
+        strategyIndex += 1;
+      }
+      const strategy = strategyRows[strategyIndex];
+      return strategy ? [{ client, strategy }] : [];
+    });
+    const firstAligned = aligned[0];
+    if (!firstAligned) return [];
+
+    const clientStartGrowth = 1 + Number(firstAligned.client.allTimePct) / 100;
+    const strategyStartGrowth = 1 + Number(firstAligned.strategy.allTimePct) / 100;
+    if (clientStartGrowth <= 0 || strategyStartGrowth <= 0) return [];
+
+    return aligned.map(({ client, strategy }) => {
+      const clientPct = ((1 + Number(client.allTimePct) / 100) / clientStartGrowth - 1) * 100;
+      const strategyPct = ((1 + Number(strategy.allTimePct) / 100) / strategyStartGrowth - 1) * 100;
+      return {
+        date: client.date,
+        clientPct: Number(clientPct.toFixed(4)),
+        strategyPct: Number(strategyPct.toFixed(4)),
+        differencePp: Number((clientPct - strategyPct).toFixed(4)),
+      };
+    });
+  }, [modelHistory, position.history]);
+
+  const latest = comparison.at(-1);
+  let largest = comparison[0];
+  for (const row of comparison) {
+    if (!largest || Math.abs(row.differencePp) > Math.abs(largest.differencePp)) largest = row;
+  }
+  const cashWeightPct = position.canonicalValueCents
+    ? ((position.residualCents + position.reserveCents) / position.canonicalValueCents) * 100
+    : 0;
+  const severity = !latest
+    ? "warning"
+    : Math.abs(latest.differencePp) >= 1
+      ? "urgent"
+      : Math.abs(latest.differencePp) >= 0.25
+        ? "warning"
+        : "ok";
+
+  return (
+    <details open className={`rounded-xl border p-3 ${severityStyle[severity]}`}>
+      <summary className="cursor-pointer list-none">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              Client vs actual strategy performance
+              <InfoHint label="Client versus strategy performance">
+                Both canonical return chains are rebased to zero on the client&apos;s first comparable date. The
+                purple line is what this client experienced; the cyan line is the strategy model over those same
+                dates; amber is the exact percentage-point gap.
+              </InfoHint>
+            </div>
+            <div className="text-[10px] text-muted-foreground">
+              Like-for-like fee-free return comparison · click to collapse
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-right text-xs tabular-nums">
+            <StatusLight severity={severity} />
+            <span>Latest gap {pct(latest?.differencePp)}</span>
+            <span>Largest gap {pct(largest?.differencePp)}</span>
+          </div>
+        </div>
+      </summary>
+      {comparison.length > 1 ? (
+        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(240px,1fr)]">
+          <div className="h-80 rounded-lg border border-white/10 bg-black/10 p-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={comparison}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#ffffff12" />
+                <XAxis dataKey="date" tick={{ fontSize: 9 }} minTickGap={28} />
+                <YAxis tick={{ fontSize: 9 }} tickFormatter={(value) => `${Number(value).toFixed(1)}%`} />
+                <Tooltip
+                  formatter={(value, name) => [
+                    `${Number(value).toFixed(4)} ${name === "Difference" ? "pp" : "%"}`,
+                    name,
+                  ]}
+                />
+                <Legend />
+                <ReferenceLine y={0} stroke="#ffffff55" />
+                {position.rebalanceDiagnostics.map((row) => (
+                  <ReferenceLine
+                    key={row.id}
+                    x={row.date}
+                    stroke="#f59e0b66"
+                    strokeDasharray="3 3"
+                    label={{ value: "R", fill: "#fbbf24", fontSize: 9 }}
+                  />
+                ))}
+                <Line type="monotone" dataKey="clientPct" name="Client" stroke="#a78bfa" strokeWidth={2.5} dot={false} />
+                <Line type="monotone" dataKey="strategyPct" name="Actual strategy" stroke="#22d3ee" strokeWidth={2.5} dot={false} />
+                <Line
+                  type="monotone"
+                  dataKey="differencePp"
+                  name="Difference"
+                  stroke="#f59e0b"
+                  strokeWidth={1.5}
+                  dot={{ r: 2, fill: "#f59e0b" }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="space-y-2 rounded-lg border border-white/10 bg-black/10 p-3 text-xs">
+            <div className="font-semibold">Why can the lines differ?</div>
+            <p className="leading-5 text-muted-foreground">
+              The client starts on their own entry date and owns real filled quantities. Their strategy-specific CA
+              and reserve are included in value but remain flat while securities move. The model represents the
+              strategy itself, so entry timing, cash weight, fills, quantity drift, missing valuation dates, or an
+              unneutralised rebalance can create a gap.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <Stat label="Client CA + reserve" value={money(position.residualCents + position.reserveCents)} />
+              <Stat label="Cash weight" value={pct(cashWeightPct)} />
+              <Stat label="Compared dates" value={String(comparison.length)} />
+              <Stat label="Rebalances marked" value={String(position.rebalanceDiagnostics.length)} />
+            </div>
+            <div className="rounded-md bg-white/5 p-2 text-[10px] leading-4 text-muted-foreground">
+              Thresholds: under 0.25 pp healthy, 0.25–0.99 pp warning, 1.00 pp or more urgent. An “R” marker is a
+              rebalance boundary; it should not cause a discontinuity in either canonical line.
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/5 p-3 text-xs text-amber-200">
+          At least two overlapping client and strategy valuation dates are required for this comparison.
+        </div>
+      )}
+    </details>
+  );
+}
+
 async function exportWorkbook(truth: ClientTruth) {
   const XLSX = await import("xlsx");
   const book = XLSX.utils.book_new();
@@ -2110,6 +2262,12 @@ function TruthResult({ truth }: { truth: Truth }) {
           </div>
           <div className="mt-3">
             <HistoryChart data={position.history} />
+          </div>
+          <div className="mt-3">
+            <ClientStrategyComparison
+              position={position}
+              modelHistory={truth.strategyModelHistory[position.strategyId] ?? []}
+            />
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Stat label="Independent live value" value={money(position.liveValueCents)} />

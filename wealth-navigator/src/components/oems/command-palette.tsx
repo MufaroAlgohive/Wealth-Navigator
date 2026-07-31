@@ -35,8 +35,15 @@ const NAV: { title: string; items: NavItem[] }[] = [
     title: "Cockpit",
     items: [
       { to: "/oems",             label: "Overview" },
-      { to: "/oems/blotter",     label: "Blotter" },
       { to: "/strategies",       label: "Strategies" },
+    ],
+  },
+  {
+    title: "Orders & Cash",
+    items: [
+      { to: "/admin/order-book", label: "Order Book" },
+      { to: "/oems/blotter", label: "Blotter" },
+      { to: "/admin/gifting", label: "Gifting" },
     ],
   },
   {
