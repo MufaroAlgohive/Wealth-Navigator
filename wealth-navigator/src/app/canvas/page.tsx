@@ -1,5 +1,6 @@
 "use client";
 
+import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { BrainCircuit } from "lucide-react";
 
@@ -8,7 +9,7 @@ import { FyncaCanvas } from "@/components/canvas/fynca-canvas";
 import { PageCanvas } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
 
-export default function CanvasPage() {
+function CanvasContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -49,5 +50,21 @@ export default function CanvasPage() {
         <FyncaCanvas sym={sym} boardId={board} />
       </div>
     </PageCanvas>
+  );
+}
+
+export default function CanvasPage() {
+  return (
+    <Suspense
+      fallback={
+        <PageCanvas>
+          <div className="glass-panel p-6 text-caption text-muted-foreground">
+            Loading canvas…
+          </div>
+        </PageCanvas>
+      }
+    >
+      <CanvasContent />
+    </Suspense>
   );
 }

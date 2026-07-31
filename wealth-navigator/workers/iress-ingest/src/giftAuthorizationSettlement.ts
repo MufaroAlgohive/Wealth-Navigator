@@ -58,7 +58,7 @@ export const GIFT_AUTH_STATUS = Object.freeze({
   FAILED:                  "FAILED",
 });
 
-const TERMINAL = new Set([
+const TERMINAL = new Set<string>([
   GIFT_AUTH_STATUS.FILLED,
   GIFT_AUTH_STATUS.CANCELLED,
   GIFT_AUTH_STATUS.AUTO_CANCELLED,
@@ -86,6 +86,8 @@ export interface GiftAuthRow {
   reserved_amount_cents: number;
   payment_method: string;
   status: string;
+  fill_price_cents: number | null;
+  paid_amount_cents: number | null;
   pending_decision_deadline: string | null;
   oems_order_audit_id: string | null;
   oems_order_id: string | null;
