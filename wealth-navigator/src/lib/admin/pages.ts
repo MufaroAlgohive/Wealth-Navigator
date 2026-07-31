@@ -18,6 +18,7 @@ export type AdminPageKey =
   | "strategies"
   | "factsheets"
   | "investors"
+  | "gifting"
   | "orderbook"
   | "eft"
   | "mint-mornings"
@@ -45,6 +46,7 @@ export const ADMIN_PAGES: readonly AdminPage[] = [
   { key: "strategies",       path: "/admin/strategies",       label: "Strategies",         section: "INVESTMENTS",    adminOnly: false, icon: "Layers" },
   { key: "factsheets",       path: "/admin/factsheets",       label: "Factsheets",         section: "INVESTMENTS",    adminOnly: false, icon: "FileText" },
   { key: "investors",        path: "/admin/investors",        label: "Investors",          section: "INVESTMENTS",    adminOnly: false, icon: "TrendingUp" },
+  { key: "gifting",          path: "/admin/gifting",          label: "Gifting",            section: "INVESTMENTS",    adminOnly: true,  icon: "Gift" },
   { key: "orderbook",        path: "/admin/order-book",       label: "Order Book",         section: "INVESTMENTS",    adminOnly: false, icon: "BookOpen" },
   { key: "eft",              path: "/admin/eft",              label: "EFT Payments",       section: "BANKING",        adminOnly: false, icon: "Banknote" },
   { key: "mint-mornings",    path: "/admin/mint-mornings",    label: "Mint Mornings",      section: "COMMUNICATIONS", adminOnly: true,  icon: "Sunrise" },
