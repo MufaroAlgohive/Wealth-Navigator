@@ -96,27 +96,14 @@ export async function GET() {
     return (result.data ?? []) as Row[];
   };
 
-  const [authorizationRows, claimRows] = await Promise.all([
+  const [authorizationRows, claimRows, itemRows, registryRows, contributionRows] = await Promise.all([
     safeTable("gift_authorizations"),
     safeTable("gift_claims"),
+    safeTable("gift_registry_items"),
+    safeTable("gift_events"),
+    safeTable("gift_contributions"),
   ]);
-
-  const itemIds = unique(authorizationRows.map((row) => row.registry_item_id));
-  let itemRows: Row[] = [];
-  if (itemIds.length) {
-    const result = await db.from("gift_registry_items").select("*").in("id", itemIds);
-    if (result.error) notices.push(`gift_registry_items: ${result.error.message}`);
-    else itemRows = (result.data ?? []) as Row[];
-  }
   const itemById = byId(itemRows);
-
-  const registryIds = unique(itemRows.map((row) => row.gift_event_id));
-  let registryRows: Row[] = [];
-  if (registryIds.length) {
-    const result = await db.from("gift_events").select("*").in("id", registryIds);
-    if (result.error) notices.push(`gift_events: ${result.error.message}`);
-    else registryRows = (result.data ?? []) as Row[];
-  }
   const registryById = byId(registryRows);
 
   const authIds = unique(authorizationRows.map((row) => row.id));
@@ -141,12 +128,16 @@ export async function GET() {
     ...authorizationRows.flatMap((row) => [row.gifter_user_id, row.recipient_user_id]),
     ...claimRows.flatMap((row) => [row.sender_user_id, row.recipient_user_id]),
     ...registryRows.map((row) => row.creator_user_id),
+    ...contributionRows.map((row) => row.gifter_user_id),
+    ...registryRows
+      .filter((row) => text(row.beneficiary_type)?.toUpperCase() === "OTHER")
+      .map((row) => row.beneficiary_ref),
   ]);
   let profileRows: Row[] = [];
   if (userIds.length) {
     const result = await db
       .from("profiles")
-      .select("id,email,first_name,last_name,mint_number")
+      .select("id,email,first_name,last_name,mint_number,is_test")
       .in("id", userIds);
     if (result.error) {
       const fallback = await db.from("profiles").select("id,email,first_name,last_name").in("id", userIds);
@@ -156,7 +147,25 @@ export async function GET() {
   }
   const profileById = byId(profileRows);
 
-  const familyIds = unique(authorizationRows.map((row) => row.recipient_family_member_id));
+  let testWalletRows: Row[] = [];
+  if (userIds.length) {
+    const result = await db.from("wallets").select("user_id,status").in("user_id", userIds).eq("status", "test");
+    if (result.error) notices.push(`wallets test scope: ${result.error.message}`);
+    else testWalletRows = (result.data ?? []) as Row[];
+  }
+  const testWalletUsers = new Set(unique(testWalletRows.map((row) => row.user_id)));
+  const isTestUser = (id: unknown) => {
+    const userId = text(id);
+    return Boolean(userId && (profileById.get(userId)?.is_test === true || testWalletUsers.has(userId)));
+  };
+  const environmentFor = (...ids: unknown[]) => (ids.some(isTestUser) ? "uat" : "live");
+
+  const familyIds = unique([
+    ...authorizationRows.map((row) => row.recipient_family_member_id),
+    ...registryRows
+      .filter((row) => text(row.beneficiary_type)?.toUpperCase() === "CHILD")
+      .map((row) => row.beneficiary_ref),
+  ]);
   let familyRows: Row[] = [];
   if (familyIds.length) {
     const result = await db.from("family_members").select("id,first_name,last_name").in("id", familyIds);
@@ -304,6 +313,17 @@ export async function GET() {
         recipientHoldingId: text(row.recipient_holding_id),
         claimId: linkedClaimId,
       },
+      environment: environmentFor(row.gifter_user_id, row.recipient_user_id),
+      execution: {
+        reachedOrderBook: Boolean(row.oems_order_audit_id || row.oems_order_id),
+        state: row.oems_order_audit_id || row.oems_order_id ? status : status === "authorized" ? "awaiting_forward" : "not_routed",
+        reason:
+          row.oems_order_audit_id || row.oems_order_id
+            ? "OEM order reference recorded"
+            : status === "authorized"
+              ? "Authorized, but no OEM order reference was recorded"
+              : "No OEM order-book evidence is attached to this authorization",
+      },
       events: eventsByAuth.get(id) ?? [],
     };
   });
@@ -382,6 +402,12 @@ export async function GET() {
           fillReference: null,
           recipientHoldingId: text(row.holding_id),
         },
+        environment: environmentFor(row.sender_user_id, row.recipient_user_id),
+        execution: {
+          reachedOrderBook: false,
+          state: "direct_allocation",
+          reason: "Direct gift claims currently allocate holdings without creating an OEM order",
+        },
         events: [],
       };
     });
@@ -390,11 +416,83 @@ export async function GET() {
     String(b.timestamps.created || "").localeCompare(String(a.timestamps.created || "")),
   );
 
+  const contributionsByItem = new Map<string, Row[]>();
+  for (const row of contributionRows) {
+    const itemId = text(row.registry_item_id);
+    if (itemId) contributionsByItem.set(itemId, [...(contributionsByItem.get(itemId) ?? []), row]);
+  }
+  const wishlists = registryRows.map((registry) => {
+    const id = text(registry.id) || crypto.randomUUID();
+    const creatorId = text(registry.creator_user_id);
+    const beneficiaryType = text(registry.beneficiary_type)?.toUpperCase() || "SELF";
+    const beneficiaryId = text(registry.beneficiary_ref);
+    const beneficiary =
+      beneficiaryType === "CHILD"
+        ? familyById.get(beneficiaryId || "")
+        : beneficiaryType === "SELF"
+          ? profileById.get(creatorId || "")
+          : profileById.get(beneficiaryId || "");
+    const items = itemRows
+      .filter((item) => text(item.gift_event_id) === id)
+      .map((item) => {
+        const itemId = text(item.id) || crypto.randomUUID();
+        const assetKey = text(item.isin);
+        const strategy = strategyById.get(assetKey || "");
+        const security = securityByKey.get(assetKey || "");
+        const contributions = contributionsByItem.get(itemId) ?? [];
+        return {
+          id: itemId,
+          type: text(item.instrument_type)?.toLowerCase() || (strategy ? "basket" : "security"),
+          symbol: text(security?.symbol) || text(strategy?.short_name) || assetKey,
+          name: text(strategy?.name) || text(security?.name) || assetKey || "Unknown asset",
+          targetQuantity: number(item.target_quantity) ?? 0,
+          filledQuantity: number(item.filled_quantity) ?? 0,
+          reservedQuantity: number(item.reserved_quantity) ?? 0,
+          status: text(item.status)?.toLowerCase() || "unknown",
+          contributionCount: contributions.length,
+          contributedRands: contributions.reduce(
+            (sum, contribution) =>
+              sum + (centsToRands(contribution.executed_amount_cents ?? contribution.quoted_amount_cents) ?? 0),
+            0,
+          ),
+        };
+      });
+    const relatedUserIds = [creatorId, beneficiaryType === "OTHER" ? beneficiaryId : null];
+    return {
+      id,
+      title: text(registry.title) || "Untitled wishlist",
+      occasion: text(registry.custom_occasion) || text(registry.occasion),
+      status: text(registry.status)?.toLowerCase() || "unknown",
+      beneficiaryType,
+      creator: {
+        id: creatorId,
+        name: profileName(profileById.get(creatorId || "")),
+        email: text(profileById.get(creatorId || "")?.email),
+      },
+      beneficiary: {
+        id: beneficiaryId || creatorId,
+        name: profileName(beneficiary, registry.beneficiary_display_name),
+        email: text(beneficiary?.email),
+      },
+      eventDate: text(registry.event_date),
+      expiresAt: text(registry.expiry_at),
+      createdAt: text(registry.created_at),
+      environment: environmentFor(...relatedUserIds),
+      itemCount: items.length,
+      contributionCount: items.reduce((sum, item) => sum + item.contributionCount, 0),
+      contributedRands: items.reduce((sum, item) => sum + item.contributedRands, 0),
+      targetQuantity: items.reduce((sum, item) => sum + item.targetQuantity, 0),
+      filledQuantity: items.reduce((sum, item) => sum + item.filledQuantity, 0),
+      items,
+    };
+  });
+
   return NextResponse.json({
     ok: true,
     source: "retail-supabase",
     generatedAt: new Date().toISOString(),
     gifts,
+    wishlists,
     notices,
     lineage: [
       { table: "gift_claims", purpose: "Direct gift identity, recipient claim and expiry state" },
