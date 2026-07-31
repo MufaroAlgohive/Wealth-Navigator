@@ -3,59 +3,63 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Search, ClipboardList } from "lucide-react";
+import { CalendarDays, ClipboardList, Search, X } from "lucide-react";
 import { toast } from "sonner";
 
-import {
-  GlassBadge,
-  GlassKpi,
-  GlassSection,
-} from "@/components/oems/primitives/glass";
+import { GlassBadge, GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { ConfirmDestructive } from "@/components/oems/confirm-destructive";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useIress } from "@/lib/iress/provider";
 import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
+import {
+  filterBlotterOrders,
+  type BlotterDateMode,
+  type BlotterStatusFilter,
+} from "@/lib/orders/blotter-filters";
 import { NewOrderDialog } from "./new-order-dialog";
 import type { Order, OrderState } from "@/types/iress";
 
-const STATES: Array<{ key: OrderState | "ALL"; label: string }> = [
-  { key: "ALL",       label: "All" },
-  { key: "WORKING",   label: "Working" },
-  { key: "PARTIAL",   label: "Partial" },
-  { key: "FILLED",    label: "Filled" },
+const STATUS_FILTERS: Array<{ key: BlotterStatusFilter; label: string }> = [
+  { key: "FILLED", label: "Filled" },
+  { key: "WORKING", label: "Working" },
   { key: "CANCELLED", label: "Cancelled" },
-  { key: "REJECTED",  label: "Rejected" },
+  { key: "REJECTED", label: "Rejected" },
 ];
 
 export default function BlotterPage() {
   const { data, client } = useIress();
   const realDataOnly = isRealDataOnlyClient();
   const qc = useQueryClient();
-  const [state, setState] = useState<OrderState | "ALL">("ALL");
+  const [statuses, setStatuses] = useState<Set<BlotterStatusFilter>>(new Set());
+  const [dateMode, setDateMode] = useState<BlotterDateMode>("ALL");
+  const [dateValue, setDateValue] = useState("");
   const [q, setQ] = useState("");
 
-  const seedOrdersQ = useQuery({ queryKey: ["orders"], queryFn: () => data.orders(), enabled: !realDataOnly });
+  const seedOrdersQ = useQuery({
+    queryKey: ["orders"],
+    queryFn: () => data.orders(),
+    enabled: !realDataOnly,
+  });
   const auditOrdersQ = useAuditOrders("ALL", realDataOnly);
   const orders = realDataOnly ? (auditOrdersQ.data?.orders ?? []) : (seedOrdersQ.data ?? []);
   const ordersLoading = realDataOnly ? auditOrdersQ.isLoading : seedOrdersQ.isLoading;
 
   const filtered = useMemo(() => {
-    return orders.filter((o) =>
-      (state === "ALL" || o.state === state) &&
-      (q === "" || o.symbol.toLowerCase().includes(q.toLowerCase()) || o.strategy.toLowerCase().includes(q.toLowerCase()) || o.id.toLowerCase().includes(q.toLowerCase())));
-  }, [orders, state, q]);
+    return filterBlotterOrders(orders, { statuses, dateMode, dateValue, query: q });
+  }, [orders, statuses, dateMode, dateValue, q]);
 
-  const counts = STATES.reduce<Record<string, number>>((acc, s) => {
-    acc[s.key] = s.key === "ALL" ? orders.length : orders.filter((o) => o.state === s.key).length;
+  const counts = orders.reduce<Record<string, number>>((acc, order) => {
+    acc[order.state] = (acc[order.state] ?? 0) + 1;
     return acc;
-  }, {} as Record<string, number>);
+  }, {});
   const workingCount = counts.WORKING ?? 0;
   const partialCount = counts.PARTIAL ?? 0;
 
@@ -67,7 +71,9 @@ export default function BlotterPage() {
   const cancelAll = useMutation({
     mutationFn: async () => {
       const working = orders.filter((o) => o.state === "WORKING" || o.state === "PARTIAL");
-      await Promise.all(working.map((o) => client.orderDelete({ ServiceSessionKey: "MOCK-S", OrderNumber: o.id })));
+      await Promise.all(
+        working.map((o) => client.orderDelete({ ServiceSessionKey: "MOCK-S", OrderNumber: o.id })),
+      );
       return working.length;
     },
     onSuccess: (n) => {
@@ -133,31 +139,110 @@ export default function BlotterPage() {
 
         <div className="relative mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           <GlassKpi label="Total" value={String(orders.length)} accent="primary" />
-          <GlassKpi label="Working" value={String(workingCount)} accent={workingCount > 0 ? "primary" : "default"} />
-          <GlassKpi label="Partial" value={String(partialCount)} accent={partialCount > 0 ? "negative" : "default"} />
+          <GlassKpi
+            label="Working"
+            value={String(workingCount)}
+            accent={workingCount > 0 ? "primary" : "default"}
+          />
+          <GlassKpi
+            label="Partial"
+            value={String(partialCount)}
+            accent={partialCount > 0 ? "negative" : "default"}
+          />
           <GlassKpi label="Filled" value={String(counts.FILLED ?? 0)} accent="positive" />
           <GlassKpi label="Cancelled" value={String(counts.CANCELLED ?? 0)} />
-          <GlassKpi label="Rejected" value={String(counts.REJECTED ?? 0)} accent={(counts.REJECTED ?? 0) > 0 ? "negative" : "default"} />
+          <GlassKpi
+            label="Rejected"
+            value={String(counts.REJECTED ?? 0)}
+            accent={(counts.REJECTED ?? 0) > 0 ? "negative" : "default"}
+          />
         </div>
       </header>
 
       <div className="flex flex-wrap items-center gap-3">
-        <Tabs value={state} onValueChange={(v) => setState(v as typeof state)}>
-          <TabsList className="glass-inset h-auto gap-0.5 p-1">
-            {STATES.map((s) => (
-              <TabsTrigger
-                key={s.key}
-                value={s.key}
-                className="group h-7 gap-1.5 rounded-lg px-3 text-[11px] font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-[0_2px_12px_hsl(var(--primary)/0.35)]"
+        <div className="glass-inset flex flex-wrap gap-1 p-1">
+          {STATUS_FILTERS.map((status) => {
+            const active = statuses.has(status.key);
+            const count =
+              status.key === "WORKING"
+                ? (counts.WORKING ?? 0) + (counts.PARTIAL ?? 0)
+                : (counts[status.key] ?? 0);
+            return (
+              <Button
+                key={status.key}
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-pressed={active}
+                onClick={() =>
+                  setStatuses((current) => {
+                    const next = new Set(current);
+                    if (next.has(status.key)) next.delete(status.key);
+                    else next.add(status.key);
+                    return next;
+                  })
+                }
+                className={cn(
+                  "h-7 gap-1.5 rounded-md px-2.5 text-[11px] shadow-none",
+                  active
+                    ? "bg-foreground/10 text-foreground hover:bg-foreground/15"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
               >
-                {s.label}
-                <span className="rounded-full bg-[hsl(var(--foreground)/0.08)] px-1.5 font-mono text-[9.5px] text-muted-foreground group-data-[state=active]:bg-primary-foreground/20 group-data-[state=active]:text-primary-foreground">
-                  {counts[s.key]}
-                </span>
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
+                {status.label}
+                <span className="font-mono text-[9.5px] opacity-70">{count}</span>
+              </Button>
+            );
+          })}
+        </div>
+        <div className="glass-inset flex h-9 items-center gap-1 p-1">
+          <CalendarDays className="ml-1.5 h-3.5 w-3.5 text-muted-foreground" />
+          <Select
+            value={dateMode}
+            onValueChange={(value) => {
+              setDateMode(value as BlotterDateMode);
+              setDateValue("");
+            }}
+          >
+            <SelectTrigger className="h-7 w-[86px] border-0 bg-transparent px-2 text-[11px] shadow-none">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">Any date</SelectItem>
+              <SelectItem value="TODAY">Today</SelectItem>
+              <SelectItem value="DATE">Date</SelectItem>
+              <SelectItem value="MONTH">Month</SelectItem>
+              <SelectItem value="YEAR">Year</SelectItem>
+            </SelectContent>
+          </Select>
+          {dateMode !== "ALL" && dateMode !== "TODAY" && (
+            <Input
+              type={dateMode === "DATE" ? "date" : dateMode === "MONTH" ? "month" : "number"}
+              min={dateMode === "YEAR" ? "2000" : undefined}
+              max={dateMode === "YEAR" ? "2100" : undefined}
+              value={dateValue}
+              onChange={(event) => setDateValue(event.target.value)}
+              placeholder={dateMode === "YEAR" ? "YYYY" : undefined}
+              className="h-7 w-[132px] border-0 bg-transparent px-2 text-[11px] shadow-none"
+            />
+          )}
+        </div>
+        {(statuses.size > 0 || dateMode !== "ALL") && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setStatuses(new Set());
+              setDateMode("ALL");
+              setDateValue("");
+            }}
+            className="h-8 gap-1 px-2 text-[10.5px] text-muted-foreground"
+          >
+            <X className="h-3.5 w-3.5" />
+            Clear
+          </Button>
+        )}
         <div className="relative w-72">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -244,22 +329,33 @@ function OrderRow({ order }: { order: Order }) {
       <td className="px-2.5 py-1.5 text-muted-foreground">{order.id}</td>
       <td className="px-2.5 py-1.5 text-muted-foreground">{formatTime(order.ts)}</td>
       <td className="px-2.5 py-1.5">{order.strategy}</td>
-      <td className={cn("px-2.5 py-1.5 font-semibold", order.side === "BUY" ? "text-up" : "text-down")}>{order.side}</td>
+      <td className={cn("px-2.5 py-1.5 font-semibold", order.side === "BUY" ? "text-up" : "text-down")}>
+        {order.side}
+      </td>
       <td className="px-2.5 py-1.5 font-semibold">{order.symbol}</td>
       <td className="px-2.5 py-1.5 text-[9.5px] text-muted-foreground">{order.isin}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">{order.qty.toLocaleString()}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">
-        {order.filled.toLocaleString()} <span className="text-muted-foreground/70">({order.qty > 0 ? Math.round((order.filled / order.qty) * 100) : 0}%)</span>
+        {order.filled.toLocaleString()}{" "}
+        <span className="text-muted-foreground/70">
+          ({order.qty > 0 ? Math.round((order.filled / order.qty) * 100) : 0}%)
+        </span>
       </td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">{order.limit?.toFixed(2) ?? "MKT"}</td>
       <td className="px-2.5 py-1.5 text-right tabular-nums">
         <NumberCell sym={order.symbol} fallback={order.arrivalMid} decimals={2} />
       </td>
-      <td className="px-2.5 py-1.5 text-right tabular-nums">{order.vwap != null ? order.vwap.toFixed(2) : "—"}</td>
+      <td className="px-2.5 py-1.5 text-right tabular-nums">
+        {order.vwap != null ? order.vwap.toFixed(2) : "—"}
+      </td>
       <td
         className={cn(
           "px-2.5 py-1.5 text-right tabular-nums",
-          order.slippageBps == null ? "text-muted-foreground" : order.slippageBps >= 0 ? "text-up" : "text-down",
+          order.slippageBps == null
+            ? "text-muted-foreground"
+            : order.slippageBps >= 0
+              ? "text-up"
+              : "text-down",
         )}
       >
         {order.slippageBps != null ? order.slippageBps.toFixed(1) : "—"}
@@ -276,10 +372,18 @@ function OrderRow({ order }: { order: Order }) {
 
 function OrderStatePill({ state }: { state: OrderState }) {
   const tone =
-    state === "FILLED"   ? "success" :
-    state === "PARTIAL"  ? "warning" :
-    state === "WORKING"  ? "primary" :
-    state === "REJECTED" ? "destructive" :
-                            "neutral";
-  return <Badge variant={tone as never} className="text-[9.5px]">{state}</Badge>;
+    state === "FILLED"
+      ? "success"
+      : state === "PARTIAL"
+        ? "warning"
+        : state === "WORKING"
+          ? "primary"
+          : state === "REJECTED"
+            ? "destructive"
+            : "neutral";
+  return (
+    <Badge variant={tone as never} className="text-[9.5px]">
+      {state}
+    </Badge>
+  );
 }

@@ -1,5 +1,10 @@
-import { createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
+import {
+  createRetailServiceRoleClient,
+  createServiceRoleClient,
+  isSupabaseConfigured,
+} from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
+import { isLiveBlotterAuditRow } from "@/lib/orders/blotter-filters";
 import type { Order, OrderDestination, OrderSide, OrderState, OrderTIF, OrderType } from "@/types/iress";
 
 export const runtime = "nodejs";
@@ -151,7 +156,36 @@ export async function GET(req: Request) {
     );
   }
 
-  let orders = ((data ?? []) as AuditRow[]).map(mapAuditRow);
+  const auditRows = (data ?? []) as AuditRow[];
+  const retail = createRetailServiceRoleClient();
+  const [{ data: testProfiles }, { data: testWallets }] = await Promise.all([
+    retail.from("profiles").select("id,email").eq("is_test", true),
+    retail.from("wallets").select("user_id").eq("status", "test"),
+  ]);
+  const testUserIds = new Set<string>([
+    ...((testProfiles ?? []) as Array<{ id: string }>).map((profile) => profile.id),
+    ...((testWallets ?? []) as Array<{ user_id: string }>).map((wallet) => wallet.user_id),
+  ]);
+  const walletOnlyIds = ((testWallets ?? []) as Array<{ user_id: string }>).map((wallet) => wallet.user_id);
+  const { data: walletTestProfiles } = walletOnlyIds.length
+    ? await retail.from("profiles").select("email").in("id", walletOnlyIds)
+    : { data: [] };
+  const testEmails = new Set<string>(
+    [
+      ...((testProfiles ?? []) as Array<{ email: string | null }>),
+      ...((walletTestProfiles ?? []) as Array<{ email: string | null }>),
+    ]
+      .map((profile) => profile.email?.trim().toLowerCase() ?? "")
+      .filter(Boolean),
+  );
+
+  // This is the production blotter. UAT rows remain available in the
+  // order-book UAT views but must never leak into this Live execution tape.
+  // The identity check also removes rows created before uat_test was stamped
+  // reliably (for example an older test user's MINT_CLIENT_ORDER).
+  let orders = auditRows
+    .filter((row) => isLiveBlotterAuditRow(row, testUserIds, testEmails))
+    .map(mapAuditRow);
 
   if (stateFilter && stateFilter !== "ALL") {
     orders = orders.filter((o) => o.state === stateFilter);
