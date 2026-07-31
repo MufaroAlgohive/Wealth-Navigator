@@ -24,7 +24,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
-type Party = { id: string | null; name: string | null; email: string | null; kind?: string };
+type Party = { id: string | null; name: string | null; email: string | null; kind?: string; mintNumber?: string | null };
 type Asset = {
   type: string;
   key: string | null;
@@ -99,6 +99,7 @@ type WishlistRecord = {
     type: string;
     symbol: string | null;
     name: string;
+    logoUrl: string | null;
     targetQuantity: number;
     filledQuantity: number;
     reservedQuantity: number;
@@ -273,9 +274,34 @@ function PartyCell({ party }: { party: Party }) {
     <div className="min-w-0">
       <p className="truncate text-[11px] font-semibold">{party.name || "Unknown"}</p>
       <p className="truncate text-[9px] text-muted-foreground">
-        {party.email || party.id || "No identifier"}
+        {party.mintNumber || party.email || party.id || "No identifier"}
       </p>
     </div>
+  );
+}
+
+function AssetLogo({ logoUrl, label, size = 28 }: { logoUrl: string | null; label: string; size?: number }) {
+  const [failed, setFailed] = React.useState(false);
+  const initial = (label || "?").trim().charAt(0).toUpperCase() || "?";
+  if (!logoUrl || failed) {
+    return (
+      <div
+        className="flex flex-shrink-0 items-center justify-center rounded-full bg-primary/10 font-bold text-primary"
+        style={{ width: size, height: size, fontSize: size * 0.4 }}
+      >
+        {initial}
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={logoUrl}
+      alt={label}
+      onError={() => setFailed(true)}
+      className="flex-shrink-0 rounded-full border border-border/60 bg-white object-contain"
+      style={{ width: size, height: size }}
+    />
   );
 }
 
@@ -491,6 +517,91 @@ function GiftDetail({ gift, now, onClose }: { gift: GiftRecord; now: number; onC
   );
 }
 
+function WishlistCard({ wishlist }: { wishlist: WishlistRecord }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const progress = wishlist.targetQuantity
+    ? Math.min(100, (wishlist.filledQuantity / wishlist.targetQuantity) * 100)
+    : 0;
+  const owner = wishlist.beneficiary.name ? wishlist.beneficiary : wishlist.creator;
+  return (
+    <article className="rounded-xl border border-border bg-card/60">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-3 p-4 text-left"
+      >
+        <AssetLogo logoUrl={null} label={owner.name || "?"} size={34} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <EnvironmentPill environment={wishlist.environment} />
+            <StatusPill status={wishlist.status} />
+          </div>
+          <p className="mt-1 truncate text-[11px] font-semibold">
+            {owner.name || "Unknown"}
+            {owner.mintNumber ? <span className="ml-1.5 font-mono text-[9px] text-muted-foreground">{owner.mintNumber}</span> : null}
+          </p>
+          <p className="truncate text-[10px] text-muted-foreground">{wishlist.title}</p>
+          <div className="mt-2 flex items-center gap-2">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-primary" style={{ width: `${progress}%` }} />
+            </div>
+            <span className="whitespace-nowrap text-[8px] text-muted-foreground">
+              {wishlist.filledQuantity}/{wishlist.targetQuantity} · {progress.toFixed(0)}%
+            </span>
+          </div>
+        </div>
+        <div className="flex flex-shrink-0 items-center gap-2 text-right">
+          <div>
+            <p className="font-mono text-sm font-semibold">{formatMoney(wishlist.contributedRands)}</p>
+            <p className="text-[8px] text-muted-foreground">{wishlist.contributionCount} contributions</p>
+          </div>
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+          )}
+        </div>
+      </button>
+      {expanded && (
+        <div className="border-t border-border/60 p-4 pt-3">
+          <div className="grid grid-cols-2 gap-2 text-[9px]">
+            <div className="rounded-lg bg-muted/35 p-2">
+              <p className="uppercase text-muted-foreground">Owner</p>
+              <PartyCell party={wishlist.creator} />
+            </div>
+            <div className="rounded-lg bg-muted/35 p-2">
+              <p className="uppercase text-muted-foreground">Beneficiary</p>
+              <PartyCell party={wishlist.beneficiary} />
+            </div>
+          </div>
+          <p className="mt-3 text-[9px] font-bold uppercase tracking-wider text-muted-foreground">
+            Assets requested
+          </p>
+          <div className="mt-1.5 space-y-1.5">
+            {wishlist.items.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center gap-2.5 rounded-lg border border-border/70 px-3 py-2 text-[9px]"
+              >
+                <AssetLogo logoUrl={item.logoUrl} label={item.symbol || item.name} size={24} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-semibold">{item.symbol || item.name} · {item.name}</p>
+                  <p className="text-muted-foreground">{item.filledQuantity}/{item.targetQuantity} units · {item.contributionCount} gifts</p>
+                </div>
+                <span className="ml-2 flex-shrink-0 whitespace-nowrap font-mono">{formatMoney(item.contributedRands)}</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex justify-between text-[8px] text-muted-foreground">
+            <span>Event {formatDate(wishlist.eventDate, false)}</span>
+            <span>Expires {formatDate(wishlist.expiresAt, false)}</span>
+          </div>
+        </div>
+      )}
+    </article>
+  );
+}
+
 function WishlistPanel({ wishlists, loading }: { wishlists: WishlistRecord[]; loading: boolean }) {
   return (
     <section className="glass-panel overflow-hidden rounded-xl">
@@ -503,72 +614,14 @@ function WishlistPanel({ wishlists, loading }: { wishlists: WishlistRecord[]; lo
       <div className="grid gap-3 p-3 lg:grid-cols-2">
         {loading ? (
           SKELETON_ROWS.slice(0, 4).map((key) => (
-            <div key={key} className="h-44 animate-pulse rounded-xl bg-muted/50" />
+            <div key={key} className="h-20 animate-pulse rounded-xl bg-muted/50" />
           ))
         ) : wishlists.length === 0 ? (
           <div className="col-span-full py-14 text-center text-[11px] text-muted-foreground">
             No wishlists match this environment or search.
           </div>
         ) : (
-          wishlists.map((wishlist) => {
-            const progress = wishlist.targetQuantity
-              ? Math.min(100, (wishlist.filledQuantity / wishlist.targetQuantity) * 100)
-              : 0;
-            return (
-              <article key={wishlist.id} className="rounded-xl border border-border bg-card/60 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <EnvironmentPill environment={wishlist.environment} />
-                      <StatusPill status={wishlist.status} />
-                    </div>
-                    <h3 className="mt-2 text-sm font-semibold">{wishlist.title}</h3>
-                    <p className="mt-0.5 text-[9px] text-muted-foreground">
-                      {wishlist.occasion || "Wishlist"} · {wishlist.beneficiaryType}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-mono text-sm font-semibold">{formatMoney(wishlist.contributedRands)}</p>
-                    <p className="text-[8px] text-muted-foreground">{wishlist.contributionCount} contributions</p>
-                  </div>
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-[9px]">
-                  <div className="rounded-lg bg-muted/35 p-2">
-                    <p className="uppercase text-muted-foreground">Owner</p>
-                    <PartyCell party={wishlist.creator} />
-                  </div>
-                  <div className="rounded-lg bg-muted/35 p-2">
-                    <p className="uppercase text-muted-foreground">Beneficiary</p>
-                    <PartyCell party={wishlist.beneficiary} />
-                  </div>
-                </div>
-                <div className="mt-3">
-                  <div className="flex justify-between text-[8px] text-muted-foreground">
-                    <span>{wishlist.filledQuantity} of {wishlist.targetQuantity} units funded</span>
-                    <span>{progress.toFixed(1)}%</span>
-                  </div>
-                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
-                    <div className="h-full rounded-full bg-primary" style={{ width: `${progress}%` }} />
-                  </div>
-                </div>
-                <div className="mt-3 space-y-1.5">
-                  {wishlist.items.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2 text-[9px]">
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold">{item.symbol || item.name} · {item.name}</p>
-                        <p className="text-muted-foreground">{item.filledQuantity}/{item.targetQuantity} units · {item.contributionCount} gifts</p>
-                      </div>
-                      <span className="ml-3 whitespace-nowrap font-mono">{formatMoney(item.contributedRands)}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-3 flex justify-between text-[8px] text-muted-foreground">
-                  <span>Event {formatDate(wishlist.eventDate, false)}</span>
-                  <span>Expires {formatDate(wishlist.expiresAt, false)}</span>
-                </div>
-              </article>
-            );
-          })
+          wishlists.map((wishlist) => <WishlistCard key={wishlist.id} wishlist={wishlist} />)
         )}
       </div>
     </section>
