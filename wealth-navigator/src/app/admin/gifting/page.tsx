@@ -73,13 +73,46 @@ type GiftRecord = {
   expiresAt: string | null;
   timestamps: Record<string, string | null>;
   references: Record<string, string | null>;
+  environment: "live" | "uat";
+  execution: { reachedOrderBook: boolean; state: string; reason: string };
   events: GiftEvent[];
+};
+type WishlistRecord = {
+  id: string;
+  title: string;
+  occasion: string | null;
+  status: string;
+  beneficiaryType: string;
+  creator: Party;
+  beneficiary: Party;
+  eventDate: string | null;
+  expiresAt: string | null;
+  createdAt: string | null;
+  environment: "live" | "uat";
+  itemCount: number;
+  contributionCount: number;
+  contributedRands: number;
+  targetQuantity: number;
+  filledQuantity: number;
+  items: Array<{
+    id: string;
+    type: string;
+    symbol: string | null;
+    name: string;
+    targetQuantity: number;
+    filledQuantity: number;
+    reservedQuantity: number;
+    status: string;
+    contributionCount: number;
+    contributedRands: number;
+  }>;
 };
 type Payload = {
   ok: boolean;
   source?: string;
   generatedAt?: string;
   gifts?: GiftRecord[];
+  wishlists?: WishlistRecord[];
   notices?: string[];
   lineage?: Array<{ table: string; purpose: string }>;
   error?: string;
@@ -161,6 +194,21 @@ function StatusPill({ status }: { status: string }) {
     >
       <Icon className="h-3 w-3" />
       {statusLabel(status)}
+    </span>
+  );
+}
+
+function EnvironmentPill({ environment }: { environment: "live" | "uat" }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full border px-2 py-1 text-[8px] font-bold uppercase tracking-[0.14em]",
+        environment === "live"
+          ? "border-success/25 bg-success/10 text-success"
+          : "border-warning/25 bg-warning/10 text-warning",
+      )}
+    >
+      {environment}
     </span>
   );
 }
@@ -258,6 +306,7 @@ function GiftDetail({ gift, now, onClose }: { gift: GiftRecord; now: number; onC
           <div>
             <div className="mb-2 flex items-center gap-2">
               <StatusPill status={gift.status} />
+              <EnvironmentPill environment={gift.environment} />
               <span className="text-[9px] uppercase tracking-wider text-muted-foreground">{gift.source}</span>
             </div>
             <h2 className="text-xl font-semibold">{gift.asset.name}</h2>
@@ -354,6 +403,10 @@ function GiftDetail({ gift, now, onClose }: { gift: GiftRecord; now: number; onC
               <div className="mt-2">
                 <KeyValue label="Registry" value={gift.registry?.title || "Direct gift"} />
                 <KeyValue
+                  label="Order-book routing"
+                  value={`${statusLabel(gift.execution.state)} · ${gift.execution.reason}`}
+                />
+                <KeyValue
                   label="Occasion / beneficiary"
                   value={
                     gift.registry
@@ -438,11 +491,97 @@ function GiftDetail({ gift, now, onClose }: { gift: GiftRecord; now: number; onC
   );
 }
 
+function WishlistPanel({ wishlists, loading }: { wishlists: WishlistRecord[]; loading: boolean }) {
+  return (
+    <section className="glass-panel overflow-hidden rounded-xl">
+      <div className="border-b border-border px-4 py-3">
+        <h2 className="text-xs font-bold">Wishlist register</h2>
+        <p className="mt-1 text-[9px] text-muted-foreground">
+          Every wishlist, its requested assets, contribution progress, beneficiary and expiry.
+        </p>
+      </div>
+      <div className="grid gap-3 p-3 lg:grid-cols-2">
+        {loading ? (
+          SKELETON_ROWS.slice(0, 4).map((key) => (
+            <div key={key} className="h-44 animate-pulse rounded-xl bg-muted/50" />
+          ))
+        ) : wishlists.length === 0 ? (
+          <div className="col-span-full py-14 text-center text-[11px] text-muted-foreground">
+            No wishlists match this environment or search.
+          </div>
+        ) : (
+          wishlists.map((wishlist) => {
+            const progress = wishlist.targetQuantity
+              ? Math.min(100, (wishlist.filledQuantity / wishlist.targetQuantity) * 100)
+              : 0;
+            return (
+              <article key={wishlist.id} className="rounded-xl border border-border bg-card/60 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <EnvironmentPill environment={wishlist.environment} />
+                      <StatusPill status={wishlist.status} />
+                    </div>
+                    <h3 className="mt-2 text-sm font-semibold">{wishlist.title}</h3>
+                    <p className="mt-0.5 text-[9px] text-muted-foreground">
+                      {wishlist.occasion || "Wishlist"} · {wishlist.beneficiaryType}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-mono text-sm font-semibold">{formatMoney(wishlist.contributedRands)}</p>
+                    <p className="text-[8px] text-muted-foreground">{wishlist.contributionCount} contributions</p>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-[9px]">
+                  <div className="rounded-lg bg-muted/35 p-2">
+                    <p className="uppercase text-muted-foreground">Owner</p>
+                    <PartyCell party={wishlist.creator} />
+                  </div>
+                  <div className="rounded-lg bg-muted/35 p-2">
+                    <p className="uppercase text-muted-foreground">Beneficiary</p>
+                    <PartyCell party={wishlist.beneficiary} />
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <div className="flex justify-between text-[8px] text-muted-foreground">
+                    <span>{wishlist.filledQuantity} of {wishlist.targetQuantity} units funded</span>
+                    <span>{progress.toFixed(1)}%</span>
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                    <div className="h-full rounded-full bg-primary" style={{ width: `${progress}%` }} />
+                  </div>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  {wishlist.items.map((item) => (
+                    <div key={item.id} className="flex items-center justify-between rounded-lg border border-border/70 px-3 py-2 text-[9px]">
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold">{item.symbol || item.name} · {item.name}</p>
+                        <p className="text-muted-foreground">{item.filledQuantity}/{item.targetQuantity} units · {item.contributionCount} gifts</p>
+                      </div>
+                      <span className="ml-3 whitespace-nowrap font-mono">{formatMoney(item.contributedRands)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 flex justify-between text-[8px] text-muted-foreground">
+                  <span>Event {formatDate(wishlist.eventDate, false)}</span>
+                  <span>Expires {formatDate(wishlist.expiresAt, false)}</span>
+                </div>
+              </article>
+            );
+          })
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function GiftingPage() {
   const [payload, setPayload] = React.useState<Payload | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [search, setSearch] = React.useState("");
   const [filter, setFilter] = React.useState("all");
+  const [environment, setEnvironment] = React.useState<"live" | "uat">("live");
+  const [view, setView] = React.useState<"gifts" | "wishlists">("gifts");
   const [selected, setSelected] = React.useState<GiftRecord | null>(null);
   const [showLineage, setShowLineage] = React.useState(false);
   const [now, setNow] = React.useState(Date.now());
@@ -464,7 +603,20 @@ export default function GiftingPage() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const gifts = payload?.gifts ?? [];
+  const gifts = React.useMemo(
+    () => (payload?.gifts ?? []).filter((gift) => gift.environment === environment),
+    [environment, payload?.gifts],
+  );
+  const wishlists = React.useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return (payload?.wishlists ?? []).filter(
+      (wishlist) =>
+        wishlist.environment === environment &&
+        (!query ||
+          [wishlist.title, wishlist.occasion, wishlist.creator.name, wishlist.beneficiary.name, ...wishlist.items.map((item) => item.name)]
+            .some((value) => String(value || "").toLowerCase().includes(query))),
+    );
+  }, [environment, payload?.wishlists, search]);
   const stats = React.useMemo(
     () => ({
       active: gifts.filter((gift) => ACTIVE.has(gift.status)).length,
@@ -536,8 +688,45 @@ export default function GiftingPage() {
         </div>
       </header>
 
+      <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card/60 p-2">
+        <div className="flex rounded-lg border border-border bg-background p-0.5">
+          {(["gifts", "wishlists"] as const).map((option) => (
+            <button
+              type="button"
+              key={option}
+              onClick={() => setView(option)}
+              className={cn(
+                "rounded-md px-4 py-2 text-[10px] font-semibold",
+                view === option ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {option === "gifts" ? "Gift activity" : "Wishlists"}
+            </button>
+          ))}
+        </div>
+        <div className="flex rounded-lg border border-border bg-background p-0.5">
+          {(["live", "uat"] as const).map((option) => (
+            <button
+              type="button"
+              key={option}
+              onClick={() => setEnvironment(option)}
+              className={cn(
+                "rounded-md px-4 py-2 text-[9px] font-bold uppercase tracking-wider",
+                environment === option
+                  ? option === "live"
+                    ? "bg-success text-white"
+                    : "bg-warning text-black"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {option}
+            </button>
+          ))}
+        </div>
+      </section>
+
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <Metric label="All gift records" value={gifts.length} icon={Gift} />
+        <Metric label={`${environment.toUpperCase()} gift records`} value={gifts.length} icon={Gift} />
         <Metric label="In progress" value={stats.active} icon={Clock3} tone="warning" />
         <Metric label="Claimed / filled" value={stats.successful} icon={PackageCheck} tone="success" />
         <Metric label="Expired / failed" value={stats.failed} icon={AlertTriangle} tone="danger" />
@@ -589,6 +778,7 @@ export default function GiftingPage() {
         )}
       </section>
 
+      {view === "gifts" ? (
       <section className="glass-panel overflow-hidden rounded-xl">
         <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
           <div className="relative min-w-[220px] flex-1">
@@ -728,6 +918,9 @@ export default function GiftingPage() {
           </span>
         </footer>
       </section>
+      ) : (
+        <WishlistPanel wishlists={wishlists} loading={loading} />
+      )}
 
       {selected && <GiftDetail gift={selected} now={now} onClose={() => setSelected(null)} />}
     </div>
