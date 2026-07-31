@@ -33,6 +33,54 @@ export function calculateStrategyCashAsset(securitiesCents: number, minimumInves
 
 export type TruthSeverity = "ok" | "warning" | "urgent";
 
+export function chainReturnFromAnchor(
+  rows: Array<{ anchorPct?: number | null; dailyPct?: number | null }>,
+) {
+  if (!rows.length || rows[0]?.anchorPct == null || !Number.isFinite(Number(rows[0].anchorPct))) {
+    return null;
+  }
+  let factor = 1 + Number(rows[0].anchorPct) / 100;
+  for (const row of rows.slice(1)) {
+    if (row.dailyPct == null || !Number.isFinite(Number(row.dailyPct))) continue;
+    factor *= 1 + Number(row.dailyPct) / 100;
+  }
+  return (factor - 1) * 100;
+}
+
+export function classifyPercentageDifference(deltaPp: number | null): TruthSeverity {
+  if (deltaPp == null || !Number.isFinite(deltaPp)) return "warning";
+  const absolute = Math.abs(deltaPp);
+  if (absolute > 0.25) return "urgent";
+  if (absolute > 0.01) return "warning";
+  return "ok";
+}
+
+export function reconcileIressPrice(yahooCents: number, iressLast: number | null) {
+  if (!(yahooCents > 0) || iressLast == null || !Number.isFinite(iressLast) || iressLast <= 0) {
+    return {
+      normalisedCents: null,
+      scale: "unavailable" as const,
+      differenceCents: null,
+      differencePct: null,
+      status: "warning" as TruthSeverity,
+    };
+  }
+  const randsCandidate = Math.round(iressLast * 100);
+  const centsCandidate = Math.round(iressLast);
+  const useCents = Math.abs(centsCandidate - yahooCents) < Math.abs(randsCandidate - yahooCents);
+  const normalisedCents = useCents ? centsCandidate : randsCandidate;
+  const differenceCents = normalisedCents - yahooCents;
+  const differencePct = (differenceCents / yahooCents) * 100;
+  const absolutePct = Math.abs(differencePct);
+  return {
+    normalisedCents,
+    scale: useCents ? ("already-cents" as const) : ("rands-x100" as const),
+    differenceCents,
+    differencePct,
+    status: absolutePct > 2 ? "urgent" : absolutePct > 0.5 || useCents ? "warning" : "ok",
+  };
+}
+
 export function classifyDifference(differenceCents: number, baselineCents: number): TruthSeverity {
   const absolute = Math.abs(differenceCents);
   const ratio = baselineCents > 0 ? absolute / baselineCents : absolute > 0 ? 1 : 0;

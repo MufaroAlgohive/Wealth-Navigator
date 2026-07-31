@@ -75,6 +75,9 @@ type Quote = {
   exchangeTime: string;
   fetchedAt: string;
   source: string;
+  previousCloseCents?: number | null;
+  dailyChangeCents?: number | null;
+  dailyChangePct?: number | null;
 };
 type LiveHolding = {
   symbol: string;
@@ -82,6 +85,8 @@ type LiveHolding = {
   name?: string;
   quantity: number;
   livePriceCents: number;
+  previousCloseCents?: number | null;
+  todayPnlCents?: number | null;
   marketValueCents: number;
   costPriceCents?: number;
   costValueCents?: number;
@@ -91,6 +96,18 @@ type LiveHolding = {
   rebalanceBatchId?: string;
   formula: string;
   quote: Quote;
+  iress?: {
+    available: boolean;
+    rawLast: number | null;
+    normalisedCents: number | null;
+    scale: "rands-x100" | "already-cents" | "unavailable";
+    differenceCents: number | null;
+    differencePct: number | null;
+    status: "ok" | "warning" | "urgent";
+    outcome?: string;
+    marketState?: string | null;
+    error?: string | null;
+  };
 };
 type SurfaceCheck = {
   surface: string;
@@ -135,6 +152,37 @@ type TruthPosition = {
   severity: "ok" | "warning" | "urgent";
   reasons: string[];
   returns: { fiveDayPct?: number; mtdPct?: number; ytdPct?: number; allTimePct?: number };
+  performance: {
+    definition: string;
+    storedYtdPct: number | null;
+    independentYtdPct: number | null;
+    ytdDifferencePp: number | null;
+    ytdStatus: "ok" | "warning" | "urgent";
+    performancePnlCents: number;
+    openingPerformanceNavCents: number;
+    previousSecuritiesCents: number | null;
+    todayStrategyPnlCents: number | null;
+    todayStrategyPct: number | null;
+    feeTreatment: string;
+    iressStatus: "ok" | "warning" | "urgent";
+    iressMode: string;
+    iressCovered: number;
+    iressRequested: number;
+    iressProbedAt?: string | null;
+  };
+  rebalanceDiagnostics: Array<{
+    id: string;
+    date: string;
+    status?: string;
+    settlementState?: string;
+    beforeValueCents: number | null;
+    afterValueCents: number | null;
+    rawNavChangePct: number | null;
+    canonicalDailyPct: number | null;
+    canonicalYtdPct: number | null;
+    neutralisedDifferencePp: number | null;
+    protected: boolean;
+  }>;
   history: Array<{
     date: string;
     valueCents: number;
@@ -349,6 +397,33 @@ function HoldingRows({ rows }: { rows: LiveHolding[] }) {
             <dd>{row.quote.yahooSymbol}</dd>
             <dt className="text-muted-foreground">Exchange price time</dt>
             <dd>{when(row.quote.exchangeTime)}</dd>
+            <dt className="text-muted-foreground">Previous close / today</dt>
+            <dd>
+              {row.previousCloseCents == null
+                ? "Unavailable"
+                : `${money(row.previousCloseCents)} / ${money(row.todayPnlCents ?? 0)}`}
+            </dd>
+            <dt className="text-muted-foreground">IRESS comparison</dt>
+            <dd>
+              {row.iress?.normalisedCents == null ? (
+                <span className="text-amber-300">Unavailable · {row.iress?.outcome || "not probed"}</span>
+              ) : (
+                <span
+                  className={
+                    row.iress.status === "urgent"
+                      ? "text-red-300"
+                      : row.iress.status === "warning"
+                        ? "text-amber-300"
+                        : "text-emerald-300"
+                  }
+                >
+                  {money(row.iress.normalisedCents)} · Δ {money(row.iress.differenceCents ?? 0)} ·{" "}
+                  {row.iress.scale}
+                </span>
+              )}
+            </dd>
+            <dt className="text-muted-foreground">IRESS state / probe</dt>
+            <dd>{row.iress?.marketState || "—"} · {row.iress?.outcome || "—"}</dd>
             <dt className="text-muted-foreground">Fetched by OEM</dt>
             <dd>{when(row.quote.fetchedAt)}</dd>
             <dt className="text-muted-foreground">Cost price / value</dt>
@@ -923,6 +998,109 @@ function ReturnStrip({
       <Stat label="MTD" value={pct(returns.mtdPct)} />
       <Stat label="YTD" value={pct(returns.ytdPct)} />
       <Stat label="All time" value={pct(returns.allTimePct)} />
+    </div>
+  );
+}
+
+function PerformanceReconciliation({ position }: { position: TruthPosition }) {
+  const p = position.performance;
+  const rebalanceProtected = position.rebalanceDiagnostics.every((row) => row.protected);
+  const overall =
+    p.ytdStatus === "urgent" || p.iressStatus === "urgent" || !rebalanceProtected
+      ? "urgent"
+      : p.ytdStatus === "warning" || p.iressStatus === "warning"
+        ? "warning"
+        : "ok";
+  return (
+    <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.035] p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            Independent client performance proof
+            <InfoHint label="Independent client performance proof">
+              Rebuilds the client&apos;s return from the first approved anchor and every later daily return,
+              checks rebalance boundaries, calculates today from quantity × price movement, and compares each
+              Yahoo price with a fresh IRESS quote.
+            </InfoHint>
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">{p.definition}</div>
+        </div>
+        <StatusLight severity={overall} />
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-6">
+        <Stat label="Official YTD" value={pct(p.storedYtdPct)} />
+        <Stat label="Rebuilt YTD" value={pct(p.independentYtdPct)} />
+        <Stat
+          label="Chain difference"
+          value={p.ytdDifferencePp == null ? "—" : `${p.ytdDifferencePp.toFixed(6)} pp`}
+          className={p.ytdStatus === "ok" ? "text-emerald-300" : "text-red-300"}
+        />
+        <Stat label="Performance P&L" value={money(p.performancePnlCents)} />
+        <Stat
+          label="Today's strategy P&L"
+          value={`${money(p.todayStrategyPnlCents ?? 0)} · ${pct(p.todayStrategyPct)}`}
+        />
+        <Stat
+          label="IRESS coverage"
+          value={`${p.iressCovered}/${p.iressRequested} · ${p.iressMode}`}
+          className={p.iressStatus === "ok" ? "text-emerald-300" : "text-amber-300"}
+        />
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div className="rounded-lg border border-white/10 bg-black/10 p-3 text-xs leading-5">
+          <div className="font-semibold">What this proves</div>
+          <ul className="mt-2 list-disc space-y-1 pl-4 text-muted-foreground">
+            <li>
+              YTD is independently chained from the approved opening anchor; it is not inferred from raw
+              basket-value changes.
+            </li>
+            <li>{p.feeTreatment}.</li>
+            <li>
+              CA and execution reserve remain part of account value, but contribute zero market movement until
+              deployed.
+            </li>
+            <li>
+              Today&apos;s figure uses only the selected client&apos;s quantities and the current price minus previous
+              close.
+            </li>
+          </ul>
+        </div>
+        <div className="overflow-hidden rounded-lg border border-white/10 bg-black/10">
+          <div className="border-b border-white/10 p-3 text-xs font-semibold">
+            Rebalance neutralisation proof · {position.rebalanceDiagnostics.length} event(s)
+          </div>
+          {position.rebalanceDiagnostics.length ? (
+            <div className="max-h-44 overflow-auto">
+              <table className="w-full text-xs">
+                <thead className="text-left text-[10px] uppercase text-muted-foreground">
+                  <tr>
+                    <th className="p-2">Date</th>
+                    <th className="p-2 text-right">Raw NAV</th>
+                    <th className="p-2 text-right">Performance</th>
+                    <th className="p-2">Verdict</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {position.rebalanceDiagnostics.map((row) => (
+                    <tr key={row.id} className="border-t border-white/5">
+                      <td className="p-2">{row.date}</td>
+                      <td className="p-2 text-right tabular-nums">{pct(row.rawNavChangePct)}</td>
+                      <td className="p-2 text-right tabular-nums">{pct(row.canonicalDailyPct)}</td>
+                      <td className="p-2">
+                        <span className={row.protected ? "text-emerald-300" : "text-red-300"}>
+                          {row.protected ? "Neutralised" : "Unproven"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="p-3 text-xs text-muted-foreground">No rebalance boundary exists for this position.</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1928,21 +2106,22 @@ function TruthResult({ truth }: { truth: Truth }) {
             <ReturnStrip returns={position.returns} />
           </div>
           <div className="mt-3">
+            <PerformanceReconciliation position={position} />
+          </div>
+          <div className="mt-3">
             <HistoryChart data={position.history} />
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2">
-            <Stat
-              label="Live P&L / return"
-              value={`${money(position.livePnlCents)} · ${pct(position.liveReturnPct)}`}
-            />
-            <Stat label="Canonical P&L" value={money(position.canonicalPnlCents)} />
+            <Stat label="Independent live value" value={money(position.liveValueCents)} />
+            <Stat label="Client performance P&L" value={money(position.canonicalPnlCents)} />
             <Stat label="Residual" value={money(position.residualCents)} className="text-emerald-400" />
             <Stat label="Reserve" value={money(position.reserveCents)} />
             <Stat label="Liability" value={money(position.liabilityCents)} />
             <Stat label="Securities" value={money(position.securitiesCents)} />
           </div>
           <div className="my-3 rounded-lg bg-white/[0.035] p-2 text-xs text-muted-foreground">
-            {position.formula}. Invested basis = canonical value − canonical inception P&amp;L.
+            {position.formula}. This proves current account value separately; performance P&amp;L and YTD come
+            from the fee-free, rebalance-neutral canonical return chain.
           </div>
           <div className="mb-3 grid gap-3 md:grid-cols-2">
             <div className="rounded-xl border border-white/10 bg-black/10 p-3 text-xs">
@@ -1956,7 +2135,8 @@ function TruthResult({ truth }: { truth: Truth }) {
               <p className="mt-2 leading-5 text-muted-foreground">
                 Every active quantity is multiplied by its fresh Yahoo price. We add this strategy&apos;s own
                 CA/residual and unused execution reserve, subtract open fee liabilities, then compare the
-                result with the canonical value currently supplied to the app.
+                result with the canonical value currently supplied to the app. Fees are shown only in that
+                withdrawable-value reconciliation and are excluded from the performance return.
               </p>
               <ul className="mt-2 list-disc space-y-1 pl-4">
                 {position.reasons.map((reason) => (
