@@ -175,8 +175,10 @@ export async function POST(req: Request) {
   // classification below must agree, or the same gift shows as "uat" on the
   // dashboard and lands on the Live order-book tab.
   let giftGifterUserId: string | null = null;
+  const isGiftAuth = holdingId.startsWith(GIFT_AUTH_PREFIX);
+  let childName: string | null = null;
 
-  if (holdingId.startsWith(GIFT_AUTH_PREFIX)) {
+  if (isGiftAuth) {
     const authorizationId = holdingId.slice(GIFT_AUTH_PREFIX.length);
     const { data: authRow, error: authErr } = await supabase.retail
       .from("gift_authorizations")
@@ -261,7 +263,7 @@ export async function POST(req: Request) {
     // recipient_user_id) — the parent is resolved here, from the family
     // member row itself, same as the existing holding path always did.
     ownerUserId = ownerUserId ?? familyMember.primary_user_id;
-    const childName =
+    childName =
       [familyMember.first_name, familyMember.last_name].filter(Boolean).join(" ").trim() ||
       familyMember.relationship ||
       "Child account";
@@ -278,6 +280,31 @@ export async function POST(req: Request) {
     );
   }
   const holdingRow = { user_id: ownerUserId, family_member_id: ownerFamilyMemberId };
+
+  if (isGiftAuth) {
+    // `clientEmail` (from the request body) is the GIFTER's email here —
+    // contribute.js::forwardToOEMS names its param `recipientEmail` but
+    // actually passes `gifterEmail`. That's fine for `trader_email` (who
+    // placed/paid — kept below), but wrong for the order-book's "Investor"
+    // / Client column, which must show whose account the shares settle
+    // to. Rebuild that label from the resolved recipient's own profile
+    // instead of trusting the request body for it.
+    const { data: recipientProfile } = await supabase.retail
+      .from("profiles")
+      .select("email, first_name, last_name")
+      .eq("id", ownerUserId)
+      .maybeSingle();
+    const recipientEmail = recipientProfile?.email || clientEmail;
+    const recipientName = [recipientProfile?.first_name, recipientProfile?.last_name]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    displayClient = childName
+      ? `${childName} · ${recipientEmail}`
+      : recipientName
+        ? `${recipientName} · ${recipientEmail}`
+        : recipientEmail;
+  }
 
   // No preflight here — this order PARKS with zero worker/IRESS contact.
   // Preflight is deferred to release time (see submit.ts::parkOrder /

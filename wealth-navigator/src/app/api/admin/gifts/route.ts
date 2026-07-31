@@ -168,7 +168,7 @@ export async function GET() {
   ]);
   let familyRows: Row[] = [];
   if (familyIds.length) {
-    const result = await db.from("family_members").select("id,first_name,last_name").in("id", familyIds);
+    const result = await db.from("family_members").select("id,first_name,last_name,mint_number").in("id", familyIds);
     if (result.error) notices.push(`family_members: ${result.error.message}`);
     else familyRows = (result.data ?? []) as Row[];
   }
@@ -182,7 +182,7 @@ export async function GET() {
   const securityRows: Row[] = [];
   if (assetKeys.length) {
     const [strategies, securitiesById, securitiesByIsin, securitiesBySymbol] = await Promise.all([
-      db.from("strategies_c").select("id,name,short_name,holdings").in("id", assetKeys),
+      db.from("strategies_c").select("id,name,short_name,holdings,icon_url,image_url").in("id", assetKeys),
       db.from("securities_c").select("id,isin,symbol,name,logo_url").in("id", assetKeys),
       db.from("securities_c").select("id,isin,symbol,name,logo_url").in("isin", assetKeys),
       db.from("securities_c").select("id,isin,symbol,name,logo_url").in("symbol", assetKeys),
@@ -445,6 +445,7 @@ export async function GET() {
           type: text(item.instrument_type)?.toLowerCase() || (strategy ? "basket" : "security"),
           symbol: text(security?.symbol) || text(strategy?.short_name) || assetKey,
           name: text(strategy?.name) || text(security?.name) || assetKey || "Unknown asset",
+          logoUrl: text(security?.logo_url) || text(strategy?.icon_url) || text(strategy?.image_url),
           targetQuantity: number(item.target_quantity) ?? 0,
           filledQuantity: number(item.filled_quantity) ?? 0,
           reservedQuantity: number(item.reserved_quantity) ?? 0,
@@ -458,6 +459,7 @@ export async function GET() {
         };
       });
     const relatedUserIds = [creatorId, beneficiaryType === "OTHER" ? beneficiaryId : null];
+    const creatorProfile = profileById.get(creatorId || "");
     return {
       id,
       title: text(registry.title) || "Untitled wishlist",
@@ -466,13 +468,15 @@ export async function GET() {
       beneficiaryType,
       creator: {
         id: creatorId,
-        name: profileName(profileById.get(creatorId || "")),
-        email: text(profileById.get(creatorId || "")?.email),
+        name: profileName(creatorProfile),
+        email: text(creatorProfile?.email),
+        mintNumber: text(creatorProfile?.mint_number),
       },
       beneficiary: {
         id: beneficiaryId || creatorId,
         name: profileName(beneficiary, registry.beneficiary_display_name),
         email: text(beneficiary?.email),
+        mintNumber: text(beneficiary?.mint_number),
       },
       eventDate: text(registry.event_date),
       expiresAt: text(registry.expiry_at),
