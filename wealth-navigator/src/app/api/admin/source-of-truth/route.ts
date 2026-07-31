@@ -1219,6 +1219,12 @@ async function auditSurfaces(
       const cardInvestedRands = card
         ? num(card.investedAmount ?? card.invested_amount ?? card.invested)
         : null;
+      const cardResidualRands = card
+        ? num(card.residualCash ?? card.residual_cash ?? card.residual)
+        : null;
+      const cardReserveRands = card
+        ? num(card.reserveCash ?? card.reserve_cash ?? card.reserve)
+        : null;
       const cardReturnPct =
         cardValueRands != null && cardInvestedRands != null && cardInvestedRands > 0
           ? ((cardValueRands - cardInvestedRands) / cardInvestedRands) * 100
@@ -1241,11 +1247,17 @@ async function auditSurfaces(
       );
       const caComparison = comparison(
         "Client strategy CA / residual",
-        null,
+        cardResidualRands == null ? null : Math.round(cardResidualRands * 100),
         expectedPosition.residualCents,
         "cents",
       );
-      const comparisons = [valueComparison, returnComparison, caComparison];
+      const reserveComparison = comparison(
+        "Client strategy execution reserve",
+        cardReserveRands == null ? null : Math.round(cardReserveRands * 100),
+        expectedPosition.reserveCents,
+        "cents",
+      );
+      const comparisons = [valueComparison, returnComparison, caComparison, reserveComparison];
       const hasUrgent = comparisons.some((row) => row.status === "urgent");
       const hasWarning = comparisons.some((row) => row.status === "warning");
       checks.push({
@@ -1259,6 +1271,10 @@ async function auditSurfaces(
           : card
             ? `${moneyText(Math.round((cardValueRands ?? 0) * 100))}; all-time return ${
                 cardReturnPct == null ? "not supplied" : `${cardReturnPct.toFixed(2)}%`
+              }; CA ${
+                cardResidualRands == null ? "not supplied" : moneyText(Math.round(cardResidualRands * 100))
+              }; reserve ${
+                cardReserveRands == null ? "not supplied" : moneyText(Math.round(cardReserveRands * 100))
               }`
             : "Selected strategy card is missing",
         expected: `${moneyText(expectedPosition.canonicalValueCents)} including ${moneyText(
@@ -1269,8 +1285,10 @@ async function auditSurfaces(
         difference: !card
           ? "The selected client strategy card is absent"
           : caComparison.actual == null && expectedPosition.residualCents > 0
-            ? "The app contract does not expose CA separately, so its inclusion cannot be proven from the card payload"
-            : "Card fields agree with canonical client truth",
+            ? "The app contract does not expose residual CA separately"
+            : reserveComparison.actual == null && expectedPosition.reserveCents > 0
+              ? "The app contract does not expose execution reserve separately"
+              : "Card value, return, residual CA and reserve agree with canonical client truth",
         evidence: [
           `deployment=${label}`,
           `base_url=${configuredUrl || "not configured"}`,
@@ -1285,6 +1303,8 @@ async function auditSurfaces(
             .filter(Boolean)
             .join(",") || "none"}`,
           `card_present=${Boolean(card)}`,
+          `card_residual_cents=${cardResidualRands == null ? "not supplied" : Math.round(cardResidualRands * 100)}`,
+          `card_reserve_cents=${cardReserveRands == null ? "not supplied" : Math.round(cardReserveRands * 100)}`,
           `latency_ms=${probe.latencyMs}`,
           ...(probe.error ? [`error=${probe.error}`] : []),
         ],
