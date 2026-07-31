@@ -199,6 +199,29 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
+function OrderBookBadge({ execution }: { execution: GiftRecord["execution"] }) {
+  const tone = execution.reachedOrderBook
+    ? "border-success/25 bg-success/10 text-success"
+    : execution.state === "legacy_direct_allocation" || execution.state === "skipped"
+      ? "border-muted-foreground/25 bg-muted text-muted-foreground"
+      : "border-destructive/25 bg-destructive/10 text-destructive";
+  const label = execution.reachedOrderBook
+    ? "Order-book ✓"
+    : execution.state === "legacy_direct_allocation"
+      ? "Pre-fix, no order"
+      : execution.state === "skipped"
+        ? "Forwarding off"
+        : "Not routed";
+  return (
+    <span
+      title={execution.reason}
+      className={cn("inline-flex rounded-full border px-2 py-0.5 text-[8px] font-semibold", tone)}
+    >
+      {label}
+    </span>
+  );
+}
+
 function EnvironmentPill({ environment }: { environment: "live" | "uat" }) {
   return (
     <span
@@ -934,7 +957,10 @@ export default function GiftingPage() {
                       {formatMoney(gift.amountRands)}
                     </td>
                     <td className="px-3 py-3">
-                      <StatusPill status={gift.status} />
+                      <div className="flex flex-col items-start gap-1">
+                        <StatusPill status={gift.status} />
+                        <OrderBookBadge execution={gift.execution} />
+                      </div>
                     </td>
                     <td className="px-3 py-3">
                       <StatusPill status={gift.claimState} />
