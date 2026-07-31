@@ -153,65 +153,131 @@ export async function POST(req: Request) {
     });
   }
 
-  // Confirm the holding actually exists — a data-integrity check, not a
-  // gate on who may order. Every client's order (real or test) parks here;
-  // the broker-facing gate lives at release time (see route doc comment).
+  // Resolve who this order settles to. Two sources, converging on the same
+  // { user_id, family_member_id, displayClient } shape:
   //
-  // 2026-07-27: this used to select only "id". The holding carries the
-  // client's user_id, and it is required downstream: the per-client pre-trade
-  // guard routes on payload.user_id, and fill settlement refuses to move money
-  // for an order it cannot attribute to a client. Every desk-placed MANUAL_CLIENT_ORDER carried user_id; every
-  // app-placed MINT_CLIENT_ORDER did not, so an app order would have filled
-  // at the broker and then been silently skipped by settlement — the client
-  // debited nothing and owning nothing, which is the exact failure this whole
-  // path exists to prevent. We were discarding a column already in hand.
-  const { data: holding, error: holdingErr } = await supabase.retail
-    .from("stock_holdings_c")
-    .select("id, user_id, family_member_id")
-    .eq("id", holdingId)
-    .maybeSingle();
-  if (holdingErr || !holding) {
-    return NextResponse.json(
-      { ok: false, error: `Could not resolve holding '${holdingId}': ${holdingErr?.message ?? "not found"}` },
-      { status: 404 },
-    );
-  }
-  const holdingRow = holding as { id: string; user_id: string | null; family_member_id: string | null };
-  if (!holdingRow.user_id) {
-    // Fail loudly rather than park an unattributable order. A parked order we
-    // cannot settle is worse than one we refuse to place: it reaches the market
-    // and then strands the client.
-    return NextResponse.json(
-      {
-        ok: false,
-        error: `Holding '${holdingId}' has no user_id — refusing to place an order that could not be settled to a client.`,
-      },
-      { status: 422 },
-    );
-  }
-
+  //   - A real stock_holdings_c.id (the normal single-security/basket path).
+  //   - A "gift-auth:<gift_authorizations.id>" sentinel (wishlist gifts —
+  //     see contribute.js::forwardToOEMS). No stock_holdings_c row exists
+  //     yet at gift-authorization time (that row is only created later, at
+  //     fill time), so there is nothing to look up there; attribution comes
+  //     from the gift_authorizations row's own recipient fields instead.
+  //     `holding_id` in the parked payload stays the sentinel string either
+  //     way — the idempotency check below already keys on it verbatim.
+  const GIFT_AUTH_PREFIX = "gift-auth:";
+  let ownerUserId: string | null;
+  let ownerFamilyMemberId: string | null;
   let displayClient = clientEmail;
-  if (holdingRow.family_member_id) {
-    const { data: familyMember, error: familyErr } = await supabase.retail
-      .from("family_members")
-      .select("id, primary_user_id, first_name, last_name, relationship")
-      .eq("id", holdingRow.family_member_id)
+  // Set only on the gift-auth path. The admin gifting dashboard's own
+  // environment split (gifts/route.ts::environmentFor) tags a gift "uat" if
+  // EITHER party is a test account — a test-account gifter probing a real
+  // recipient (or vice versa) is still a test order. The order-book
+  // classification below must agree, or the same gift shows as "uat" on the
+  // dashboard and lands on the Live order-book tab.
+  let giftGifterUserId: string | null = null;
+
+  if (holdingId.startsWith(GIFT_AUTH_PREFIX)) {
+    const authorizationId = holdingId.slice(GIFT_AUTH_PREFIX.length);
+    const { data: authRow, error: authErr } = await supabase.retail
+      .from("gift_authorizations")
+      .select("id, gifter_user_id, recipient_user_id, recipient_family_member_id")
+      .eq("id", authorizationId)
       .maybeSingle();
-    if (familyErr || !familyMember || familyMember.primary_user_id !== holdingRow.user_id) {
+    if (authErr || !authRow) {
+      return NextResponse.json(
+        { ok: false, error: `Could not resolve gift authorization '${authorizationId}': ${authErr?.message ?? "not found"}` },
+        { status: 404 },
+      );
+    }
+    if (!authRow.recipient_user_id && !authRow.recipient_family_member_id) {
       return NextResponse.json(
         {
           ok: false,
-          error: `Could not resolve child owner '${holdingRow.family_member_id}': ${familyErr?.message ?? "not found or owner mismatch"}`,
+          error: `Gift authorization '${authorizationId}' has no recipient — refusing to place an order that could not be settled to a client.`,
         },
         { status: 422 },
       );
     }
+    ownerUserId = authRow.recipient_user_id;
+    ownerFamilyMemberId = authRow.recipient_family_member_id;
+    giftGifterUserId = authRow.gifter_user_id;
+  } else {
+    // Confirm the holding actually exists — a data-integrity check, not a
+    // gate on who may order. Every client's order (real or test) parks here;
+    // the broker-facing gate lives at release time (see route doc comment).
+    //
+    // 2026-07-27: this used to select only "id". The holding carries the
+    // client's user_id, and it is required downstream: the per-client pre-trade
+    // guard routes on payload.user_id, and fill settlement refuses to move money
+    // for an order it cannot attribute to a client. Every desk-placed MANUAL_CLIENT_ORDER carried user_id; every
+    // app-placed MINT_CLIENT_ORDER did not, so an app order would have filled
+    // at the broker and then been silently skipped by settlement — the client
+    // debited nothing and owning nothing, which is the exact failure this whole
+    // path exists to prevent. We were discarding a column already in hand.
+    const { data: holding, error: holdingErr } = await supabase.retail
+      .from("stock_holdings_c")
+      .select("id, user_id, family_member_id")
+      .eq("id", holdingId)
+      .maybeSingle();
+    if (holdingErr || !holding) {
+      return NextResponse.json(
+        { ok: false, error: `Could not resolve holding '${holdingId}': ${holdingErr?.message ?? "not found"}` },
+        { status: 404 },
+      );
+    }
+    const holdingRow = holding as { id: string; user_id: string | null; family_member_id: string | null };
+    if (!holdingRow.user_id) {
+      // Fail loudly rather than park an unattributable order. A parked order we
+      // cannot settle is worse than one we refuse to place: it reaches the market
+      // and then strands the client.
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Holding '${holdingId}' has no user_id — refusing to place an order that could not be settled to a client.`,
+        },
+        { status: 422 },
+      );
+    }
+    ownerUserId = holdingRow.user_id;
+    ownerFamilyMemberId = holdingRow.family_member_id;
+  }
+
+  if (ownerFamilyMemberId) {
+    const { data: familyMember, error: familyErr } = await supabase.retail
+      .from("family_members")
+      .select("id, primary_user_id, first_name, last_name, relationship")
+      .eq("id", ownerFamilyMemberId)
+      .maybeSingle();
+    if (familyErr || !familyMember || (ownerUserId && familyMember.primary_user_id !== ownerUserId)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Could not resolve child owner '${ownerFamilyMemberId}': ${familyErr?.message ?? "not found or owner mismatch"}`,
+        },
+        { status: 422 },
+      );
+    }
+    // A gift authorization may only carry recipient_family_member_id (no
+    // recipient_user_id) — the parent is resolved here, from the family
+    // member row itself, same as the existing holding path always did.
+    ownerUserId = ownerUserId ?? familyMember.primary_user_id;
     const childName =
       [familyMember.first_name, familyMember.last_name].filter(Boolean).join(" ").trim() ||
       familyMember.relationship ||
       "Child account";
     displayClient = `${childName} · ${clientEmail}`;
   }
+
+  if (!ownerUserId) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Could not resolve a client for '${holdingId}' — refusing to place an order that could not be settled.`,
+      },
+      { status: 422 },
+    );
+  }
+  const holdingRow = { user_id: ownerUserId, family_member_id: ownerFamilyMemberId };
 
   // No preflight here — this order PARKS with zero worker/IRESS contact.
   // Preflight is deferred to release time (see submit.ts::parkOrder /
@@ -220,22 +286,20 @@ export async function POST(req: Request) {
   // audit row accurately tags production orders vs UAT test orders.
   // Classify the order owner, not only the deployment. The production OEM
   // receives both real and UAT app orders, so a deployment-only decision leaks
-  // test-user orders into the Live book.
-  const [{ data: ownerProfile }, { data: testWallet }] = await Promise.all([
-    supabase.retail
-      .from("profiles")
-      .select("id, is_test")
-      .eq("id", holdingRow.user_id)
-      .maybeSingle(),
-    supabase.retail
-      .from("wallets")
-      .select("user_id")
-      .eq("user_id", holdingRow.user_id)
-      .eq("status", "test")
-      .limit(1)
-      .maybeSingle(),
+  // test-user orders into the Live book. For a gift order, "the owner" also
+  // includes the gifter (giftGifterUserId, unset for non-gift orders) —
+  // a test-account gifter's order is a test order even when it settles to a
+  // real recipient, matching gifts/route.ts::environmentFor's own "either
+  // party" rule.
+  const testCheckIds = [holdingRow.user_id, giftGifterUserId].filter(
+    (id): id is string => Boolean(id),
+  );
+  const [{ data: testProfiles }, { data: testWallets }] = await Promise.all([
+    supabase.retail.from("profiles").select("id, is_test").in("id", testCheckIds),
+    supabase.retail.from("wallets").select("user_id").in("user_id", testCheckIds).eq("status", "test"),
   ]);
-  const ownerIsTest = ownerProfile?.is_test === true || Boolean(testWallet?.user_id);
+  const ownerIsTest =
+    (testProfiles ?? []).some((p) => p.is_test === true) || (testWallets ?? []).length > 0;
   const uatTest = isUatEnv() || ownerIsTest;
   const result = await parkOrder(
     supabase,
