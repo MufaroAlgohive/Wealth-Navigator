@@ -2,6 +2,9 @@ export interface YahooTruthQuote {
   symbol: string;
   yahooSymbol: string;
   priceCents: number;
+  previousCloseCents: number | null;
+  dailyChangeCents: number | null;
+  dailyChangePct: number | null;
   currency: string;
   exchangeTime: string;
   fetchedAt: string;
@@ -38,6 +41,9 @@ export async function fetchYahooTruthQuote(symbol: string): Promise<YahooTruthQu
         result?: Array<{
           meta?: {
             regularMarketPrice?: number;
+            chartPreviousClose?: number;
+            previousClose?: number;
+            regularMarketPreviousClose?: number;
             currency?: string;
             regularMarketTime?: number;
           };
@@ -55,6 +61,16 @@ export async function fetchYahooTruthQuote(symbol: string): Promise<YahooTruthQu
     // Yahoo JSE instruments are quoted in ZAc; RETAIL stores all prices in cents.
     // Non-JSE instruments are major currency units and are converted to cents.
     const priceCents = yahooPriceToCents(yahooSymbol, rawPrice);
+    const rawPreviousClose = Number(
+      result.meta?.regularMarketPreviousClose ??
+        result.meta?.previousClose ??
+        result.meta?.chartPreviousClose,
+    );
+    const previousCloseCents =
+      Number.isFinite(rawPreviousClose) && rawPreviousClose > 0
+        ? yahooPriceToCents(yahooSymbol, rawPreviousClose)
+        : null;
+    const dailyChangeCents = previousCloseCents == null ? null : priceCents - previousCloseCents;
     const marketTime =
       result.meta?.regularMarketTime ??
       [...(result.timestamp ?? [])].reverse().find((value) => Number(value) > 0);
@@ -62,6 +78,10 @@ export async function fetchYahooTruthQuote(symbol: string): Promise<YahooTruthQu
       symbol,
       yahooSymbol,
       priceCents,
+      previousCloseCents,
+      dailyChangeCents,
+      dailyChangePct:
+        previousCloseCents == null ? null : (dailyChangeCents! / previousCloseCents) * 100,
       currency: result.meta?.currency ?? "ZAR",
       exchangeTime: marketTime ? new Date(marketTime * 1000).toISOString() : new Date().toISOString(),
       fetchedAt: new Date().toISOString(),

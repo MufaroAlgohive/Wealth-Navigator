@@ -5,13 +5,17 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 import {
   calculatePositionTruth,
   calculateStrategyCashAsset,
+  chainReturnFromAnchor,
+  classifyPercentageDifference,
   classifyDifference,
   possibleDifferenceReasons,
+  reconcileIressPrice,
   reconstructClientHistoryPoint,
   reconstructStrategyHistoryPoint,
   returnScopeBenchmarks,
 } from "@/lib/truth/calculations";
 import { fetchYahooTruthQuote } from "@/lib/truth/yahoo-live";
+import { callWorker } from "@/lib/iress/worker-api";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -283,7 +287,7 @@ async function clientTruth(db: Db, userId: string) {
     db
       .from("client_strategy_returns_effective_c")
       .select(
-        'user_id,family_member_id,strategy_id,as_of_date,basket_value_cents,securities_value_cents,residual_cash_cents,unused_reserve_cents,accrued_liability_cents,inception_pnl_cents,inception_pct,ytd_pct,"1d_pct",source_kind',
+        'user_id,family_member_id,strategy_id,as_of_date,basket_value_cents,securities_value_cents,residual_cash_cents,unused_reserve_cents,accrued_liability_cents,inception_pnl_cents,inception_pct,ytd_pct,opening_performance_nav_cents,"1d_pct",source_kind',
       )
       .eq("user_id", userId)
       .order("as_of_date", { ascending: true }),
@@ -338,6 +342,38 @@ async function clientTruth(db: Db, userId: string) {
   const stratMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
   const symbols = (holdings ?? []).map((row) => text(secMap.get(text(row.security_id))?.symbol));
   const quotes = await quoteMap(symbols);
+  type IressCoverageRow = {
+    symbol?: string;
+    iressCode?: string;
+    ok?: boolean;
+    outcome?: string;
+    last?: number | null;
+    marketState?: string | null;
+    currency?: string | null;
+    error?: string | null;
+  };
+  type IressCoverageBody = {
+    ok?: boolean;
+    iressMode?: string;
+    covered?: number;
+    requested?: number;
+    probedAt?: string;
+    rows?: IressCoverageRow[];
+  };
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => text(symbol)).filter(Boolean))];
+  const iressCoverage = await callWorker<IressCoverageBody>({
+    method: "POST",
+    path: "/debug/coverage",
+    body: { symbols: uniqueSymbols, exchange: "JSE" },
+    timeoutMs: 30_000,
+  });
+  const iressBody = iressCoverage.ok ? iressCoverage.body : null;
+  const iressRows = new Map(
+    (iressBody?.rows ?? []).map((row) => [
+      text(row.symbol || row.iressCode).replace(/\.(JO|JSE)$/i, "").toUpperCase(),
+      row,
+    ]),
+  );
   const rows = (holdings ?? []).map((holding) => {
     const security = secMap.get(text(holding.security_id));
     const symbol = text(security?.symbol);
@@ -347,6 +383,11 @@ async function clientTruth(db: Db, userId: string) {
     const rawFill = expected > 0 ? expected : num(holding.avg_fill);
     const costCents =
       rawFill > 0 && rawFill < quote.priceCents / 5 ? Math.round(rawFill * 100) : Math.round(rawFill);
+    const iressRow = iressRows.get(symbol.replace(/\.(JO|JSE)$/i, "").toUpperCase());
+    const iressReconciliation = reconcileIressPrice(quote.priceCents, iressRow?.last ?? null);
+    const previousCloseCents = quote.previousCloseCents;
+    const todayPnlCents =
+      previousCloseCents == null ? null : Math.round(quantity * (quote.priceCents - previousCloseCents));
     return {
       holdingId: holding.id,
       strategyId: holding.strategy_id,
@@ -356,6 +397,8 @@ async function clientTruth(db: Db, userId: string) {
       security: security?.name,
       quantity,
       livePriceCents: quote.priceCents,
+      previousCloseCents,
+      todayPnlCents,
       marketValueCents: Math.round(quantity * quote.priceCents),
       costPriceCents: costCents,
       costValueCents: Math.round(quantity * costCents),
@@ -364,6 +407,18 @@ async function clientTruth(db: Db, userId: string) {
       transactionId: holding.transaction_id,
       rebalanceBatchId: holding.rebalance_batch_id,
       quote,
+      iress: {
+        available: Boolean(iressRow?.ok),
+        rawLast: iressRow?.last ?? null,
+        normalisedCents: iressReconciliation.normalisedCents,
+        scale: iressReconciliation.scale,
+        differenceCents: iressReconciliation.differenceCents,
+        differencePct: iressReconciliation.differencePct,
+        status: iressRow?.ok ? iressReconciliation.status : "warning",
+        outcome: iressRow?.outcome ?? (iressCoverage.ok ? "not-covered" : iressCoverage.code),
+        marketState: iressRow?.marketState ?? null,
+        error: iressRow?.error ?? (iressCoverage.ok ? null : iressCoverage.error),
+      },
       formula: `${quantity} × ${quote.priceCents} cents`,
     };
   });
@@ -416,11 +471,80 @@ async function clientTruth(db: Db, userId: string) {
         text(row.strategy_id) === text(position.strategy_id) &&
         text(row.family_member_id) === text(position.family_member_id),
     );
+    const latestHistory = positionHistory.at(-1);
+    const latestYear = text(latestHistory?.as_of_date).slice(0, 4);
+    const ytdHistory = positionHistory.filter((row) => text(row.as_of_date).startsWith(latestYear));
+    const independentYtdPct = chainReturnFromAnchor(
+      ytdHistory.map((row, index) => ({
+        anchorPct: index === 0 ? num(row.ytd_pct) : null,
+        dailyPct: row["1d_pct"] == null ? null : num(row["1d_pct"]),
+      })),
+    );
+    const storedYtdPct = latestHistory?.ytd_pct == null ? null : num(latestHistory.ytd_pct);
+    const ytdDifferencePp =
+      independentYtdPct == null || storedYtdPct == null ? null : independentYtdPct - storedYtdPct;
+    const ytdStatus = classifyPercentageDifference(ytdDifferencePp);
+    const hasAllPreviousCloses = positionHoldings.every((row) => row.previousCloseCents != null);
+    const previousSecuritiesCents = hasAllPreviousCloses
+      ? positionHoldings.reduce(
+          (sum, row) => sum + Math.round(row.quantity * Number(row.previousCloseCents)),
+          0,
+        )
+      : null;
+    const todayStrategyPnlCents = hasAllPreviousCloses
+      ? positionHoldings.reduce((sum, row) => sum + Number(row.todayPnlCents ?? 0), 0)
+      : null;
+    const todayStrategyPct =
+      previousSecuritiesCents && todayStrategyPnlCents != null
+        ? (todayStrategyPnlCents / previousSecuritiesCents) * 100
+        : null;
+    const iressHoldingStatus = positionHoldings.some((row) => row.iress.status === "urgent")
+      ? "urgent"
+      : positionHoldings.some((row) => row.iress.status === "warning")
+        ? "warning"
+        : "ok";
+    const rebalanceDiagnostics = ((rebalanceBatches ?? []) as Row[])
+      .filter((batch) => text(batch.strategy_id) === text(position.strategy_id))
+      .map((batch) => {
+        const date = text(batch.settled_at || batch.effective_date || batch.created_at).slice(0, 10);
+        const index = positionHistory.findIndex((row) => text(row.as_of_date) >= date);
+        const before = index > 0 ? positionHistory[index - 1] : null;
+        const after = index >= 0 ? positionHistory[index] : null;
+        const beforeValue = before == null ? null : num(before.basket_value_cents);
+        const afterValue = after == null ? null : num(after.basket_value_cents);
+        const rawNavChangePct =
+          beforeValue && afterValue != null ? (afterValue / beforeValue - 1) * 100 : null;
+        const canonicalDailyPct = after?.["1d_pct"] == null ? null : num(after["1d_pct"]);
+        return {
+          id: batch.id,
+          date,
+          status: batch.status,
+          settlementState: batch.settlement_state,
+          beforeValueCents: beforeValue,
+          afterValueCents: afterValue,
+          rawNavChangePct,
+          canonicalDailyPct,
+          canonicalYtdPct: after?.ytd_pct == null ? null : num(after.ytd_pct),
+          neutralisedDifferencePp:
+            rawNavChangePct == null || canonicalDailyPct == null
+              ? null
+              : rawNavChangePct - canonicalDailyPct,
+          protected:
+            text(batch.status).toUpperCase() === "SETTLED" &&
+            text(batch.settlement_state).toUpperCase() === "COMPLETE" &&
+            canonicalDailyPct != null,
+        };
+      });
     const quoteTime = positionHoldings
       .map((row) => row.quote.exchangeTime)
       .sort()
       .at(-1);
-    const severity = classifyDifference(calculated.differenceCents, canonicalValueCents);
+    const valueSeverity = classifyDifference(calculated.differenceCents, canonicalValueCents);
+    const severity = [valueSeverity, ytdStatus, iressHoldingStatus].includes("urgent")
+      ? "urgent"
+      : [valueSeverity, ytdStatus, iressHoldingStatus].includes("warning")
+        ? "warning"
+        : "ok";
     const reasons = possibleDifferenceReasons({
       differenceCents: calculated.differenceCents,
       canonicalAsOf: text(position.as_of_date),
@@ -451,6 +575,25 @@ async function clientTruth(db: Db, userId: string) {
       severity,
       reasons,
       returns: periodReturns(positionHistory),
+      performance: {
+        definition: "Client strategy movement from entry; cash flows and rebalances neutralised; fees excluded",
+        storedYtdPct,
+        independentYtdPct,
+        ytdDifferencePp,
+        ytdStatus,
+        performancePnlCents: canonicalPnlCents,
+        openingPerformanceNavCents: num(position.opening_performance_nav_cents),
+        previousSecuritiesCents,
+        todayStrategyPnlCents,
+        todayStrategyPct,
+        feeTreatment: "Fees affect withdrawable value only and are excluded from the performance chain",
+        iressStatus: iressHoldingStatus,
+        iressMode: iressBody?.iressMode ?? (iressCoverage.ok ? "unknown" : iressCoverage.code),
+        iressCovered: positionHoldings.filter((row) => row.iress.available).length,
+        iressRequested: positionHoldings.length,
+        iressProbedAt: iressBody?.probedAt ?? null,
+      },
+      rebalanceDiagnostics,
       history: positionHistory.map((row) => ({
         date: row.as_of_date,
         valueCents: row.basket_value_cents,
@@ -934,7 +1077,15 @@ async function auditSurfaces(
     : "/api/admin/factsheets?action=list";
   // The Mint home carousel is fed by this authenticated retail endpoint.
   // `/api/overall-portfolio` belongs to OEM and must never be probed on Mint.
-  const clientCardPath = clientId ? "/api/user/strategies" : "";
+  const clientFamilyMemberId =
+    truth.kind === "client" ? text(truth.positions[0]?.familyMemberId) : "";
+  const clientCardPath = clientId
+    ? `/api/user/strategies${
+        clientFamilyMemberId
+          ? `?familyMemberId=${encodeURIComponent(clientFamilyMemberId)}`
+          : ""
+      }`
+    : "";
   const clientAuditSession =
     truth.kind === "client"
       ? await issueClientAuditToken(text(truth.profile.email))
@@ -1211,6 +1362,12 @@ async function auditSurfaces(
       const cardInvestedRands = card
         ? num(card.investedAmount ?? card.invested_amount ?? card.invested)
         : null;
+      const cardResidualRands = card
+        ? num(card.residualCash ?? card.residual_cash ?? card.residual)
+        : null;
+      const cardReserveRands = card
+        ? num(card.reserveCash ?? card.reserve_cash ?? card.reserve)
+        : null;
       const cardReturnPct =
         cardValueRands != null && cardInvestedRands != null && cardInvestedRands > 0
           ? ((cardValueRands - cardInvestedRands) / cardInvestedRands) * 100
@@ -1233,11 +1390,17 @@ async function auditSurfaces(
       );
       const caComparison = comparison(
         "Client strategy CA / residual",
-        null,
+        cardResidualRands == null ? null : Math.round(cardResidualRands * 100),
         expectedPosition.residualCents,
         "cents",
       );
-      const comparisons = [valueComparison, returnComparison, caComparison];
+      const reserveComparison = comparison(
+        "Client strategy execution reserve",
+        cardReserveRands == null ? null : Math.round(cardReserveRands * 100),
+        expectedPosition.reserveCents,
+        "cents",
+      );
+      const comparisons = [valueComparison, returnComparison, caComparison, reserveComparison];
       const hasUrgent = comparisons.some((row) => row.status === "urgent");
       const hasWarning = comparisons.some((row) => row.status === "warning");
       checks.push({
@@ -1251,6 +1414,10 @@ async function auditSurfaces(
           : card
             ? `${moneyText(Math.round((cardValueRands ?? 0) * 100))}; all-time return ${
                 cardReturnPct == null ? "not supplied" : `${cardReturnPct.toFixed(2)}%`
+              }; CA ${
+                cardResidualRands == null ? "not supplied" : moneyText(Math.round(cardResidualRands * 100))
+              }; reserve ${
+                cardReserveRands == null ? "not supplied" : moneyText(Math.round(cardReserveRands * 100))
               }`
             : "Selected strategy card is missing",
         expected: `${moneyText(expectedPosition.canonicalValueCents)} including ${moneyText(
@@ -1261,8 +1428,10 @@ async function auditSurfaces(
         difference: !card
           ? "The selected client strategy card is absent"
           : caComparison.actual == null && expectedPosition.residualCents > 0
-            ? "The app contract does not expose CA separately, so its inclusion cannot be proven from the card payload"
-            : "Card fields agree with canonical client truth",
+            ? "The app contract does not expose residual CA separately"
+            : reserveComparison.actual == null && expectedPosition.reserveCents > 0
+              ? "The app contract does not expose execution reserve separately"
+              : "Card value, return, residual CA and reserve agree with canonical client truth",
         evidence: [
           `deployment=${label}`,
           `base_url=${configuredUrl || "not configured"}`,
@@ -1270,12 +1439,15 @@ async function auditSurfaces(
           `source=${text(probe.body.source)}`,
           `as_of=${text(probe.body.asOf)}`,
           `strategy_id=${strategyId}`,
+          `family_member_id=${clientFamilyMemberId || "parent"}`,
           `audit_session_user_id=${clientAuditSession.userId || "unavailable"}`,
           `returned_card_ids=${cardRows
             .map((row) => text(row.strategyId || row.strategy_id || row.id))
             .filter(Boolean)
             .join(",") || "none"}`,
           `card_present=${Boolean(card)}`,
+          `card_residual_cents=${cardResidualRands == null ? "not supplied" : Math.round(cardResidualRands * 100)}`,
+          `card_reserve_cents=${cardReserveRands == null ? "not supplied" : Math.round(cardReserveRands * 100)}`,
           `latency_ms=${probe.latencyMs}`,
           ...(probe.error ? [`error=${probe.error}`] : []),
         ],

@@ -3,10 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   calculatePositionTruth,
   calculateStrategyCashAsset,
+  chainReturnFromAnchor,
+  classifyPercentageDifference,
   classifyDifference,
   possibleDifferenceReasons,
   reconstructClientHistoryPoint,
   reconstructStrategyHistoryPoint,
+  reconcileIressPrice,
   returnScopeBenchmarks,
 } from "@/lib/truth/calculations";
 import { yahooPriceToCents } from "@/lib/truth/yahoo-live";
@@ -91,5 +94,33 @@ describe("source-of-truth calculations", () => {
       }),
     ).toBeNull();
     expect(reconstructStrategyHistoryPoint(151_153, null)).toBeNull();
+  });
+
+  it("rebuilds YTD from the approved opening anchor and later daily returns", () => {
+    const rebuilt = chainReturnFromAnchor([
+      { anchorPct: -0.2901196997362548, dailyPct: null },
+      { dailyPct: -0.773869 },
+      { dailyPct: -0.399863 },
+      { dailyPct: 0.139313 },
+    ]);
+    expect(rebuilt).toBeCloseTo(-1.320077, 5);
+    expect(classifyPercentageDifference(0.000002)).toBe("ok");
+    expect(classifyPercentageDifference(0.1)).toBe("warning");
+    expect(classifyPercentageDifference(0.3)).toBe("urgent");
+  });
+
+  it("normalises IRESS Rand and already-cent quotes against Yahoo without hiding scale anomalies", () => {
+    expect(reconcileIressPrice(12_474, 124.74)).toMatchObject({
+      normalisedCents: 12_474,
+      scale: "rands-x100",
+      differenceCents: 0,
+      status: "ok",
+    });
+    expect(reconcileIressPrice(3_082, 3_082)).toMatchObject({
+      normalisedCents: 3_082,
+      scale: "already-cents",
+      differenceCents: 0,
+      status: "warning",
+    });
   });
 });

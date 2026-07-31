@@ -8,6 +8,7 @@ import {
   ClipboardList,
   DatabaseZap,
   FileText,
+  Gift,
   Globe2,
   Landmark,
   Layers,
@@ -116,6 +117,7 @@ export const PLATFORM_NAV: NavSection[] = [
     items: [
       { label: "Clients", href: "/admin/clients", icon: Users, roles: [WM, OPS] },
       { label: "Investors", href: "/admin/investors", icon: TrendingUp, roles: [WM, BIZ] },
+      { label: "Gifting", href: "/admin/gifting", icon: Gift, roles: [] },
       { label: "Client View Studio", href: "/admin/studio", icon: MonitorSmartphone, roles: [WM] },
     ],
   },
