@@ -934,7 +934,15 @@ async function auditSurfaces(
     : "/api/admin/factsheets?action=list";
   // The Mint home carousel is fed by this authenticated retail endpoint.
   // `/api/overall-portfolio` belongs to OEM and must never be probed on Mint.
-  const clientCardPath = clientId ? "/api/user/strategies" : "";
+  const clientFamilyMemberId =
+    truth.kind === "client" ? text(truth.positions[0]?.familyMemberId) : "";
+  const clientCardPath = clientId
+    ? `/api/user/strategies${
+        clientFamilyMemberId
+          ? `?familyMemberId=${encodeURIComponent(clientFamilyMemberId)}`
+          : ""
+      }`
+    : "";
   const clientAuditSession =
     truth.kind === "client"
       ? await issueClientAuditToken(text(truth.profile.email))
@@ -1270,6 +1278,7 @@ async function auditSurfaces(
           `source=${text(probe.body.source)}`,
           `as_of=${text(probe.body.asOf)}`,
           `strategy_id=${strategyId}`,
+          `family_member_id=${clientFamilyMemberId || "parent"}`,
           `audit_session_user_id=${clientAuditSession.userId || "unavailable"}`,
           `returned_card_ids=${cardRows
             .map((row) => text(row.strategyId || row.strategy_id || row.id))
