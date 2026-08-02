@@ -379,6 +379,12 @@ export interface StrategyBlock {
   strategy: string;
   groups: GroupedRow[];
 }
+
+/** Direct gift claims need one disclosure level: gift order -> asset orders. */
+export function isGiftOrderBlock(strategy: string): boolean {
+  return /^GIFT-[A-Z0-9_-]+$/i.test(strategy.trim());
+}
+
 export function groupOrdersByStrategy(groupedRows: GroupedRow[]): StrategyBlock[] {
   const m = new Map<string, GroupedRow[]>();
   for (const g of groupedRows) {
@@ -1872,6 +1878,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                 }
                 const block = item.block;
                 const strategyKey = block.strategy;
+                const isGiftOrder = isGiftOrderBlock(strategyKey);
                 const isStrategyOpen = !!expandedStrategy[strategyKey];
                 const totalOrders = block.groups.length;
                 const totalQty = block.groups.reduce((s, g) => s + g.parent.qty, 0);
@@ -1910,10 +1917,21 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                       </td>
                       <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap" colSpan={3}>
                         <span className="inline-flex items-center gap-1.5">
-                          {strategyKey}
+                          <span className={cn(isGiftOrder && "font-mono")}>{strategyKey}</span>
+                          {isGiftOrder ? (
+                            <span className="rounded-full border border-violet-400/30 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-violet-300">
+                              Gift order
+                            </span>
+                          ) : null}
                           <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                            {totalOrders} order{totalOrders !== 1 ? "s" : ""} · {investors.length} client
-                            {investors.length !== 1 ? "s" : ""}
+                            {isGiftOrder ? (
+                              <>{totalOrders} asset{totalOrders !== 1 ? "s" : ""}</>
+                            ) : (
+                              <>
+                                {totalOrders} order{totalOrders !== 1 ? "s" : ""} · {investors.length} client
+                                {investors.length !== 1 ? "s" : ""}
+                              </>
+                            )}
                           </span>
                         </span>
                       </td>
@@ -1929,7 +1947,18 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                     </tr>
                     {isStrategyOpen && (
                       <>
-                        {securityBlocks.map((sec) => {
+                        {isGiftOrder ? (
+                          block.groups.map((g) => (
+                            <GroupRow
+                              key={g.parent.id}
+                              g={g}
+                              lookupLast={lookupLast}
+                              expanded={expanded}
+                              toggleExpanded={toggleGroupExpanded}
+                              actions={orderActions}
+                            />
+                          ))
+                        ) : securityBlocks.map((sec) => {
                           const secKey = `${strategyKey}::${sec.key}`;
                           const isSecOpen = !!expandedSecurity[secKey];
                           const liveLast = lookupLast(sec.symbol);
@@ -1990,7 +2019,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                             </React.Fragment>
                           );
                         })}
-                        <tr>
+                        {!isGiftOrder ? <tr>
                           <td colSpan={COLS} className="p-0">
                             <div className="space-y-1.5 border-t border-border/30 bg-card/20 px-4 py-3">
                               <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -2015,7 +2044,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                               />
                             </div>
                           </td>
-                        </tr>
+                        </tr> : null}
                       </>
                     )}
                   </React.Fragment>
