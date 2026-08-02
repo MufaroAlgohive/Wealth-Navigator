@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { groupOrdersByStrategy, type ExecutionRow } from "@/components/admin/order-book/execution-view";
+import {
+  groupOrdersByStrategy,
+  isGiftOrderBlock,
+  type ExecutionRow,
+} from "@/components/admin/order-book/execution-view";
 
 /**
  * 2026-07-22: regression coverage for the order-book panel consolidation —
@@ -85,5 +89,18 @@ describe("groupOrdersByStrategy", () => {
 
   it("returns an empty array for an empty input (no execution rows for the book yet)", () => {
     expect(groupOrdersByStrategy([])).toEqual([]);
+  });
+});
+
+describe("isGiftOrderBlock", () => {
+  it("recognises a claimed gift book so its assets can be revealed directly", () => {
+    expect(isGiftOrderBlock("GIFT-8f44da9f-3c83-4f93-b434-f20f70d94655")).toBe(true);
+    expect(isGiftOrderBlock("gift-uat_claim_42")).toBe(true);
+  });
+
+  it("does not flatten normal strategy and client-order books", () => {
+    expect(isGiftOrderBlock("Yield Basket")).toBe(false);
+    expect(isGiftOrderBlock("CLIENT-BUY")).toBe(false);
+    expect(isGiftOrderBlock("GIFT-")).toBe(false);
   });
 });

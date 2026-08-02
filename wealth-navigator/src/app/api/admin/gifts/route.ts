@@ -347,6 +347,32 @@ export async function GET() {
       } catch {
         // Direct gifts store plain text; registry bridges may store JSON.
       }
+      // oems_forward_status/payload persisted by api/gift/claim(-v2).js on
+      // claim (see sql/2026-07-31_gift_claims_oems_forward.sql) — one entry
+      // per constituent holding for a basket claim: { ok, skipped,
+      // orderAuditId, orderId, symbol, error }. Rows claimed before this
+      // column existed have oems_forward_status: null — distinguish that
+      // ("never attempted, predates the fix") from "skipped" (flag off at
+      // claim time) rather than lumping both into one vague message.
+      const forwardStatus = text(row.oems_forward_status);
+      const forwardPayload = Array.isArray(row.oems_forward_payload) ? row.oems_forward_payload : [];
+      const firstForwarded = forwardPayload.find((r: Row) => r?.ok && !r?.skipped);
+      const forwardMeta: Record<string, { reachedOrderBook: boolean; reason: string }> = {
+        forwarded: { reachedOrderBook: true, reason: "All holdings reached the OEM order book." },
+        partial: {
+          reachedOrderBook: true,
+          reason: `${forwardPayload.filter((r: Row) => r?.ok).length}/${forwardPayload.length} constituent holdings reached the order book; the rest failed to forward.`,
+        },
+        failed: { reachedOrderBook: false, reason: "Order-book forwarding failed for every holding on this claim." },
+        skipped: { reachedOrderBook: false, reason: "Order-book forwarding was disabled at claim time (IRESS_FORWARD_BUYS unset)." },
+      };
+      const execution = forwardStatus && forwardMeta[forwardStatus]
+        ? { ...forwardMeta[forwardStatus], state: forwardStatus }
+        : {
+            reachedOrderBook: false,
+            state: "legacy_direct_allocation",
+            reason: "Claimed before order-book forwarding existed for direct gifts — holdings were allocated directly with no order-book evidence.",
+          };
       return {
         id: `claim:${id}`,
         recordId: id,
@@ -397,17 +423,13 @@ export async function GET() {
           refunded: text(row.refunded_at),
         },
         references: {
-          oemsOrderId: null,
-          oemsAuditId: null,
+          oemsOrderId: text(firstForwarded?.orderId),
+          oemsAuditId: text(firstForwarded?.orderAuditId),
           fillReference: null,
           recipientHoldingId: text(row.holding_id),
         },
         environment: environmentFor(row.sender_user_id, row.recipient_user_id),
-        execution: {
-          reachedOrderBook: false,
-          state: "direct_allocation",
-          reason: "Direct gift claims currently allocate holdings without creating an OEM order",
-        },
+        execution,
         events: [],
       };
     });
