@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   calculatePositionTruth,
   calculateStrategyCashAsset,
+  calculateStrategyLiveValue,
   chainReturnFromAnchor,
+  classifyValuationComparison,
+  auditReturnChain,
   classifyPercentageDifference,
   classifyDifference,
   possibleDifferenceReasons,
@@ -37,6 +40,14 @@ describe("source-of-truth calculations", () => {
     });
   });
 
+  it("keeps attributable strategy CA fixed while live securities move", () => {
+    expect(calculateStrategyLiveValue(215_000, 48_847)).toEqual({
+      modelCapitalCents: 263_847,
+      strategyCaCents: 48_847,
+      caWeightPct: (48_847 / 263_847) * 100,
+    });
+  });
+
   it("normalises Yahoo JSE and major-currency prices to cents", () => {
     expect(yahooPriceToCents("BHG.JO", 701.71)).toBe(702);
     expect(yahooPriceToCents("AAPL", 215.4)).toBe(21_540);
@@ -47,6 +58,25 @@ describe("source-of-truth calculations", () => {
     expect(classifyDifference(500, 100_000)).toBe("warning");
     expect(classifyDifference(2_100, 100_000)).toBe("urgent");
     expect(classifyDifference(10_000, 2_000_000)).toBe("urgent");
+  });
+
+  it("never escalates newer market prices as an accounting failure", () => {
+    expect(
+      classifyValuationComparison({
+        differenceCents: 25_000,
+        baselineCents: 100_000,
+        canonicalAsOf: "2026-07-29",
+        quoteTime: "2026-07-30T12:00:00Z",
+      }),
+    ).toMatchObject({ kind: "market-movement", severity: "warning", accountingComparable: false });
+    expect(
+      classifyValuationComparison({
+        differenceCents: 25_000,
+        baselineCents: 100_000,
+        canonicalAsOf: "2026-07-30",
+        quoteTime: "2026-07-30T12:00:00Z",
+      }),
+    ).toMatchObject({ kind: "timestamp-aligned", severity: "urgent", accountingComparable: true });
   });
 
   it("explains timing, reserve and liability evidence without claiming certainty", () => {
@@ -107,6 +137,23 @@ describe("source-of-truth calculations", () => {
     expect(classifyPercentageDifference(0.000002)).toBe("ok");
     expect(classifyPercentageDifference(0.1)).toBe("warning");
     expect(classifyPercentageDifference(0.3)).toBe("urgent");
+  });
+
+  it("blocks a reconstructed return when a chain link is missing or duplicated", () => {
+    expect(
+      auditReturnChain([
+        { date: "2026-07-01", anchorPct: 0, dailyPct: null },
+        { date: "2026-07-02", dailyPct: 1 },
+        { date: "2026-07-03", dailyPct: null },
+      ]),
+    ).toMatchObject({ complete: false, returnPct: null, missingDailyDates: ["2026-07-03"] });
+    expect(
+      auditReturnChain([
+        { date: "2026-07-01", anchorPct: 0, dailyPct: null },
+        { date: "2026-07-02", dailyPct: 1 },
+        { date: "2026-07-02", dailyPct: 2 },
+      ]),
+    ).toMatchObject({ complete: false, returnPct: null, duplicateDates: ["2026-07-02"] });
   });
 
   it("normalises IRESS Rand and already-cent quotes against Yahoo without hiding scale anomalies", () => {

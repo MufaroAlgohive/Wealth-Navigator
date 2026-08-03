@@ -540,6 +540,203 @@ function GiftDetail({ gift, now, onClose }: { gift: GiftRecord; now: number; onC
   );
 }
 
+const explicitRands = (row: Record<string, unknown>, ...keys: string[]) => {
+  for (const key of keys) {
+    const value = Number(row[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+};
+
+function GiftOrderBookCard({
+  gift,
+  now,
+  onOpenAudit,
+}: {
+  gift: GiftRecord;
+  now: number;
+  onOpenAudit: () => void;
+}) {
+  const [expanded, setExpanded] = React.useState(false);
+  const orderId = gift.references.oemsOrderId || gift.recordId;
+  const completedAt = gift.timestamps.claimed || gift.timestamps.filled || null;
+  const value = gift.paidRands ?? gift.amountRands;
+  const assets = gift.asset.constituents.length
+    ? gift.asset.constituents
+    : [{
+        name: gift.asset.name,
+        symbol: gift.asset.symbol,
+        quantity: gift.quantity,
+        avg_fill_rands: gift.fillPriceRands,
+        market_value_rands: value,
+      }];
+
+  return (
+    <article className="overflow-hidden rounded-xl border border-border/80 bg-card/45">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full flex-wrap items-center gap-x-4 gap-y-2 border-b border-transparent px-4 py-3 text-left transition hover:bg-muted/25"
+        aria-expanded={expanded}
+      >
+        {expanded ? (
+          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+        )}
+        <div className="min-w-[260px] flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold">Gift order: {orderId}</span>
+            <EnvironmentPill environment={gift.environment} />
+            <OrderBookBadge execution={gift.execution} />
+          </div>
+          <p className="mt-0.5 text-[9px] text-muted-foreground">
+            {formatDate(gift.timestamps.created ?? null)}
+            {completedAt ? ` → ${formatDate(completedAt)}` : ""}
+          </p>
+        </div>
+        <div className="ml-auto flex items-center gap-3 text-right">
+          <div>
+            <p className="font-mono text-[12px] font-semibold">{formatMoney(value)}</p>
+            <p className="text-[8px] text-muted-foreground">
+              {completedAt ? `Completed ${formatDate(completedAt)}` : "Awaiting completion"}
+            </p>
+          </div>
+          <StatusPill status={gift.claimState || gift.status} />
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border/70 bg-background/20">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1180px] border-collapse text-left">
+              <thead className="text-[8px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                <tr>
+                  {[
+                    "Order",
+                    "Gifter",
+                    "Recipient",
+                    "Asset",
+                    "Qty",
+                    "Reserved",
+                    "Paid",
+                    "Live / fill",
+                    "State",
+                    "Claimed / filled at",
+                  ].map((heading) => (
+                    <th key={heading} className="px-4 py-2.5">{heading}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-t border-border/50 text-[10px]">
+                  <td className="max-w-[180px] break-all px-4 py-3 font-mono text-[9px]">{orderId}</td>
+                  <td className="px-4 py-3"><PartyCell party={gift.gifter} /></td>
+                  <td className="px-4 py-3"><PartyCell party={gift.recipient} /></td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <AssetLogo logoUrl={gift.asset.logoUrl} label={gift.asset.symbol || gift.asset.name} size={26} />
+                      <div>
+                        <p className="font-semibold">{gift.asset.name}</p>
+                        <p className="text-[8px] text-muted-foreground">{gift.asset.symbol || statusLabel(gift.asset.type)}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 tabular-nums">{gift.quantity ?? "—"}</td>
+                  <td className="px-4 py-3 tabular-nums">{formatMoney(gift.reservedRands)}</td>
+                  <td className="px-4 py-3 tabular-nums">{formatMoney(gift.paidRands)}</td>
+                  <td className="px-4 py-3 tabular-nums">{formatMoney(gift.livePriceRands)} / {formatMoney(gift.fillPriceRands)}</td>
+                  <td className="px-4 py-3"><StatusPill status={gift.status} /></td>
+                  <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{formatDate(completedAt)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <section className="border-t border-border/60 px-4 py-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[9px] font-bold uppercase tracking-[0.12em] text-muted-foreground">
+                Assets under {gift.asset.name}
+              </p>
+              <span className="text-[8px] text-muted-foreground">{assets.length} asset{assets.length === 1 ? "" : "s"}</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] border-collapse text-left text-[10px]">
+                <thead className="text-[8px] uppercase tracking-[0.1em] text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2">Instrument</th>
+                    <th className="px-3 py-2">Ticker</th>
+                    <th className="px-3 py-2">Side</th>
+                    <th className="px-3 py-2 text-right">Allocation</th>
+                    <th className="px-3 py-2 text-right">Qty</th>
+                    <th className="px-3 py-2 text-right">Avg fill</th>
+                    <th className="px-3 py-2 text-right">Expected fill</th>
+                    <th className="px-3 py-2 text-right">Market value</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {assets.map((asset, index) => {
+                    const symbol = String(asset.symbol || asset.ticker || gift.asset.symbol || "—");
+                    const quantity = Number(asset.quantity ?? asset.shares);
+                    const weight = Number(asset.weight);
+                    const avgFill = explicitRands(asset, "avg_fill_rands", "avgFillRands");
+                    const expectedFill = explicitRands(asset, "expected_fill_rands", "expectedFillRands");
+                    const marketValue = explicitRands(asset, "market_value_rands", "marketValueRands");
+                    return (
+                      <tr key={`${symbol}-${index}`} className="border-t border-border/45">
+                        <td className="px-3 py-2.5 font-semibold">{String(asset.name || asset.instrument || symbol)}</td>
+                        <td className="px-3 py-2.5 text-muted-foreground">{symbol}</td>
+                        <td className="px-3 py-2.5 text-success">{String(asset.side || "BUY")}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{Number.isFinite(weight) ? `${weight.toFixed(2)}%` : "—"}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{Number.isFinite(quantity) ? quantity : "—"}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{formatMoney(avgFill)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{formatMoney(expectedFill)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{formatMoney(marketValue)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="border-t border-border/60 px-4 py-3">
+            <p className="mb-2 text-[9px] font-bold uppercase tracking-[0.12em] text-muted-foreground">Gift participants</p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] text-left text-[10px]">
+                <thead className="text-[8px] uppercase tracking-[0.1em] text-muted-foreground">
+                  <tr><th className="px-3 py-2">Person</th><th className="px-3 py-2">Identifier</th><th className="px-3 py-2">Role</th><th className="px-3 py-2">Owner type</th><th className="px-3 py-2 text-right">Gift value</th></tr>
+                </thead>
+                <tbody>
+                  {[[gift.gifter, "Gifter"], [gift.recipient, "Recipient"]].map(([party, role]) => {
+                    const person = party as Party;
+                    return (
+                      <tr key={role as string} className="border-t border-border/45">
+                        <td className="px-3 py-2.5 font-semibold">{person.name || "Unknown"}</td>
+                        <td className="px-3 py-2.5 font-mono text-[9px] text-muted-foreground">{person.mintNumber || person.email || person.id || "—"}</td>
+                        <td className="px-3 py-2.5">{role as string}</td>
+                        <td className="px-3 py-2.5">{statusLabel(person.kind || "primary")}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{formatMoney(value)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 px-4 py-3 text-[8px] text-muted-foreground">
+            <span><Countdown expiresAt={gift.expiresAt} status={gift.status} now={now} /> · {gift.execution.reason}</span>
+            <button type="button" onClick={onOpenAudit} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[9px] font-semibold text-foreground hover:bg-muted">
+              <ExternalLink className="h-3 w-3" /> Full audit and timeline
+            </button>
+          </footer>
+        </div>
+      )}
+    </article>
+  );
+}
+
 function WishlistCard({ wishlist }: { wishlist: WishlistRecord }) {
   const [expanded, setExpanded] = React.useState(false);
   const progress = wishlist.targetQuantity
@@ -885,107 +1082,23 @@ export default function GiftingPage() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[1120px] border-collapse text-left">
-            <thead>
-              <tr className="border-b border-border bg-muted/20 text-[8px] uppercase tracking-[0.12em] text-muted-foreground">
-                <th className="px-4 py-2.5">Created</th>
-                <th className="px-3 py-2.5">Gifter</th>
-                <th className="px-3 py-2.5">Recipient</th>
-                <th className="px-3 py-2.5">Gift asset</th>
-                <th className="px-3 py-2.5 text-right">Value</th>
-                <th className="px-3 py-2.5">Order status</th>
-                <th className="px-3 py-2.5">Claim / delivery</th>
-                <th className="px-3 py-2.5">Expires in</th>
-                <th className="px-3 py-2.5" />
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                SKELETON_ROWS.map((key) => (
-                  <tr key={key} className="border-b border-border/60">
-                    <td colSpan={9} className="px-4 py-3">
-                      <div className="h-8 animate-pulse rounded-lg bg-muted/50" />
-                    </td>
-                  </tr>
-                ))
-              ) : visible.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="px-4 py-14 text-center text-[11px] text-muted-foreground">
-                    No gift records match this view.
-                  </td>
-                </tr>
-              ) : (
-                visible.map((gift) => (
-                  <tr
-                    key={gift.id}
-                    className="border-b border-border/60 transition-colors hover:bg-primary/[0.035]"
-                  >
-                    <td className="whitespace-nowrap px-4 py-3">
-                      <p className="text-[10px] font-medium">
-                        {formatDate(gift.timestamps.created ?? null, false)}
-                      </p>
-                      <p className="text-[8px] text-muted-foreground">
-                        {formatDate(gift.timestamps.created ?? null)
-                          .split(",")
-                          .slice(-1)}
-                      </p>
-                    </td>
-                    <td className="max-w-[190px] px-3 py-3">
-                      <PartyCell party={gift.gifter} />
-                    </td>
-                    <td className="max-w-[190px] px-3 py-3">
-                      <PartyCell party={gift.recipient} />
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                          <Gift className="h-3.5 w-3.5" />
-                        </span>
-                        <div>
-                          <p className="max-w-[180px] truncate text-[10px] font-semibold">
-                            {gift.asset.name}
-                          </p>
-                          <p className="text-[8px] uppercase text-muted-foreground">
-                            {gift.asset.symbol || gift.asset.type}
-                            {gift.quantity ? ` · qty ${gift.quantity}` : ""}
-                          </p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-3 text-right font-mono text-[10px] font-semibold">
-                      {formatMoney(gift.amountRands)}
-                    </td>
-                    <td className="px-3 py-3">
-                      <div className="flex flex-col items-start gap-1">
-                        <StatusPill status={gift.status} />
-                        <OrderBookBadge execution={gift.execution} />
-                      </div>
-                    </td>
-                    <td className="px-3 py-3">
-                      <StatusPill status={gift.claimState} />
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-3">
-                      <Countdown expiresAt={gift.expiresAt} status={gift.status} now={now} />
-                      <p className="mt-0.5 text-[8px] text-muted-foreground">
-                        {formatDate(gift.expiresAt, false)}
-                      </p>
-                    </td>
-                    <td className="px-3 py-3">
-                      <button
-                        type="button"
-                        onClick={() => setSelected(gift)}
-                        className="rounded-lg border border-border p-2 text-muted-foreground hover:border-primary/30 hover:bg-primary/10 hover:text-primary"
-                        aria-label={`Open ${gift.asset.name} gift audit`}
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+        <div className="space-y-2 p-2">
+          {loading ? (
+            SKELETON_ROWS.map((key) => <div key={key} className="h-14 animate-pulse rounded-xl bg-muted/50" />)
+          ) : visible.length === 0 ? (
+            <div className="px-4 py-14 text-center text-[11px] text-muted-foreground">
+              No gift records match this view.
+            </div>
+          ) : (
+            visible.map((gift) => (
+              <GiftOrderBookCard
+                key={gift.id}
+                gift={gift}
+                now={now}
+                onOpenAudit={() => setSelected(gift)}
+              />
+            ))
+          )}
         </div>
         <footer className="flex items-center justify-between border-t border-border px-4 py-2 text-[9px] text-muted-foreground">
           <span>
