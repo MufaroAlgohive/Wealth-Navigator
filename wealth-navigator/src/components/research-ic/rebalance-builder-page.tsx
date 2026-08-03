@@ -9,11 +9,19 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, FlaskConical, Plus, Rocket, Send, X } from "lucide-react";
+import { ArrowDown, ArrowUp, FlaskConical, Info, Plus, Rocket, Send, X } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
 import { moneyR, rebalanceCodeMap, useQuotes, weightPct, ActionBadge } from "./ui";
@@ -41,6 +49,21 @@ type ImpactInvestor = {
   netCashCents: number;
   walletAfterCents: number;
   shortfall: boolean;
+  grossSellCents: number;
+  grossBuyCents: number;
+  sellBrokerageCents: number;
+  sellCustodyCents: number;
+  sellFeesCents: number;
+  netProceedsCents: number;
+  buyBrokerageCents: number;
+  buyCustodyCents: number;
+  buyFeesCents: number;
+  totalFeesCents: number;
+  reserveCents: number;
+  reserveUsedCents: number;
+  reserveAfterCents: number;
+  feeShortfallCents: number;
+  cashAfterCents: number;
   lines: ImpactLine[];
 };
 type ImpactTotals = {
@@ -49,6 +72,13 @@ type ImpactTotals = {
   sellCents: number;
   walletCents: number;
   walletAfterCents: number;
+  netProceedsCents: number;
+  sellFeesCents: number;
+  buyFeesCents: number;
+  totalFeesCents: number;
+  reserveCents: number;
+  reserveUsedCents: number;
+  feeShortfallCents: number;
   cashOk: boolean;
 };
 type ImpactResponse = {
@@ -56,6 +86,12 @@ type ImpactResponse = {
   scope?: string;
   investors?: ImpactInvestor[];
   totals?: ImpactTotals | null;
+  feeConfig?: {
+    brokerageRate: number;
+    custodyFeeCents: number;
+    source: string;
+    updatedAt?: string | null;
+  };
   notice?: string;
   error?: string;
 };
@@ -123,6 +159,7 @@ export function RebalanceBuilderPage({
   // what you're buying" — every SELL action must be paired with a BUY action
   // and each row needs its own rationale text before submit.
   const [rationaleBySymbol, setRationaleBySymbol] = React.useState<Record<string, string>>({});
+  const [proceedsDestination, setProceedsDestination] = React.useState("");
   const setRationale = (sym: string, v: string) =>
     setRationaleBySymbol((prev) => ({ ...prev, [sym.toUpperCase()]: v }));
   const [submitting, setSubmitting] = React.useState(false);
@@ -133,6 +170,7 @@ export function RebalanceBuilderPage({
   // leak across strategies.
   React.useEffect(() => {
     setRationaleBySymbol({});
+    setProceedsDestination("");
   }, [strategyId]);
 
   React.useEffect(() => {
@@ -298,7 +336,18 @@ export function RebalanceBuilderPage({
   const buyActions = proposedComposition.filter(
     (p) => (p.action === "add" || p.action === "increase") && (p.shares ?? 0) > 0,
   );
-  const sellWithoutBuy = sellActions.length > 0 && buyActions.length === 0;
+  const destinationSymbols = buyActions.map((row) => row.ticker.toUpperCase()).sort();
+  const proposedDestination = destinationSymbols.length
+    ? destinationSymbols.length === 1
+      ? `BUY:${destinationSymbols[0]}`
+      : `BUY:${destinationSymbols.join("+")}`
+    : "";
+  React.useEffect(() => {
+    if (!sellActions.length || (proceedsDestination && proceedsDestination !== proposedDestination)) {
+      setProceedsDestination("");
+    }
+  }, [proceedsDestination, proposedDestination, sellActions.length]);
+  const proceedsPlanMissing = sellActions.length > 0 && proceedsDestination !== proposedDestination;
 
   // Investor impact — read-only, TEST CLIENTS ONLY (the server enforces is_test
   // and never reads a real client). Re-modelled whenever the proposed weights
@@ -336,9 +385,18 @@ export function RebalanceBuilderPage({
       );
       return;
     }
-    if (sellWithoutBuy) {
+    if (proceedsPlanMissing) {
       setError(
-        "You have a SELL action with no matching BUY. Specify what the proceeds are funding, or park the cash.",
+        buyActions.length
+          ? "Confirm which proposed purchase will receive the sale proceeds."
+          : "This sale has no replacement purchase. Add or increase an asset, then choose it as the proceeds destination.",
+      );
+      return;
+    }
+    if (impactQ.isFetching || !impactQ.data?.ok) {
+      setError(
+        impactQ.data?.error ??
+          "Wait for the fee-adjusted investor impact preview before submitting this rebalance.",
       );
       return;
     }
@@ -361,7 +419,18 @@ export function RebalanceBuilderPage({
       const res = await fetch("/api/rebalance/requests", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ strategy_id: strategyName, current_composition, proposed_composition }),
+        body: JSON.stringify({
+          strategy_id: strategyName,
+          current_composition,
+          proposed_composition,
+          affected_investors: {
+            scope: impactQ.data.scope,
+            proceeds_destination: proceedsDestination,
+            fee_config: impactQ.data.feeConfig,
+            totals: impactQ.data.totals,
+            investors: impactQ.data.investors,
+          },
+        }),
       });
       const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !json.ok) {
@@ -417,9 +486,11 @@ export function RebalanceBuilderPage({
           One-line rationale required for {rationalesMissing.join(", ")} before this can go to the IC.
         </p>
       )}
-      {sellWithoutBuy && changes > 0 && (
+      {proceedsPlanMissing && changes > 0 && (
         <p className="rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-3 py-2 text-xs text-down">
-          A SELL is present with no matching BUY. Specify what the proceeds fund or park the cash.
+          {buyActions.length
+            ? "Confirm the proceeds destination before submitting."
+            : "A SELL is present with no replacement BUY. Add or increase the asset the proceeds should fund."}
         </p>
       )}
       {impactQ.data?.totals && impactQ.data.totals.cashOk === false && changes > 0 && (
@@ -575,7 +646,9 @@ export function RebalanceBuilderPage({
                 changes === 0 ||
                 missingResearch.length > 0 ||
                 rationalesMissing.length > 0 ||
-                sellWithoutBuy ||
+                proceedsPlanMissing ||
+                impactQ.isFetching ||
+                impactQ.data?.ok !== true ||
                 (impactQ.data?.totals && impactQ.data.totals.cashOk === false) ||
                 !perms.raiseRebalance
               }
@@ -584,11 +657,15 @@ export function RebalanceBuilderPage({
                   ? "Research missing for one or more changes"
                   : rationalesMissing.length > 0
                     ? "Rationale required for one or more changes"
-                    : sellWithoutBuy
-                      ? "SELL without a matching BUY"
-                      : impactQ.data?.totals?.cashOk === false
-                        ? "Insufficient cash for one or more investors"
-                        : undefined
+                    : proceedsPlanMissing
+                      ? "Confirm the sale proceeds destination"
+                      : impactQ.isFetching
+                        ? "Calculating fee-adjusted investor impact"
+                        : impactQ.data?.ok !== true
+                          ? impactQ.data?.error ?? "Investor impact is unavailable"
+                          : impactQ.data?.totals?.cashOk === false
+                            ? "Insufficient cash for one or more investors"
+                            : undefined
               }
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
@@ -671,6 +748,17 @@ export function RebalanceBuilderPage({
         </GlassSection>
       </div>
 
+      {sellActions.length > 0 && (
+        <ProceedsDestinationPanel
+          buySymbols={destinationSymbols}
+          destination={proceedsDestination}
+          expectedDestination={proposedDestination}
+          onDestination={setProceedsDestination}
+          netProceedsCents={impactQ.data?.totals?.netProceedsCents}
+          loading={impactQ.isFetching}
+        />
+      )}
+
       <InvestorImpactPanel
         enabled={!!strategyId && changes > 0}
         loading={impactQ.isFetching}
@@ -685,6 +773,145 @@ export function RebalanceBuilderPage({
 /** Cents (int) → "R1,234.00". */
 function centsToR(c: number | null | undefined): string {
   return moneyR((Number(c) || 0) / 100);
+}
+
+function ProceedsDestinationPanel({
+  buySymbols,
+  destination,
+  expectedDestination,
+  onDestination,
+  netProceedsCents,
+  loading,
+}: {
+  buySymbols: string[];
+  destination: string;
+  expectedDestination: string;
+  onDestination: (value: string) => void;
+  netProceedsCents?: number;
+  loading: boolean;
+}) {
+  const destinationLabel =
+    buySymbols.length === 1
+      ? `Buy ${buySymbols[0]}`
+      : `Split across proposed buys · ${buySymbols.join(", ")}`;
+  return (
+    <GlassSection
+      title="Sale proceeds plan"
+      subtitle="Confirm where the fee-adjusted proceeds will be reinvested"
+      dataSource="live"
+      db="retail"
+    >
+      <div className="grid gap-3 md:grid-cols-[1fr_220px] md:items-end">
+        <label className="space-y-1.5 text-xs font-medium">
+          What should the sale proceeds buy?
+          <select
+            value={destination}
+            disabled={!expectedDestination}
+            onChange={(event) => onDestination(event.target.value)}
+            className="block h-10 w-full rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <option value="">
+              {expectedDestination ? "Select proceeds destination…" : "Add or increase a replacement asset first"}
+            </option>
+            {expectedDestination ? <option value={expectedDestination}>{destinationLabel}</option> : null}
+          </select>
+          <span className="block text-[10px] font-normal text-muted-foreground">
+            The destination is saved with the IC proposal and must match the proposed BUY legs.
+          </span>
+        </label>
+        <div className="rounded-xl border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.025)] p-3">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Estimated net proceeds</div>
+          <div className="mt-1 font-mono text-lg font-semibold tabular-nums text-up">
+            {loading ? "Calculating…" : netProceedsCents == null ? "—" : centsToR(netProceedsCents)}
+          </div>
+          <div className="mt-1 text-[10px] text-muted-foreground">After estimated sell brokerage and custody</div>
+        </div>
+      </div>
+    </GlassSection>
+  );
+}
+
+function ProceedsBreakdownDialog({ data }: { data: ImpactResponse }) {
+  const totals = data.totals;
+  if (!totals) return null;
+  const feeRate = Number(data.feeConfig?.brokerageRate ?? 0) * 100;
+  const rows = [
+    ["Gross sale proceeds", totals.sellCents],
+    ["Estimated sell fees", -totals.sellFeesCents],
+    ["Net sale proceeds", totals.netProceedsCents],
+    ["Replacement purchases", -totals.buyCents],
+    ["Estimated buy fees", -totals.buyFeesCents],
+    ["Execution reserve used", totals.reserveUsedCents],
+    ["Fees not covered by reserve", -totals.feeShortfallCents],
+    ["Cash after proposed sequence", totals.walletAfterCents],
+  ] as const;
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          aria-label="Show sale proceeds calculation"
+          className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[hsl(var(--glass-border))] text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+        >
+          <Info className="h-3 w-3" />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="glass-panel max-h-[88vh] max-w-3xl overflow-y-auto border-[hsl(var(--glass-border))]">
+        <DialogHeader>
+          <DialogTitle>Estimated proceeds and fee bridge</DialogTitle>
+          <DialogDescription>
+            Preview only. Actual settlement uses broker fills and charges configured in App Settings.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
+            <div className="space-y-2 text-xs">
+              {rows.map(([label, cents]) => (
+                <div key={label} className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">{label}</span>
+                  <span className={cn("font-mono tabular-nums", cents < 0 && "text-down")}>
+                    {cents < 0 ? "−" : ""}{centsToR(Math.abs(cents))}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-4 border-t border-[hsl(var(--glass-border))] pt-3 text-[10px] text-muted-foreground">
+              Brokerage {feeRate.toFixed(3)}% · custody {centsToR(data.feeConfig?.custodyFeeCents)} per
+              traded asset per affected investor · source {data.feeConfig?.source ?? "unavailable"}
+            </div>
+          </div>
+          <div className="overflow-hidden rounded-xl border border-[hsl(var(--glass-border))]">
+            <div className="border-b border-[hsl(var(--glass-border))] px-3 py-2 text-xs font-semibold">
+              Per-investor effect
+            </div>
+            <div className="max-h-72 overflow-y-auto">
+              {data.investors?.map((investor) => (
+                <div key={investor.user_id} className="border-b border-[hsl(var(--glass-border))] p-3 last:border-0">
+                  <div className="flex items-center justify-between gap-3 text-xs font-medium">
+                    <span>{investor.name}</span>
+                    <span className={cn("font-mono", investor.shortfall ? "text-down" : "text-up")}>
+                      {centsToR(investor.cashAfterCents)} after
+                    </span>
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
+                    <span>Gross sell {centsToR(investor.grossSellCents)}</span>
+                    <span>Net proceeds {centsToR(investor.netProceedsCents)}</span>
+                    <span>Total fees {centsToR(investor.totalFeesCents)}</span>
+                    <span>Reserve used {centsToR(investor.reserveUsedCents)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <p className="text-[10px] leading-4 text-muted-foreground">
+          Standard net proceeds are gross sale proceeds less estimated sell fees. The sequence cash result also
+          includes replacement-buy costs and fees. Execution reserve is applied to fees first; only an uncovered
+          fee shortfall reduces the cash available for the replacement purchase.
+        </p>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function InvestorImpactPanel({
@@ -715,6 +942,10 @@ function InvestorImpactPanel({
     >
       {!enabled ? (
         <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
+      ) : data?.ok === false ? (
+        <p className="border-l-2 border-down px-5 py-4 text-xs text-down">
+          {data.error ?? "The fee-adjusted impact preview could not be calculated."}
+        </p>
       ) : loading && investors.length === 0 ? (
         <p className="px-5 py-4 text-caption">Modelling impact…</p>
       ) : investors.length === 0 ? (
@@ -742,6 +973,11 @@ function InvestorImpactPanel({
               <span>
                 Sells <span className="font-mono font-semibold text-up">{centsToR(totals?.sellCents)}</span>
               </span>
+              <span className="inline-flex items-center gap-1">
+                Net proceeds{" "}
+                <span className="font-mono font-semibold text-up">{centsToR(totals?.netProceedsCents)}</span>
+                {data ? <ProceedsBreakdownDialog data={data} /> : null}
+              </span>
               <span className="text-muted-foreground">
                 Combined wallets <span className="font-mono">{centsToR(totals?.walletCents)}</span>
               </span>
@@ -763,6 +999,7 @@ function InvestorImpactPanel({
                   <th className="px-3 py-2 text-right font-medium">Basket</th>
                   <th className="px-3 py-2 text-right font-medium">To buy</th>
                   <th className="px-3 py-2 text-right font-medium">To sell</th>
+                  <th className="px-3 py-2 text-right font-medium">Net proceeds</th>
                   <th className="px-3 py-2 text-right font-medium">Wallet</th>
                   <th className="px-5 py-2 text-right font-medium">Wallet after</th>
                 </tr>
@@ -781,6 +1018,9 @@ function InvestorImpactPanel({
                       <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
                         {inv.sellCents ? centsToR(inv.sellCents) : "—"}
                       </td>
+                      <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
+                        {inv.netProceedsCents ? centsToR(inv.netProceedsCents) : "—"}
+                      </td>
                       <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
                         {centsToR(inv.walletCents)}
                       </td>
@@ -795,7 +1035,7 @@ function InvestorImpactPanel({
                     </tr>
                     {inv.lines.length > 0 && (
                       <tr className="border-b border-[hsl(var(--glass-border))]">
-                        <td colSpan={6} className="px-5 pb-2 pt-0">
+                        <td colSpan={7} className="px-5 pb-2 pt-0">
                           <div className="flex flex-wrap gap-1.5">
                             {inv.lines.map((ln) => (
                               <span
