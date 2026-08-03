@@ -552,12 +552,16 @@ function GiftOrderBookCard({
   gift,
   now,
   onOpenAudit,
+  onRecovered,
 }: {
   gift: GiftRecord;
   now: number;
   onOpenAudit: () => void;
+  onRecovered: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = React.useState(false);
+  const [recovering, setRecovering] = React.useState(false);
+  const [recoveryError, setRecoveryError] = React.useState<string | null>(null);
   const orderId = gift.references.oemsOrderId || gift.recordId;
   const completedAt = gift.timestamps.claimed || gift.timestamps.filled || null;
   const value = gift.paidRands ?? gift.amountRands;
@@ -570,6 +574,29 @@ function GiftOrderBookCard({
         avg_fill_rands: gift.fillPriceRands,
         market_value_rands: value,
       }];
+  const canRecover =
+    gift.source === "claim" && gift.claimState === "claimed" && !gift.execution.reachedOrderBook;
+
+  async function recoverOrderBook() {
+    setRecovering(true);
+    setRecoveryError(null);
+    try {
+      const response = await fetch("/api/admin/gifts/recover-orderbook", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ claim_id: gift.recordId }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok !== true) {
+        throw new Error(result.error || "The gift could not be recovered to the order book.");
+      }
+      await onRecovered();
+    } catch (error) {
+      setRecoveryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRecovering(false);
+    }
+  }
 
   return (
     <article className="overflow-hidden rounded-xl border border-border/80 bg-card/45">
@@ -727,9 +754,24 @@ function GiftOrderBookCard({
 
           <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 px-4 py-3 text-[8px] text-muted-foreground">
             <span><Countdown expiresAt={gift.expiresAt} status={gift.status} now={now} /> · {gift.execution.reason}</span>
-            <button type="button" onClick={onOpenAudit} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[9px] font-semibold text-foreground hover:bg-muted">
-              <ExternalLink className="h-3 w-3" /> Full audit and timeline
-            </button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {recoveryError ? <span className="max-w-sm text-right text-danger">{recoveryError}</span> : null}
+              {canRecover ? (
+                <button
+                  type="button"
+                  onClick={() => void recoverOrderBook()}
+                  disabled={recovering}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-warning/40 bg-warning/10 px-2.5 py-1.5 text-[9px] font-semibold text-warning hover:bg-warning/20 disabled:opacity-50"
+                  title="Idempotently reconstruct this claimed gift's pending holdings and park any missing OEM orders"
+                >
+                  <RefreshCw className={cn("h-3 w-3", recovering && "animate-spin")} />
+                  {recovering ? "Recovering…" : "Recover to order book"}
+                </button>
+              ) : null}
+              <button type="button" onClick={onOpenAudit} className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-[9px] font-semibold text-foreground hover:bg-muted">
+                <ExternalLink className="h-3 w-3" /> Full audit and timeline
+              </button>
+            </div>
           </footer>
         </div>
       )}
@@ -1096,6 +1138,7 @@ export default function GiftingPage() {
                 gift={gift}
                 now={now}
                 onOpenAudit={() => setSelected(gift)}
+                onRecovered={load}
               />
             ))
           )}

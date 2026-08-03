@@ -21,6 +21,13 @@ describe("OEM gifting order-book layout", () => {
     expect(page).toContain("<WishlistPanel wishlists={wishlists}");
   });
 
+  it("offers recovery for a claimed direct gift missing from the order book", () => {
+    expect(page).toContain('gift.source === "claim"');
+    expect(page).toContain('gift.claimState === "claimed"');
+    expect(page).toContain("Recover to order book");
+    expect(page).toContain('/api/admin/gifts/recover-orderbook');
+  });
+
   it("only formats explicitly rand-denominated constituent price fields", () => {
     expect(page).toContain('explicitRands(asset, "avg_fill_rands", "avgFillRands")');
     expect(page).not.toContain('explicitRands(asset, "avg_fill")');
