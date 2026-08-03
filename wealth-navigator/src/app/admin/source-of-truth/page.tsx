@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
+  Clock3,
   DatabaseZap,
   Download,
   ExternalLink,
@@ -34,6 +35,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/cn";
 import {
   Tooltip as HelpTooltip,
   TooltipContent,
@@ -128,6 +130,22 @@ type SurfaceCheck = {
     status: "ok" | "warning" | "urgent";
   }>;
 };
+type PricingSnapshot = {
+  id: string;
+  provider: string;
+  startedAt: string;
+  completedAt: string;
+  instruments: number;
+  earliestExchangeTime: string | null;
+  latestExchangeTime: string | null;
+  frozenWithinRun: boolean;
+};
+type ValuationComparison = {
+  kind: "timestamp-aligned" | "market-movement" | "provider-stale" | "timestamp-unavailable";
+  severity: "ok" | "warning" | "urgent";
+  accountingComparable: boolean;
+  message: string;
+};
 type TruthPosition = {
   key: string;
   strategyId: string;
@@ -147,6 +165,7 @@ type TruthPosition = {
   canonicalValueCents: number;
   canonicalPnlCents: number;
   differenceCents: number;
+  valuationComparison: ValuationComparison;
   appDisplayedValueCents: number;
   appDisplayedPnlCents: number;
   severity: "ok" | "warning" | "urgent";
@@ -158,6 +177,16 @@ type TruthPosition = {
     independentYtdPct: number | null;
     ytdDifferencePp: number | null;
     ytdStatus: "ok" | "warning" | "urgent";
+    returnChainAudit: {
+      complete: boolean;
+      observedRows: number;
+      anchorAvailable: boolean;
+      missingDailyDates: string[];
+      missingExpectedDates: string[];
+      duplicateDates: string[];
+      largestCalendarGapDays: number;
+      returnPct: number | null;
+    };
     performancePnlCents: number;
     openingPerformanceNavCents: number;
     previousSecuritiesCents: number | null;
@@ -203,6 +232,7 @@ type ClientTruth = {
   kind: "client";
   generatedAt: string;
   provider: string;
+  pricingSnapshot: PricingSnapshot;
   profile: {
     id: string;
     first_name?: string;
@@ -269,6 +299,7 @@ type StrategyTruth = {
   kind: "strategy";
   generatedAt: string;
   provider: string;
+  pricingSnapshot: PricingSnapshot;
   strategy: { name?: string; short_name?: string; updated_at?: string };
   holdings: LiveHolding[];
   live: {
@@ -280,6 +311,21 @@ type StrategyTruth = {
   };
   canonical?: Record<string, string | number | null>;
   differences: Record<string, number>;
+  valuationComparison: ValuationComparison;
+  returnChainAudit: {
+    complete: boolean;
+    observedRows: number;
+    anchorAvailable: boolean;
+    missingDailyDates: string[];
+    missingExpectedDates: string[];
+    duplicateDates: string[];
+    largestCalendarGapDays: number;
+    returnPct: number | null;
+  };
+  storedYtdPct: number | null;
+  rebuiltYtdPct: number | null;
+  ytdDifferencePp: number | null;
+  ytdStatus: "ok" | "warning" | "urgent";
   severity: "ok" | "warning" | "urgent";
   reasons: string[];
   returns: { fiveDayPct?: number; mtdPct?: number; ytdPct?: number; allTimePct?: number };
@@ -320,6 +366,7 @@ type GeneralTruth = {
   generatedAt: string;
   auditedClients: number;
   auditedStrategies: number;
+  pricingSnapshot: PricingSnapshot;
   summary: { urgent: number; warning: number; ok: number };
   findings: Array<{
     kind: string;
@@ -370,6 +417,49 @@ function Stat({ label, value, className = "" }: { label: string; value: string; 
       </div>
       <div className={`mt-1 text-sm font-semibold tabular-nums ${className}`}>{value}</div>
     </div>
+  );
+}
+
+function TimeAlignmentRibbon({
+  snapshot,
+  canonicalDates = [],
+  comparison,
+}: {
+  snapshot: PricingSnapshot;
+  canonicalDates?: Array<string | null | undefined>;
+  comparison?: ValuationComparison;
+}) {
+  const dates = [...new Set(canonicalDates.filter(Boolean).map((value) => String(value).slice(0, 10)))];
+  const aligned = comparison?.accountingComparable ?? false;
+  return (
+    <section className={cn(
+      "rounded-xl border p-3",
+      aligned ? "border-emerald-400/25 bg-emerald-400/[0.045]" : "border-amber-400/25 bg-amber-400/[0.045]",
+    )}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-semibold">
+          <Clock3 className={cn("h-4 w-4", aligned ? "text-emerald-300" : "text-amber-300")} />
+          Valuation-time alignment
+          <InfoHint label="Valuation-time alignment">
+            An accounting mismatch is only escalated when provider prices and canonical values share a
+            valuation date. Newer live prices are reported as market movement, not as broken accounting.
+          </InfoHint>
+        </div>
+        <span className={cn(
+          "rounded-full border px-2 py-1 text-[9px] font-bold uppercase tracking-wider",
+          aligned ? "border-emerald-400/25 text-emerald-300" : "border-amber-400/25 text-amber-300",
+        )}>
+          {comparison ? comparison.kind.replaceAll("-", " ") : "frozen run snapshot"}
+        </span>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <Stat label="Canonical date" value={dates.length ? dates.join(", ") : "Multiple / book audit"} />
+        <Stat label="Yahoo exchange window" value={`${when(snapshot.earliestExchangeTime)} → ${when(snapshot.latestExchangeTime)}`} />
+        <Stat label="Frozen instruments" value={`${snapshot.instruments} · one price per symbol`} />
+        <Stat label="Audit run ID" value={snapshot.id.slice(0, 13)} className="font-mono text-cyan-300" />
+      </div>
+      {comparison ? <p className="mt-2 text-[10px] text-muted-foreground">{comparison.message}</p> : null}
+    </section>
   );
 }
 
@@ -1016,18 +1106,18 @@ function PerformanceReconciliation({ position }: { position: TruthPosition }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold">
-            Independent client performance proof
-            <InfoHint label="Independent client performance proof">
-              Rebuilds the client&apos;s return from the first approved anchor and every later daily return,
+            Canonical return-chain integrity proof
+            <InfoHint label="Canonical return-chain integrity proof">
+              Checks the internal arithmetic and completeness of the approved anchor and every later daily return,
               checks rebalance boundaries, calculates today from quantity × price movement, and compares each
-              Yahoo price with a fresh IRESS quote.
+              Yahoo price with a fresh IRESS quote. This is distinct from an independent broker-position proof.
             </InfoHint>
           </div>
           <div className="mt-1 text-xs text-muted-foreground">{p.definition}</div>
         </div>
         <StatusLight severity={overall} />
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-6">
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-7">
         <Stat label="Official YTD" value={pct(p.storedYtdPct)} />
         <Stat label="Rebuilt YTD" value={pct(p.independentYtdPct)} />
         <Stat
@@ -1045,14 +1135,19 @@ function PerformanceReconciliation({ position }: { position: TruthPosition }) {
           value={`${p.iressCovered}/${p.iressRequested} · ${p.iressMode}`}
           className={p.iressStatus === "ok" ? "text-emerald-300" : "text-amber-300"}
         />
+        <Stat
+          label="Chain completeness"
+          value={`${p.returnChainAudit.observedRows} rows · ${p.returnChainAudit.complete ? "Complete" : "Blocked"}`}
+          className={p.returnChainAudit.complete ? "text-emerald-300" : "text-amber-300"}
+        />
       </div>
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
         <div className="rounded-lg border border-white/10 bg-black/10 p-3 text-xs leading-5">
           <div className="font-semibold">What this proves</div>
           <ul className="mt-2 list-disc space-y-1 pl-4 text-muted-foreground">
             <li>
-              YTD is independently chained from the approved opening anchor; it is not inferred from raw
-              basket-value changes.
+              YTD arithmetic is re-chained from the approved opening anchor; it is not inferred from raw
+              basket-value changes, and no result is emitted when a daily link is missing or duplicated.
             </li>
             <li>{p.feeTreatment}.</li>
             <li>
@@ -1064,6 +1159,14 @@ function PerformanceReconciliation({ position }: { position: TruthPosition }) {
               close.
             </li>
           </ul>
+          {!p.returnChainAudit.complete ? (
+            <div className="mt-2 rounded-md border border-amber-400/20 bg-amber-400/10 p-2 text-amber-200">
+              Missing daily values: {p.returnChainAudit.missingDailyDates.join(", ") || "none"} · missing published dates:{" "}
+              {p.returnChainAudit.missingExpectedDates.join(", ") || "none"} · duplicate dates:{" "}
+              {p.returnChainAudit.duplicateDates.join(", ") || "none"} · largest calendar gap:{" "}
+              {p.returnChainAudit.largestCalendarGapDays}d
+            </div>
+          ) : null}
         </div>
         <div className="overflow-hidden rounded-lg border border-white/10 bg-black/10">
           <div className="border-b border-white/10 p-3 text-xs font-semibold">
@@ -2044,6 +2147,7 @@ function TruthResult({ truth }: { truth: Truth }) {
           <Stat label="Warnings" value={String(truth.summary.warning)} className="text-amber-400" />
           <Stat label="Healthy" value={String(truth.summary.ok)} className="text-emerald-400" />
         </div>
+        <TimeAlignmentRibbon snapshot={truth.pricingSnapshot} />
         <p className="text-xs text-muted-foreground">
           Freshly audited {truth.auditedClients} clients and {truth.auditedStrategies} strategies at{" "}
           {when(truth.generatedAt)}.
@@ -2061,7 +2165,7 @@ function TruthResult({ truth }: { truth: Truth }) {
                   <StatusLight severity={finding.severity} />
                 </div>
                 <div className="mt-1 text-xs">
-                  {finding.kind} · absolute variance {money(finding.differenceCents)}
+                  {finding.kind} · observed value drift {money(finding.differenceCents)}
                 </div>
                 <div className="mt-1 text-xs opacity-80">{finding.message}</div>
               </div>
@@ -2089,7 +2193,43 @@ function TruthResult({ truth }: { truth: Truth }) {
           Computed {when(truth.generatedAt)}
           <StatusLight severity={truth.severity} />
         </div>
+        <TimeAlignmentRibbon
+          snapshot={truth.pricingSnapshot}
+          canonicalDates={[String(canonical?.as_of_date || "")]}
+          comparison={truth.valuationComparison}
+        />
         <ReturnStrip returns={truth.returns} />
+        <div className={`rounded-xl border p-3 ${severityStyle[truth.ytdStatus]}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              Strategy return-chain integrity
+              <InfoHint label="Strategy return-chain integrity">
+                Rebuilds YTD from the canonical opening anchor and every published daily return. Missing or
+                duplicate links block the rebuilt figure instead of being treated as zero.
+              </InfoHint>
+            </div>
+            <StatusLight severity={truth.ytdStatus} />
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+            <Stat label="Official YTD" value={pct(truth.storedYtdPct)} />
+            <Stat label="Rebuilt YTD" value={pct(truth.rebuiltYtdPct)} />
+            <Stat
+              label="Difference"
+              value={truth.ytdDifferencePp == null ? "—" : `${truth.ytdDifferencePp.toFixed(6)} pp`}
+            />
+            <Stat
+              label="Completeness"
+              value={`${truth.returnChainAudit.observedRows} rows · ${truth.returnChainAudit.complete ? "Complete" : "Blocked"}`}
+            />
+          </div>
+          {!truth.returnChainAudit.complete ? (
+            <div className="mt-2 text-xs text-amber-200">
+              Missing daily values: {truth.returnChainAudit.missingDailyDates.join(", ") || "none"} · duplicate
+              dates: {truth.returnChainAudit.duplicateDates.join(", ") || "none"}. No rebuilt YTD is trusted until
+              the chain is complete.
+            </div>
+          ) : null}
+        </div>
         <SurfaceMatrix checks={truth.surfaceChecks} />
         <div className="grid grid-cols-2 gap-2">
           <Stat label="Live securities" value={money(truth.live.securitiesCents)} />
@@ -2192,6 +2332,11 @@ function TruthResult({ truth }: { truth: Truth }) {
           <Download className="mr-1 h-3.5 w-3.5" /> Excel ledger
         </Button>
       </div>
+      <TimeAlignmentRibbon
+        snapshot={truth.pricingSnapshot}
+        canonicalDates={truth.positions.map((position) => position.asOf)}
+        comparison={truth.positions.length === 1 ? truth.positions[0]?.valuationComparison : undefined}
+      />
       <div className="grid grid-cols-2 gap-2">
         <Stat label="Live value" value={money(t.liveValueCents)} />
         <Stat label="Invested basis" value={money(t.investedCents)} />

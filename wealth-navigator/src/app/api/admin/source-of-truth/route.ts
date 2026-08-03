@@ -4,17 +4,17 @@ import { getAdminContext } from "@/lib/admin/rbac";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 import {
   calculatePositionTruth,
-  calculateStrategyCashAsset,
-  chainReturnFromAnchor,
+  calculateStrategyLiveValue,
+  auditReturnChain,
+  classifyValuationComparison,
   classifyPercentageDifference,
-  classifyDifference,
   possibleDifferenceReasons,
   reconcileIressPrice,
   reconstructClientHistoryPoint,
   reconstructStrategyHistoryPoint,
   returnScopeBenchmarks,
 } from "@/lib/truth/calculations";
-import { fetchYahooTruthQuote } from "@/lib/truth/yahoo-live";
+import { fetchYahooTruthQuote, type YahooTruthQuote } from "@/lib/truth/yahoo-live";
 import { callWorker } from "@/lib/iress/worker-api";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +43,8 @@ type SurfaceCheck = {
 };
 
 const num = (value: unknown) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+const nullableNumber = (value: unknown): number | null =>
+  value == null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
 const text = (value: unknown) => String(value ?? "").trim();
 const moneyText = (cents: number) => `R ${(cents / 100).toFixed(2)}`;
 const comparison = (
@@ -72,8 +74,15 @@ const comparison = (
 };
 const ownerKey = (userId: unknown, familyId: unknown, strategyId: unknown) =>
   `${text(userId)}:${text(familyId)}:${text(strategyId)}`;
-const chained = (rows: Row[]) =>
-  rows.reduce((total, row) => total * (1 + num(row["1d_pct"]) / 100), 1) * 100 - 100;
+const chained = (rows: Row[]) => {
+  const daily = rows.map((row) => nullableNumber(row["1d_pct"]));
+  let factor = 1;
+  for (const value of daily) {
+    if (value == null) return null;
+    factor *= 1 + value / 100;
+  }
+  return factor * 100 - 100;
+};
 const periodReturns = (rows: Row[]) => {
   const sorted = [...rows].sort((a, b) => text(a.as_of_date).localeCompare(text(b.as_of_date)));
   const latestDate = text(sorted.at(-1)?.as_of_date);
@@ -83,8 +92,8 @@ const periodReturns = (rows: Row[]) => {
   return {
     fiveDayPct: five.length ? chained(five) : null,
     mtdPct: mtd.length ? chained(mtd) : null,
-    ytdPct: sorted.length ? num(sorted.at(-1)?.ytd_pct) : null,
-    allTimePct: sorted.length ? num(sorted.at(-1)?.inception_pct ?? sorted.at(-1)?.all_pct) : null,
+    ytdPct: nullableNumber(sorted.at(-1)?.ytd_pct),
+    allTimePct: nullableNumber(sorted.at(-1)?.inception_pct ?? sorted.at(-1)?.all_pct),
   };
 };
 
@@ -193,11 +202,31 @@ async function listTruth(db: Db) {
   };
 }
 
-async function quoteMap(symbols: string[]) {
+type QuoteSnapshot = {
+  id: string;
+  startedAt: string;
+  requests: Map<string, Promise<YahooTruthQuote>>;
+};
+
+const createQuoteSnapshot = (): QuoteSnapshot => ({
+  id: crypto.randomUUID(),
+  startedAt: new Date().toISOString(),
+  requests: new Map(),
+});
+
+async function quoteMap(symbols: string[], snapshot: QuoteSnapshot) {
   const unique = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))];
-  if (!unique.length) throw new Error("Live truth blocked—no priced holdings were found");
-  const settled = await Promise.allSettled(unique.map(fetchYahooTruthQuote));
-  const quotes = new Map<string, Awaited<ReturnType<typeof fetchYahooTruthQuote>>>();
+  if (!unique.length) return new Map<string, YahooTruthQuote>();
+  const requests = unique.map((symbol) => {
+    const key = symbol.toUpperCase();
+    const existing = snapshot.requests.get(key);
+    if (existing) return existing;
+    const request = fetchYahooTruthQuote(symbol);
+    snapshot.requests.set(key, request);
+    return request;
+  });
+  const settled = await Promise.allSettled(requests);
+  const quotes = new Map<string, YahooTruthQuote>();
   const errors: string[] = [];
   settled.forEach((result, index) => {
     const symbol = unique[index] ?? "";
@@ -206,6 +235,24 @@ async function quoteMap(symbols: string[]) {
   });
   if (errors.length) throw new Error(`Live truth blocked—missing Yahoo quote(s): ${errors.join("; ")}`);
   return quotes;
+}
+
+async function quoteSnapshotEvidence(snapshot: QuoteSnapshot) {
+  const settled = await Promise.allSettled([...snapshot.requests.values()]);
+  const quotes = settled
+    .filter((result): result is PromiseFulfilledResult<YahooTruthQuote> => result.status === "fulfilled")
+    .map((result) => result.value);
+  const exchangeTimes = quotes.map((quote) => quote.exchangeTime).filter(Boolean).sort();
+  return {
+    id: snapshot.id,
+    provider: "Yahoo Finance chart API",
+    startedAt: snapshot.startedAt,
+    completedAt: new Date().toISOString(),
+    instruments: quotes.length,
+    earliestExchangeTime: exchangeTimes.at(0) ?? null,
+    latestExchangeTime: exchangeTimes.at(-1) ?? null,
+    frozenWithinRun: true,
+  };
 }
 
 function requiredQuote(
@@ -217,7 +264,7 @@ function requiredQuote(
   return quote;
 }
 
-async function clientTruth(db: Db, userId: string) {
+async function clientTruth(db: Db, userId: string, snapshot: QuoteSnapshot = createQuoteSnapshot()) {
   const [{ data: profile }, { data: holdings }, { data: canonical }] = await Promise.all([
     db
       .from("profiles")
@@ -236,7 +283,12 @@ async function clientTruth(db: Db, userId: string) {
   ]);
   if (!profile) throw new Error("Client not found");
   const securityIds = [...new Set((holdings ?? []).map((row) => text(row.security_id)).filter(Boolean))];
-  const strategyIds = [...new Set((holdings ?? []).map((row) => text(row.strategy_id)).filter(Boolean))];
+  const strategyIds = [
+    ...new Set([
+      ...(holdings ?? []).map((row) => text(row.strategy_id)),
+      ...(canonical ?? []).map((row) => text(row.strategy_id)),
+    ].filter(Boolean)),
+  ];
   const transactionIds = [
     ...new Set((holdings ?? []).map((row) => text(row.transaction_id)).filter(Boolean)),
   ];
@@ -341,7 +393,7 @@ async function clientTruth(db: Db, userId: string) {
   const secMap = new Map((securities ?? []).map((row) => [text(row.id), row]));
   const stratMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
   const symbols = (holdings ?? []).map((row) => text(secMap.get(text(row.security_id))?.symbol));
-  const quotes = await quoteMap(symbols);
+  const quotes = await quoteMap(symbols, snapshot);
   type IressCoverageRow = {
     symbol?: string;
     iressCode?: string;
@@ -474,13 +526,23 @@ async function clientTruth(db: Db, userId: string) {
     const latestHistory = positionHistory.at(-1);
     const latestYear = text(latestHistory?.as_of_date).slice(0, 4);
     const ytdHistory = positionHistory.filter((row) => text(row.as_of_date).startsWith(latestYear));
-    const independentYtdPct = chainReturnFromAnchor(
+    const expectedYtdDates = ((strategyHistory ?? []) as Row[])
+      .filter(
+        (row) =>
+          text(row.strategy_id) === text(position.strategy_id) &&
+          text(row.as_of_date).startsWith(latestYear),
+      )
+      .map((row) => text(row.as_of_date));
+    const returnChainAudit = auditReturnChain(
       ytdHistory.map((row, index) => ({
-        anchorPct: index === 0 ? num(row.ytd_pct) : null,
-        dailyPct: row["1d_pct"] == null ? null : num(row["1d_pct"]),
+        date: text(row.as_of_date),
+        anchorPct: index === 0 ? nullableNumber(row.ytd_pct) : null,
+        dailyPct: nullableNumber(row["1d_pct"]),
       })),
+      expectedYtdDates,
     );
-    const storedYtdPct = latestHistory?.ytd_pct == null ? null : num(latestHistory.ytd_pct);
+    const independentYtdPct = returnChainAudit.returnPct;
+    const storedYtdPct = nullableNumber(latestHistory?.ytd_pct);
     const ytdDifferencePp =
       independentYtdPct == null || storedYtdPct == null ? null : independentYtdPct - storedYtdPct;
     const ytdStatus = classifyPercentageDifference(ytdDifferencePp);
@@ -538,8 +600,14 @@ async function clientTruth(db: Db, userId: string) {
     const quoteTime = positionHoldings
       .map((row) => row.quote.exchangeTime)
       .sort()
-      .at(-1);
-    const valueSeverity = classifyDifference(calculated.differenceCents, canonicalValueCents);
+      .at(-1) ?? `${text(position.as_of_date)}T23:59:59Z`;
+    const valuationComparison = classifyValuationComparison({
+      differenceCents: calculated.differenceCents,
+      baselineCents: canonicalValueCents,
+      canonicalAsOf: text(position.as_of_date),
+      quoteTime,
+    });
+    const valueSeverity = valuationComparison.severity;
     const severity = [valueSeverity, ytdStatus, iressHoldingStatus].includes("urgent")
       ? "urgent"
       : [valueSeverity, ytdStatus, iressHoldingStatus].includes("warning")
@@ -568,6 +636,7 @@ async function clientTruth(db: Db, userId: string) {
       reserveCents,
       liabilityCents,
       ...calculated,
+      valuationComparison,
       canonicalValueCents,
       canonicalPnlCents,
       appDisplayedValueCents: canonicalValueCents,
@@ -581,6 +650,7 @@ async function clientTruth(db: Db, userId: string) {
         independentYtdPct,
         ytdDifferencePp,
         ytdStatus,
+        returnChainAudit,
         performancePnlCents: canonicalPnlCents,
         openingPerformanceNavCents: num(position.opening_performance_nav_cents),
         previousSecuritiesCents,
@@ -667,6 +737,7 @@ async function clientTruth(db: Db, userId: string) {
     kind: "client" as const,
     generatedAt: new Date().toISOString(),
     provider: "Yahoo Finance live chart API",
+    pricingSnapshot: await quoteSnapshotEvidence(snapshot),
     profile,
     positions: byPosition,
     strategyBenchmarks: Object.fromEntries(
@@ -770,7 +841,7 @@ async function clientTruth(db: Db, userId: string) {
   };
 }
 
-async function strategyTruth(db: Db, strategyId: string) {
+async function strategyTruth(db: Db, strategyId: string, snapshot: QuoteSnapshot = createQuoteSnapshot()) {
   const { data: strategy } = await db
     .from("strategies_c")
     .select("id,name,short_name,min_investment,holdings,updated_at")
@@ -779,7 +850,7 @@ async function strategyTruth(db: Db, strategyId: string) {
   if (!strategy) throw new Error("Strategy not found");
   const holdings = Array.isArray(strategy.holdings) ? (strategy.holdings as Row[]) : [];
   const symbols = holdings.map((row) => text(row.ticker || row.symbol)).filter(Boolean);
-  const quotes = await quoteMap(symbols);
+  const quotes = await quoteMap(symbols, snapshot);
   const rows = holdings.map((holding) => {
     const symbol = text(holding.ticker || holding.symbol);
     const quote = requiredQuote(quotes, symbol);
@@ -795,7 +866,6 @@ async function strategyTruth(db: Db, strategyId: string) {
     };
   });
   const securitiesCents = rows.reduce((sum, row) => sum + row.marketValueCents, 0);
-  const cash = calculateStrategyCashAsset(securitiesCents, num(strategy.min_investment));
   const { data: canonicalHistory } = await db
     .from("strategy_returns_effective_c")
     .select(
@@ -820,37 +890,73 @@ async function strategyTruth(db: Db, strategyId: string) {
       .order("created_at", { ascending: true }),
   ]);
   const canonical = canonicalHistory?.[0];
+  if (canonical?.continuity_cash_cents == null) {
+    throw new Error("Live truth blocked—strategy CA is not published in the canonical model ledger");
+  }
+  const cash = calculateStrategyLiveValue(securitiesCents, num(canonical.continuity_cash_cents));
   const differences = {
     securitiesCents: securitiesCents - num(canonical?.securities_value_cents),
     caCents: cash.strategyCaCents - num(canonical?.continuity_cash_cents),
     completeCents: cash.modelCapitalCents - num(canonical?.complete_value_cents),
   };
-  const severity = classifyDifference(differences.completeCents, num(canonical?.complete_value_cents));
+  const quoteTime = rows.map((row) => row.quote.exchangeTime).sort().at(-1);
+  const valuationComparison = classifyValuationComparison({
+    differenceCents: differences.completeCents,
+    baselineCents: num(canonical?.complete_value_cents),
+    canonicalAsOf: text(canonical?.as_of_date),
+    quoteTime,
+  });
+  const canonicalAscending = [...(canonicalHistory ?? [])].reverse() as Row[];
+  const latestYear = text(canonicalAscending.at(-1)?.as_of_date).slice(0, 4);
+  const ytdHistory = canonicalAscending.filter((row) => text(row.as_of_date).startsWith(latestYear));
+  const returnChainAudit = auditReturnChain(
+    ytdHistory.map((row, index) => ({
+      date: text(row.as_of_date),
+      anchorPct: index === 0 ? nullableNumber(row.ytd_pct) : null,
+      dailyPct: nullableNumber(row["1d_pct"]),
+    })),
+  );
+  const storedYtdPct = nullableNumber(canonical?.ytd_pct);
+  const ytdDifferencePp =
+    returnChainAudit.returnPct == null || storedYtdPct == null
+      ? null
+      : returnChainAudit.returnPct - storedYtdPct;
+  const ytdStatus = classifyPercentageDifference(ytdDifferencePp);
+  const severity =
+    valuationComparison.severity === "urgent" || ytdStatus === "urgent"
+      ? "urgent"
+      : valuationComparison.severity === "warning" || ytdStatus === "warning"
+        ? "warning"
+        : "ok";
   return {
     kind: "strategy" as const,
     generatedAt: new Date().toISOString(),
     provider: "Yahoo Finance live chart API",
+    pricingSnapshot: await quoteSnapshotEvidence(snapshot),
     strategy,
     holdings: rows,
     live: {
       securitiesCents,
       ...cash,
-      formula: "max(model capital, actual securities) − actual securities",
+      formula: "live value of fixed model quantities + attributable canonical strategy CA",
     },
     canonical,
     differences,
+    valuationComparison,
+    returnChainAudit,
+    storedYtdPct,
+    rebuiltYtdPct: returnChainAudit.returnPct,
+    ytdDifferencePp,
+    ytdStatus,
     severity,
     reasons: possibleDifferenceReasons({
       differenceCents: differences.completeCents,
       canonicalAsOf: text(canonical?.as_of_date),
-      quoteTime: rows
-        .map((row) => row.quote.exchangeTime)
-        .sort()
-        .at(-1),
+      quoteTime,
       hasReserve: false,
       hasLiability: false,
     }),
-    returns: periodReturns([...(canonicalHistory ?? [])].reverse() as Row[]),
+    returns: periodReturns(canonicalAscending),
     history: [...(canonicalHistory ?? [])].reverse().map((row) => ({
       date: row.as_of_date,
       valueCents: row.complete_value_cents || row.basket_value_cents,
@@ -886,11 +992,12 @@ async function strategyTruth(db: Db, strategyId: string) {
 
 async function generalTruth(db: Db) {
   const truthIndex = await listTruth(db);
+  const snapshot = createQuoteSnapshot();
   const clientIds = [...new Set(truthIndex.positions.map((row) => text(row.userId)))];
   const startedAt = new Date().toISOString();
-  const clientRuns = await Promise.allSettled(clientIds.map((id) => clientTruth(db, id)));
+  const clientRuns = await Promise.allSettled(clientIds.map((id) => clientTruth(db, id, snapshot)));
   const strategyRuns = await Promise.allSettled(
-    truthIndex.strategies.map((row) => strategyTruth(db, text(row.id))),
+    truthIndex.strategies.map((row) => strategyTruth(db, text(row.id), snapshot)),
   );
   const findings = [
     ...clientRuns.map((run, position) =>
@@ -938,6 +1045,7 @@ async function generalTruth(db: Db) {
     generatedAt: new Date().toISOString(),
     auditedClients: clientIds.length,
     auditedStrategies: truthIndex.strategies.length,
+    pricingSnapshot: await quoteSnapshotEvidence(snapshot),
     findings,
     summary: {
       urgent: findings.filter((row) => row.severity === "urgent").length,
@@ -1130,16 +1238,19 @@ async function auditSurfaces(
     truth.kind === "client" ? ((truth.strategyBenchmarks[strategyId] ?? {}) as Row) : null;
   const expectedStrategyYtd =
     truth.kind === "strategy"
-      ? num(truth.canonical?.ytd_pct)
+      ? nullableNumber(truth.canonical?.ytd_pct)
       : truth.kind === "client"
-        ? num(clientStrategyBenchmark?.ytdPct)
+        ? nullableNumber(clientStrategyBenchmark?.ytdPct)
         : null;
-  const expectedClientYtd = truth.kind === "client" ? num(truth.positions[0]?.returns.ytdPct) : null;
+  const expectedClientYtd =
+    truth.kind === "client" ? nullableNumber(truth.positions[0]?.returns.ytdPct) : null;
   const returnScopes = returnScopeBenchmarks(expectedClientYtd, expectedStrategyYtd);
   const strategyYtdDifference =
     returnScopes.strategyPageExpectedYtd == null || !strategyPageRow
       ? null
-      : num(strategyPageRow.ytd) - returnScopes.strategyPageExpectedYtd;
+      : nullableNumber(strategyPageRow.ytd) == null
+        ? null
+        : Number(nullableNumber(strategyPageRow.ytd)) - returnScopes.strategyPageExpectedYtd;
   const strategyValueMismatch = strategyYtdDifference != null && Math.abs(strategyYtdDifference) > 0.01;
   const strategyValueCritical = strategyYtdDifference != null && Math.abs(strategyYtdDifference) > 0.25;
   checks.push({
@@ -1173,7 +1284,7 @@ async function auditSurfaces(
     comparisons: [
       comparison(
         "Model strategy YTD",
-        strategyPageRow ? num(strategyPageRow.ytd) : null,
+        strategyPageRow ? nullableNumber(strategyPageRow.ytd) : null,
         returnScopes.strategyPageExpectedYtd,
         "percent",
       ),
@@ -1187,12 +1298,14 @@ async function auditSurfaces(
   const factsheetYtdDifference =
     returnScopes.factsheetExpectedYtd == null || !factsheetLatest
       ? null
-      : num(factsheetLatest.ytd_pct) - returnScopes.factsheetExpectedYtd;
+      : nullableNumber(factsheetLatest.ytd_pct) == null
+        ? null
+        : Number(nullableNumber(factsheetLatest.ytd_pct)) - returnScopes.factsheetExpectedYtd;
   const expectedStrategyCa =
     truth.kind === "strategy"
-      ? num(truth.canonical?.continuity_cash_cents)
+      ? nullableNumber(truth.canonical?.continuity_cash_cents)
       : truth.kind === "client"
-        ? num(clientStrategyBenchmark?.caCents)
+        ? nullableNumber(clientStrategyBenchmark?.caCents)
         : null;
   const factsheetCash = factsheet.body.cashAsset as Row | undefined;
   const factsheetCaCents = factsheetCash ? num(factsheetCash.value) * 100 : null;
@@ -1250,7 +1363,7 @@ async function auditSurfaces(
     comparisons: [
       comparison(
         "Model strategy YTD",
-        factsheetLatest ? num(factsheetLatest.ytd_pct) : null,
+        factsheetLatest ? nullableNumber(factsheetLatest.ytd_pct) : null,
         returnScopes.factsheetExpectedYtd,
         "percent",
       ),
@@ -1278,7 +1391,9 @@ async function auditSurfaces(
   const investorYtdDifference =
     returnScopes.investorsExpectedYtd == null || !investorLatest
       ? null
-      : num(investorLatest.ytd_pct) - returnScopes.investorsExpectedYtd;
+      : nullableNumber(investorLatest.ytd_pct) == null
+        ? null
+        : Number(nullableNumber(investorLatest.ytd_pct)) - returnScopes.investorsExpectedYtd;
   const investorYtdMismatch = investorYtdDifference != null && Math.abs(investorYtdDifference) > 0.01;
   const investorCritical =
     (investorValueDifference != null &&
@@ -1325,7 +1440,7 @@ async function auditSurfaces(
       ),
       comparison(
         "Client personal YTD",
-        investorLatest ? num(investorLatest.ytd_pct) : null,
+        investorLatest ? nullableNumber(investorLatest.ytd_pct) : null,
         returnScopes.investorsExpectedYtd,
         "percent",
       ),
@@ -1532,12 +1647,13 @@ export async function POST(req: Request) {
   }
   try {
     const id = body.id ?? "";
+    const snapshot = createQuoteSnapshot();
     const calculated =
       body.kind === "general"
         ? await generalTruth(access.db)
         : body.kind === "client"
-          ? await clientTruth(access.db, id)
-          : await strategyTruth(access.db, id);
+          ? await clientTruth(access.db, id, snapshot)
+          : await strategyTruth(access.db, id, snapshot);
     const truth = { ...calculated, surfaceChecks: await auditSurfaces(req, calculated) };
     return NextResponse.json({ ok: true, truth });
   } catch (error) {

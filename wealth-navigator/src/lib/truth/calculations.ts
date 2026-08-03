@@ -21,9 +21,18 @@ export function calculatePositionTruth(input: PositionTruthInput) {
   };
 }
 
-export function calculateStrategyCashAsset(securitiesCents: number, minimumInvestmentRands: number) {
-  const modelCapitalCents = Math.max(Math.round(minimumInvestmentRands * 100), securitiesCents);
-  const strategyCaCents = modelCapitalCents - securitiesCents;
+/**
+ * Revalue a strategy without allowing market movement to manufacture or erase
+ * cash.  The attributable cash sleeve is a ledger/model input; it is not the
+ * balancing figure between today's securities and the original minimum.
+ */
+export function calculateStrategyLiveValue(securitiesCents: number, attributableCashCents: number) {
+  const liveSecuritiesCents = Math.round(securitiesCents);
+  const strategyCaCents = Math.round(attributableCashCents);
+  if (liveSecuritiesCents < 0 || strategyCaCents < 0) {
+    throw new Error("Strategy live value cannot be reconstructed from negative securities or CA");
+  }
+  const modelCapitalCents = liveSecuritiesCents + strategyCaCents;
   return {
     modelCapitalCents,
     strategyCaCents,
@@ -87,6 +96,133 @@ export function classifyDifference(differenceCents: number, baselineCents: numbe
   if (absolute >= 10_000 || ratio >= 0.02) return "urgent";
   if (absolute >= 100 || ratio >= 0.0025) return "warning";
   return "ok";
+}
+
+export type ValuationComparisonKind =
+  | "timestamp-aligned"
+  | "market-movement"
+  | "provider-stale"
+  | "timestamp-unavailable";
+
+/**
+ * A price from a different valuation date cannot prove an accounting error.
+ * Preserve the monetary drift for information, but cap severity at warning
+ * until both sides are timestamp-aligned.
+ */
+export function classifyValuationComparison(input: {
+  differenceCents: number;
+  baselineCents: number;
+  canonicalAsOf?: string | null;
+  quoteTime?: string | null;
+}) {
+  const canonicalRaw = String(input.canonicalAsOf ?? "");
+  const quoteRaw = String(input.quoteTime ?? "");
+  const canonicalDate = canonicalRaw.slice(0, 10);
+  const quoteDate = quoteRaw.slice(0, 10);
+  if (!canonicalDate || !quoteDate) {
+    return {
+      kind: "timestamp-unavailable" as ValuationComparisonKind,
+      severity: "warning" as TruthSeverity,
+      accountingComparable: false,
+      message: "Timestamp alignment is unavailable, so the monetary drift is not proof of an accounting error.",
+    };
+  }
+  if (quoteDate > canonicalDate) {
+    return {
+      kind: "market-movement" as ValuationComparisonKind,
+      severity: "warning" as TruthSeverity,
+      accountingComparable: false,
+      message: "Live prices are newer than the canonical valuation; the drift is market movement until a same-date check proves otherwise.",
+    };
+  }
+  if (quoteDate < canonicalDate) {
+    return {
+      kind: "provider-stale" as ValuationComparisonKind,
+      severity: "warning" as TruthSeverity,
+      accountingComparable: false,
+      message: "The provider price predates the canonical valuation and cannot prove the current accounting value.",
+    };
+  }
+  // An `as_of_date` is a reporting date, not an exact price timestamp. A live
+  // intraday quote on that date may still legitimately differ from the
+  // canonical close. Only exact timestamps close enough to represent the same
+  // valuation instant may be treated as an accounting comparison.
+  const canonicalTime = Date.parse(canonicalRaw);
+  const quoteTime = Date.parse(quoteRaw);
+  const canonicalHasTime = /T\d{2}:\d{2}/.test(canonicalRaw);
+  const quoteHasTime = /T\d{2}:\d{2}/.test(quoteRaw);
+  if (
+    !canonicalHasTime ||
+    !quoteHasTime ||
+    !Number.isFinite(canonicalTime) ||
+    !Number.isFinite(quoteTime) ||
+    Math.abs(canonicalTime - quoteTime) > 5 * 60 * 1000
+  ) {
+    return {
+      kind: "timestamp-unavailable" as ValuationComparisonKind,
+      severity: "warning" as TruthSeverity,
+      accountingComparable: false,
+      message: "The values share a reporting date but not a proven valuation timestamp, so their drift is not proof of an accounting error.",
+    };
+  }
+  return {
+    kind: "timestamp-aligned" as ValuationComparisonKind,
+    severity: classifyDifference(input.differenceCents, input.baselineCents),
+    accountingComparable: true,
+    message: "Provider and canonical values share the same valuation date.",
+  };
+}
+
+export function auditReturnChain(
+  rows: Array<{ date?: string | null; anchorPct?: number | null; dailyPct?: number | null }>,
+  expectedDates: Array<string | null | undefined> = [],
+) {
+  const sorted = [...rows].sort((a, b) => String(a.date ?? "").localeCompare(String(b.date ?? "")));
+  const dates = sorted.map((row) => String(row.date ?? "").slice(0, 10)).filter(Boolean);
+  const duplicates = [...new Set(dates.filter((date, index) => dates.indexOf(date) !== index))];
+  const missingDailyDates = sorted
+    .slice(1)
+    .filter((row) => row.dailyPct == null || !Number.isFinite(Number(row.dailyPct)))
+    .map((row) => String(row.date ?? "unknown"));
+  const firstDate = dates.at(0) ?? "";
+  const lastDate = dates.at(-1) ?? "";
+  const expected = [
+    ...new Set(
+      expectedDates
+        .map((date) => String(date ?? "").slice(0, 10))
+        .filter((date) => date && (!firstDate || date >= firstDate) && (!lastDate || date <= lastDate)),
+    ),
+  ];
+  const observed = new Set(dates);
+  const missingExpectedDates = expected.filter((date) => !observed.has(date));
+  let largestCalendarGapDays = 0;
+  for (let index = 1; index < dates.length; index += 1) {
+    const previous = Date.parse(`${dates[index - 1]}T00:00:00Z`);
+    const current = Date.parse(`${dates[index]}T00:00:00Z`);
+    if (Number.isFinite(previous) && Number.isFinite(current)) {
+      largestCalendarGapDays = Math.max(largestCalendarGapDays, Math.round((current - previous) / 86_400_000));
+    }
+  }
+  const anchorAvailable = sorted[0]?.anchorPct != null && Number.isFinite(Number(sorted[0]?.anchorPct));
+  const complete = Boolean(
+    sorted.length &&
+      anchorAvailable &&
+      !duplicates.length &&
+      !missingDailyDates.length &&
+      !missingExpectedDates.length,
+  );
+  return {
+    complete,
+    observedRows: sorted.length,
+    anchorAvailable,
+    missingDailyDates,
+    missingExpectedDates,
+    duplicateDates: duplicates,
+    largestCalendarGapDays,
+    returnPct: complete
+      ? chainReturnFromAnchor(sorted.map((row) => ({ anchorPct: row.anchorPct, dailyPct: row.dailyPct })))
+      : null,
+  };
 }
 
 export function possibleDifferenceReasons(input: {

@@ -357,14 +357,27 @@ export async function GET() {
       const forwardStatus = text(row.oems_forward_status);
       const forwardPayload = Array.isArray(row.oems_forward_payload) ? row.oems_forward_payload : [];
       const firstForwarded = forwardPayload.find((r: Row) => r?.ok && !r?.skipped);
+      const forwardReasons = unique(
+        forwardPayload.flatMap((entry: Row) => [entry.reason, entry.error]),
+      );
       const forwardMeta: Record<string, { reachedOrderBook: boolean; reason: string }> = {
         forwarded: { reachedOrderBook: true, reason: "All holdings reached the OEM order book." },
         partial: {
           reachedOrderBook: true,
           reason: `${forwardPayload.filter((r: Row) => r?.ok).length}/${forwardPayload.length} constituent holdings reached the order book; the rest failed to forward.`,
         },
-        failed: { reachedOrderBook: false, reason: "Order-book forwarding failed for every holding on this claim." },
-        skipped: { reachedOrderBook: false, reason: "Order-book forwarding was disabled at claim time (IRESS_FORWARD_BUYS unset)." },
+        failed: {
+          reachedOrderBook: false,
+          reason: forwardReasons.length
+            ? `Order-book forwarding failed: ${forwardReasons.join("; ")}`
+            : "Order-book forwarding failed for every holding on this claim.",
+        },
+        skipped: {
+          reachedOrderBook: false,
+          reason: forwardReasons.length
+            ? `Order-book forwarding was skipped: ${forwardReasons.join("; ")}`
+            : "Order-book forwarding was skipped at claim time.",
+        },
       };
       const execution = forwardStatus && forwardMeta[forwardStatus]
         ? { ...forwardMeta[forwardStatus], state: forwardStatus }
