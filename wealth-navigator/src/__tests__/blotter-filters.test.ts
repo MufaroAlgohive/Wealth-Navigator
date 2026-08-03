@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isLiveBlotterAuditRow,
+  isUatBlotterAuditRow,
   matchesBlotterDate,
   matchesBlotterStatus,
 } from "@/lib/orders/blotter-filters";
@@ -27,6 +28,24 @@ describe("Live OEM blotter scope", () => {
         new Set(["uat-user"]),
       ),
     ).toBe(false);
+  });
+
+  it("puts every explicit or identity-derived test order in UAT and nowhere else", () => {
+    const testIds = new Set(["test-owner"]);
+    const testEmails = new Set(["test@mymint.co.za"]);
+    const rows = [
+      { source: "OB_SEND_TO_MARKET_UAT", payload: {} },
+      { source: "MINT_CLIENT_ORDER", payload: { uat_test: true } },
+      { source: "MINT_CLIENT_ORDER", payload: { owner_user_id: "test-owner" } },
+      { source: "MINT_CLIENT_ORDER", payload: { investor_email: "TEST@mymint.co.za" } },
+    ];
+    for (const row of rows) {
+      expect(isUatBlotterAuditRow(row, testIds, testEmails)).toBe(true);
+      expect(isLiveBlotterAuditRow(row, testIds, testEmails)).toBe(false);
+    }
+    const live = { source: "MINT_CLIENT_ORDER", payload: { user_id: "real-owner" } };
+    expect(isUatBlotterAuditRow(live, testIds, testEmails)).toBe(false);
+    expect(isLiveBlotterAuditRow(live, testIds, testEmails)).toBe(true);
   });
 });
 

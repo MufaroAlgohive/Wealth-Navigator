@@ -43,6 +43,8 @@ type SurfaceCheck = {
 };
 
 const num = (value: unknown) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+const nullableNumber = (value: unknown): number | null =>
+  value == null || value === "" || !Number.isFinite(Number(value)) ? null : Number(value);
 const text = (value: unknown) => String(value ?? "").trim();
 const moneyText = (cents: number) => `R ${(cents / 100).toFixed(2)}`;
 const comparison = (
@@ -72,8 +74,15 @@ const comparison = (
 };
 const ownerKey = (userId: unknown, familyId: unknown, strategyId: unknown) =>
   `${text(userId)}:${text(familyId)}:${text(strategyId)}`;
-const chained = (rows: Row[]) =>
-  rows.reduce((total, row) => total * (1 + num(row["1d_pct"]) / 100), 1) * 100 - 100;
+const chained = (rows: Row[]) => {
+  const daily = rows.map((row) => nullableNumber(row["1d_pct"]));
+  let factor = 1;
+  for (const value of daily) {
+    if (value == null) return null;
+    factor *= 1 + value / 100;
+  }
+  return factor * 100 - 100;
+};
 const periodReturns = (rows: Row[]) => {
   const sorted = [...rows].sort((a, b) => text(a.as_of_date).localeCompare(text(b.as_of_date)));
   const latestDate = text(sorted.at(-1)?.as_of_date);
@@ -83,8 +92,8 @@ const periodReturns = (rows: Row[]) => {
   return {
     fiveDayPct: five.length ? chained(five) : null,
     mtdPct: mtd.length ? chained(mtd) : null,
-    ytdPct: sorted.length ? num(sorted.at(-1)?.ytd_pct) : null,
-    allTimePct: sorted.length ? num(sorted.at(-1)?.inception_pct ?? sorted.at(-1)?.all_pct) : null,
+    ytdPct: nullableNumber(sorted.at(-1)?.ytd_pct),
+    allTimePct: nullableNumber(sorted.at(-1)?.inception_pct ?? sorted.at(-1)?.all_pct),
   };
 };
 
@@ -517,15 +526,23 @@ async function clientTruth(db: Db, userId: string, snapshot: QuoteSnapshot = cre
     const latestHistory = positionHistory.at(-1);
     const latestYear = text(latestHistory?.as_of_date).slice(0, 4);
     const ytdHistory = positionHistory.filter((row) => text(row.as_of_date).startsWith(latestYear));
+    const expectedYtdDates = ((strategyHistory ?? []) as Row[])
+      .filter(
+        (row) =>
+          text(row.strategy_id) === text(position.strategy_id) &&
+          text(row.as_of_date).startsWith(latestYear),
+      )
+      .map((row) => text(row.as_of_date));
     const returnChainAudit = auditReturnChain(
       ytdHistory.map((row, index) => ({
         date: text(row.as_of_date),
-        anchorPct: index === 0 ? num(row.ytd_pct) : null,
-        dailyPct: row["1d_pct"] == null ? null : num(row["1d_pct"]),
+        anchorPct: index === 0 ? nullableNumber(row.ytd_pct) : null,
+        dailyPct: nullableNumber(row["1d_pct"]),
       })),
+      expectedYtdDates,
     );
     const independentYtdPct = returnChainAudit.returnPct;
-    const storedYtdPct = latestHistory?.ytd_pct == null ? null : num(latestHistory.ytd_pct);
+    const storedYtdPct = nullableNumber(latestHistory?.ytd_pct);
     const ytdDifferencePp =
       independentYtdPct == null || storedYtdPct == null ? null : independentYtdPct - storedYtdPct;
     const ytdStatus = classifyPercentageDifference(ytdDifferencePp);
@@ -889,7 +906,28 @@ async function strategyTruth(db: Db, strategyId: string, snapshot: QuoteSnapshot
     canonicalAsOf: text(canonical?.as_of_date),
     quoteTime,
   });
-  const severity = valuationComparison.severity;
+  const canonicalAscending = [...(canonicalHistory ?? [])].reverse() as Row[];
+  const latestYear = text(canonicalAscending.at(-1)?.as_of_date).slice(0, 4);
+  const ytdHistory = canonicalAscending.filter((row) => text(row.as_of_date).startsWith(latestYear));
+  const returnChainAudit = auditReturnChain(
+    ytdHistory.map((row, index) => ({
+      date: text(row.as_of_date),
+      anchorPct: index === 0 ? nullableNumber(row.ytd_pct) : null,
+      dailyPct: nullableNumber(row["1d_pct"]),
+    })),
+  );
+  const storedYtdPct = nullableNumber(canonical?.ytd_pct);
+  const ytdDifferencePp =
+    returnChainAudit.returnPct == null || storedYtdPct == null
+      ? null
+      : returnChainAudit.returnPct - storedYtdPct;
+  const ytdStatus = classifyPercentageDifference(ytdDifferencePp);
+  const severity =
+    valuationComparison.severity === "urgent" || ytdStatus === "urgent"
+      ? "urgent"
+      : valuationComparison.severity === "warning" || ytdStatus === "warning"
+        ? "warning"
+        : "ok";
   return {
     kind: "strategy" as const,
     generatedAt: new Date().toISOString(),
@@ -905,6 +943,11 @@ async function strategyTruth(db: Db, strategyId: string, snapshot: QuoteSnapshot
     canonical,
     differences,
     valuationComparison,
+    returnChainAudit,
+    storedYtdPct,
+    rebuiltYtdPct: returnChainAudit.returnPct,
+    ytdDifferencePp,
+    ytdStatus,
     severity,
     reasons: possibleDifferenceReasons({
       differenceCents: differences.completeCents,
@@ -913,7 +956,7 @@ async function strategyTruth(db: Db, strategyId: string, snapshot: QuoteSnapshot
       hasReserve: false,
       hasLiability: false,
     }),
-    returns: periodReturns([...(canonicalHistory ?? [])].reverse() as Row[]),
+    returns: periodReturns(canonicalAscending),
     history: [...(canonicalHistory ?? [])].reverse().map((row) => ({
       date: row.as_of_date,
       valueCents: row.complete_value_cents || row.basket_value_cents,
@@ -1195,16 +1238,19 @@ async function auditSurfaces(
     truth.kind === "client" ? ((truth.strategyBenchmarks[strategyId] ?? {}) as Row) : null;
   const expectedStrategyYtd =
     truth.kind === "strategy"
-      ? num(truth.canonical?.ytd_pct)
+      ? nullableNumber(truth.canonical?.ytd_pct)
       : truth.kind === "client"
-        ? num(clientStrategyBenchmark?.ytdPct)
+        ? nullableNumber(clientStrategyBenchmark?.ytdPct)
         : null;
-  const expectedClientYtd = truth.kind === "client" ? num(truth.positions[0]?.returns.ytdPct) : null;
+  const expectedClientYtd =
+    truth.kind === "client" ? nullableNumber(truth.positions[0]?.returns.ytdPct) : null;
   const returnScopes = returnScopeBenchmarks(expectedClientYtd, expectedStrategyYtd);
   const strategyYtdDifference =
     returnScopes.strategyPageExpectedYtd == null || !strategyPageRow
       ? null
-      : num(strategyPageRow.ytd) - returnScopes.strategyPageExpectedYtd;
+      : nullableNumber(strategyPageRow.ytd) == null
+        ? null
+        : Number(nullableNumber(strategyPageRow.ytd)) - returnScopes.strategyPageExpectedYtd;
   const strategyValueMismatch = strategyYtdDifference != null && Math.abs(strategyYtdDifference) > 0.01;
   const strategyValueCritical = strategyYtdDifference != null && Math.abs(strategyYtdDifference) > 0.25;
   checks.push({
@@ -1238,7 +1284,7 @@ async function auditSurfaces(
     comparisons: [
       comparison(
         "Model strategy YTD",
-        strategyPageRow ? num(strategyPageRow.ytd) : null,
+        strategyPageRow ? nullableNumber(strategyPageRow.ytd) : null,
         returnScopes.strategyPageExpectedYtd,
         "percent",
       ),
@@ -1252,12 +1298,14 @@ async function auditSurfaces(
   const factsheetYtdDifference =
     returnScopes.factsheetExpectedYtd == null || !factsheetLatest
       ? null
-      : num(factsheetLatest.ytd_pct) - returnScopes.factsheetExpectedYtd;
+      : nullableNumber(factsheetLatest.ytd_pct) == null
+        ? null
+        : Number(nullableNumber(factsheetLatest.ytd_pct)) - returnScopes.factsheetExpectedYtd;
   const expectedStrategyCa =
     truth.kind === "strategy"
-      ? num(truth.canonical?.continuity_cash_cents)
+      ? nullableNumber(truth.canonical?.continuity_cash_cents)
       : truth.kind === "client"
-        ? num(clientStrategyBenchmark?.caCents)
+        ? nullableNumber(clientStrategyBenchmark?.caCents)
         : null;
   const factsheetCash = factsheet.body.cashAsset as Row | undefined;
   const factsheetCaCents = factsheetCash ? num(factsheetCash.value) * 100 : null;
@@ -1315,7 +1363,7 @@ async function auditSurfaces(
     comparisons: [
       comparison(
         "Model strategy YTD",
-        factsheetLatest ? num(factsheetLatest.ytd_pct) : null,
+        factsheetLatest ? nullableNumber(factsheetLatest.ytd_pct) : null,
         returnScopes.factsheetExpectedYtd,
         "percent",
       ),
@@ -1343,7 +1391,9 @@ async function auditSurfaces(
   const investorYtdDifference =
     returnScopes.investorsExpectedYtd == null || !investorLatest
       ? null
-      : num(investorLatest.ytd_pct) - returnScopes.investorsExpectedYtd;
+      : nullableNumber(investorLatest.ytd_pct) == null
+        ? null
+        : Number(nullableNumber(investorLatest.ytd_pct)) - returnScopes.investorsExpectedYtd;
   const investorYtdMismatch = investorYtdDifference != null && Math.abs(investorYtdDifference) > 0.01;
   const investorCritical =
     (investorValueDifference != null &&
@@ -1390,7 +1440,7 @@ async function auditSurfaces(
       ),
       comparison(
         "Client personal YTD",
-        investorLatest ? num(investorLatest.ytd_pct) : null,
+        investorLatest ? nullableNumber(investorLatest.ytd_pct) : null,
         returnScopes.investorsExpectedYtd,
         "percent",
       ),

@@ -2,6 +2,38 @@ import type { Order, OrderState } from "@/types/iress";
 
 export type BlotterStatusFilter = "WORKING" | "FILLED" | "CANCELLED" | "REJECTED";
 export type BlotterDateMode = "ALL" | "TODAY" | "DATE" | "MONTH" | "YEAR";
+export type BlotterScope = "LIVE" | "UAT";
+
+function auditRowIsUat(
+  row: { source?: string | null; payload?: Record<string, unknown> | null },
+  testUserIds: ReadonlySet<string>,
+  testEmails: ReadonlySet<string>,
+) {
+  const source = String(row.source ?? "").toUpperCase();
+  const payload = row.payload ?? {};
+  if (source === "UAT_ADHOC_ORDER" || source.endsWith("_UAT")) return true;
+  if (payload.uat_test === true) return true;
+  const userIds = [
+    payload.user_id,
+    payload.investor_id,
+    payload.owner_user_id,
+    payload.recipient_user_id,
+    payload.client_id,
+  ]
+    .map((value) => String(value ?? ""))
+    .filter(Boolean);
+  if (userIds.some((userId) => testUserIds.has(userId))) return true;
+  const emails = [
+    payload.client_email,
+    payload.trader,
+    payload.email,
+    payload.investor_email,
+    payload.recipient_email,
+  ]
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .filter(Boolean);
+  return emails.some((email) => testEmails.has(email));
+}
 
 export function isLiveBlotterAuditRow(
   row: {
@@ -11,15 +43,15 @@ export function isLiveBlotterAuditRow(
   testUserIds: ReadonlySet<string> = new Set(),
   testEmails: ReadonlySet<string> = new Set(),
 ): boolean {
-  if (String(row.source ?? "").toUpperCase() === "UAT_ADHOC_ORDER") return false;
-  const payload = row.payload ?? {};
-  if (payload.uat_test === true) return false;
-  const userId = String(payload.user_id ?? "");
-  if (userId && testUserIds.has(userId)) return false;
-  const email = String(payload.client_email ?? payload.trader ?? "")
-    .trim()
-    .toLowerCase();
-  return !email || !testEmails.has(email);
+  return !auditRowIsUat(row, testUserIds, testEmails);
+}
+
+export function isUatBlotterAuditRow(
+  row: { source?: string | null; payload?: Record<string, unknown> | null },
+  testUserIds: ReadonlySet<string> = new Set(),
+  testEmails: ReadonlySet<string> = new Set(),
+): boolean {
+  return auditRowIsUat(row, testUserIds, testEmails);
 }
 
 export function matchesBlotterStatus(state: OrderState, selected: ReadonlySet<BlotterStatusFilter>): boolean {

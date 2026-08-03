@@ -22,6 +22,7 @@ import { cn } from "@/lib/cn";
 import {
   filterBlotterOrders,
   type BlotterDateMode,
+  type BlotterScope,
   type BlotterStatusFilter,
 } from "@/lib/orders/blotter-filters";
 import { NewOrderDialog } from "./new-order-dialog";
@@ -42,15 +43,17 @@ export default function BlotterPage() {
   const [dateMode, setDateMode] = useState<BlotterDateMode>("ALL");
   const [dateValue, setDateValue] = useState("");
   const [q, setQ] = useState("");
+  const [scope, setScope] = useState<BlotterScope>("LIVE");
 
   const seedOrdersQ = useQuery({
     queryKey: ["orders"],
     queryFn: () => data.orders(),
     enabled: !realDataOnly,
   });
-  const auditOrdersQ = useAuditOrders("ALL", realDataOnly);
-  const orders = realDataOnly ? (auditOrdersQ.data?.orders ?? []) : (seedOrdersQ.data ?? []);
-  const ordersLoading = realDataOnly ? auditOrdersQ.isLoading : seedOrdersQ.isLoading;
+  const auditOrdersQ = useAuditOrders("ALL", realDataOnly || scope === "UAT", scope);
+  const orders =
+    scope === "UAT" || realDataOnly ? (auditOrdersQ.data?.orders ?? []) : (seedOrdersQ.data ?? []);
+  const ordersLoading = scope === "UAT" || realDataOnly ? auditOrdersQ.isLoading : seedOrdersQ.isLoading;
 
   const filtered = useMemo(() => {
     return filterBlotterOrders(orders, { statuses, dateMode, dateValue, query: q });
@@ -83,7 +86,8 @@ export default function BlotterPage() {
     onError: () => toast.error("Cancel-all failed"),
   });
 
-  const dataSourceLabel = realDataOnly ? "order record" : "demo orders";
+  const dataSourceLabel =
+    scope === "UAT" ? "isolated UAT audit records" : realDataOnly ? "live order records" : "demo orders";
 
   return (
     <div className="space-y-4">
@@ -96,9 +100,13 @@ export default function BlotterPage() {
               Execution tape
             </GlassBadge>
             <div>
-              <h1 className="text-lg font-semibold tracking-tight md:text-xl">Blotter & Orders</h1>
+              <h1 className="text-lg font-semibold tracking-tight md:text-xl">
+                {scope === "UAT" ? "UAT Blotter" : "Live Blotter & Orders"}
+              </h1>
               <p className="mt-1 text-xs text-muted-foreground">
-                Live execution tape · FIX 4.4 via IRESS gateway · slippage in bps vs arrival
+                {scope === "UAT"
+                  ? "Test-only execution evidence · isolated from the live broker tape"
+                  : "Live execution tape · FIX 4.4 via IRESS gateway · slippage in bps vs arrival"}
               </p>
             </div>
           </div>
@@ -109,7 +117,7 @@ export default function BlotterPage() {
             >
               ← Cockpit
             </Link>
-            {!realDataOnly && (
+            {!realDataOnly && scope === "LIVE" && (
               <>
                 <ConfirmDestructive
                   count={openOrders.length}
@@ -130,9 +138,9 @@ export default function BlotterPage() {
                 <NewOrderDialog onCreated={() => qc.invalidateQueries({ queryKey: ["orders"] })} />
               </>
             )}
-            <GlassBadge tone={realDataOnly ? "success" : "neutral"}>
+            <GlassBadge tone={scope === "UAT" ? "warning" : realDataOnly ? "success" : "neutral"}>
               <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />
-              {realDataOnly ? "IRESS order tape" : "Demo orders"}
+              {scope === "UAT" ? "UAT · never routed live" : realDataOnly ? "IRESS order tape" : "Demo orders"}
             </GlassBadge>
           </div>
         </div>
@@ -158,6 +166,29 @@ export default function BlotterPage() {
           />
         </div>
       </header>
+
+      <div className="glass-inset inline-flex gap-1 p-1" aria-label="Blotter environment">
+        {(["LIVE", "UAT"] as BlotterScope[]).map((value) => (
+          <Button
+            key={value}
+            type="button"
+            size="sm"
+            variant="ghost"
+            aria-pressed={scope === value}
+            onClick={() => setScope(value)}
+            className={cn(
+              "h-8 px-4 text-[11px]",
+              scope === value
+                ? value === "UAT"
+                  ? "bg-amber-400/15 text-amber-200 hover:bg-amber-400/20"
+                  : "bg-emerald-400/15 text-emerald-200 hover:bg-emerald-400/20"
+                : "text-muted-foreground",
+            )}
+          >
+            {value === "LIVE" ? "Live blotter" : "UAT blotter"}
+          </Button>
+        ))}
+      </div>
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="glass-inset flex flex-wrap gap-1 p-1">
@@ -260,7 +291,7 @@ export default function BlotterPage() {
       <GlassSection
         title={`Orders · ${filtered.length}`}
         db="institutional"
-        endpoint="GET /api/orders"
+        endpoint={`GET /api/orders?scope=${scope}`}
         dataSource="supabase"
         noPadding
         className="flex min-h-0 flex-col h-[calc(100vh-380px)]"
@@ -284,7 +315,13 @@ export default function BlotterPage() {
           <div className="p-3.5">
             <EmptyDataState
               title="No orders"
-              message={realDataOnly ? "Order history is syncing. Check back shortly." : "No demo orders yet."}
+              message={
+                scope === "UAT"
+                  ? "No UAT orders match this view. Test activity will appear here and never on the Live blotter."
+                  : realDataOnly
+                    ? "Live order history is syncing. Check back shortly."
+                    : "No demo orders yet."
+              }
             />
           </div>
         ) : (

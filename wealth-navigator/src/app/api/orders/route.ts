@@ -4,7 +4,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
-import { isLiveBlotterAuditRow } from "@/lib/orders/blotter-filters";
+import { isLiveBlotterAuditRow, isUatBlotterAuditRow } from "@/lib/orders/blotter-filters";
 import type { Order, OrderDestination, OrderSide, OrderState, OrderTIF, OrderType } from "@/types/iress";
 
 export const runtime = "nodejs";
@@ -128,6 +128,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const account = url.searchParams.get("account") ?? undefined;
   const stateFilter = url.searchParams.get("state") ?? undefined;
+  const scope = url.searchParams.get("scope")?.toUpperCase() === "UAT" ? "UAT" : "LIVE";
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 200), 500);
 
   const supabase = createServiceRoleClient();
@@ -179,12 +180,12 @@ export async function GET(req: Request) {
       .filter(Boolean),
   );
 
-  // This is the production blotter. UAT rows remain available in the
-  // order-book UAT views but must never leak into this Live execution tape.
-  // The identity check also removes rows created before uat_test was stamped
-  // reliably (for example an older test user's MINT_CLIENT_ORDER).
+  // LIVE remains the fail-safe default. UAT is an explicit, separately
+  // labelled view of the same immutable audit tape; neither scope can leak
+  // into the other, including legacy rows that predate reliable uat_test tags.
+  const inScope = scope === "UAT" ? isUatBlotterAuditRow : isLiveBlotterAuditRow;
   let orders = auditRows
-    .filter((row) => isLiveBlotterAuditRow(row, testUserIds, testEmails))
+    .filter((row) => inScope(row, testUserIds, testEmails))
     .map(mapAuditRow);
 
   if (stateFilter && stateFilter !== "ALL") {
@@ -195,6 +196,7 @@ export async function GET(req: Request) {
     orders,
     count: orders.length,
     source: orders.length > 0 ? "supabase" : "unavailable",
+    scope,
     reason: orders.length === 0 ? "empty" : undefined,
   });
 }

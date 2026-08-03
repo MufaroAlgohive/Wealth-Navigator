@@ -21,16 +21,6 @@ export function calculatePositionTruth(input: PositionTruthInput) {
   };
 }
 
-export function calculateStrategyCashAsset(securitiesCents: number, minimumInvestmentRands: number) {
-  const modelCapitalCents = Math.max(Math.round(minimumInvestmentRands * 100), securitiesCents);
-  const strategyCaCents = modelCapitalCents - securitiesCents;
-  return {
-    modelCapitalCents,
-    strategyCaCents,
-    caWeightPct: modelCapitalCents > 0 ? (strategyCaCents / modelCapitalCents) * 100 : 0,
-  };
-}
-
 /**
  * Revalue a strategy without allowing market movement to manufacture or erase
  * cash.  The attributable cash sleeve is a ledger/model input; it is not the
@@ -125,8 +115,10 @@ export function classifyValuationComparison(input: {
   canonicalAsOf?: string | null;
   quoteTime?: string | null;
 }) {
-  const canonicalDate = String(input.canonicalAsOf ?? "").slice(0, 10);
-  const quoteDate = String(input.quoteTime ?? "").slice(0, 10);
+  const canonicalRaw = String(input.canonicalAsOf ?? "");
+  const quoteRaw = String(input.quoteTime ?? "");
+  const canonicalDate = canonicalRaw.slice(0, 10);
+  const quoteDate = quoteRaw.slice(0, 10);
   if (!canonicalDate || !quoteDate) {
     return {
       kind: "timestamp-unavailable" as ValuationComparisonKind,
@@ -151,6 +143,28 @@ export function classifyValuationComparison(input: {
       message: "The provider price predates the canonical valuation and cannot prove the current accounting value.",
     };
   }
+  // An `as_of_date` is a reporting date, not an exact price timestamp. A live
+  // intraday quote on that date may still legitimately differ from the
+  // canonical close. Only exact timestamps close enough to represent the same
+  // valuation instant may be treated as an accounting comparison.
+  const canonicalTime = Date.parse(canonicalRaw);
+  const quoteTime = Date.parse(quoteRaw);
+  const canonicalHasTime = /T\d{2}:\d{2}/.test(canonicalRaw);
+  const quoteHasTime = /T\d{2}:\d{2}/.test(quoteRaw);
+  if (
+    !canonicalHasTime ||
+    !quoteHasTime ||
+    !Number.isFinite(canonicalTime) ||
+    !Number.isFinite(quoteTime) ||
+    Math.abs(canonicalTime - quoteTime) > 5 * 60 * 1000
+  ) {
+    return {
+      kind: "timestamp-unavailable" as ValuationComparisonKind,
+      severity: "warning" as TruthSeverity,
+      accountingComparable: false,
+      message: "The values share a reporting date but not a proven valuation timestamp, so their drift is not proof of an accounting error.",
+    };
+  }
   return {
     kind: "timestamp-aligned" as ValuationComparisonKind,
     severity: classifyDifference(input.differenceCents, input.baselineCents),
@@ -161,6 +175,7 @@ export function classifyValuationComparison(input: {
 
 export function auditReturnChain(
   rows: Array<{ date?: string | null; anchorPct?: number | null; dailyPct?: number | null }>,
+  expectedDates: Array<string | null | undefined> = [],
 ) {
   const sorted = [...rows].sort((a, b) => String(a.date ?? "").localeCompare(String(b.date ?? "")));
   const dates = sorted.map((row) => String(row.date ?? "").slice(0, 10)).filter(Boolean);
@@ -169,6 +184,17 @@ export function auditReturnChain(
     .slice(1)
     .filter((row) => row.dailyPct == null || !Number.isFinite(Number(row.dailyPct)))
     .map((row) => String(row.date ?? "unknown"));
+  const firstDate = dates.at(0) ?? "";
+  const lastDate = dates.at(-1) ?? "";
+  const expected = [
+    ...new Set(
+      expectedDates
+        .map((date) => String(date ?? "").slice(0, 10))
+        .filter((date) => date && (!firstDate || date >= firstDate) && (!lastDate || date <= lastDate)),
+    ),
+  ];
+  const observed = new Set(dates);
+  const missingExpectedDates = expected.filter((date) => !observed.has(date));
   let largestCalendarGapDays = 0;
   for (let index = 1; index < dates.length; index += 1) {
     const previous = Date.parse(`${dates[index - 1]}T00:00:00Z`);
@@ -178,12 +204,19 @@ export function auditReturnChain(
     }
   }
   const anchorAvailable = sorted[0]?.anchorPct != null && Number.isFinite(Number(sorted[0]?.anchorPct));
-  const complete = Boolean(sorted.length && anchorAvailable && !duplicates.length && !missingDailyDates.length);
+  const complete = Boolean(
+    sorted.length &&
+      anchorAvailable &&
+      !duplicates.length &&
+      !missingDailyDates.length &&
+      !missingExpectedDates.length,
+  );
   return {
     complete,
     observedRows: sorted.length,
     anchorAvailable,
     missingDailyDates,
+    missingExpectedDates,
     duplicateDates: duplicates,
     largestCalendarGapDays,
     returnPct: complete

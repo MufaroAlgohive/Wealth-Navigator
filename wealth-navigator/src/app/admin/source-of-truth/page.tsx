@@ -182,6 +182,7 @@ type TruthPosition = {
       observedRows: number;
       anchorAvailable: boolean;
       missingDailyDates: string[];
+      missingExpectedDates: string[];
       duplicateDates: string[];
       largestCalendarGapDays: number;
       returnPct: number | null;
@@ -311,6 +312,20 @@ type StrategyTruth = {
   canonical?: Record<string, string | number | null>;
   differences: Record<string, number>;
   valuationComparison: ValuationComparison;
+  returnChainAudit: {
+    complete: boolean;
+    observedRows: number;
+    anchorAvailable: boolean;
+    missingDailyDates: string[];
+    missingExpectedDates: string[];
+    duplicateDates: string[];
+    largestCalendarGapDays: number;
+    returnPct: number | null;
+  };
+  storedYtdPct: number | null;
+  rebuiltYtdPct: number | null;
+  ytdDifferencePp: number | null;
+  ytdStatus: "ok" | "warning" | "urgent";
   severity: "ok" | "warning" | "urgent";
   reasons: string[];
   returns: { fiveDayPct?: number; mtdPct?: number; ytdPct?: number; allTimePct?: number };
@@ -1146,7 +1161,8 @@ function PerformanceReconciliation({ position }: { position: TruthPosition }) {
           </ul>
           {!p.returnChainAudit.complete ? (
             <div className="mt-2 rounded-md border border-amber-400/20 bg-amber-400/10 p-2 text-amber-200">
-              Missing daily dates: {p.returnChainAudit.missingDailyDates.join(", ") || "none"} · duplicate dates:{" "}
+              Missing daily values: {p.returnChainAudit.missingDailyDates.join(", ") || "none"} · missing published dates:{" "}
+              {p.returnChainAudit.missingExpectedDates.join(", ") || "none"} · duplicate dates:{" "}
               {p.returnChainAudit.duplicateDates.join(", ") || "none"} · largest calendar gap:{" "}
               {p.returnChainAudit.largestCalendarGapDays}d
             </div>
@@ -2183,6 +2199,37 @@ function TruthResult({ truth }: { truth: Truth }) {
           comparison={truth.valuationComparison}
         />
         <ReturnStrip returns={truth.returns} />
+        <div className={`rounded-xl border p-3 ${severityStyle[truth.ytdStatus]}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              Strategy return-chain integrity
+              <InfoHint label="Strategy return-chain integrity">
+                Rebuilds YTD from the canonical opening anchor and every published daily return. Missing or
+                duplicate links block the rebuilt figure instead of being treated as zero.
+              </InfoHint>
+            </div>
+            <StatusLight severity={truth.ytdStatus} />
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+            <Stat label="Official YTD" value={pct(truth.storedYtdPct)} />
+            <Stat label="Rebuilt YTD" value={pct(truth.rebuiltYtdPct)} />
+            <Stat
+              label="Difference"
+              value={truth.ytdDifferencePp == null ? "—" : `${truth.ytdDifferencePp.toFixed(6)} pp`}
+            />
+            <Stat
+              label="Completeness"
+              value={`${truth.returnChainAudit.observedRows} rows · ${truth.returnChainAudit.complete ? "Complete" : "Blocked"}`}
+            />
+          </div>
+          {!truth.returnChainAudit.complete ? (
+            <div className="mt-2 text-xs text-amber-200">
+              Missing daily values: {truth.returnChainAudit.missingDailyDates.join(", ") || "none"} · duplicate
+              dates: {truth.returnChainAudit.duplicateDates.join(", ") || "none"}. No rebuilt YTD is trusted until
+              the chain is complete.
+            </div>
+          ) : null}
+        </div>
         <SurfaceMatrix checks={truth.surfaceChecks} />
         <div className="grid grid-cols-2 gap-2">
           <Stat label="Live securities" value={money(truth.live.securitiesCents)} />

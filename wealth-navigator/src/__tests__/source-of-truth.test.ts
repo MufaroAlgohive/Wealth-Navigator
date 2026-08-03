@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   calculatePositionTruth,
-  calculateStrategyCashAsset,
   calculateStrategyLiveValue,
   chainReturnFromAnchor,
   classifyValuationComparison,
@@ -31,13 +30,6 @@ describe("source-of-truth calculations", () => {
     expect(result.investedCents).toBe(156_283);
     expect(result.livePnlCents).toBe(-5_251);
     expect(result.differenceCents).toBe(0);
-  });
-
-  it("derives strategy CA only from that strategy model", () => {
-    expect(calculateStrategyCashAsset(151_153, 2_000)).toMatchObject({
-      modelCapitalCents: 200_000,
-      strategyCaCents: 48_847,
-    });
   });
 
   it("keeps attributable strategy CA fixed while live securities move", () => {
@@ -73,10 +65,18 @@ describe("source-of-truth calculations", () => {
       classifyValuationComparison({
         differenceCents: 25_000,
         baselineCents: 100_000,
-        canonicalAsOf: "2026-07-30",
+        canonicalAsOf: "2026-07-30T12:01:00Z",
         quoteTime: "2026-07-30T12:00:00Z",
       }),
     ).toMatchObject({ kind: "timestamp-aligned", severity: "urgent", accountingComparable: true });
+    expect(
+      classifyValuationComparison({
+        differenceCents: 25_000,
+        baselineCents: 100_000,
+        canonicalAsOf: "2026-07-30",
+        quoteTime: "2026-07-30T12:00:00Z",
+      }),
+    ).toMatchObject({ kind: "timestamp-unavailable", severity: "warning", accountingComparable: false });
   });
 
   it("explains timing, reserve and liability evidence without claiming certainty", () => {
@@ -154,6 +154,15 @@ describe("source-of-truth calculations", () => {
         { date: "2026-07-02", dailyPct: 2 },
       ]),
     ).toMatchObject({ complete: false, returnPct: null, duplicateDates: ["2026-07-02"] });
+    expect(
+      auditReturnChain(
+        [
+          { date: "2026-07-01", anchorPct: 0, dailyPct: null },
+          { date: "2026-07-03", dailyPct: 2 },
+        ],
+        ["2026-07-01", "2026-07-02", "2026-07-03"],
+      ),
+    ).toMatchObject({ complete: false, returnPct: null, missingExpectedDates: ["2026-07-02"] });
   });
 
   it("normalises IRESS Rand and already-cent quotes against Yahoo without hiding scale anomalies", () => {
