@@ -26,6 +26,14 @@ describe("rebalance sale-proceeds flow", () => {
     expect(builder).toContain("Per-investor effect");
   });
 
+  it("separates strategy residual from wallet cash before execution", () => {
+    expect(builder).toContain("Residual view");
+    expect(builder).toContain("Residual before");
+    expect(builder).toContain("Wallet before");
+    expect(builder).toContain("Strategy CA after");
+    expect(builder).toContain("inv.residualCents + inv.walletCents");
+  });
+
   it("loads rebalance fees from App Settings without a fallback", () => {
     expect(impactRoute).toContain('.from("app_settings")');
     expect(impactRoute).toContain("feeValue?.rebBrokerageRate");

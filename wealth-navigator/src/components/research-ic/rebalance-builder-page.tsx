@@ -1042,6 +1042,7 @@ function InvestorImpactPanel({
   const investors = data?.investors ?? [];
   const totals = data?.totals ?? null;
   const cashOk = totals?.cashOk ?? true;
+  const [residualView, setResidualView] = React.useState(false);
 
   return (
     <GlassSection
@@ -1118,14 +1119,30 @@ function InvestorImpactPanel({
                 Available cash <span className="font-mono">{centsToR(totals?.availableCashCents)}</span>
               </span>
             </div>
-            <span
-              className={cn(
-                "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-                cashOk ? "bg-[hsl(var(--up)/0.15)] text-up" : "bg-[hsl(var(--down)/0.15)] text-down",
-              )}
-            >
-              {cashOk ? "Cash available" : "Insufficient cash"}
-            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setResidualView((current) => !current)}
+                className={cn(
+                  "rounded-full border px-2.5 py-1 text-[11px] font-semibold transition",
+                  residualView
+                    ? "border-emerald-500/40 bg-emerald-500/12 text-emerald-500"
+                    : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground",
+                )}
+                aria-pressed={residualView}
+                title="Show each investor's strategy residual and wallet before execution"
+              >
+                {residualView ? "Trade view" : "Residual view"}
+              </button>
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                  cashOk ? "bg-[hsl(var(--up)/0.15)] text-up" : "bg-[hsl(var(--down)/0.15)] text-down",
+                )}
+              >
+                {cashOk ? "Cash available" : "Insufficient cash"}
+              </span>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -1133,11 +1150,23 @@ function InvestorImpactPanel({
                 <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
                   <th className="px-5 py-2 font-medium">Investor</th>
                   <th className="px-3 py-2 text-right font-medium">Basket</th>
-                  <th className="px-3 py-2 text-right font-medium">To buy</th>
-                  <th className="px-3 py-2 text-right font-medium">To sell</th>
-                  <th className="px-3 py-2 text-right font-medium">Net proceeds</th>
-                  <th className="px-3 py-2 text-right font-medium">Cash available</th>
-                  <th className="px-5 py-2 text-right font-medium">Cash after</th>
+                  {residualView ? (
+                    <>
+                      <th className="px-3 py-2 text-right font-medium">Residual before</th>
+                      <th className="px-3 py-2 text-right font-medium">Wallet before</th>
+                      <th className="px-3 py-2 text-right font-medium">Available before</th>
+                      <th className="px-3 py-2 text-right font-medium">Strategy CA after</th>
+                      <th className="px-5 py-2 text-right font-medium">Wallet after</th>
+                    </>
+                  ) : (
+                    <>
+                      <th className="px-3 py-2 text-right font-medium">To buy</th>
+                      <th className="px-3 py-2 text-right font-medium">To sell</th>
+                      <th className="px-3 py-2 text-right font-medium">Net proceeds</th>
+                      <th className="px-3 py-2 text-right font-medium">Cash available</th>
+                      <th className="px-5 py-2 text-right font-medium">Cash after</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -1148,26 +1177,53 @@ function InvestorImpactPanel({
                       <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
                         {centsToR(inv.basketCents)}
                       </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-down">
-                        {inv.buyCents ? centsToR(inv.buyCents) : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
-                        {inv.sellCents ? centsToR(inv.sellCents) : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
-                        {inv.netProceedsCents ? centsToR(inv.netProceedsCents) : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                        {centsToR(inv.availableCashCents)}
-                      </td>
-                      <td
-                        className={cn(
-                          "px-5 py-2 text-right font-mono tabular-nums font-semibold",
-                          inv.shortfall ? "text-down" : "text-foreground",
-                        )}
-                      >
-                        {centsToR(inv.cashAfterCents)}
-                      </td>
+                      {residualView ? (
+                        <>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
+                            {centsToR(inv.residualCents)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            {centsToR(inv.walletCents)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">
+                            {centsToR(inv.residualCents + inv.walletCents)}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
+                            {centsToR(inv.strategyCashAfterCents)}
+                          </td>
+                          <td
+                            className={cn(
+                              "px-5 py-2 text-right font-mono tabular-nums font-semibold",
+                              inv.shortfall ? "text-down" : "text-foreground",
+                            )}
+                          >
+                            {centsToR(inv.walletAfterCents)}
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-down">
+                            {inv.buyCents ? centsToR(inv.buyCents) : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
+                            {inv.sellCents ? centsToR(inv.sellCents) : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
+                            {inv.netProceedsCents ? centsToR(inv.netProceedsCents) : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            {centsToR(inv.availableCashCents)}
+                          </td>
+                          <td
+                            className={cn(
+                              "px-5 py-2 text-right font-mono tabular-nums font-semibold",
+                              inv.shortfall ? "text-down" : "text-foreground",
+                            )}
+                          >
+                            {centsToR(inv.cashAfterCents)}
+                          </td>
+                        </>
+                      )}
                     </tr>
                     {inv.lines.length > 0 && (
                       <tr className="border-b border-[hsl(var(--glass-border))]">
