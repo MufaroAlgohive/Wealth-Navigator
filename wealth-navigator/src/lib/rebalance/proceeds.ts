@@ -7,6 +7,7 @@ export interface ProceedsBridgeInput {
   custodyFeeCents: number;
   reserveCents: number;
   walletCents: number;
+  residualCents?: number;
 }
 
 const safeMoney = (value: number) => Math.max(0, Math.round(Number(value) || 0));
@@ -38,7 +39,13 @@ export function calculateProceedsBridge(input: ProceedsBridgeInput) {
   const feeShortfallCents = totalFeesCents - reserveUsedCents;
   const netProceedsCents = Math.max(0, grossSellCents - sellFeesCents);
   const walletCents = safeMoney(input.walletCents);
-  const cashAfterCents = walletCents + grossSellCents - grossBuyCents - feeShortfallCents;
+  const residualCents = safeMoney(input.residualCents ?? 0);
+  const strategyCashBeforeWalletCents =
+    residualCents + grossSellCents - grossBuyCents - feeShortfallCents;
+  const walletDrawCents = Math.min(walletCents, Math.max(0, -strategyCashBeforeWalletCents));
+  const strategyCashAfterCents = Math.max(0, strategyCashBeforeWalletCents);
+  const walletAfterCents = walletCents - walletDrawCents;
+  const cashAfterCents = walletCents + strategyCashBeforeWalletCents;
 
   return {
     grossSellCents,
@@ -56,6 +63,11 @@ export function calculateProceedsBridge(input: ProceedsBridgeInput) {
     reserveAfterCents: reserveCents - reserveUsedCents,
     feeShortfallCents,
     walletCents,
+    residualCents,
+    availableCashCents: walletCents + residualCents + grossSellCents,
+    walletDrawCents,
+    walletAfterCents,
+    strategyCashAfterCents,
     cashAfterCents,
     shortfall: cashAfterCents < 0,
   };
