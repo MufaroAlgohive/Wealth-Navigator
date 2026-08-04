@@ -37,11 +37,19 @@ describe("rebalance sale-proceeds flow", () => {
 
   it("presents a professional client impact table before committing", () => {
     expect(builder).toContain('title="Client impact preview"');
+    expect(builder).toContain(">Lots</th>");
+    expect(builder).toContain("line.lots");
     expect(builder).toContain("Commit trade sequence");
     expect(builder).toContain("No market order is sent yet");
     expect(builder).toContain("line.currentQty");
     expect(builder).toContain("line.targetQty");
     expect(builder).toContain("line.currentPnlCents");
+  });
+
+  it("derives each client's lot count from the current basket model", () => {
+    expect(builder).toContain("current: baseline");
+    expect(impactRoute).toContain("currentModelUnits");
+    expect(impactRoute).toContain("currentQty / modelUnits");
   });
 
   it("derives LIVE versus UAT preview scope from the persisted strategy", () => {

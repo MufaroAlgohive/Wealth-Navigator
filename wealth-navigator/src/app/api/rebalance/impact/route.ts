@@ -32,6 +32,10 @@ interface ProposedLine {
   toWeight?: number | null;
   weight?: number | null;
 }
+interface CurrentModelLine {
+  ticker: string;
+  shares?: number | null;
+}
 
 /** "MTN.JO" / " mtn " -> "MTN". */
 function bare(sym: string): string {
@@ -58,6 +62,7 @@ export async function POST(req: Request) {
       ? body.proceeds_mode
       : null;
   const proposedRaw = Array.isArray(body.proposed) ? (body.proposed as ProposedLine[]) : [];
+  const currentRaw = Array.isArray(body.current) ? (body.current as CurrentModelLine[]) : [];
   if (!strategyId && !strategyName) {
     return NextResponse.json(
       { ok: false, error: "strategy_id or strategy_name is required" },
@@ -73,6 +78,12 @@ export async function POST(req: Request) {
     const action = String(p.action ?? "hold");
     const w = typeof p.toWeight === "number" ? p.toWeight : typeof p.weight === "number" ? p.weight : 0;
     targets.set(sym, { action, weight: (Number(w) || 0) / 100 });
+  }
+  const currentModelUnits = new Map<string, number>();
+  for (const line of currentRaw) {
+    const symbol = bare(line.ticker);
+    const shares = Math.max(0, Number(line.shares) || 0);
+    if (symbol && shares > 0) currentModelUnits.set(symbol, shares);
   }
   const hasSellTarget = [...targets.values()].some(
     (target) => target.action === "remove" || target.action === "decrease",
@@ -373,6 +384,8 @@ export async function POST(req: Request) {
       const priceCents = priceCentsForSymbol(sym);
       const position = positions.get(sym) ?? { quantity: 0, costValueCents: 0 };
       const currentQty = position.quantity;
+      const modelUnits = currentModelUnits.get(sym) ?? 0;
+      const lots = modelUnits > 0 ? currentQty / modelUnits : null;
       if (!target || target.action === "hold") continue;
       let targetQty = currentQty;
       if (target.action === "remove") targetQty = 0;
@@ -385,6 +398,7 @@ export async function POST(req: Request) {
       lines.push({
         symbol: sym,
         action: target.action,
+        lots,
         currentQty,
         targetQty,
         deltaQty,

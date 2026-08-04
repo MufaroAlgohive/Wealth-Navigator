@@ -32,6 +32,7 @@ type StrategyOpt = { id: string; name: string; investorEnvironment: "LIVE" | "UA
 type ImpactLine = {
   symbol: string;
   action: string;
+  lots: number | null;
   currentQty: number;
   targetQty: number;
   deltaQty: number;
@@ -381,6 +382,7 @@ export function RebalanceBuilderPage({
           strategy_id: strategyId,
           strategy_name: strategyName,
           proceeds_mode: inferredProceedsMode,
+          current: baseline,
           proposed: proposedComposition,
         }),
       });
@@ -1000,10 +1002,10 @@ function InvestorImpactPanel({
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-5 py-2 font-medium">Investor</th>
-                  <th className="px-3 py-2 text-right font-medium">Basket</th>
+                  <th className="px-5 py-2 font-medium">Client</th>
                   {residualView ? (
                     <>
+                      <th className="px-3 py-2 text-right font-medium">Basket</th>
                       <th className="px-3 py-2 text-right font-medium">Residual before</th>
                       <th className="px-3 py-2 text-right font-medium">Wallet before</th>
                       <th className="px-3 py-2 text-right font-medium">Available before</th>
@@ -1012,7 +1014,7 @@ function InvestorImpactPanel({
                     </>
                   ) : (
                     <>
-                      <th className="px-3 py-2 font-medium">Trades</th>
+                      <th className="px-3 py-2 text-right font-medium">Lots</th>
                       <th className="px-3 py-2 text-right font-medium">Current</th>
                       <th className="px-3 py-2 text-right font-medium">New</th>
                       <th className="px-3 py-2 text-right font-medium">Δ</th>
@@ -1033,16 +1035,31 @@ function InvestorImpactPanel({
                       )}
                     >
                       <td className="px-5 py-3">
-                        <div className="font-medium">{inv.name}</div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-medium">{inv.name}</span>
+                          {!residualView && inv.lines.map((line) => (
+                            <span
+                              key={line.symbol}
+                              className={cn(
+                                "rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
+                                line.side === "buy"
+                                  ? "border-[hsl(var(--down)/0.3)] bg-[hsl(var(--down)/0.08)] text-down"
+                                  : "border-[hsl(var(--up)/0.3)] bg-[hsl(var(--up)/0.08)] text-up",
+                              )}
+                            >
+                              {line.symbol} {line.side}
+                            </span>
+                          ))}
+                        </div>
                         <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
                           {inv.account || inv.user_id}
                         </div>
                       </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                        {centsToR(inv.basketCents)}
-                      </td>
                       {residualView ? (
                         <>
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            {centsToR(inv.basketCents)}
+                          </td>
                           <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
                             {centsToR(inv.residualCents)}
                           </td>
@@ -1066,21 +1083,15 @@ function InvestorImpactPanel({
                         </>
                       ) : (
                         <>
-                          <td className="px-3 py-2">
+                          <td className="px-3 py-2 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
                             <div className="space-y-1">
                               {inv.lines.map((line) => (
-                                <div key={line.symbol} className="flex items-center gap-1.5 whitespace-nowrap">
-                                  <span
-                                    className={cn(
-                                      "rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
-                                      line.side === "buy"
-                                        ? "border-[hsl(var(--down)/0.3)] bg-[hsl(var(--down)/0.08)] text-down"
-                                        : "border-[hsl(var(--up)/0.3)] bg-[hsl(var(--up)/0.08)] text-up",
-                                    )}
-                                  >
-                                    {line.side}
-                                  </span>
-                                  <span className="font-mono text-[11px] font-semibold">{line.symbol}</span>
+                                <div key={line.symbol}>
+                                  {line.lots == null
+                                    ? "—"
+                                    : Number.isInteger(line.lots)
+                                      ? line.lots
+                                      : line.lots.toLocaleString("en-ZA", { maximumFractionDigits: 2 })}
                                 </div>
                               ))}
                             </div>
