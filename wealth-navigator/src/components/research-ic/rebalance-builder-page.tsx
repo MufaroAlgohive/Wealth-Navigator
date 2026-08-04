@@ -9,7 +9,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, FlaskConical, Info, Plus, Rocket, Send, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Info, Plus, Rocket, Send, X } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
@@ -38,10 +38,12 @@ type ImpactLine = {
   side: "buy" | "sell";
   priceCents: number;
   valueCents: number;
+  currentPnlCents: number;
 };
 type ImpactInvestor = {
   user_id: string;
   name: string;
+  account?: string;
   basketCents: number;
   walletCents: number;
   buyCents: number;
@@ -482,6 +484,31 @@ export function RebalanceBuilderPage({
     }
   }
 
+  const commitDisabled =
+    submitting ||
+    changes === 0 ||
+    (!isTestStrategy && missingResearch.length > 0) ||
+    (!isTestStrategy && rationalesMissing.length > 0) ||
+    proceedsPlanMissing ||
+    impactQ.isFetching ||
+    impactQ.data?.ok !== true ||
+    impactQ.data?.totals?.cashOk === false ||
+    !perms.raiseRebalance;
+  const commitTitle =
+    !isTestStrategy && missingResearch.length > 0
+      ? "Research missing for one or more changes"
+      : !isTestStrategy && rationalesMissing.length > 0
+        ? "Rationale required for one or more changes"
+        : proceedsPlanMissing
+          ? "Confirm the sale proceeds destination"
+          : impactQ.isFetching
+            ? "Calculating fee-adjusted client impact"
+            : impactQ.data?.ok !== true
+              ? impactQ.data?.error ?? "Client impact is unavailable"
+              : impactQ.data?.totals?.cashOk === false
+                ? "Insufficient cash for one or more clients"
+                : "Create the controlled trade-sequence proposal for IC review";
+
   return (
     <ResearchLabCanvas>
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -688,39 +715,9 @@ export function RebalanceBuilderPage({
           dataSource="hybrid"
           subtitle={`${changes} change${changes === 1 ? "" : "s"} pending`}
           right={
-            <button
-              type="button"
-              onClick={submitToIc}
-              disabled={
-                submitting ||
-                changes === 0 ||
-                (!isTestStrategy && missingResearch.length > 0) ||
-                (!isTestStrategy && rationalesMissing.length > 0) ||
-                proceedsPlanMissing ||
-                impactQ.isFetching ||
-                impactQ.data?.ok !== true ||
-                (impactQ.data?.totals && impactQ.data.totals.cashOk === false) ||
-                !perms.raiseRebalance
-              }
-              title={
-                !isTestStrategy && missingResearch.length > 0
-                  ? "Research missing for one or more changes"
-                  : !isTestStrategy && rationalesMissing.length > 0
-                    ? "Rationale required for one or more changes"
-                    : proceedsPlanMissing
-                      ? "Confirm the sale proceeds destination"
-                      : impactQ.isFetching
-                        ? "Calculating fee-adjusted investor impact"
-                        : impactQ.data?.ok !== true
-                          ? impactQ.data?.error ?? "Investor impact is unavailable"
-                          : impactQ.data?.totals?.cashOk === false
-                            ? "Insufficient cash for one or more investors"
-                            : undefined
-              }
-              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-            >
-              <Send className="h-3.5 w-3.5" /> {submitting ? "Submitting…" : "Submit to IC"}
-            </button>
+            <span className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+              Review client impact
+            </span>
           }
           noPadding
         >
@@ -802,6 +799,12 @@ export function RebalanceBuilderPage({
         enabled={!!strategyId && changes > 0}
         loading={impactQ.isFetching}
         data={impactQ.data}
+        strategyName={strategyName}
+        sellSymbols={sellActions.map((action) => action.ticker.toUpperCase())}
+        submitting={submitting}
+        commitDisabled={commitDisabled}
+        commitTitle={commitTitle}
+        onCommit={submitToIc}
         proceedsDecision={
           sellActions.length > 0
             ? {
@@ -1025,11 +1028,23 @@ function InvestorImpactPanel({
   enabled,
   loading,
   data,
+  strategyName,
+  sellSymbols,
+  submitting,
+  commitDisabled,
+  commitTitle,
+  onCommit,
   proceedsDecision,
 }: {
   enabled: boolean;
   loading: boolean;
   data: ImpactResponse | undefined;
+  strategyName: string;
+  sellSymbols: string[];
+  submitting: boolean;
+  commitDisabled: boolean;
+  commitTitle: string;
+  onCommit: () => void;
   proceedsDecision?: {
     buySymbols: string[];
     destination: string;
@@ -1043,17 +1058,26 @@ function InvestorImpactPanel({
   const totals = data?.totals ?? null;
   const cashOk = totals?.cashOk ?? true;
   const [residualView, setResidualView] = React.useState(false);
+  const scopeLabel =
+    data?.scope === "live" ? "LIVE clients" : data?.scope === "uat" ? "UAT clients" : "Scope unavailable";
+  const impactLabel = sellSymbols.length ? sellSymbols.join(" + ") : strategyName;
 
   return (
     <GlassSection
-      title="Affected investors — cash & shares"
+      title="Client impact preview"
       dataSource="hybrid"
       db="retail"
-      subtitle="Read-only impact of this rebalance"
+      subtitle={`${impactLabel} · ${totals?.investorCount ?? investors.length} client${(totals?.investorCount ?? investors.length) === 1 ? "" : "s"} · review projected holdings before commitment`}
       right={
-        <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-400">
-          <FlaskConical className="h-3 w-3" /> Test clients only
-        </span>
+        <label className="inline-flex cursor-pointer items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Show residual view
+          <input
+            type="checkbox"
+            checked={residualView}
+            onChange={(event) => setResidualView(event.target.checked)}
+            className="h-4 w-4 rounded border-[hsl(var(--glass-border))] accent-primary"
+          />
+        </label>
       }
       noPadding
     >
@@ -1120,20 +1144,9 @@ function InvestorImpactPanel({
               </span>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setResidualView((current) => !current)}
-                className={cn(
-                  "rounded-full border px-2.5 py-1 text-[11px] font-semibold transition",
-                  residualView
-                    ? "border-emerald-500/40 bg-emerald-500/12 text-emerald-500"
-                    : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground",
-                )}
-                aria-pressed={residualView}
-                title="Show each investor's strategy residual and wallet before execution"
-              >
-                {residualView ? "Trade view" : "Residual view"}
-              </button>
+              <span className="rounded-full border border-[hsl(var(--glass-border))] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                {scopeLabel}
+              </span>
               <span
                 className={cn(
                   "rounded-full px-2 py-0.5 text-[11px] font-semibold",
@@ -1160,11 +1173,11 @@ function InvestorImpactPanel({
                     </>
                   ) : (
                     <>
-                      <th className="px-3 py-2 text-right font-medium">To buy</th>
-                      <th className="px-3 py-2 text-right font-medium">To sell</th>
-                      <th className="px-3 py-2 text-right font-medium">Net proceeds</th>
-                      <th className="px-3 py-2 text-right font-medium">Cash available</th>
-                      <th className="px-5 py-2 text-right font-medium">Cash after</th>
+                      <th className="px-3 py-2 font-medium">Trades</th>
+                      <th className="px-3 py-2 text-right font-medium">Current</th>
+                      <th className="px-3 py-2 text-right font-medium">New</th>
+                      <th className="px-3 py-2 text-right font-medium">Δ</th>
+                      <th className="px-5 py-2 text-right font-medium">P/L</th>
                     </>
                   )}
                 </tr>
@@ -1172,8 +1185,20 @@ function InvestorImpactPanel({
               <tbody>
                 {investors.map((inv) => (
                   <React.Fragment key={inv.user_id}>
-                    <tr className="border-b border-[hsl(var(--glass-border))]">
-                      <td className="px-5 py-2 font-medium">{inv.name}</td>
+                    <tr
+                      className={cn(
+                        "border-b border-[hsl(var(--glass-border))] transition-colors",
+                        inv.shortfall
+                          ? "bg-[hsl(var(--down)/0.07)]"
+                          : "bg-amber-500/[0.035] hover:bg-amber-500/[0.065]",
+                      )}
+                    >
+                      <td className="px-5 py-3">
+                        <div className="font-medium">{inv.name}</div>
+                        <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                          {inv.account || inv.user_id}
+                        </div>
+                      </td>
                       <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
                         {centsToR(inv.basketCents)}
                       </td>
@@ -1202,54 +1227,81 @@ function InvestorImpactPanel({
                         </>
                       ) : (
                         <>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-down">
-                            {inv.buyCents ? centsToR(inv.buyCents) : "—"}
+                          <td className="px-3 py-2">
+                            <div className="space-y-1">
+                              {inv.lines.map((line) => (
+                                <div key={line.symbol} className="flex items-center gap-1.5 whitespace-nowrap">
+                                  <span
+                                    className={cn(
+                                      "rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
+                                      line.side === "buy"
+                                        ? "border-[hsl(var(--down)/0.3)] bg-[hsl(var(--down)/0.08)] text-down"
+                                        : "border-[hsl(var(--up)/0.3)] bg-[hsl(var(--up)/0.08)] text-up",
+                                    )}
+                                  >
+                                    {line.side}
+                                  </span>
+                                  <span className="font-mono text-[11px] font-semibold">{line.symbol}</span>
+                                </div>
+                              ))}
+                            </div>
                           </td>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
-                            {inv.sellCents ? centsToR(inv.sellCents) : "—"}
+                          <td className="px-3 py-2 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                            <div className="space-y-1">
+                              {inv.lines.map((line) => <div key={line.symbol}>{line.currentQty}</div>)}
+                            </div>
                           </td>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-up">
-                            {inv.netProceedsCents ? centsToR(inv.netProceedsCents) : "—"}
+                          <td className="px-3 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
+                            <div className="space-y-1">
+                              {inv.lines.map((line) => <div key={line.symbol}>{line.targetQty}</div>)}
+                            </div>
                           </td>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                            {centsToR(inv.availableCashCents)}
+                          <td className="px-3 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
+                            <div className="space-y-1">
+                              {inv.lines.map((line) => (
+                                <div key={line.symbol} className={line.deltaQty < 0 ? "text-down" : "text-up"}>
+                                  {line.deltaQty > 0 ? "+" : ""}{line.deltaQty}
+                                </div>
+                              ))}
+                            </div>
                           </td>
-                          <td
-                            className={cn(
-                              "px-5 py-2 text-right font-mono tabular-nums font-semibold",
-                              inv.shortfall ? "text-down" : "text-foreground",
-                            )}
-                          >
-                            {centsToR(inv.cashAfterCents)}
+                          <td className="px-5 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
+                            <div className="space-y-1">
+                              {inv.lines.map((line) => (
+                                <div
+                                  key={line.symbol}
+                                  className={line.currentPnlCents < 0 ? "text-down" : line.currentPnlCents > 0 ? "text-up" : "text-muted-foreground"}
+                                >
+                                  {line.currentPnlCents > 0 ? "+" : ""}{centsToR(line.currentPnlCents)}
+                                </div>
+                              ))}
+                            </div>
                           </td>
                         </>
                       )}
                     </tr>
-                    {inv.lines.length > 0 && (
-                      <tr className="border-b border-[hsl(var(--glass-border))]">
-                        <td colSpan={7} className="px-5 pb-2 pt-0">
-                          <div className="flex flex-wrap gap-1.5">
-                            {inv.lines.map((ln) => (
-                              <span
-                                key={ln.symbol}
-                                className={cn(
-                                  "rounded border px-1.5 py-0.5 font-mono text-[10px]",
-                                  ln.side === "buy"
-                                    ? "border-[hsl(var(--down)/0.3)] text-down"
-                                    : "border-[hsl(var(--up)/0.3)] text-up",
-                                )}
-                              >
-                                {ln.side === "buy" ? "BUY" : "SELL"} {Math.abs(ln.deltaQty)} {ln.symbol}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
                   </React.Fragment>
                 ))}
               </tbody>
             </table>
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
+            <div>
+              <div className="text-xs font-semibold">Ready to commit this trade sequence?</div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground">
+                Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onCommit}
+              disabled={commitDisabled}
+              title={commitTitle}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <Send className="h-3.5 w-3.5" />
+              {submitting ? "Committing…" : "Commit trade sequence"}
+            </button>
           </div>
         </>
       )}

@@ -27,11 +27,27 @@ describe("rebalance sale-proceeds flow", () => {
   });
 
   it("separates strategy residual from wallet cash before execution", () => {
-    expect(builder).toContain("Residual view");
+    expect(builder).toContain("Show residual view");
     expect(builder).toContain("Residual before");
     expect(builder).toContain("Wallet before");
     expect(builder).toContain("Strategy CA after");
     expect(builder).toContain("inv.residualCents + inv.walletCents");
+  });
+
+  it("presents a professional client impact table before committing", () => {
+    expect(builder).toContain('title="Client impact preview"');
+    expect(builder).toContain("Commit trade sequence");
+    expect(builder).toContain("No market order is sent yet");
+    expect(builder).toContain("line.currentQty");
+    expect(builder).toContain("line.targetQty");
+    expect(builder).toContain("line.currentPnlCents");
+  });
+
+  it("derives LIVE versus UAT preview scope from the persisted strategy", () => {
+    expect(impactRoute).toContain("investor_environment");
+    expect(impactRoute).toContain('investorEnvironment === "UAT" ? isTest : !isTest');
+    expect(impactRoute).toContain("eligibleIds");
+    expect(impactRoute).toContain("accountById");
   });
 
   it("loads rebalance fees from App Settings without a fallback", () => {
