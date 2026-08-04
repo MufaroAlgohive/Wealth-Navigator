@@ -186,6 +186,12 @@ export function RebalanceBuilderPage({
   // to Cash" as buttons rather than inferring it from the basket editor.
   // null until the admin picks one on the execute step.
   const [sequenceMode, setSequenceMode] = React.useState<"liquidate" | "reinvest" | null>(null);
+  // Buy Execution step (mirrors CRM's rebShowBuyModal): a search box above the
+  // dropdown, and an 8% conservative-price buffer applied to the auto-sized
+  // share count. "Use remaining + wallet credits to buy another security" and
+  // "View Detailed Effect" are CRM features not ported here — see chat.
+  const [buySearch, setBuySearch] = React.useState("");
+  const [applyBuffer, setApplyBuffer] = React.useState(true);
 
   // Reset rationale when the basket switches strategies so old text doesn't
   // leak across strategies.
@@ -199,6 +205,8 @@ export function RebalanceBuilderPage({
     setStage("compose");
     setDropdownBuySymbol("");
     setSequenceMode(null);
+    setBuySearch("");
+    setApplyBuffer(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId, compQ.data]);
 
@@ -309,7 +317,8 @@ export function RebalanceBuilderPage({
   // input next to the dropdown.
   const chooseBuyInstrument = (symbol: string, name: string, priceCents: number) => {
     const netProceeds = impactQ.data?.totals?.netProceedsCents ?? 0;
-    const affordable = priceCents > 0 ? Math.max(0, Math.floor(netProceeds / priceCents)) : 0;
+    const bufferedPriceCents = priceCents * (applyBuffer ? 1.08 : 1);
+    const affordable = bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
     setWorking((prev) => {
       const withoutOldPick = dropdownBuySymbol ? prev.filter((h) => keyOf(h) !== dropdownBuySymbol) : prev;
       const already = withoutOldPick.find((h) => keyOf(h) === symbol);
@@ -326,6 +335,26 @@ export function RebalanceBuilderPage({
     if (dropdownBuySymbol) removeHolding(dropdownBuySymbol);
     setDropdownBuySymbol("");
   };
+  // "Start Over" on the Buy Execution step (CRM's rebBuyResetBtn): clear the
+  // selection and search without leaving the execute stage.
+  const startOverBuy = () => {
+    clearBuyInstrument();
+    setBuySearch("");
+    setApplyBuffer(true);
+  };
+  // Re-price the auto-computed share count when the buffer toggle changes —
+  // matches CRM recomputing autoBuyPerLot off the buffered price. A manual
+  // shares override afterward still wins until the buffer is toggled again.
+  React.useEffect(() => {
+    if (!dropdownBuySymbol) return;
+    const meta = buyUniverse.find((u) => u.symbol === dropdownBuySymbol);
+    if (!meta) return;
+    const netProceeds = impactQ.data?.totals?.netProceedsCents ?? 0;
+    const bufferedPriceCents = meta.priceCents * (applyBuffer ? 1.08 : 1);
+    const affordable = bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
+    setAbsoluteShares(dropdownBuySymbol, affordable);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyBuffer]);
   const addHolding = () => {
     const t = addTicker.trim().toUpperCase();
     const sh = Number(addShares);
@@ -510,6 +539,8 @@ export function RebalanceBuilderPage({
       setRationaleBySymbol({});
       setDropdownBuySymbol("");
       setSequenceMode(null);
+      setBuySearch("");
+      setApplyBuffer(true);
       setStage("compose");
     } finally {
       setSubmitting(false);
@@ -847,6 +878,11 @@ export function RebalanceBuilderPage({
           setSequenceMode("liquidate");
         }}
         onChooseReinvest={() => setSequenceMode("reinvest")}
+        buySearch={buySearch}
+        onBuySearchChange={setBuySearch}
+        applyBuffer={applyBuffer}
+        onApplyBufferChange={setApplyBuffer}
+        onStartOverBuy={startOverBuy}
       />
 
       <ProposalsList pushingId={pushingId} setPushingId={setPushingId} canPush={perms.pushRebalance} />
@@ -1022,6 +1058,11 @@ function TradeSequencePanel({
   onSharesOverride,
   onChooseLiquidate,
   onChooseReinvest,
+  buySearch,
+  onBuySearchChange,
+  applyBuffer,
+  onApplyBufferChange,
+  onStartOverBuy,
 }: {
   mode: "compose" | "execute";
   enabled: boolean;
@@ -1044,6 +1085,11 @@ function TradeSequencePanel({
   onSharesOverride: (value: number) => void;
   onChooseLiquidate: () => void;
   onChooseReinvest: () => void;
+  buySearch: string;
+  onBuySearchChange: (value: string) => void;
+  applyBuffer: boolean;
+  onApplyBufferChange: (value: boolean) => void;
+  onStartOverBuy: () => void;
 }) {
   const investors = data?.investors ?? [];
   const totals = data?.totals ?? null;
@@ -1054,6 +1100,10 @@ function TradeSequencePanel({
   const impactLabel = sellSymbols.length ? sellSymbols.join(" + ") : strategyName;
   const selectedInstrument = buyUniverse.find((u) => u.symbol === dropdownBuySymbol) ?? null;
   const isExecute = mode === "execute";
+  const buySearchQ = buySearch.trim().toLowerCase();
+  const filteredBuyUniverse = buySearchQ
+    ? buyUniverse.filter((u) => `${u.symbol} ${u.name}`.toLowerCase().includes(buySearchQ))
+    : buyUniverse;
 
   return (
     <GlassSection
@@ -1153,44 +1203,69 @@ function TradeSequencePanel({
         </div>
       ) : null}
       {isExecute && enabled && proceedsMode === "reinvest" ? (
-        <div className="flex flex-wrap items-center gap-3 border-b border-[hsl(var(--glass-border))] px-5 py-3">
-          <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Instrument to buy
+        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-3">
+          <div>
+            <div className="text-xs font-semibold">Buy Execution</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
+              Net capital: {centsToR(totals?.netProceedsCents)}
+            </div>
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Instrument to buy
+            </label>
+            <input
+              value={buySearch}
+              onChange={(e) => onBuySearchChange(e.target.value)}
+              placeholder="Search by name or symbol…"
+              className="mt-1.5 w-full max-w-md rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <select
+                value={dropdownBuySymbol}
+                onChange={(e) => {
+                  const meta = buyUniverse.find((u) => u.symbol === e.target.value);
+                  if (meta) onSelectBuyInstrument(meta.symbol, meta.name, meta.priceCents);
+                }}
+                className="min-w-[260px] rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
+              >
+                <option value="">
+                  {buyUniverseLoading
+                    ? "Loading instruments…"
+                    : `Select instrument (${filteredBuyUniverse.length})…`}
+                </option>
+                {filteredBuyUniverse.map((u) => (
+                  <option key={u.symbol} value={u.symbol}>
+                    {u.symbol} · {u.name}
+                    {u.priceCents > 0 ? ` · ${centsToR(u.priceCents)}` : " · N/A"}
+                  </option>
+                ))}
+              </select>
+              {selectedInstrument ? (
+                <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  Shares
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    defaultValue={undefined}
+                    onChange={(e) => onSharesOverride(Number(e.target.value) || 0)}
+                    placeholder="auto"
+                    className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none"
+                  />
+                </span>
+              ) : null}
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-foreground/85">
+            <input
+              type="checkbox"
+              checked={applyBuffer}
+              onChange={(e) => onApplyBufferChange(e.target.checked)}
+              className="h-4 w-4 rounded border-[hsl(var(--glass-border))] accent-primary"
+            />
+            Apply 8% buffer to price (conservative)
           </label>
-          <select
-            value={dropdownBuySymbol}
-            onChange={(e) => {
-              const meta = buyUniverse.find((u) => u.symbol === e.target.value);
-              if (meta) onSelectBuyInstrument(meta.symbol, meta.name, meta.priceCents);
-            }}
-            className="min-w-[260px] rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
-          >
-            <option value="">
-              {buyUniverseLoading
-                ? "Loading instruments…"
-                : `Select instrument (${buyUniverse.length} available)…`}
-            </option>
-            {buyUniverse.map((u) => (
-              <option key={u.symbol} value={u.symbol}>
-                {u.symbol} · {u.name}
-                {u.priceCents > 0 ? ` · ${centsToR(u.priceCents)}` : " · N/A"}
-              </option>
-            ))}
-          </select>
-          {selectedInstrument ? (
-            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-              Shares
-              <input
-                type="number"
-                min={0}
-                step={1}
-                defaultValue={undefined}
-                onChange={(e) => onSharesOverride(Number(e.target.value) || 0)}
-                placeholder="auto"
-                className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none"
-              />
-            </span>
-          ) : null}
         </div>
       ) : null}
       {isExecute && data ? <FeeProceedsBreakdown data={data} proceedsMode={proceedsMode} /> : null}
@@ -1400,16 +1475,27 @@ function TradeSequencePanel({
                   : "Continue to pick the buy instrument and review the full fee bridge before this is sent to the IC."}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={isExecute ? onCommit : onProceed}
-              disabled={commitDisabled}
-              title={commitTitle}
-              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <Send className="h-3.5 w-3.5" />
-              {isExecute ? (submitting ? "Committing…" : "Commit trade sequence") : "Commit trade sequence"}
-            </button>
+            <div className="flex items-center gap-2">
+              {isExecute && proceedsMode === "reinvest" ? (
+                <button
+                  type="button"
+                  onClick={onStartOverBuy}
+                  className="rounded-lg border border-[hsl(var(--glass-border))] px-4 py-2 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
+                >
+                  Start Over
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={isExecute ? onCommit : onProceed}
+                disabled={commitDisabled}
+                title={commitTitle}
+                className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                <Send className="h-3.5 w-3.5" />
+                {isExecute ? (submitting ? "Committing…" : "Commit trade sequence") : "Commit trade sequence"}
+              </button>
+            </div>
           </div>
         </>
       )}
