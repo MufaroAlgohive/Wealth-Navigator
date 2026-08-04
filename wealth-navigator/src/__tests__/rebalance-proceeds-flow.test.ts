@@ -14,7 +14,7 @@ describe("rebalance sale-proceeds flow", () => {
     expect(builder).toContain("inferredProceedsMode");
     expect(builder).toContain('buyActions.length > 0 ? "reinvest" : "liquidate"');
     expect(builder).toContain("enabled: !!strategyId && changes > 0");
-    expect(builder).toContain("proceeds_mode: inferredProceedsMode");
+    expect(builder).toContain("proceeds_mode: effectiveProceedsMode");
     expect(builder).toContain("proceeds_destination: inferredProceedsDestination");
     expect(builder).toContain('"Liquidate to Cash" : proceedsMode === "reinvest" ? "Reinvest / Buy"');
     expect(builder).not.toContain("Will the sale proceeds buy another asset?");

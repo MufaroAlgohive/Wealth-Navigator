@@ -181,6 +181,11 @@ export function RebalanceBuilderPage({
   // fires from the final Commit button inside "execute".
   const [stage, setStage] = React.useState<"compose" | "execute">("compose");
   const [dropdownBuySymbol, setDropdownBuySymbol] = React.useState<string>("");
+  // Explicit Liquidate-vs-Reinvest choice, made on the execute step — mirrors
+  // CRM's Sell modal offering both "Confirm & Proceed to Buy" and "Liquidate
+  // to Cash" as buttons rather than inferring it from the basket editor.
+  // null until the admin picks one on the execute step.
+  const [sequenceMode, setSequenceMode] = React.useState<"liquidate" | "reinvest" | null>(null);
 
   // Reset rationale when the basket switches strategies so old text doesn't
   // leak across strategies.
@@ -193,6 +198,7 @@ export function RebalanceBuilderPage({
     setAddOpen(false);
     setStage("compose");
     setDropdownBuySymbol("");
+    setSequenceMode(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId, compQ.data]);
 
@@ -314,6 +320,12 @@ export function RebalanceBuilderPage({
     });
     setDropdownBuySymbol(symbol);
   };
+  // "Liquidate to Cash" choice on the execute step: drop whatever buy leg the
+  // dropdown had staged, so the impact call goes out sell-only.
+  const clearBuyInstrument = () => {
+    if (dropdownBuySymbol) removeHolding(dropdownBuySymbol);
+    setDropdownBuySymbol("");
+  };
   const addHolding = () => {
     const t = addTicker.trim().toUpperCase();
     const sh = Number(addShares);
@@ -399,13 +411,17 @@ export function RebalanceBuilderPage({
   // reinvested. Increases use only existing strategy CA and execution reserve.
   const inferredProceedsMode: "reinvest" | "liquidate" | null =
     sellActions.length > 0 ? (buyActions.length > 0 ? "reinvest" : "liquidate") : null;
-  const inferredProceedsDestination = inferredProceedsMode === "reinvest" ? proposedDestination : "";
+  // Once the admin has explicitly picked a direction on the execute step,
+  // that choice wins; before that (still composing), fall back to what the
+  // basket editor implies.
+  const effectiveProceedsMode = sequenceMode ?? inferredProceedsMode;
+  const inferredProceedsDestination = effectiveProceedsMode === "reinvest" ? proposedDestination : "";
 
   // Client impact is read-only and re-modelled immediately whenever proposed
   // shares change. The server derives LIVE versus UAT owner scope from the
   // persisted strategy, never from a browser-provided environment flag.
   const impactSig = JSON.stringify([
-    inferredProceedsMode,
+    effectiveProceedsMode,
     ...proposedComposition.map((p) => [p.ticker, p.action, p.shares]),
   ]);
   const impactQ = useQuery<ImpactResponse>({
@@ -418,7 +434,7 @@ export function RebalanceBuilderPage({
         body: JSON.stringify({
           strategy_id: strategyId,
           strategy_name: strategyName,
-          proceeds_mode: inferredProceedsMode,
+          proceeds_mode: effectiveProceedsMode,
           current: baseline,
           proposed: proposedComposition,
         }),
@@ -474,7 +490,7 @@ export function RebalanceBuilderPage({
           proposed_composition,
           affected_investors: {
             scope: impactQ.data.scope,
-            proceeds_mode: inferredProceedsMode,
+            proceeds_mode: effectiveProceedsMode,
             proceeds_destination: inferredProceedsDestination,
             fee_config: impactQ.data.feeConfig,
             totals: impactQ.data.totals,
@@ -493,6 +509,7 @@ export function RebalanceBuilderPage({
       setWorking(baseline.map((h) => ({ ...h })));
       setRationaleBySymbol({});
       setDropdownBuySymbol("");
+      setSequenceMode(null);
       setStage("compose");
     } finally {
       setSubmitting(false);
@@ -808,16 +825,28 @@ export function RebalanceBuilderPage({
         submitting={submitting}
         commitDisabled={commitDisabled}
         commitTitle={commitTitle}
-        onProceed={() => !commitDisabled && setStage("execute")}
+        onProceed={() => {
+          if (commitDisabled) return;
+          setSequenceMode(inferredProceedsMode);
+          setStage("execute");
+        }}
         onCommit={submitToIc}
-        onBack={() => setStage("compose")}
-        proceedsMode={inferredProceedsMode}
+        onBack={() => {
+          setSequenceMode(null);
+          setStage("compose");
+        }}
+        proceedsMode={effectiveProceedsMode}
         buySymbols={destinationSymbols}
         buyUniverse={buyUniverse}
         buyUniverseLoading={equitiesQ.isLoading}
         dropdownBuySymbol={dropdownBuySymbol}
         onSelectBuyInstrument={chooseBuyInstrument}
         onSharesOverride={(value) => dropdownBuySymbol && setAbsoluteShares(dropdownBuySymbol, value)}
+        onChooseLiquidate={() => {
+          clearBuyInstrument();
+          setSequenceMode("liquidate");
+        }}
+        onChooseReinvest={() => setSequenceMode("reinvest")}
       />
 
       <ProposalsList pushingId={pushingId} setPushingId={setPushingId} canPush={perms.pushRebalance} />
@@ -922,6 +951,8 @@ function TradeSequencePanel({
   dropdownBuySymbol,
   onSelectBuyInstrument,
   onSharesOverride,
+  onChooseLiquidate,
+  onChooseReinvest,
 }: {
   mode: "compose" | "execute";
   enabled: boolean;
@@ -942,6 +973,8 @@ function TradeSequencePanel({
   dropdownBuySymbol: string;
   onSelectBuyInstrument: (symbol: string, name: string, priceCents: number) => void;
   onSharesOverride: (value: number) => void;
+  onChooseLiquidate: () => void;
+  onChooseReinvest: () => void;
 }) {
   const investors = data?.investors ?? [];
   const totals = data?.totals ?? null;
@@ -988,7 +1021,7 @@ function TradeSequencePanel({
       }
       noPadding
     >
-      {enabled ? (
+      {isExecute && enabled ? (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--glass-border))] bg-primary/[0.035] px-5 py-3">
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-primary">
@@ -1014,6 +1047,40 @@ function TradeSequencePanel({
                   )}
             </div>
           </div>
+        </div>
+      ) : null}
+      {/* Explicit Liquidate-vs-Reinvest choice — mirrors CRM's Sell modal,
+          which always offers both "Confirm & Proceed to Buy" and "Liquidate
+          to Cash (skip buy)" as buttons rather than inferring the direction. */}
+      {isExecute && enabled && sellSymbols.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-[hsl(var(--glass-border))] px-5 py-3">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Sale proceeds:
+          </span>
+          <button
+            type="button"
+            onClick={onChooseReinvest}
+            className={cn(
+              "rounded-full border px-3 py-1 text-[11px] font-semibold transition",
+              proceedsMode === "reinvest"
+                ? "border-primary/50 bg-primary/15 text-primary"
+                : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
+            )}
+          >
+            Reinvest · buy replacement
+          </button>
+          <button
+            type="button"
+            onClick={onChooseLiquidate}
+            className={cn(
+              "rounded-full border px-3 py-1 text-[11px] font-semibold transition",
+              proceedsMode === "liquidate"
+                ? "border-primary/50 bg-primary/15 text-primary"
+                : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
+            )}
+          >
+            Liquidate to Cash
+          </button>
         </div>
       ) : null}
       {isExecute && enabled && proceedsMode === "reinvest" ? (
@@ -1057,7 +1124,7 @@ function TradeSequencePanel({
           ) : null}
         </div>
       ) : null}
-      {data ? <FeeProceedsBreakdown data={data} /> : null}
+      {isExecute && data ? <FeeProceedsBreakdown data={data} /> : null}
       {!enabled ? (
         <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
       ) : data?.ok === false ? (
