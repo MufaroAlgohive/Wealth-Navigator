@@ -20,11 +20,13 @@ describe("rebalance sale-proceeds flow", () => {
     expect(builder).not.toContain("Will the sale proceeds buy another asset?");
   });
 
-  it("shows net proceeds with an expandable fee and reserve bridge", () => {
-    expect(builder).toContain("Estimated proceeds and fee bridge");
-    expect(builder).toContain("Estimated sell fees");
-    expect(builder).toContain("Execution reserve used");
-    expect(builder).toContain("Per-investor effect");
+  it("shows net proceeds with a CRM-exact sell/buy fee breakdown", () => {
+    expect(builder).toContain("Sell Execution");
+    expect(builder).toContain("Total Shares to Sell");
+    expect(builder).toContain("Gross Proceeds");
+    expect(builder).toContain("Net Proceeds");
+    expect(builder).toContain("Execution Reserve Before");
+    expect(builder).toContain("Per-Client Allocation");
   });
 
   it("shows only strategy CA and execution reserve as rebalance funding", () => {

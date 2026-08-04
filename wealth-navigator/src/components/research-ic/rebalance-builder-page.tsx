@@ -859,51 +859,120 @@ function centsToR(c: number | null | undefined): string {
   return moneyR((Number(c) || 0) / 100);
 }
 
+/** A single fee-bridge line: label left, value right, red when it's a deduction. */
+function BridgeRow({ label, value, deduct, bold }: { label: string; value: string; deduct?: boolean; bold?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-4 text-xs">
+      <span className={cn(bold ? "font-semibold" : "text-muted-foreground")}>{label}</span>
+      <span className={cn("font-mono tabular-nums", bold && "font-semibold", deduct && "text-down")}>
+        {deduct ? "−" : ""}{value}
+      </span>
+    </div>
+  );
+}
+
 /**
- * Always-visible fee/proceeds bridge — embedded, not a click-to-open dialog,
- * so it's guaranteed to show whenever there's a valid impact preview (this
- * replaces the old Info-icon Dialog that only rendered three conditions deep
- * and was easy to never see).
+ * Sell/Buy execution breakdown — the exact CRM layout (dashboard.html's
+ * rebShowSellModal / rebShowBuyModal: Total Shares to Sell, Price per Share,
+ * Gross Proceeds, Brokerage, Off-Custody Fee, Net Proceeds — same for the buy
+ * leg), computed directly from the per-investor lines already in the impact
+ * response rather than the murkier pooled totals. No "estimated" hedging —
+ * these are the same brokerage/custody figures App Settings drives on CRM.
+ * Sell and buy are kept in separate self-contained cards: CRM's Sell modal
+ * never mixes in reserve/shortfall figures, those are Buy-modal-only.
  */
-function FeeProceedsBreakdown({ data }: { data: ImpactResponse }) {
+function FeeProceedsBreakdown({
+  data,
+  proceedsMode,
+}: {
+  data: ImpactResponse;
+  proceedsMode: "reinvest" | "liquidate" | null;
+}) {
   const totals = data.totals;
   if (!totals) return null;
+  const investors = data.investors ?? [];
   const feeRate = Number(data.feeConfig?.brokerageRate ?? 0) * 100;
-  const rows = [
-    ["Gross sale proceeds", totals.sellCents],
-    ["Estimated sell fees", -totals.sellFeesCents],
-    ["Net sale proceeds", totals.netProceedsCents],
-    ["Replacement purchases", -totals.buyCents],
-    ["Estimated buy fees", -totals.buyFeesCents],
-    ["Execution reserve used", totals.reserveUsedCents],
-    ["Fees not covered by reserve", -totals.feeShortfallCents],
-    ["Existing strategy cash", totals.residualCents],
-    ["Strategy cash after sequence", totals.strategyCashAfterCents],
-  ] as const;
+  const investorCount = totals.investorCount ?? investors.length;
+
+  const sellLines = investors.flatMap((inv) => inv.lines.filter((l) => l.side === "sell"));
+  const totalSharesToSell = sellLines.reduce((s, l) => s + Math.abs(l.deltaQty), 0);
+  const grossProceeds = sellLines.reduce((s, l) => s + l.valueCents, 0);
+  const sellBrokerage = investors.reduce((s, inv) => s + (inv.sellBrokerageCents || 0), 0);
+  const sellCustody = investors.reduce((s, inv) => s + (inv.sellCustodyCents || 0), 0);
+  const netProceeds = grossProceeds - sellBrokerage - sellCustody;
+  const avgSellPriceCents = totalSharesToSell > 0 ? grossProceeds / totalSharesToSell : 0;
+  const sellTickers = [...new Set(sellLines.map((l) => l.symbol))];
+
+  const buyLines = investors.flatMap((inv) => inv.lines.filter((l) => l.side === "buy"));
+  const showBuyCard = proceedsMode === "reinvest" && buyLines.length > 0;
+  const totalSharesToBuy = buyLines.reduce((s, l) => s + Math.abs(l.deltaQty), 0);
+  const grossCost = buyLines.reduce((s, l) => s + l.valueCents, 0);
+  const buyBrokerage = investors.reduce((s, inv) => s + (inv.buyBrokerageCents || 0), 0);
+  const buyCustody = investors.reduce((s, inv) => s + (inv.buyCustodyCents || 0), 0);
+  const totalCost = grossCost + buyBrokerage + buyCustody;
+  const avgBuyPriceCents = totalSharesToBuy > 0 ? grossCost / totalSharesToBuy : 0;
+  const buyTickers = [...new Set(buyLines.map((l) => l.symbol))];
+  const reserveBefore = totals.reserveCents ?? 0;
+  const reserveUsed = totals.reserveUsedCents ?? 0;
+  const reserveAfter = investors.reduce((s, inv) => s + (inv.reserveAfterCents || 0), 0);
+  const feeShortfall = totals.feeShortfallCents ?? 0;
+  const residualAfter = proceedsMode === "liquidate" ? totals.strategyCashAfterCents : totals.cashAfterCents;
+
   return (
-    <div className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.015)] px-5 py-4">
-      <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
-        <Info className="h-3.5 w-3.5 text-primary" /> Estimated proceeds and fee bridge
+    <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-4">
+      <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
+        <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
+          <Info className="h-3.5 w-3.5 text-primary" /> Sell Execution
+          <span className="font-normal text-muted-foreground">
+            · {sellTickers.join(", ") || "—"}
+          </span>
+        </div>
+        <div className="space-y-2">
+          <BridgeRow label="Total Shares to Sell" value={totalSharesToSell.toLocaleString()} />
+          <BridgeRow label="Price per Share" value={centsToR(avgSellPriceCents)} />
+          <BridgeRow label="Gross Proceeds" value={centsToR(grossProceeds)} />
+          <BridgeRow label={`Brokerage (${feeRate.toFixed(1)}%)`} value={centsToR(sellBrokerage)} deduct />
+          <BridgeRow label={`Off-Custody Fee (x${investorCount})`} value={centsToR(sellCustody)} deduct />
+          <div className="border-t border-[hsl(var(--glass-border))] pt-2">
+            <BridgeRow label="Net Proceeds" value={centsToR(netProceeds)} bold />
+          </div>
+        </div>
       </div>
-      <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
-        {rows.map(([label, cents]) => (
-          <div key={label} className="flex items-center justify-between gap-4 text-xs">
-            <span className="text-muted-foreground">{label}</span>
-            <span className={cn("font-mono tabular-nums", cents < 0 && "text-down")}>
-              {cents < 0 ? "−" : ""}{centsToR(Math.abs(cents))}
+
+      {showBuyCard ? (
+        <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
+          <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
+            <Info className="h-3.5 w-3.5 text-primary" /> Buy Execution
+            <span className="font-normal text-muted-foreground">
+              · {buyTickers.join(", ") || "—"}
             </span>
           </div>
-        ))}
-      </div>
-      <div className="mt-3 border-t border-[hsl(var(--glass-border))] pt-2.5 text-[10px] text-muted-foreground">
-        Brokerage {feeRate.toFixed(3)}% · custody {centsToR(data.feeConfig?.custodyFeeCents)} per traded
-        asset per affected investor · source {data.feeConfig?.source ?? "unavailable"} · preview only,
-        actual settlement uses broker fills and App Settings charges.
-      </div>
+          <div className="space-y-2">
+            <BridgeRow label="Execution Price" value={centsToR(avgBuyPriceCents)} />
+            <BridgeRow label="Total Shares" value={totalSharesToBuy.toLocaleString()} />
+            <BridgeRow label="Gross Cost" value={centsToR(grossCost)} />
+            <BridgeRow label={`Brokerage (${feeRate.toFixed(1)}%)`} value={centsToR(buyBrokerage)} deduct />
+            <BridgeRow label={`Custody Fee (x${investorCount})`} value={centsToR(buyCustody)} deduct />
+            <div className="border-t border-[hsl(var(--glass-border))] pt-2">
+              <BridgeRow label="Total Cost" value={centsToR(totalCost)} bold />
+            </div>
+            <div className="border-t border-[hsl(var(--glass-border))] pt-2 mt-1">
+              <BridgeRow label="Execution Reserve Before" value={centsToR(reserveBefore)} />
+              <BridgeRow label="Fees Paid from Reserve" value={centsToR(reserveUsed)} deduct />
+              <BridgeRow label="Execution Reserve After" value={centsToR(reserveAfter)} />
+              {feeShortfall > 0 ? (
+                <BridgeRow label="Fee Shortfall (funded by portfolio)" value={centsToR(feeShortfall)} deduct />
+              ) : null}
+              <BridgeRow label="Residual Cash After" value={centsToR(residualAfter)} bold />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {data.investors?.length ? (
-        <div className="mt-3 overflow-hidden rounded-xl border border-[hsl(var(--glass-border))]">
+        <div className="overflow-hidden rounded-xl border border-[hsl(var(--glass-border))]">
           <div className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-3 py-2 text-xs font-semibold">
-            Per-investor effect
+            Per-Client Allocation
           </div>
           <div className="max-h-56 overflow-y-auto">
             {data.investors.map((investor) => (
@@ -1124,7 +1193,7 @@ function TradeSequencePanel({
           ) : null}
         </div>
       ) : null}
-      {isExecute && data ? <FeeProceedsBreakdown data={data} /> : null}
+      {isExecute && data ? <FeeProceedsBreakdown data={data} proceedsMode={proceedsMode} /> : null}
       {!enabled ? (
         <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
       ) : data?.ok === false ? (
