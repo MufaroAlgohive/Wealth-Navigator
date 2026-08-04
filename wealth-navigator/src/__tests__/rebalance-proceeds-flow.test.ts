@@ -27,12 +27,15 @@ describe("rebalance sale-proceeds flow", () => {
     expect(builder).toContain("Per-investor effect");
   });
 
-  it("separates strategy residual from wallet cash before execution", () => {
+  it("shows only strategy CA and execution reserve as rebalance funding", () => {
     expect(builder).toContain("Show residual view");
-    expect(builder).toContain("Residual before");
-    expect(builder).toContain("Wallet before");
+    expect(builder).toContain("CA before");
+    expect(builder).toContain("Reserve before");
     expect(builder).toContain("Strategy CA after");
-    expect(builder).toContain("inv.residualCents + inv.walletCents");
+    expect(builder).toContain("Reserve after");
+    expect(builder).not.toContain("Available cash");
+    expect(builder).not.toContain("Wallet before");
+    expect(impactRoute).not.toContain('select("user_id, balance")');
   });
 
   it("presents a professional client impact table before committing", () => {

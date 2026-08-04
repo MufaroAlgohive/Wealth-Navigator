@@ -13,7 +13,6 @@ describe("rebalance proceeds bridge", () => {
         brokerageRate: 0.005,
         custodyFeeCents: 2_500,
         reserveCents: 0,
-        walletCents: 0,
       }),
     ).toMatchObject({
       sellBrokerageCents: 500,
@@ -35,7 +34,6 @@ describe("rebalance proceeds bridge", () => {
         brokerageRate: 0.005,
         custodyFeeCents: 2_500,
         reserveCents: 7_980,
-        walletCents: 0,
       }),
     ).toMatchObject({
       sellFeesCents: 3_000,
@@ -58,7 +56,6 @@ describe("rebalance proceeds bridge", () => {
         brokerageRate: 0.005,
         custodyFeeCents: 2_500,
         reserveCents: 5_000,
-        walletCents: 0,
       }),
     ).toMatchObject({ feeShortfallCents: 1_000, cashAfterCents: -1_000, shortfall: true });
   });
@@ -73,18 +70,16 @@ describe("rebalance proceeds bridge", () => {
         brokerageRate: 0.005,
         custodyFeeCents: 2_500,
         reserveCents: 1_000,
-        walletCents: 20_000,
         residualCents: 5_000,
       }),
     ).toMatchObject({
       feeShortfallCents: 2_000,
       strategyCashAfterCents: 103_000,
-      walletAfterCents: 20_000,
-      cashAfterCents: 123_000,
+      cashAfterCents: 103_000,
     });
   });
 
-  it("uses proceeds then strategy residual then wallet cash for a buy sequence", () => {
+  it("blocks a buy sequence that exceeds proceeds and strategy CA", () => {
     expect(
       calculateProceedsBridge({
         grossSellCents: 50_000,
@@ -94,16 +89,12 @@ describe("rebalance proceeds bridge", () => {
         brokerageRate: 0,
         custodyFeeCents: 0,
         reserveCents: 0,
-        walletCents: 25_000,
         residualCents: 10_000,
       }),
     ).toMatchObject({
-      availableCashCents: 85_000,
-      walletDrawCents: 10_000,
-      walletAfterCents: 15_000,
       strategyCashAfterCents: 0,
-      cashAfterCents: 15_000,
-      shortfall: false,
+      cashAfterCents: -10_000,
+      shortfall: true,
     });
   });
 });

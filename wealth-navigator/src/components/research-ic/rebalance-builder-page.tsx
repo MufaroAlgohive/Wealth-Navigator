@@ -46,11 +46,9 @@ type ImpactInvestor = {
   name: string;
   account?: string;
   basketCents: number;
-  walletCents: number;
   buyCents: number;
   sellCents: number;
   netCashCents: number;
-  walletAfterCents: number;
   shortfall: boolean;
   grossSellCents: number;
   grossBuyCents: number;
@@ -67,8 +65,6 @@ type ImpactInvestor = {
   reserveAfterCents: number;
   feeShortfallCents: number;
   residualCents: number;
-  availableCashCents: number;
-  walletDrawCents: number;
   strategyCashAfterCents: number;
   cashAfterCents: number;
   lines: ImpactLine[];
@@ -77,8 +73,6 @@ type ImpactTotals = {
   investorCount: number;
   buyCents: number;
   sellCents: number;
-  walletCents: number;
-  walletAfterCents: number;
   netProceedsCents: number;
   sellFeesCents: number;
   buyFeesCents: number;
@@ -87,7 +81,6 @@ type ImpactTotals = {
   reserveUsedCents: number;
   feeShortfallCents: number;
   residualCents: number;
-  availableCashCents: number;
   strategyCashAfterCents: number;
   cashAfterCents: number;
   cashOk: boolean;
@@ -359,7 +352,7 @@ export function RebalanceBuilderPage({
     : "";
   // The trade shape determines the proceeds path automatically. A sell-only
   // change liquidates into strategy CA; sells paired with replacement buys are
-  // reinvested. Increases use existing strategy CA/reserve/wallet availability.
+  // reinvested. Increases use only existing strategy CA and execution reserve.
   const inferredProceedsMode: "reinvest" | "liquidate" | null =
     sellActions.length > 0 ? (buyActions.length > 0 ? "reinvest" : "liquidate") : null;
   const inferredProceedsDestination = inferredProceedsMode === "reinvest" ? proposedDestination : "";
@@ -791,7 +784,6 @@ function ProceedsBreakdownDialog({ data }: { data: ImpactResponse }) {
     ["Fees not covered by reserve", -totals.feeShortfallCents],
     ["Existing strategy cash", totals.residualCents],
     ["Strategy cash after sequence", totals.strategyCashAfterCents],
-    ["Overall cash after sequence", totals.cashAfterCents],
   ] as const;
   return (
     <Dialog>
@@ -847,7 +839,7 @@ function ProceedsBreakdownDialog({ data }: { data: ImpactResponse }) {
                     <span>Total fees {centsToR(investor.totalFeesCents)}</span>
                     <span>Reserve used {centsToR(investor.reserveUsedCents)}</span>
                     <span>Strategy CA after {centsToR(investor.strategyCashAfterCents)}</span>
-                    <span>Wallet draw {centsToR(investor.walletDrawCents)}</span>
+                    <span>Reserve remaining {centsToR(investor.reserveAfterCents)}</span>
                   </div>
                 </div>
               ))}
@@ -925,12 +917,12 @@ function InvestorImpactPanel({
                 ? "Sell-only · net proceeds settle into this strategy’s CA"
                 : proceedsMode === "reinvest"
                   ? `Sell + buy · proceeds fund ${buySymbols.join(", ")}`
-                  : "Increase · funding is checked against strategy CA, reserve and wallet"}
+                  : "Increase · funding is checked against strategy CA and reserve"}
             </div>
           </div>
           <div className="text-right">
             <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              {proceedsMode === "liquidate" ? "Strategy CA after" : "Projected cash after"}
+              Strategy CA after
             </div>
             <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-up">
               {loading
@@ -981,7 +973,10 @@ function InvestorImpactPanel({
                 {data ? <ProceedsBreakdownDialog data={data} /> : null}
               </span>
               <span className="text-muted-foreground">
-                Available cash <span className="font-mono">{centsToR(totals?.availableCashCents)}</span>
+                CA <span className="font-mono">{centsToR(totals?.residualCents)}</span>
+              </span>
+              <span className="text-muted-foreground">
+                Reserve <span className="font-mono">{centsToR(totals?.reserveCents)}</span>
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -1006,11 +1001,10 @@ function InvestorImpactPanel({
                   {residualView ? (
                     <>
                       <th className="px-3 py-2 text-right font-medium">Basket</th>
-                      <th className="px-3 py-2 text-right font-medium">Residual before</th>
-                      <th className="px-3 py-2 text-right font-medium">Wallet before</th>
-                      <th className="px-3 py-2 text-right font-medium">Available before</th>
+                      <th className="px-3 py-2 text-right font-medium">CA before</th>
+                      <th className="px-3 py-2 text-right font-medium">Reserve before</th>
                       <th className="px-3 py-2 text-right font-medium">Strategy CA after</th>
-                      <th className="px-5 py-2 text-right font-medium">Wallet after</th>
+                      <th className="px-5 py-2 text-right font-medium">Reserve after</th>
                     </>
                   ) : (
                     <>
@@ -1065,11 +1059,8 @@ function InvestorImpactPanel({
                           <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
                             {centsToR(inv.residualCents)}
                           </td>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                            {centsToR(inv.walletCents)}
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">
-                            {centsToR(inv.residualCents + inv.walletCents)}
+                          <td className="px-3 py-2 text-right font-mono tabular-nums text-violet-400">
+                            {centsToR(inv.reserveCents)}
                           </td>
                           <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
                             {centsToR(inv.strategyCashAfterCents)}
@@ -1080,7 +1071,7 @@ function InvestorImpactPanel({
                               inv.shortfall ? "text-down" : "text-foreground",
                             )}
                           >
-                            {centsToR(inv.walletAfterCents)}
+                            {centsToR(inv.reserveAfterCents)}
                           </td>
                         </>
                       ) : (

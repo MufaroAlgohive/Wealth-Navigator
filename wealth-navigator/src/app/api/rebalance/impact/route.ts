@@ -15,9 +15,9 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
  * Read-only investor impact of a proposed strategy rebalance, for the Rebalance
  * Builder. Given the strategy + proposed model units per name, it applies the
  * same unit delta to every complete client lot and
- * returns, per investor: shares to trade, buy/sell cash, wallet-after, and a
- * shortfall flag — plus a combined cash-availability check across all wallets
- * ("only buy with money we have"). This is the meeting's Builder requirement.
+ * returns, per investor: shares to trade, buy/sell cash, strategy CA, execution
+ * reserve, and a shortfall flag. General wallet balances are deliberately not
+ * rebalance funding.
  *
  * ── HARD CLIENT-DATA BOUNDARY ────────────────────────────────────────────────
  * The persisted strategy environment controls the preview scope. UAT reads
@@ -25,8 +25,7 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
  * override that boundary, and every subsequent retail query is bounded to the
  * resolved profile ids. Read-only: this endpoint performs no writes.
  *
- * Units: wallets.balance is in RANDS; securities prices / holdings are in CENTS.
- * All maths is done in cents; wallet rands are converted (× 100) to compare.
+ * Securities prices, holdings, strategy CA, and reserve are calculated in cents.
  */
 
 export const dynamic = "force-dynamic";
@@ -212,7 +211,7 @@ export async function POST(req: Request) {
       scope: investorEnvironment.toLowerCase(),
       strategy: { id: strategyId || null, name: strategyName || null },
       investors: [],
-      totals: { investorCount: 0, buyCents: 0, sellCents: 0, walletCents: 0, walletAfterCents: 0, cashOk: true },
+      totals: { investorCount: 0, buyCents: 0, sellCents: 0, residualCents: 0, reserveCents: 0, cashOk: true },
       notice: `No ${investorEnvironment} clients hold this strategy yet.`,
     });
   }
@@ -298,12 +297,6 @@ export async function POST(req: Request) {
     return intradayById.get(s.id) || s.lastCents || 0;
   };
 
-  // Wallet cash (RANDS) per eligible client.
-  const walletRandsByUser = new Map<string, number>();
-  const walletRes = await db.from("wallets").select("user_id, balance").in("user_id", eligibleIds);
-  for (const w of (walletRes.data ?? []) as Array<{ user_id: string; balance: number | null }>) {
-    walletRandsByUser.set(w.user_id, (walletRandsByUser.get(w.user_id) ?? 0) + (Number(w.balance) || 0));
-  }
   const residualByUser = new Map<string, number>();
   if (strategyId) {
     const residualRes = await db
@@ -383,10 +376,7 @@ export async function POST(req: Request) {
   const investors: Array<Record<string, unknown>> = [];
   let tBuy = 0;
   let tSell = 0;
-  let tWallet = 0;
-  let tWalletAfter = 0;
   let tResidual = 0;
-  let tAvailableCash = 0;
   let tStrategyCashAfter = 0;
   let tCashAfter = 0;
   let tNetProceeds = 0;
@@ -452,7 +442,6 @@ export async function POST(req: Request) {
       });
     }
 
-    const walletCents = Math.round((walletRandsByUser.get(userId) ?? 0) * 100);
     const residualCents = residualByUser.get(userId) ?? 0;
     const reserveCents = reserveByUser.get(userId) ?? 0;
     const bridge = calculateProceedsBridge({
@@ -463,15 +452,11 @@ export async function POST(req: Request) {
       brokerageRate,
       custodyFeeCents,
       reserveCents,
-      walletCents,
       residualCents,
     });
     tBuy += buyCents;
     tSell += sellCents;
-    tWallet += walletCents;
-    tWalletAfter += bridge.walletAfterCents;
     tResidual += bridge.residualCents;
-    tAvailableCash += bridge.availableCashCents;
     tStrategyCashAfter += bridge.strategyCashAfterCents;
     tCashAfter += bridge.cashAfterCents;
     tNetProceeds += bridge.netProceedsCents;
@@ -499,10 +484,7 @@ export async function POST(req: Request) {
     investorCount: investors.length,
     buyCents: tBuy,
     sellCents: tSell,
-    walletCents: tWallet,
-    walletAfterCents: tWalletAfter,
     residualCents: tResidual,
-    availableCashCents: tAvailableCash,
     strategyCashAfterCents: tStrategyCashAfter,
     cashAfterCents: tCashAfter,
     netProceedsCents: tNetProceeds,
