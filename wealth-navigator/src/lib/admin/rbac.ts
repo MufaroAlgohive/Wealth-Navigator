@@ -2,10 +2,23 @@
  * Admin RBAC — server-side resolution of the signed-in user's Mint admin
  * permissions. Replaces the legacy `access-guard.js` + `/api/team?action=me`.
  *
- * The signed-in Supabase session is against the RETAIL/LIVE project (`mfxng…`,
- * NEXT_PUBLIC_SUPABASE_URL), which is where `admin_team` lives. We read the
- * team row with the RETAIL service-role client (bypasses RLS, server-only —
- * enforced transitively via `next/headers` in the supabase server client).
+ * IDENTITY AND AUTHORIZATION LIVE IN DIFFERENT PROJECTS — do not assume they
+ * are the same one (an earlier version of this comment did, and it cost two
+ * staff a working login on 2026-08-04):
+ *   - SESSION / login  → the project in `NEXT_PUBLIC_SUPABASE_URL`
+ *     (INSTITUTIONAL `nnwz…` on the current OEMS deploy).
+ *   - `admin_team` row (role / page_access / permissions) → RETAIL (`mfxng…`),
+ *     read below with the RETAIL service-role client.
+ * The two are joined by EMAIL (`ilike`), not by `user_id`, so a person needs an
+ * account in the SESSION project AND a matching-email row in RETAIL. Missing the
+ * former = cannot sign in; missing the latter = signs in but is `not-member`.
+ *
+ * Any `auth.admin.*` call for a STAFF member must therefore target the session
+ * project — use `createAuthAdminClient()`, never the RETAIL client. (Client /
+ * investor accounts are the opposite: they live in RETAIL.)
+ *
+ * The RETAIL service-role read bypasses RLS and is server-only — enforced
+ * transitively via `next/headers` in the supabase server client.
  */
 import { createSupabaseServerClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 import type { AdminPageKey } from "@/lib/admin/pages";

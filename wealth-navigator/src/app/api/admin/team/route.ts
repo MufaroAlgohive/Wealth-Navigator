@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext, isAdminRole } from "@/lib/admin/rbac";
-import { createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { createAuthAdminClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { sendEmail, buildInviteHtml } from "@/lib/admin/email";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -21,20 +21,36 @@ export const dynamic = "force-dynamic";
 
 async function guard() {
   const auth = await getAdminContext();
-  if (auth.status === "no-session") return { db: null, ctx: null, error: NextResponse.json({ ok: false, error: "no-session" }, { status: 401 }) };
-  if (auth.status !== "ok") return { db: null, ctx: null, error: NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 }) };
-  if (!isAdminRole(auth.ctx)) return { db: null, ctx: null, error: NextResponse.json({ ok: false, error: "Admins only" }, { status: 403 }) };
+  if (auth.status === "no-session") return { db: null, ctx: null, authDb: null, error: NextResponse.json({ ok: false, error: "no-session" }, { status: 401 }) };
+  if (auth.status !== "ok") return { db: null, ctx: null, authDb: null, error: NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 }) };
+  if (!isAdminRole(auth.ctx)) return { db: null, ctx: null, authDb: null, error: NextResponse.json({ ok: false, error: "Admins only" }, { status: 403 }) };
   let db: SupabaseClient | null = null;
   try {
     db = createRetailServiceRoleClient();
   } catch {
     db = null;
   }
-  return { db, ctx: auth.ctx, error: null as null };
+  // `admin_team` (roles/permissions) lives in RETAIL, but staff SESSIONS are
+  // issued by the project in NEXT_PUBLIC_SUPABASE_URL. Every auth.admin.* call
+  // for a staff member must target THAT project, or the invited user is created
+  // where the app never authenticates and they can never sign in.
+  let authDb: SupabaseClient | null = null;
+  try {
+    authDb = createAuthAdminClient();
+  } catch {
+    authDb = null;
+  }
+  return { db, ctx: auth.ctx, authDb, error: null as null };
 }
 
+/**
+ * @param authDb service-role client for the SESSION project (createAuthAdminClient).
+ *   Must NOT be the RETAIL client unless RETAIL is also the session project —
+ *   generateLink() creates the user in whatever project it is called on, and an
+ *   account created outside the session project can never sign in.
+ */
 async function sendInvite(
-  db: SupabaseClient,
+  authDb: SupabaseClient,
   req: Request,
   email: string,
   role: string,
@@ -42,7 +58,7 @@ async function sendInvite(
   const origin = new URL(req.url).origin;
   let existingUser: { id: string; email?: string } | null = null;
   for (let page = 1; page <= 20 && !existingUser; page += 1) {
-    const { data, error } = await db.auth.admin.listUsers({ page, perPage: 100 });
+    const { data, error } = await authDb.auth.admin.listUsers({ page, perPage: 100 });
     if (error) break;
     existingUser = data.users.find((user) => user.email?.toLowerCase() === email) ?? null;
     if (data.users.length < 100) break;
@@ -51,7 +67,7 @@ async function sendInvite(
   const next = existingUser ? "/reset-password" : "/signup";
   let link: string | null = null;
   try {
-    const { data, error } = await db.auth.admin.generateLink({ type: linkType, email });
+    const { data, error } = await authDb.auth.admin.generateLink({ type: linkType, email });
     if (error) throw error;
     const properties = (data as { properties?: { hashed_token?: string } } | null)?.properties;
     if (properties?.hashed_token) {
@@ -141,7 +157,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const g = await guard();
   if (g.error) return g.error;
-  const { db, ctx } = g;
+  const { db, ctx, authDb } = g;
   const action = new URL(req.url).searchParams.get("action");
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
 
@@ -159,7 +175,17 @@ export async function POST(req: Request) {
       .from("admin_team")
       .upsert({ email, full_name, role, page_access, status: "pending" }, { onConflict: "email" });
     if (error) return NextResponse.json({ ok: false, error: error.message });
-    const invite = await sendInvite(db, req, email, role);
+    if (!authDb) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "Session-project auth admin not configured — cannot create the login. The admin_team row was saved; set the service-role key for NEXT_PUBLIC_SUPABASE_URL's project, then use Resend.",
+        },
+        { status: 503 },
+      );
+    }
+    const invite = await sendInvite(authDb, req, email, role);
     if (invite.existingAccount && invite.userId) {
       await db
         .from("admin_team")
@@ -175,7 +201,13 @@ export async function POST(req: Request) {
     if (!id || !db) return NextResponse.json({ ok: false, error: "Missing id or DB" }, { status: 400 });
     const { data: m } = await db.from("admin_team").select("email, role").eq("id", id).maybeSingle();
     if (!m?.email) return NextResponse.json({ ok: false, error: "Member not found" }, { status: 404 });
-    const invite = await sendInvite(db, req, m.email as string, (m.role as string) || "staff");
+    if (!authDb) {
+      return NextResponse.json(
+        { ok: false, error: "Session-project auth admin not configured — set the service-role key for NEXT_PUBLIC_SUPABASE_URL's project." },
+        { status: 503 },
+      );
+    }
+    const invite = await sendInvite(authDb, req, m.email as string, (m.role as string) || "staff");
     if (invite.existingAccount && invite.userId) {
       await db.from("admin_team").update({ user_id: invite.userId, status: "active" }).eq("id", id);
     }
@@ -207,15 +239,36 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "Must be a @mymint.co.za address." }, { status: 400 });
     }
     if (!db) return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
-    // Change the Supabase auth account email too, so they can sign in with it.
+    // Change the login email on the SESSION project too, so they can sign in with
+    // it. Resolve the auth user by their CURRENT email rather than by the stored
+    // user_id: rows created before the session/auth split was fixed can carry a
+    // user_id from the wrong project, which would silently update nothing.
     let authUpdated = false;
-    const { data: member } = await db.from("admin_team").select("user_id").eq("id", id).maybeSingle();
-    if (member?.user_id) {
+    const { data: member } = await db
+      .from("admin_team")
+      .select("user_id, email")
+      .eq("id", id)
+      .maybeSingle();
+    if (authDb && member) {
       try {
-        const { error: authErr } = await db.auth.admin.updateUserById(member.user_id as string, { email: new_email });
-        if (!authErr) authUpdated = true;
+        const currentEmail = String(member.email ?? "").toLowerCase();
+        let authUserId: string | null = null;
+        for (let page = 1; page <= 20 && !authUserId; page += 1) {
+          const { data, error: listErr } = await authDb.auth.admin.listUsers({ page, perPage: 100 });
+          if (listErr) break;
+          authUserId = data.users.find((u) => u.email?.toLowerCase() === currentEmail)?.id ?? null;
+          if (data.users.length < 100) break;
+        }
+        if (authUserId) {
+          const { error: authErr } = await authDb.auth.admin.updateUserById(authUserId, { email: new_email });
+          if (!authErr) {
+            authUpdated = true;
+            // Keep the stored user_id pointing at the session project's account.
+            await db.from("admin_team").update({ user_id: authUserId }).eq("id", id);
+          }
+        }
       } catch {
-        /* auth-admin unavailable */
+        /* auth-admin unavailable — admin_team email still updates below */
       }
     }
     const { error } = await db.from("admin_team").update({ email: new_email }).eq("id", id);

@@ -10,8 +10,23 @@ describe("OEM team re-invite flow", () => {
 
   it("uses recovery links for existing auth accounts and invite links for new accounts", () => {
     expect(teamRoute).toContain('const linkType = existingUser ? "recovery" : "invite"');
-    expect(teamRoute).toContain("db.auth.admin.listUsers");
+    expect(teamRoute).toContain("authDb.auth.admin.listUsers");
     expect(teamRoute).toContain("properties.hashed_token");
+  });
+
+  // REGRESSION GUARD (2026-08-04): staff invites were generated with the RETAIL
+  // service client while sessions are issued by the NEXT_PUBLIC_SUPABASE_URL
+  // project, so invited staff were created in a project the app never
+  // authenticates against — they appeared fully set up but could never sign in.
+  // Every auth.admin.* call in this route must go through the session-project
+  // client (`authDb` from createAuthAdminClient), never the RETAIL `db`.
+  it("runs staff auth-admin calls against the session project, not RETAIL", () => {
+    expect(teamRoute).toContain("createAuthAdminClient");
+    const authAdminCalls = teamRoute.match(/(\w+)\.auth\.admin\./g) ?? [];
+    expect(authAdminCalls.length).toBeGreaterThan(0);
+    for (const call of authAdminCalls) {
+      expect(call).toBe("authDb.auth.admin.");
+    }
   });
 
   it("relinks and activates an existing account when it is re-added or resent", () => {
