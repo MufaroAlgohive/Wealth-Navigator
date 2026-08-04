@@ -39,7 +39,7 @@ describe("rebalance sale-proceeds flow", () => {
   });
 
   it("presents a professional client impact table before committing", () => {
-    expect(builder).toContain('title="Trade sequence execution"');
+    expect(builder).toContain('"Client impact preview"');
     expect(builder).toContain(">Lots</th>");
     expect(builder).toContain("line.lots");
     expect(builder).toContain("Commit trade sequence");
