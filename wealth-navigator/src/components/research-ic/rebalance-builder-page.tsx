@@ -14,14 +14,6 @@ import Link from "next/link";
 import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
 import { moneyR, rebalanceCodeMap, useQuotes, weightPct, ActionBadge } from "./ui";
@@ -105,6 +97,14 @@ function keyOf(h: Holding) {
   return h.ticker.toUpperCase();
 }
 
+/** "MTN.JO" / " mtn " -> "MTN" (matches the bare-symbol convention `working` uses). */
+function bare(sym: string): string {
+  return String(sym ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\.(JO|JSE)$/i, "");
+}
+
 export function RebalanceBuilderPage({
   perms,
   viewerEmail,
@@ -175,6 +175,13 @@ export function RebalanceBuilderPage({
   const [pushingId, setPushingId] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
+  // Embedded two-stage trade sequence: "compose" is the editable basket (as
+  // today); "execute" swaps that out for the CRM-style Sell/Buy execution
+  // panel (instrument dropdown + inline fee bridge). Submit to IC only ever
+  // fires from the final Commit button inside "execute".
+  const [stage, setStage] = React.useState<"compose" | "execute">("compose");
+  const [dropdownBuySymbol, setDropdownBuySymbol] = React.useState<string>("");
+
   // Reset rationale when the basket switches strategies so old text doesn't
   // leak across strategies.
   React.useEffect(() => {
@@ -184,8 +191,26 @@ export function RebalanceBuilderPage({
   React.useEffect(() => {
     setWorking(baseline.map((h) => ({ ...h })));
     setAddOpen(false);
+    setStage("compose");
+    setDropdownBuySymbol("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId, compQ.data]);
+
+  // Buy-instrument universe for the trade-sequence dropdown (mirrors CRM's
+  // rebLoadBuySecurities). Read-only; reuses the existing equities board.
+  const equitiesQ = useQuery<{ securities?: Array<{ symbol: string; name: string | null; last_price: number | null; is_active: boolean | null }> }>({
+    queryKey: ["ric-buy-universe"],
+    queryFn: async () => (await fetch("/api/equities", { cache: "no-store" })).json(),
+  });
+  const buyUniverse = (equitiesQ.data?.securities ?? [])
+    .filter((s) => s.is_active !== false)
+    .map((s) => ({
+      symbol: bare(s.symbol),
+      name: s.name || bare(s.symbol),
+      priceCents: Number(s.last_price) || 0,
+    }))
+    .filter((s, i, arr) => arr.findIndex((x) => x.symbol === s.symbol) === i)
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
 
   const tickers = Array.from(new Set([...working.map(keyOf), ...baseline.map(keyOf)]));
   const quotes = useQuotes(tickers);
@@ -269,7 +294,26 @@ export function RebalanceBuilderPage({
     setWorking((prev) =>
       prev.map((h) => (keyOf(h) === t ? { ...h, shares: Math.max(0, h.shares + delta) } : h)),
     );
+  const setAbsoluteShares = (t: string, value: number) =>
+    setWorking((prev) => prev.map((h) => (keyOf(h) === t ? { ...h, shares: Math.max(0, Math.floor(value)) } : h)));
   const removeHolding = (t: string) => setWorking((prev) => prev.filter((h) => keyOf(h) !== t));
+  // Trade-sequence dropdown: picking an instrument sets/replaces the single
+  // reinvest destination, auto-sized from net sale proceeds (CRM's
+  // "max-affordable" default) — the admin can still fine-tune via the shares
+  // input next to the dropdown.
+  const chooseBuyInstrument = (symbol: string, name: string, priceCents: number) => {
+    const netProceeds = impactQ.data?.totals?.netProceedsCents ?? 0;
+    const affordable = priceCents > 0 ? Math.max(0, Math.floor(netProceeds / priceCents)) : 0;
+    setWorking((prev) => {
+      const withoutOldPick = dropdownBuySymbol ? prev.filter((h) => keyOf(h) !== dropdownBuySymbol) : prev;
+      const already = withoutOldPick.find((h) => keyOf(h) === symbol);
+      if (already) {
+        return withoutOldPick.map((h) => (keyOf(h) === symbol ? { ...h, shares: affordable } : h));
+      }
+      return [...withoutOldPick, { ticker: symbol, name, shares: affordable }];
+    });
+    setDropdownBuySymbol(symbol);
+  };
   const addHolding = () => {
     const t = addTicker.trim().toUpperCase();
     const sh = Number(addShares);
@@ -444,6 +488,12 @@ export function RebalanceBuilderPage({
         return;
       }
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+      // Proposal raised — return the page to a clean slate instead of leaving
+      // the just-committed edits on screen.
+      setWorking(baseline.map((h) => ({ ...h })));
+      setRationaleBySymbol({});
+      setDropdownBuySymbol("");
+      setStage("compose");
     } finally {
       setSubmitting(false);
     }
@@ -527,6 +577,7 @@ export function RebalanceBuilderPage({
         </p>
       )}
 
+      {stage === "compose" && (
       <div className="grid gap-5 lg:grid-cols-2">
         {/* working / current basket */}
         <GlassSection
@@ -745,20 +796,47 @@ export function RebalanceBuilderPage({
           </div>
         </GlassSection>
       </div>
+      )}
 
-      <InvestorImpactPanel
-        enabled={!!strategyId && changes > 0}
-        loading={impactQ.isFetching}
-        data={impactQ.data}
-        strategyName={strategyName}
-        sellSymbols={sellActions.map((action) => action.ticker.toUpperCase())}
-        submitting={submitting}
-        commitDisabled={commitDisabled}
-        commitTitle={commitTitle}
-        onCommit={submitToIc}
-        proceedsMode={inferredProceedsMode}
-        buySymbols={destinationSymbols}
-      />
+      {stage === "compose" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-5 py-3.5">
+          <div className="text-xs text-muted-foreground">
+            {changes === 0 ? "Make a change to the basket to continue." : commitTitle}
+          </div>
+          <button
+            type="button"
+            onClick={() => !commitDisabled && setStage("execute")}
+            disabled={commitDisabled}
+            title={commitTitle}
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            <Send className="h-3.5 w-3.5" />
+            Proceed to Trade Sequence
+          </button>
+        </div>
+      )}
+
+      {stage === "execute" && (
+        <TradeSequencePanel
+          enabled={!!strategyId && changes > 0}
+          loading={impactQ.isFetching}
+          data={impactQ.data}
+          strategyName={strategyName}
+          sellSymbols={sellActions.map((action) => action.ticker.toUpperCase())}
+          submitting={submitting}
+          commitDisabled={commitDisabled}
+          commitTitle={commitTitle}
+          onCommit={submitToIc}
+          onBack={() => setStage("compose")}
+          proceedsMode={inferredProceedsMode}
+          buySymbols={destinationSymbols}
+          buyUniverse={buyUniverse}
+          buyUniverseLoading={equitiesQ.isLoading}
+          dropdownBuySymbol={dropdownBuySymbol}
+          onSelectBuyInstrument={chooseBuyInstrument}
+          onSharesOverride={(value) => dropdownBuySymbol && setAbsoluteShares(dropdownBuySymbol, value)}
+        />
+      )}
 
       <ProposalsList pushingId={pushingId} setPushingId={setPushingId} canPush={perms.pushRebalance} />
     </ResearchLabCanvas>
@@ -770,7 +848,13 @@ function centsToR(c: number | null | undefined): string {
   return moneyR((Number(c) || 0) / 100);
 }
 
-function ProceedsBreakdownDialog({ data }: { data: ImpactResponse }) {
+/**
+ * Always-visible fee/proceeds bridge — embedded, not a click-to-open dialog,
+ * so it's guaranteed to show whenever there's a valid impact preview (this
+ * replaces the old Info-icon Dialog that only rendered three conditions deep
+ * and was easy to never see).
+ */
+function FeeProceedsBreakdown({ data }: { data: ImpactResponse }) {
   const totals = data.totals;
   if (!totals) return null;
   const feeRate = Number(data.feeConfig?.brokerageRate ?? 0) * 100;
@@ -786,77 +870,57 @@ function ProceedsBreakdownDialog({ data }: { data: ImpactResponse }) {
     ["Strategy cash after sequence", totals.strategyCashAfterCents],
   ] as const;
   return (
-    <Dialog>
-      <DialogTrigger asChild>
-        <button
-          type="button"
-          aria-label="Show sale proceeds calculation"
-          className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[hsl(var(--glass-border))] text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
-        >
-          <Info className="h-3 w-3" />
-        </button>
-      </DialogTrigger>
-      <DialogContent className="glass-panel max-h-[88vh] max-w-3xl overflow-y-auto border-[hsl(var(--glass-border))]">
-        <DialogHeader>
-          <DialogTitle>Estimated proceeds and fee bridge</DialogTitle>
-          <DialogDescription>
-            Preview only. Actual settlement uses broker fills and charges configured in App Settings.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
-            <div className="space-y-2 text-xs">
-              {rows.map(([label, cents]) => (
-                <div key={label} className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">{label}</span>
-                  <span className={cn("font-mono tabular-nums", cents < 0 && "text-down")}>
-                    {cents < 0 ? "−" : ""}{centsToR(Math.abs(cents))}
+    <div className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.015)] px-5 py-4">
+      <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
+        <Info className="h-3.5 w-3.5 text-primary" /> Estimated proceeds and fee bridge
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+        {rows.map(([label, cents]) => (
+          <div key={label} className="flex items-center justify-between gap-4 text-xs">
+            <span className="text-muted-foreground">{label}</span>
+            <span className={cn("font-mono tabular-nums", cents < 0 && "text-down")}>
+              {cents < 0 ? "−" : ""}{centsToR(Math.abs(cents))}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 border-t border-[hsl(var(--glass-border))] pt-2.5 text-[10px] text-muted-foreground">
+        Brokerage {feeRate.toFixed(3)}% · custody {centsToR(data.feeConfig?.custodyFeeCents)} per traded
+        asset per affected investor · source {data.feeConfig?.source ?? "unavailable"} · preview only,
+        actual settlement uses broker fills and App Settings charges.
+      </div>
+      {data.investors?.length ? (
+        <div className="mt-3 overflow-hidden rounded-xl border border-[hsl(var(--glass-border))]">
+          <div className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-3 py-2 text-xs font-semibold">
+            Per-investor effect
+          </div>
+          <div className="max-h-56 overflow-y-auto">
+            {data.investors.map((investor) => (
+              <div key={investor.user_id} className="border-b border-[hsl(var(--glass-border))] p-3 last:border-0">
+                <div className="flex items-center justify-between gap-3 text-xs font-medium">
+                  <span>{investor.name}</span>
+                  <span className={cn("font-mono", investor.shortfall ? "text-down" : "text-up")}>
+                    {centsToR(investor.cashAfterCents)} cash after
                   </span>
                 </div>
-              ))}
-            </div>
-            <div className="mt-4 border-t border-[hsl(var(--glass-border))] pt-3 text-[10px] text-muted-foreground">
-              Brokerage {feeRate.toFixed(3)}% · custody {centsToR(data.feeConfig?.custodyFeeCents)} per
-              traded asset per affected investor · source {data.feeConfig?.source ?? "unavailable"}
-            </div>
-          </div>
-          <div className="overflow-hidden rounded-xl border border-[hsl(var(--glass-border))]">
-            <div className="border-b border-[hsl(var(--glass-border))] px-3 py-2 text-xs font-semibold">
-              Per-investor effect
-            </div>
-            <div className="max-h-72 overflow-y-auto">
-              {data.investors?.map((investor) => (
-                <div key={investor.user_id} className="border-b border-[hsl(var(--glass-border))] p-3 last:border-0">
-                  <div className="flex items-center justify-between gap-3 text-xs font-medium">
-                    <span>{investor.name}</span>
-                    <span className={cn("font-mono", investor.shortfall ? "text-down" : "text-up")}>
-                      {centsToR(investor.cashAfterCents)} cash after
-                    </span>
-                  </div>
-                  <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
-                    <span>Gross sell {centsToR(investor.grossSellCents)}</span>
-                    <span>Net proceeds {centsToR(investor.netProceedsCents)}</span>
-                    <span>Total fees {centsToR(investor.totalFeesCents)}</span>
-                    <span>Reserve used {centsToR(investor.reserveUsedCents)}</span>
-                    <span>Strategy CA after {centsToR(investor.strategyCashAfterCents)}</span>
-                    <span>Reserve remaining {centsToR(investor.reserveAfterCents)}</span>
-                  </div>
+                <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-muted-foreground sm:grid-cols-3">
+                  <span>Gross sell {centsToR(investor.grossSellCents)}</span>
+                  <span>Net proceeds {centsToR(investor.netProceedsCents)}</span>
+                  <span>Total fees {centsToR(investor.totalFeesCents)}</span>
+                  <span>Reserve used {centsToR(investor.reserveUsedCents)}</span>
+                  <span>Strategy CA after {centsToR(investor.strategyCashAfterCents)}</span>
+                  <span>Reserve remaining {centsToR(investor.reserveAfterCents)}</span>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </div>
-        <p className="text-[10px] leading-4 text-muted-foreground">
-          Standard net proceeds are gross sale proceeds less estimated sell fees. The sequence cash result also
-          includes replacement-buy costs and fees. Execution reserve is applied to fees first; only an uncovered
-          fee shortfall reduces the cash available for the replacement purchase.
-        </p>
-      </DialogContent>
-    </Dialog>
+      ) : null}
+    </div>
   );
 }
 
-function InvestorImpactPanel({
+function TradeSequencePanel({
   enabled,
   loading,
   data,
@@ -866,8 +930,14 @@ function InvestorImpactPanel({
   commitDisabled,
   commitTitle,
   onCommit,
+  onBack,
   proceedsMode,
   buySymbols,
+  buyUniverse,
+  buyUniverseLoading,
+  dropdownBuySymbol,
+  onSelectBuyInstrument,
+  onSharesOverride,
 }: {
   enabled: boolean;
   loading: boolean;
@@ -878,8 +948,14 @@ function InvestorImpactPanel({
   commitDisabled: boolean;
   commitTitle: string;
   onCommit: () => void;
+  onBack: () => void;
   proceedsMode: "reinvest" | "liquidate" | null;
   buySymbols: string[];
+  buyUniverse: Array<{ symbol: string; name: string; priceCents: number }>;
+  buyUniverseLoading: boolean;
+  dropdownBuySymbol: string;
+  onSelectBuyInstrument: (symbol: string, name: string, priceCents: number) => void;
+  onSharesOverride: (value: number) => void;
 }) {
   const investors = data?.investors ?? [];
   const totals = data?.totals ?? null;
@@ -888,30 +964,42 @@ function InvestorImpactPanel({
   const scopeLabel =
     data?.scope === "live" ? "LIVE clients" : data?.scope === "uat" ? "UAT clients" : "Scope unavailable";
   const impactLabel = sellSymbols.length ? sellSymbols.join(" + ") : strategyName;
+  const selectedInstrument = buyUniverse.find((u) => u.symbol === dropdownBuySymbol) ?? null;
 
   return (
     <GlassSection
-      title="Client impact preview"
+      title="Trade sequence execution"
       dataSource="hybrid"
       db="retail"
-      subtitle={`${impactLabel} · ${totals?.investorCount ?? investors.length} client${(totals?.investorCount ?? investors.length) === 1 ? "" : "s"} · review projected holdings before commitment`}
+      subtitle={`${impactLabel} · ${totals?.investorCount ?? investors.length} client${(totals?.investorCount ?? investors.length) === 1 ? "" : "s"} · review the sequence before committing`}
       right={
-        <label className="inline-flex cursor-pointer items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Show residual view
-          <input
-            type="checkbox"
-            checked={residualView}
-            onChange={(event) => setResidualView(event.target.checked)}
-            className="h-4 w-4 rounded border-[hsl(var(--glass-border))] accent-primary"
-          />
-        </label>
+        <div className="flex items-center gap-3">
+          <label className="inline-flex cursor-pointer items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Show residual view
+            <input
+              type="checkbox"
+              checked={residualView}
+              onChange={(event) => setResidualView(event.target.checked)}
+              className="h-4 w-4 rounded border-[hsl(var(--glass-border))] accent-primary"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={onBack}
+            className="rounded-md border border-[hsl(var(--glass-border))] px-2.5 py-1 text-[11px] font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
+          >
+            Back to editing
+          </button>
+        </div>
       }
       noPadding
     >
       {enabled ? (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--glass-border))] bg-primary/[0.035] px-5 py-3">
           <div>
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-primary">Automatic sequence</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-primary">
+              {proceedsMode === "liquidate" ? "Liquidate to Cash" : proceedsMode === "reinvest" ? "Reinvest / Buy" : "Increase"}
+            </div>
             <div className="mt-0.5 text-xs font-medium">
               {proceedsMode === "liquidate"
                 ? "Sell-only · net proceeds settle into this strategy’s CA"
@@ -934,6 +1022,48 @@ function InvestorImpactPanel({
           </div>
         </div>
       ) : null}
+      {enabled && proceedsMode === "reinvest" ? (
+        <div className="flex flex-wrap items-center gap-3 border-b border-[hsl(var(--glass-border))] px-5 py-3">
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Instrument to buy
+          </label>
+          <select
+            value={dropdownBuySymbol}
+            onChange={(e) => {
+              const meta = buyUniverse.find((u) => u.symbol === e.target.value);
+              if (meta) onSelectBuyInstrument(meta.symbol, meta.name, meta.priceCents);
+            }}
+            className="min-w-[260px] rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
+          >
+            <option value="">
+              {buyUniverseLoading
+                ? "Loading instruments…"
+                : `Select instrument (${buyUniverse.length} available)…`}
+            </option>
+            {buyUniverse.map((u) => (
+              <option key={u.symbol} value={u.symbol}>
+                {u.symbol} · {u.name}
+                {u.priceCents > 0 ? ` · ${centsToR(u.priceCents)}` : " · N/A"}
+              </option>
+            ))}
+          </select>
+          {selectedInstrument ? (
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              Shares
+              <input
+                type="number"
+                min={0}
+                step={1}
+                defaultValue={undefined}
+                onChange={(e) => onSharesOverride(Number(e.target.value) || 0)}
+                placeholder="auto"
+                className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none"
+              />
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {data ? <FeeProceedsBreakdown data={data} /> : null}
       {!enabled ? (
         <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
       ) : data?.ok === false ? (
@@ -970,7 +1100,6 @@ function InvestorImpactPanel({
               <span className="inline-flex items-center gap-1">
                 Net proceeds{" "}
                 <span className="font-mono font-semibold text-up">{centsToR(totals?.netProceedsCents)}</span>
-                {data ? <ProceedsBreakdownDialog data={data} /> : null}
               </span>
               <span className="text-muted-foreground">
                 CA <span className="font-mono">{centsToR(totals?.residualCents)}</span>

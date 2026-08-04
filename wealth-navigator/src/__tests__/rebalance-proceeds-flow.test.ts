@@ -16,7 +16,7 @@ describe("rebalance sale-proceeds flow", () => {
     expect(builder).toContain("enabled: !!strategyId && changes > 0");
     expect(builder).toContain("proceeds_mode: inferredProceedsMode");
     expect(builder).toContain("proceeds_destination: inferredProceedsDestination");
-    expect(builder).toContain("Automatic sequence");
+    expect(builder).toContain('"Liquidate to Cash" : proceedsMode === "reinvest" ? "Reinvest / Buy"');
     expect(builder).not.toContain("Will the sale proceeds buy another asset?");
   });
 
@@ -39,7 +39,7 @@ describe("rebalance sale-proceeds flow", () => {
   });
 
   it("presents a professional client impact table before committing", () => {
-    expect(builder).toContain('title="Client impact preview"');
+    expect(builder).toContain('title="Trade sequence execution"');
     expect(builder).toContain(">Lots</th>");
     expect(builder).toContain("line.lots");
     expect(builder).toContain("Commit trade sequence");
