@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
+import {
+  calculateModelUnitImpact,
+  fullModelLots,
+  type ModelUnitAction,
+} from "@/lib/rebalance/model-unit-impact";
 import { calculateProceedsBridge } from "@/lib/rebalance/proceeds";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
@@ -8,8 +13,8 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
  * POST /api/rebalance/impact
  *
  * Read-only investor impact of a proposed strategy rebalance, for the Rebalance
- * Builder. Given the strategy + the proposed composition (target weights per
- * name), it reweights each affected investor's *existing* strategy capital and
+ * Builder. Given the strategy + proposed model units per name, it applies the
+ * same unit delta to every complete client lot and
  * returns, per investor: shares to trade, buy/sell cash, wallet-after, and a
  * shortfall flag — plus a combined cash-availability check across all wallets
  * ("only buy with money we have"). This is the meeting's Builder requirement.
@@ -29,8 +34,7 @@ export const dynamic = "force-dynamic";
 interface ProposedLine {
   ticker: string;
   action?: string;
-  toWeight?: number | null;
-  weight?: number | null;
+  shares?: number | null;
 }
 interface CurrentModelLine {
   ticker: string;
@@ -70,20 +74,37 @@ export async function POST(req: Request) {
     );
   }
 
-  // Normalise the proposed targets: bare symbol -> { action, targetWeight (fraction) }.
-  const targets = new Map<string, { action: string; weight: number }>();
+  // Normalise the proposed model units. Client trades must follow the model-unit
+  // direction; relative portfolio weights can move the opposite way when the
+  // basket denominator changes and are therefore unsafe for trade sizing.
+  const targets = new Map<string, { action: ModelUnitAction; units: number }>();
   for (const p of proposedRaw) {
     const sym = bare(p.ticker);
     if (!sym) continue;
-    const action = String(p.action ?? "hold");
-    const w = typeof p.toWeight === "number" ? p.toWeight : typeof p.weight === "number" ? p.weight : 0;
-    targets.set(sym, { action, weight: (Number(w) || 0) / 100 });
+    const action = String(p.action ?? "hold") as ModelUnitAction;
+    targets.set(sym, {
+      action,
+      units: Math.max(0, Math.round(Number(p.shares) || 0)),
+    });
   }
   const currentModelUnits = new Map<string, number>();
   for (const line of currentRaw) {
     const symbol = bare(line.ticker);
     const shares = Math.max(0, Number(line.shares) || 0);
     if (symbol && shares > 0) currentModelUnits.set(symbol, shares);
+  }
+  for (const [symbol, target] of targets) {
+    const currentUnits = currentModelUnits.get(symbol) ?? 0;
+    const invalidDecrease = target.action === "decrease" && !(target.units < currentUnits);
+    const invalidIncrease = target.action === "increase" && !(target.units > currentUnits);
+    const invalidAdd = target.action === "add" && !(currentUnits === 0 && target.units > 0);
+    const invalidRemove = target.action === "remove" && target.units !== 0;
+    if (invalidDecrease || invalidIncrease || invalidAdd || invalidRemove) {
+      return NextResponse.json(
+        { ok: false, error: `${symbol} has an invalid ${target.action} model-unit change.` },
+        { status: 400 },
+      );
+    }
   }
   const hasSellTarget = [...targets.values()].some(
     (target) => target.action === "remove" || target.action === "decrease",
@@ -251,18 +272,23 @@ export async function POST(req: Request) {
     if (!secBySymbol.has(sym)) secBySymbol.set(sym, { id: s.id, lastCents: cents });
   }
 
-  // Latest intraday tick (cents) per security — the live Yahoo price overlay.
+  // Latest intraday tick (cents) per security. The indexed view avoids scanning
+  // millions of historical ticks every time an analyst clicks +/-.
   const allSecIds = [...new Set([...heldSecIds, ...secRows.map((s) => s.id)])];
   const intradayById = new Map<string, number>();
   if (allSecIds.length) {
     const tickRes = await db
-      .from("stock_intraday_c")
-      .select("security_id, current_price, timestamp")
-      .in("security_id", allSecIds)
-      .order("timestamp", { ascending: false });
-    for (const t of (tickRes.data ?? []) as Array<{ security_id: string; current_price: number | null }>) {
-      if (!intradayById.has(t.security_id) && t.current_price != null) {
-        intradayById.set(t.security_id, Number(t.current_price));
+      .from("securities_with_latest_quote")
+      .select("security_id,latest_intraday_price")
+      .in("security_id", allSecIds);
+    if (!tickRes.error) {
+      for (const t of (tickRes.data ?? []) as Array<{
+        security_id: string;
+        latest_intraday_price: number | null;
+      }>) {
+        if (t.latest_intraday_price != null) {
+          intradayById.set(t.security_id, Number(t.latest_intraday_price));
+        }
       }
     }
   }
@@ -329,8 +355,9 @@ export async function POST(req: Request) {
     }
   }
 
-  // (5) Per-investor reweight. basketValue = Σ currentQty × price (their existing
-  // strategy capital); target shares = weight × basketValue / price.
+  // (5) Per-investor model-unit impact. A model decrease always produces a
+  // client SELL and an increase always produces a BUY. Existing odd shares are
+  // retained on partial changes; a full remove exits the entire holding.
   const byUser = new Map<
     string,
     Map<string, { quantity: number; costValueCents: number }>
@@ -374,6 +401,22 @@ export async function POST(req: Request) {
       basketCents += position.quantity * priceCentsForSymbol(sym);
     }
 
+    const changedExistingLots = [...targets.entries()]
+      .filter(([, target]) => target.action !== "hold" && target.action !== "add")
+      .map(([symbol]) => fullModelLots(
+        positions.get(symbol)?.quantity ?? 0,
+        currentModelUnits.get(symbol) ?? 0,
+      ))
+      .filter((lots) => lots > 0);
+    const allModelLots = [...currentModelUnits.entries()]
+      .map(([symbol, units]) => fullModelLots(positions.get(symbol)?.quantity ?? 0, units))
+      .filter((lots) => lots > 0);
+    const fallbackLots = changedExistingLots.length
+      ? Math.min(...changedExistingLots)
+      : allModelLots.length
+        ? Math.min(...allModelLots)
+        : 0;
+
     const lines: Array<Record<string, unknown>> = [];
     let buyCents = 0;
     let sellCents = 0;
@@ -384,13 +427,14 @@ export async function POST(req: Request) {
       const priceCents = priceCentsForSymbol(sym);
       const position = positions.get(sym) ?? { quantity: 0, costValueCents: 0 };
       const currentQty = position.quantity;
-      const modelUnits = currentModelUnits.get(sym) ?? 0;
-      const lots = modelUnits > 0 ? currentQty / modelUnits : null;
       if (!target || target.action === "hold") continue;
-      let targetQty = currentQty;
-      if (target.action === "remove") targetQty = 0;
-      else if (priceCents > 0) targetQty = Math.round((target.weight * basketCents) / priceCents);
-      const deltaQty = targetQty - currentQty;
+      const { lots, targetQty, deltaQty } = calculateModelUnitImpact({
+        action: target.action,
+        currentQty,
+        currentModelUnits: currentModelUnits.get(sym) ?? 0,
+        targetModelUnits: target.units,
+        fallbackLots,
+      });
       if (deltaQty === 0) continue;
       const valueCents = Math.abs(deltaQty) * priceCents;
       if (deltaQty > 0) buyCents += valueCents;

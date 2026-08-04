@@ -49,7 +49,18 @@ describe("rebalance sale-proceeds flow", () => {
   it("derives each client's lot count from the current basket model", () => {
     expect(builder).toContain("current: baseline");
     expect(impactRoute).toContain("currentModelUnits");
-    expect(impactRoute).toContain("currentQty / modelUnits");
+    expect(impactRoute).toContain("calculateModelUnitImpact");
+    expect(impactRoute).not.toContain("target.weight * basketCents");
+  });
+
+  it("does not refetch when quote-driven weights move without a model-unit change", () => {
+    expect(builder).toContain("[p.ticker, p.action, p.shares]");
+    expect(builder).not.toContain("[p.ticker, p.action, p.weight]");
+  });
+
+  it("reads the indexed latest quote instead of scanning full intraday history", () => {
+    expect(impactRoute).toContain('from("securities_with_latest_quote")');
+    expect(impactRoute).not.toContain('from("stock_intraday_c")');
   });
 
   it("derives LIVE versus UAT preview scope from the persisted strategy", () => {

@@ -369,7 +369,7 @@ export function RebalanceBuilderPage({
   // persisted strategy, never from a browser-provided environment flag.
   const impactSig = JSON.stringify([
     inferredProceedsMode,
-    ...proposedComposition.map((p) => [p.ticker, p.action, p.weight]),
+    ...proposedComposition.map((p) => [p.ticker, p.action, p.shares]),
   ]);
   const impactQ = useQuery<ImpactResponse>({
     queryKey: ["ric-impact", strategyId, impactSig],
