@@ -435,10 +435,9 @@ export async function POST(req: Request) {
         targetModelUnits: target.units,
         fallbackLots,
       });
-      if (deltaQty === 0) continue;
       const valueCents = Math.abs(deltaQty) * priceCents;
       if (deltaQty > 0) buyCents += valueCents;
-      else sellCents += valueCents;
+      else if (deltaQty < 0) sellCents += valueCents;
       lines.push({
         symbol: sym,
         action: target.action,
@@ -446,14 +445,13 @@ export async function POST(req: Request) {
         currentQty,
         targetQty,
         deltaQty,
-        side: deltaQty > 0 ? "buy" : "sell",
+        side: deltaQty > 0 ? "buy" : deltaQty < 0 ? "sell" : "none",
         priceCents,
         valueCents,
         currentPnlCents: Math.round(currentQty * priceCents - position.costValueCents),
       });
     }
 
-    if (lines.length === 0) continue;
     const walletCents = Math.round((walletRandsByUser.get(userId) ?? 0) * 100);
     const residualCents = residualByUser.get(userId) ?? 0;
     const reserveCents = reserveByUser.get(userId) ?? 0;

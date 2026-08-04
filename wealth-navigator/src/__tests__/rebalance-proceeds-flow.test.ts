@@ -58,6 +58,12 @@ describe("rebalance sale-proceeds flow", () => {
     expect(builder).not.toContain("[p.ticker, p.action, p.weight]");
   });
 
+  it("keeps zero-impact strategy holders visible instead of silently dropping them", () => {
+    expect(impactRoute).not.toContain('if (lines.length === 0) continue');
+    expect(impactRoute).toContain('deltaQty < 0 ? "sell" : "none"');
+    expect(builder).toContain('line.side === "none" ? "no trade" : line.side');
+  });
+
   it("reads the indexed latest quote instead of scanning full intraday history", () => {
     expect(impactRoute).toContain('from("securities_with_latest_quote")');
     expect(impactRoute).not.toContain('from("stock_intraday_c")');
