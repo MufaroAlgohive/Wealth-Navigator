@@ -175,8 +175,6 @@ export function RebalanceBuilderPage({
   // what you're buying" — every SELL action must be paired with a BUY action
   // and each row needs its own rationale text before submit.
   const [rationaleBySymbol, setRationaleBySymbol] = React.useState<Record<string, string>>({});
-  const [proceedsMode, setProceedsMode] = React.useState<"reinvest" | "liquidate" | "">("");
-  const [proceedsDestination, setProceedsDestination] = React.useState("");
   const setRationale = (sym: string, v: string) =>
     setRationaleBySymbol((prev) => ({ ...prev, [sym.toUpperCase()]: v }));
   const [submitting, setSubmitting] = React.useState(false);
@@ -187,8 +185,6 @@ export function RebalanceBuilderPage({
   // leak across strategies.
   React.useEffect(() => {
     setRationaleBySymbol({});
-    setProceedsMode("");
-    setProceedsDestination("");
   }, [strategyId]);
 
   React.useEffect(() => {
@@ -360,37 +356,23 @@ export function RebalanceBuilderPage({
       ? `BUY:${destinationSymbols[0]}`
       : `BUY:${destinationSymbols.join("+")}`
     : "";
-  React.useEffect(() => {
-    if (!sellActions.length) {
-      setProceedsMode("");
-      setProceedsDestination("");
-    } else if (
-      proceedsMode === "liquidate" ||
-      (proceedsDestination && proceedsDestination !== proposedDestination)
-    ) {
-      setProceedsDestination("");
-    }
-  }, [proceedsDestination, proceedsMode, proposedDestination, sellActions.length]);
-  const proceedsPlanMissing =
-    sellActions.length > 0 &&
-    (!proceedsMode ||
-      (proceedsMode === "reinvest" && proceedsDestination !== proposedDestination) ||
-      (proceedsMode === "liquidate" && buyActions.length > 0));
-  const impactCanRun =
-    sellActions.length === 0 ||
-    (proceedsMode === "reinvest" && buyActions.length > 0) ||
-    (proceedsMode === "liquidate" && buyActions.length === 0);
+  // The trade shape determines the proceeds path automatically. A sell-only
+  // change liquidates into strategy CA; sells paired with replacement buys are
+  // reinvested. Increases use existing strategy CA/reserve/wallet availability.
+  const inferredProceedsMode: "reinvest" | "liquidate" | null =
+    sellActions.length > 0 ? (buyActions.length > 0 ? "reinvest" : "liquidate") : null;
+  const inferredProceedsDestination = inferredProceedsMode === "reinvest" ? proposedDestination : "";
 
-  // Investor impact — read-only, TEST CLIENTS ONLY (the server enforces is_test
-  // and never reads a real client). Re-modelled whenever the proposed weights
-  // change. This is the meeting's "affected investors / cash availability" gate.
+  // Client impact is read-only and re-modelled immediately whenever proposed
+  // shares change. The server derives LIVE versus UAT owner scope from the
+  // persisted strategy, never from a browser-provided environment flag.
   const impactSig = JSON.stringify([
-    proceedsMode,
+    inferredProceedsMode,
     ...proposedComposition.map((p) => [p.ticker, p.action, p.weight]),
   ]);
   const impactQ = useQuery<ImpactResponse>({
     queryKey: ["ric-impact", strategyId, impactSig],
-    enabled: !!strategyId && changes > 0 && impactCanRun,
+    enabled: !!strategyId && changes > 0,
     queryFn: async () => {
       const res = await fetch("/api/rebalance/impact", {
         method: "POST",
@@ -398,7 +380,7 @@ export function RebalanceBuilderPage({
         body: JSON.stringify({
           strategy_id: strategyId,
           strategy_name: strategyName,
-          proceeds_mode: proceedsMode || null,
+          proceeds_mode: inferredProceedsMode,
           proposed: proposedComposition,
         }),
       });
@@ -418,18 +400,6 @@ export function RebalanceBuilderPage({
     if (!isTestStrategy && rationalesMissing.length) {
       setError(
         `One-line rationale required for: ${rationalesMissing.join(", ")}. Tell the IC why.`,
-      );
-      return;
-    }
-    if (proceedsPlanMissing) {
-      setError(
-        !proceedsMode
-          ? "Choose whether the sale proceeds will be reinvested or liquidated into strategy cash."
-          : proceedsMode === "liquidate"
-            ? "Remove the proposed BUY legs to complete a sell-only liquidation into strategy cash."
-            : buyActions.length
-              ? "Confirm which proposed purchase will receive the sale proceeds."
-              : "Add or increase the replacement asset, then confirm it as the proceeds destination.",
       );
       return;
     }
@@ -465,8 +435,8 @@ export function RebalanceBuilderPage({
           proposed_composition,
           affected_investors: {
             scope: impactQ.data.scope,
-            proceeds_mode: proceedsMode,
-            proceeds_destination: proceedsDestination,
+            proceeds_mode: inferredProceedsMode,
+            proceeds_destination: inferredProceedsDestination,
             fee_config: impactQ.data.feeConfig,
             totals: impactQ.data.totals,
             investors: impactQ.data.investors,
@@ -489,7 +459,6 @@ export function RebalanceBuilderPage({
     changes === 0 ||
     (!isTestStrategy && missingResearch.length > 0) ||
     (!isTestStrategy && rationalesMissing.length > 0) ||
-    proceedsPlanMissing ||
     impactQ.isFetching ||
     impactQ.data?.ok !== true ||
     impactQ.data?.totals?.cashOk === false ||
@@ -499,9 +468,7 @@ export function RebalanceBuilderPage({
       ? "Research missing for one or more changes"
       : !isTestStrategy && rationalesMissing.length > 0
         ? "Rationale required for one or more changes"
-        : proceedsPlanMissing
-          ? "Confirm the sale proceeds destination"
-          : impactQ.isFetching
+        : impactQ.isFetching
             ? "Calculating fee-adjusted client impact"
             : impactQ.data?.ok !== true
               ? impactQ.data?.error ?? "Client impact is unavailable"
@@ -557,17 +524,6 @@ export function RebalanceBuilderPage({
       {!isTestStrategy && rationalesMissing.length > 0 && changes > 0 && missingResearch.length === 0 && (
         <p className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
           One-line rationale required for {rationalesMissing.join(", ")} before this can go to the IC.
-        </p>
-      )}
-      {proceedsPlanMissing && changes > 0 && (
-        <p className="rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-3 py-2 text-xs text-down">
-          {!proceedsMode
-            ? "Will the sale proceeds be reinvested, or liquidated into strategy cash?"
-            : proceedsMode === "liquidate"
-              ? "Liquidation cannot include BUY legs. Remove the proposed increases or switch to reinvest."
-              : buyActions.length
-                ? "Confirm the proceeds destination before submitting."
-                : "Add or increase the asset the proceeds should fund."}
         </p>
       )}
       {impactQ.data?.totals && impactQ.data.totals.cashOk === false && changes > 0 && (
@@ -805,18 +761,8 @@ export function RebalanceBuilderPage({
         commitDisabled={commitDisabled}
         commitTitle={commitTitle}
         onCommit={submitToIc}
-        proceedsDecision={
-          sellActions.length > 0
-            ? {
-                buySymbols: destinationSymbols,
-                destination: proceedsDestination,
-                expectedDestination: proposedDestination,
-                onDestination: setProceedsDestination,
-                mode: proceedsMode,
-                onMode: setProceedsMode,
-              }
-            : undefined
-        }
+        proceedsMode={inferredProceedsMode}
+        buySymbols={destinationSymbols}
       />
 
       <ProposalsList pushingId={pushingId} setPushingId={setPushingId} canPush={perms.pushRebalance} />
@@ -827,114 +773,6 @@ export function RebalanceBuilderPage({
 /** Cents (int) → "R1,234.00". */
 function centsToR(c: number | null | undefined): string {
   return moneyR((Number(c) || 0) / 100);
-}
-
-function ProceedsDestinationPanel({
-  buySymbols,
-  destination,
-  expectedDestination,
-  onDestination,
-  mode,
-  onMode,
-  netProceedsCents,
-  strategyCashAfterCents,
-  loading,
-}: {
-  buySymbols: string[];
-  destination: string;
-  expectedDestination: string;
-  onDestination: (value: string) => void;
-  mode: "reinvest" | "liquidate" | "";
-  onMode: (value: "reinvest" | "liquidate") => void;
-  netProceedsCents?: number;
-  strategyCashAfterCents?: number;
-  loading: boolean;
-}) {
-  const destinationLabel =
-    buySymbols.length === 1
-      ? `Buy ${buySymbols[0]}`
-      : `Split across proposed buys · ${buySymbols.join(", ")}`;
-  return (
-    <div className="border-b border-[hsl(var(--glass-border))] bg-primary/[0.035] px-5 py-4">
-      <div className="grid gap-4 lg:grid-cols-[1fr_1fr_220px] lg:items-end">
-        <div>
-          <div className="text-xs font-semibold">Will the sale proceeds buy another asset?</div>
-          <div className="mt-2 inline-flex gap-1 rounded-lg border border-[hsl(var(--glass-border))] p-1">
-            <button
-              type="button"
-              onClick={() => onMode("reinvest")}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-[11px] font-medium",
-                mode === "reinvest" ? "bg-primary text-primary-foreground" : "text-muted-foreground",
-              )}
-            >
-              Yes · reinvest
-            </button>
-            <button
-              type="button"
-              onClick={() => onMode("liquidate")}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-[11px] font-medium",
-                mode === "liquidate" ? "bg-up/15 text-up" : "text-muted-foreground",
-              )}
-            >
-              No · liquidate to cash
-            </button>
-          </div>
-        </div>
-        {mode === "reinvest" ? (
-          <label className="space-y-1.5 text-xs font-medium">
-            What should the proceeds buy?
-          <select
-            value={destination}
-            disabled={!expectedDestination}
-            onChange={(event) => onDestination(event.target.value)}
-            className="block h-10 w-full rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <option value="">
-              {expectedDestination ? "Select proceeds destination…" : "Add or increase a replacement asset first"}
-            </option>
-            {expectedDestination ? <option value={expectedDestination}>{destinationLabel}</option> : null}
-          </select>
-          <span className="block text-[10px] font-normal text-muted-foreground">
-            The destination is saved with the IC proposal and must match the proposed BUY legs.
-          </span>
-          </label>
-        ) : mode === "liquidate" ? (
-          <div className="rounded-lg border border-up/20 bg-up/5 p-3 text-xs">
-            <div className="font-semibold text-up">Sell-only liquidation</div>
-            <div className="mt-1 text-[10px] leading-4 text-muted-foreground">
-              No replacement order will be created. Actual net proceeds will settle into this strategy&apos;s CA /
-              rebalance residual.
-            </div>
-          </div>
-        ) : (
-          <div className="text-xs text-muted-foreground">Choose Yes or No to calculate the correct sequence.</div>
-        )}
-        <div className="rounded-xl border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.025)] p-3">
-          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            {mode === "liquidate" ? "Strategy cash after" : "Estimated net proceeds"}
-          </div>
-          <div className="mt-1 font-mono text-lg font-semibold tabular-nums text-up">
-            {loading
-              ? "Calculating…"
-              : mode === "liquidate"
-                ? strategyCashAfterCents == null
-                  ? "—"
-                  : centsToR(strategyCashAfterCents)
-                : netProceedsCents == null
-                  ? "—"
-                  : centsToR(netProceedsCents)}
-          </div>
-          <div className="mt-1 text-[10px] text-muted-foreground">
-            {mode === "liquidate"
-              ? "Existing residual plus proceeds after reserve-first fees"
-              : "After estimated sell brokerage and custody"}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function ProceedsBreakdownDialog({ data }: { data: ImpactResponse }) {
@@ -1034,7 +872,8 @@ function InvestorImpactPanel({
   commitDisabled,
   commitTitle,
   onCommit,
-  proceedsDecision,
+  proceedsMode,
+  buySymbols,
 }: {
   enabled: boolean;
   loading: boolean;
@@ -1045,14 +884,8 @@ function InvestorImpactPanel({
   commitDisabled: boolean;
   commitTitle: string;
   onCommit: () => void;
-  proceedsDecision?: {
-    buySymbols: string[];
-    destination: string;
-    expectedDestination: string;
-    onDestination: (value: string) => void;
-    mode: "reinvest" | "liquidate" | "";
-    onMode: (value: "reinvest" | "liquidate") => void;
-  };
+  proceedsMode: "reinvest" | "liquidate" | null;
+  buySymbols: string[];
 }) {
   const investors = data?.investors ?? [];
   const totals = data?.totals ?? null;
@@ -1081,28 +914,34 @@ function InvestorImpactPanel({
       }
       noPadding
     >
-      {proceedsDecision ? (
-        <ProceedsDestinationPanel
-          {...proceedsDecision}
-          netProceedsCents={totals?.netProceedsCents}
-          strategyCashAfterCents={totals?.strategyCashAfterCents}
-          loading={loading}
-        />
+      {enabled ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--glass-border))] bg-primary/[0.035] px-5 py-3">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wide text-primary">Automatic sequence</div>
+            <div className="mt-0.5 text-xs font-medium">
+              {proceedsMode === "liquidate"
+                ? "Sell-only · net proceeds settle into this strategy’s CA"
+                : proceedsMode === "reinvest"
+                  ? `Sell + buy · proceeds fund ${buySymbols.join(", ")}`
+                  : "Increase · funding is checked against strategy CA, reserve and wallet"}
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              {proceedsMode === "liquidate" ? "Strategy CA after" : "Projected cash after"}
+            </div>
+            <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-up">
+              {loading
+                ? "Calculating…"
+                : centsToR(
+                    proceedsMode === "liquidate" ? totals?.strategyCashAfterCents : totals?.cashAfterCents,
+                  )}
+            </div>
+          </div>
+        </div>
       ) : null}
       {!enabled ? (
         <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
-      ) : proceedsDecision && !proceedsDecision.mode ? (
-        <p className="px-5 py-4 text-caption">
-          Choose reinvest or liquidate to cash to calculate the correct fee and proceeds path.
-        </p>
-      ) : proceedsDecision?.mode === "reinvest" && !proceedsDecision.expectedDestination ? (
-        <p className="px-5 py-4 text-caption">
-          Add or increase the replacement asset above. The preview will then include its buy cost and fees.
-        </p>
-      ) : proceedsDecision?.mode === "liquidate" && proceedsDecision.buySymbols.length > 0 ? (
-        <p className="px-5 py-4 text-caption">
-          Remove the proposed BUY legs to run this as a sell-only liquidation into strategy cash.
-        </p>
       ) : data?.ok === false ? (
         <p className="border-l-2 border-down px-5 py-4 text-xs text-down">
           {data.error ?? "The fee-adjusted impact preview could not be calculated."}

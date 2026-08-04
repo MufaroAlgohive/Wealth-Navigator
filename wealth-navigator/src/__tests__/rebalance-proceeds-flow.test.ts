@@ -10,13 +10,14 @@ describe("rebalance sale-proceeds flow", () => {
   );
   const impactRoute = readFileSync(resolve("src/app/api/rebalance/impact/route.ts"), "utf8");
 
-  it("requires an explicit proceeds destination before IC submission", () => {
-    expect(builder).toContain("Will the sale proceeds buy another asset?");
-    expect(builder).toContain("No · liquidate to cash");
-    expect(builder).toContain("What should the proceeds buy?");
-    expect(builder).toContain("proceedsPlanMissing");
-    expect(builder).toContain("proceeds_mode: proceedsMode");
-    expect(builder).toContain("proceeds_destination: proceedsDestination");
+  it("opens impact immediately and infers the proceeds path from the trade shape", () => {
+    expect(builder).toContain("inferredProceedsMode");
+    expect(builder).toContain('buyActions.length > 0 ? "reinvest" : "liquidate"');
+    expect(builder).toContain("enabled: !!strategyId && changes > 0");
+    expect(builder).toContain("proceeds_mode: inferredProceedsMode");
+    expect(builder).toContain("proceeds_destination: inferredProceedsDestination");
+    expect(builder).toContain("Automatic sequence");
+    expect(builder).not.toContain("Will the sale proceeds buy another asset?");
   });
 
   it("shows net proceeds with an expandable fee and reserve bridge", () => {
