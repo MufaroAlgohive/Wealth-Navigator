@@ -656,7 +656,7 @@ function GroupRow({
   return (
     <React.Fragment key={`grp:${groupKey}`}>
       <tr className={cn("border-b border-border/40 hover:bg-accent/10", childCount > 0 && "bg-accent/5")}>
-        <td className="px-2 py-1.5 whitespace-nowrap">
+        <td className="px-2 py-1 whitespace-nowrap">
           <button
             type="button"
             onClick={toggle}
@@ -677,7 +677,7 @@ function GroupRow({
             {isExpanded ? "▾" : "▸"}
           </button>
         </td>
-        <td className="px-3 py-1.5 font-mono text-[11px] text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 font-mono text-[11px] text-foreground whitespace-nowrap">
           <div className="flex items-center gap-1.5">
             <span>{r.order_id}</span>
             {childCount > 0 ? (
@@ -690,14 +690,14 @@ function GroupRow({
             ) : null}
           </div>
         </td>
-        <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">{fmtTs(r.ts)}</td>
-        <td className="px-3 py-1.5 whitespace-nowrap">
+        <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">{fmtTs(r.ts)}</td>
+        <td className="px-2 py-1 whitespace-nowrap">
           <Badge variant={r.side === "SELL" ? "destructive" : "success"}>{r.side}</Badge>
         </td>
-        <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap">{r.symbol}</td>
-        <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">{r.client_account || "—"}</td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(r.qty)}</td>
-        <td className="px-3 py-1.5 text-[12px] font-medium text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 text-[12px] font-semibold text-foreground whitespace-nowrap">{r.symbol}</td>
+        <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">{r.client_account || "—"}</td>
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtQty(r.qty)}</td>
+        <td className="px-2 py-1 text-[12px] font-medium text-foreground whitespace-nowrap">
           {(() => {
             // Prefer the limit, then the actual fill, then the live
             // last price — so MARKET orders (no limit, unfilled)
@@ -707,8 +707,8 @@ function GroupRow({
             return px != null && Number.isFinite(px) ? fmtMoney(px * r.qty) : "—";
           })()}
         </td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtPct(r.filled_pct)}</td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtPct(r.filled_pct)}</td>
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
           <div className="flex flex-col items-start gap-0.5">
             <span>{fmtMoney(r.limit_price)}</span>
             {r.order_type ? (
@@ -728,17 +728,17 @@ function GroupRow({
             ) : null}
           </div>
         </td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
           {r.filled > 0 && r.avg_fill_price ? fmtMoney(r.avg_fill_price) : "—"}
         </td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
           {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
         </td>
-        <td className={cn("px-3 py-1.5 text-[12px] font-semibold whitespace-nowrap", slipColor(liveSlipCents))}>
+        <td className={cn("px-2 py-1 text-[12px] font-semibold whitespace-nowrap", slipColor(liveSlipCents))}>
           {slipDisplay}
         </td>
-        <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">{r.tif}</td>
-        <td className="px-3 py-1.5 whitespace-nowrap">
+        <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">{r.tif}</td>
+        <td className="px-2 py-1 whitespace-nowrap">
           <div className="flex flex-col items-start gap-0.5">
             <span title={stateTooltip(r)} className="inline-flex">
               <Badge variant={STATE_VARIANT[r.state] ?? "outline"}>{r.state}</Badge>
@@ -784,17 +784,20 @@ function GroupRow({
             ) : null}
           </div>
         </td>
-        <td className="px-3 py-1.5 whitespace-nowrap">
-          {/* Fill (UAT) — self-fill in the OEM, never sent to the broker. Shown
-              for UAT-lane orders that aren't terminal. See handleFillUat. */}
-          {allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) && !TERMINAL_STATES.has(r.state) ? (
-            <div className="mb-1 flex flex-col gap-1">
+        <td className="px-2 py-1 whitespace-nowrap">
+          {/* All actions for this row sit on one horizontal line — a row's
+              height must never exceed a single button's height. Any error
+              text drops onto its own thin line below, only when present. */}
+          <div className="flex flex-wrap items-center gap-1">
+            {/* Fill (UAT) — self-fill in the OEM, never sent to the broker. Shown
+                for UAT-lane orders that aren't terminal. See handleFillUat. */}
+            {allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) && !TERMINAL_STATES.has(r.state) ? (
               <Button
                 variant="ghost"
                 size="sm"
                 disabled={!!fillInFlight[r.id]}
                 onClick={() => void handleFillUat(r)}
-                className="h-7 px-2 text-[10px] uppercase tracking-wider text-success hover:bg-success/10"
+                className="h-6 px-2 text-[10px] uppercase tracking-wider text-success hover:bg-success/10"
                 title="Self-fill this UAT order in the OEM (fills from us — never sent to LONGMARK)."
               >
                 {fillInFlight[r.id] ? (
@@ -809,22 +812,15 @@ function GroupRow({
                   </>
                 )}
               </Button>
-              {fillError[r.id] ? (
-                <span className="text-[9px] text-destructive" title={fillError[r.id] ?? undefined}>
-                  {fillError[r.id]}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-          {isCancellable(r.state) ? (
-            <div className="flex flex-col gap-1">
-              <div className="flex gap-1">
+            ) : null}
+            {isCancellable(r.state) ? (
+              <>
                 <Button
                   variant="ghost"
                   size="sm"
                   disabled={!!cancelInFlight[r.id]}
                   onClick={() => void handleCancel(r)}
-                  className="h-7 px-2 text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10"
+                  className="h-6 px-2 text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10"
                   title={
                     r.state === "PARKED"
                       ? "Cancel this parked order — never left our system, so this just marks it cancelled locally. No broker contact."
@@ -845,33 +841,30 @@ function GroupRow({
                     variant="ghost"
                     size="sm"
                     onClick={() => openAmend(r)}
-                    className="h-7 px-2 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"
+                    className="h-6 px-2 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"
                     title={`Amend order ${r.order_id} on IRESS (OrderAmend2 via worker). Only Volume / Price / TimeInForce / TriggerPrice can be amended — LIMIT↔MARKET is not amendable, cancel + re-create instead.`}
                   >
                     Amend
                   </Button>
                 ) : null}
-              </div>
-              {cancelError[r.id] ? (
-                <span className="text-[9px] text-destructive" title={cancelError[r.id] ?? undefined}>
-                  {cancelError[r.id]}
-                </span>
-              ) : null}
-            </div>
-          ) : isAwaitingBrokerAck(r.state) ? (
-            <div className="flex flex-col gap-0.5">
+              </>
+            ) : isAwaitingBrokerAck(r.state) ? (
               <span
                 className="inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning/5 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-warning"
                 title="OrderCreate3 has left our session and is owned by the destination. Cancel / Amend are disabled until the broker acknowledges the order."
               >
                 <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                awaiting broker ack
+                awaiting ack
               </span>
-              <span className="text-[9px] text-muted-foreground">Actions locked until Hermes acknowledges</span>
-            </div>
-          ) : (
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
-          )}
+            ) : !allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) || TERMINAL_STATES.has(r.state) ? (
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
+            ) : null}
+          </div>
+          {fillError[r.id] || cancelError[r.id] ? (
+            <span className="text-[9px] text-destructive" title={fillError[r.id] || cancelError[r.id] || undefined}>
+              {fillError[r.id] || cancelError[r.id]}
+            </span>
+          ) : null}
         </td>
       </tr>
       {isExpanded && childCount > 0 ? (
@@ -1817,7 +1810,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
               ].map((h) => (
                 <th
                   key={h}
-                  className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap"
+                  className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap"
                 >
                   {h}
                 </th>
@@ -1884,7 +1877,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                         }
                       }}
                     >
-                      <td className="px-2 py-1.5 whitespace-nowrap">
+                      <td className="px-2 py-1 whitespace-nowrap">
                         <ChevronRight
                           className={cn(
                             "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
@@ -1892,7 +1885,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                           )}
                         />
                       </td>
-                      <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap" colSpan={3}>
+                      <td className="px-2 py-1 text-[12px] font-semibold text-foreground whitespace-nowrap" colSpan={3}>
                         <span className="inline-flex items-center gap-1.5">
                           <span className={cn(isGiftOrder && "font-mono")}>{strategyKey}</span>
                           {isGiftOrder ? (
@@ -1912,15 +1905,15 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                           </span>
                         </span>
                       </td>
-                      <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
+                      <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">
                         {latestTs ? fmtTs(new Date(latestTs).toISOString()) : "—"}
                       </td>
-                      <td className="px-3 py-1.5" />
-                      <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(totalQty)}</td>
-                      <td className="px-3 py-1.5 text-[12px] font-medium text-foreground whitespace-nowrap">
+                      <td className="px-2 py-1" />
+                      <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtQty(totalQty)}</td>
+                      <td className="px-2 py-1 text-[12px] font-medium text-foreground whitespace-nowrap">
                         {fmtMoney(totalValue)}
                       </td>
-                      <td className="px-3 py-1.5" colSpan={8} />
+                      <td className="px-2 py-1" colSpan={8} />
                     </tr>
                     {isStrategyOpen && (
                       <>
