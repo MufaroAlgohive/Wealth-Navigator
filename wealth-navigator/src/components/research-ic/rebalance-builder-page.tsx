@@ -268,6 +268,14 @@ export function RebalanceBuilderPage({
     (notesQ.data?.notes ?? []).map((nte) => String(nte.symbol).toUpperCase()),
   );
   const missingResearch = changedTickers.filter((t) => !notedSymbols.has(t));
+  // On a real (non-test) strategy, don't just block submit on missing research
+  // -- don't even offer the instrument as a buy target. Submitting without
+  // research was previously only caught at the very end (submitToIc), which
+  // meant an admin could build out a whole buy leg, fee bridge and all,
+  // before discovering it can't go to the IC.
+  const buyUniverseForStrategy = isTestStrategy
+    ? buyUniverse
+    : buyUniverse.filter((u) => notedSymbols.has(u.symbol.toUpperCase()));
   // Pick the "best" research note per symbol: prefer approved, fall back to the
   // most-recently-updated. Used to build the R-<SYM>-<NN> researchRef code that
   // shows up in the IC action table and links through to the note.
@@ -887,8 +895,9 @@ export function RebalanceBuilderPage({
         }}
         proceedsMode={effectiveProceedsMode}
         buySymbols={destinationSymbols}
-        buyUniverse={buyUniverse}
+        buyUniverse={buyUniverseForStrategy}
         buyUniverseLoading={equitiesQ.isLoading}
+        buyUniverseResearchGated={!isTestStrategy}
         dropdownBuySymbol={dropdownBuySymbol}
         onSelectBuyInstrument={chooseBuyInstrument}
         onSharesOverride={(value) => dropdownBuySymbol && setAbsoluteShares(dropdownBuySymbol, value)}
@@ -1115,6 +1124,7 @@ function TradeSequencePanel({
   buySymbols,
   buyUniverse,
   buyUniverseLoading,
+  buyUniverseResearchGated,
   dropdownBuySymbol,
   onSelectBuyInstrument,
   onSharesOverride,
@@ -1142,6 +1152,7 @@ function TradeSequencePanel({
   buySymbols: string[];
   buyUniverse: Array<{ symbol: string; name: string; priceCents: number }>;
   buyUniverseLoading: boolean;
+  buyUniverseResearchGated: boolean;
   dropdownBuySymbol: string;
   onSelectBuyInstrument: (symbol: string, name: string, priceCents: number) => void;
   onSharesOverride: (value: number) => void;
@@ -1276,6 +1287,11 @@ function TradeSequencePanel({
             <label className="block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Instrument to buy
             </label>
+            {buyUniverseResearchGated ? (
+              <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+                Only instruments with an existing research note are listed — add one in the Research Library to unlock it here.
+              </p>
+            ) : null}
             <input
               value={buySearch}
               onChange={(e) => onBuySearchChange(e.target.value)}
