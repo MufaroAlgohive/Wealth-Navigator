@@ -154,9 +154,16 @@ export function StrategyBuilder() {
         holdings: holdings.map((h) => ({ symbol: h.symbol, shares: h.shares, weight: h.weight })),
         min_investment: minInvest,
       };
-      const d = await fetch("/api/admin/strategies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: editingId ? "update" : "create", id: editingId || undefined, password: savePassword, patch: payload }) }).then((r) => r.json());
+      const res = await fetch("/api/admin/strategies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: editingId ? "update" : "create", id: editingId || undefined, password: savePassword, patch: payload }) });
+      // A server-side throw before this route reaches a NextResponse.json(...)
+      // call (e.g. a misconfigured env var) comes back as an HTML error page,
+      // not JSON — .json() on that throws, and without this catch the button
+      // just silently did nothing with no toast at all.
+      const d = await res.json().catch(() => ({ ok: false, error: `Save failed (HTTP ${res.status}) — the server didn't return a valid response.` }));
       if (!d.ok) return toast.error(d.error || "Strategy save failed");
       toast.success(editingId ? "Strategy updated" : "Strategy created"); setPasswordOpen(false); await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Strategy save failed — network error");
     } finally { setBusy(false); }
   };
 

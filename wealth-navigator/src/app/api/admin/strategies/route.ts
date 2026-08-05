@@ -69,10 +69,28 @@ export async function POST(req: Request) {
   const action = String(body.action || "");
   const password = String(body.password || "");
   if (!password) return NextResponse.json({ ok: false, error: "Password is required" }, { status: 400 });
-  const verifier = createAnonServerClient();
-  const { error: passwordError } = await verifier.auth.signInWithPassword({ email: auth.ctx.email, password });
-  if (passwordError) return NextResponse.json({ ok: false, error: "Incorrect password" }, { status: 403 });
-  const db = createRetailServiceRoleClient();
+
+  // Both client constructors throw synchronously when their env vars aren't
+  // configured on this deployment — previously that meant an unhandled
+  // exception here became a raw HTML 500, which the browser's response.json()
+  // can't parse, so the save silently did nothing with no visible error.
+  let verifier, db;
+  try {
+    verifier = createAnonServerClient();
+    db = createRetailServiceRoleClient();
+  } catch (e) {
+    return NextResponse.json(
+      { ok: false, error: `Strategy save is not configured on this deployment: ${(e as Error).message}` },
+      { status: 503 },
+    );
+  }
+
+  try {
+    const { error: passwordError } = await verifier.auth.signInWithPassword({ email: auth.ctx.email, password });
+    if (passwordError) return NextResponse.json({ ok: false, error: "Incorrect password" }, { status: 403 });
+  } catch (e) {
+    return NextResponse.json({ ok: false, error: `Password verification failed: ${(e as Error).message}` }, { status: 502 });
+  }
 
   if (action === "details") {
     const { data, error } = await db.from("strategies_c").select("*").eq("id", body.id || "").maybeSingle();
