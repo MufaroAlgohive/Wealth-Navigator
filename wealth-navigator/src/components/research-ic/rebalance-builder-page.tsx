@@ -501,6 +501,13 @@ export function RebalanceBuilderPage({
       );
       return;
     }
+    // The impact API now computes sell-only totals when Reinvest is chosen
+    // but no BUY is picked yet (see impact/route.ts) — this is the one place
+    // that must still refuse to submit that state.
+    if (effectiveProceedsMode === "reinvest" && buyActions.length === 0) {
+      setError("Pick a replacement BUY instrument before committing this reinvest.");
+      return;
+    }
     // Basket-level cash-availability gate: any per-investor shortfall blocks submit.
     if (impactQ.data?.totals && impactQ.data.totals.cashOk === false) {
       setError(
@@ -554,6 +561,7 @@ export function RebalanceBuilderPage({
     }
   }
 
+  const reinvestMissingBuy = effectiveProceedsMode === "reinvest" && buyActions.length === 0;
   const commitDisabled =
     submitting ||
     changes === 0 ||
@@ -562,6 +570,7 @@ export function RebalanceBuilderPage({
     impactQ.isFetching ||
     impactQ.data?.ok !== true ||
     impactQ.data?.totals?.cashOk === false ||
+    reinvestMissingBuy ||
     !perms.raiseRebalance;
   const commitTitle =
     !isTestStrategy && missingResearch.length > 0
@@ -572,7 +581,9 @@ export function RebalanceBuilderPage({
             ? "Calculating fee-adjusted client impact"
             : impactQ.data?.ok !== true
               ? impactQ.data?.error ?? "Client impact is unavailable"
-              : impactQ.data?.totals?.cashOk === false
+              : reinvestMissingBuy
+                ? "Pick a replacement BUY instrument before committing"
+                : impactQ.data?.totals?.cashOk === false
                 ? "Insufficient cash for one or more clients"
                 : "Create the controlled trade-sequence proposal for IC review";
 

@@ -117,12 +117,17 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
-  if (proceedsMode === "reinvest" && !hasBuyTarget) {
-    return NextResponse.json(
-      { ok: false, error: "Reinvest was selected but the proposal has no replacement BUY." },
-      { status: 400 },
-    );
-  }
+  // NOTE: "reinvest chosen but no BUY yet" is NOT rejected here — it's the
+  // normal, valid state right after switching to Reinvest mode and before an
+  // instrument is picked. Rejecting it here used to make this endpoint return
+  // `ok:false` (totals undefined) at that exact moment, and the Buy Execution
+  // dropdown's auto-share-count (`chooseBuyInstrument`) reads
+  // `impactQ.data.totals.netProceedsCents` to size the very first pick — so
+  // every first buy attempt silently computed 0 shares off the failed
+  // response, which then failed the "invalid add" check on the next request
+  // regardless of which instrument was chosen. Compute sell-only totals
+  // instead (buyGross stays 0 below); `commitDisabled`/`submitToIc()` on the
+  // client is what actually blocks committing a reinvest with no BUY.
   if (proceedsMode === "liquidate" && hasBuyTarget) {
     return NextResponse.json(
       { ok: false, error: "Liquidation to cash cannot contain a replacement BUY." },
