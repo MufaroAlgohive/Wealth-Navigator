@@ -993,22 +993,39 @@ function FeeProceedsBreakdown({
               <BridgeRow label="Total Cost" value={centsToR(totalCost)} bold />
             </div>
             <div className="border-t border-[hsl(var(--glass-border))] pt-2 mt-1">
-              <BridgeRow label="Execution Reserve Before" value={centsToR(reserveBefore)} />
+              <BridgeRow label="8% Reserve Before" value={centsToR(reserveBefore)} />
               <BridgeRow label="Fees Paid from Reserve" value={centsToR(reserveUsed)} deduct />
-              <BridgeRow label="Execution Reserve After" value={centsToR(reserveAfter)} />
-              {feeShortfall > 0 ? (
-                <BridgeRow label="Fee Shortfall (funded by portfolio)" value={centsToR(feeShortfall)} deduct />
-              ) : null}
-              <BridgeRow label="Residual Cash After" value={centsToR(residualAfter)} bold />
+              <BridgeRow label="8% Reserve After" value={centsToR(reserveAfter)} />
+              <BridgeRow label="Portfolio-Funded Fee Shortfall" value={centsToR(feeShortfall)} deduct={feeShortfall > 0} />
+              <BridgeRow label="Residual Cash" value={centsToR(residualAfter)} bold />
+            </div>
+          </div>
+          {/* Per-Client Allocation — CRM's exact shape: shares bought + residual
+              cash per client, not the denser stat grid the sell side doesn't have. */}
+          <div className="mt-3 border-t border-[hsl(var(--glass-border))] pt-3">
+            <p className="mb-2 text-xs font-semibold text-muted-foreground">Per-Client Allocation</p>
+            <div className="space-y-1.5">
+              {data.investors?.map((investor) => {
+                const buyLine = investor.lines.find((l) => l.side === "buy");
+                const shares = buyLine ? Math.abs(buyLine.deltaQty) : 0;
+                return (
+                  <div key={investor.user_id} className="flex items-center justify-between text-xs">
+                    <span>{investor.name}</span>
+                    <span className="font-mono text-muted-foreground">
+                      {shares.toLocaleString()} shares · {centsToR(investor.cashAfterCents)} residual
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
       ) : null}
 
-      {data.investors?.length ? (
+      {!showBuyCard && data.investors?.length ? (
         <div className="overflow-hidden rounded-xl border border-[hsl(var(--glass-border))]">
           <div className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-3 py-2 text-xs font-semibold">
-            Per-Client Allocation
+            Per-Client Effect
           </div>
           <div className="max-h-56 overflow-y-auto">
             {data.investors.map((investor) => (

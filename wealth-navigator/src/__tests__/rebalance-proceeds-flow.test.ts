@@ -25,7 +25,7 @@ describe("rebalance sale-proceeds flow", () => {
     expect(builder).toContain("Total Shares to Sell");
     expect(builder).toContain("Gross Proceeds");
     expect(builder).toContain("Net Proceeds");
-    expect(builder).toContain("Execution Reserve Before");
+    expect(builder).toContain("8% Reserve Before");
     expect(builder).toContain("Per-Client Allocation");
   });
 
