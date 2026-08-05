@@ -928,13 +928,17 @@ function FeeProceedsBreakdown({
   if (!totals) return null;
   const investors = data.investors ?? [];
   const feeRate = Number(data.feeConfig?.brokerageRate ?? 0) * 100;
-  const investorCount = totals.investorCount ?? investors.length;
 
   const sellLines = investors.flatMap((inv) => inv.lines.filter((l) => l.side === "sell"));
   const totalSharesToSell = sellLines.reduce((s, l) => s + Math.abs(l.deltaQty), 0);
   const grossProceeds = sellLines.reduce((s, l) => s + l.valueCents, 0);
   const sellBrokerage = investors.reduce((s, inv) => s + (inv.sellBrokerageCents || 0), 0);
   const sellCustody = investors.reduce((s, inv) => s + (inv.sellCustodyCents || 0), 0);
+  // Custody is flat per client per traded asset — the "(xN)" label must count
+  // only clients actually touching THIS leg, not everyone in the sequence.
+  // Using the blanket investor count here mislabeled the fee (e.g. "(x2)" next
+  // to an amount that was actually only 1 client's flat fee).
+  const sellInvestorCount = investors.filter((inv) => inv.lines.some((l) => l.side === "sell")).length;
   const netProceeds = grossProceeds - sellBrokerage - sellCustody;
   const avgSellPriceCents = totalSharesToSell > 0 ? grossProceeds / totalSharesToSell : 0;
   const sellTickers = [...new Set(sellLines.map((l) => l.symbol))];
@@ -945,6 +949,7 @@ function FeeProceedsBreakdown({
   const grossCost = buyLines.reduce((s, l) => s + l.valueCents, 0);
   const buyBrokerage = investors.reduce((s, inv) => s + (inv.buyBrokerageCents || 0), 0);
   const buyCustody = investors.reduce((s, inv) => s + (inv.buyCustodyCents || 0), 0);
+  const buyInvestorCount = investors.filter((inv) => inv.lines.some((l) => l.side === "buy")).length;
   const totalCost = grossCost + buyBrokerage + buyCustody;
   const avgBuyPriceCents = totalSharesToBuy > 0 ? grossCost / totalSharesToBuy : 0;
   const buyTickers = [...new Set(buyLines.map((l) => l.symbol))];
@@ -989,7 +994,7 @@ function FeeProceedsBreakdown({
           <BridgeRow label="Price per Share" value={centsToR(avgSellPriceCents)} />
           <BridgeRow label="Gross Proceeds" value={centsToR(grossProceeds)} />
           <BridgeRow label={`Brokerage (${feeRate.toFixed(1)}%)`} value={centsToR(sellBrokerage)} deduct />
-          <BridgeRow label={`Off-Custody Fee (x${investorCount})`} value={centsToR(sellCustody)} deduct />
+          <BridgeRow label={`Off-Custody Fee (x${sellInvestorCount})`} value={centsToR(sellCustody)} deduct />
           <div className="border-t border-[hsl(var(--glass-border))] pt-2">
             <BridgeRow label="Net Proceeds" value={centsToR(netProceeds)} bold />
           </div>
@@ -1009,7 +1014,7 @@ function FeeProceedsBreakdown({
             <BridgeRow label="Total Shares" value={totalSharesToBuy.toLocaleString()} />
             <BridgeRow label="Gross Cost" value={centsToR(grossCost)} />
             <BridgeRow label={`Brokerage (${feeRate.toFixed(1)}%)`} value={centsToR(buyBrokerage)} deduct />
-            <BridgeRow label={`Custody Fee (x${investorCount})`} value={centsToR(buyCustody)} deduct />
+            <BridgeRow label={`Custody Fee (x${buyInvestorCount})`} value={centsToR(buyCustody)} deduct />
             <div className="border-t border-[hsl(var(--glass-border))] pt-2">
               <BridgeRow label="Total Cost" value={centsToR(totalCost)} bold />
             </div>
