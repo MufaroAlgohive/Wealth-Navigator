@@ -46,7 +46,7 @@ import { usePolling } from "@/lib/hooks/use-polling";
 import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 import { allowsMarketRelease, allowsUatSelfFill } from "@/lib/oems/orderbook-lane-actions";
 import { isAmendable, isAwaitingBrokerAck, isCancellable } from "./format";
-import { InvestorFilterTable, type InvestorAgg } from "./investor-filter-table";
+import type { InvestorAgg } from "./investor-filter-table";
 
 export interface ExecutionRow {
   id: string;
@@ -552,40 +552,6 @@ export function buildOrderBookDisplayItems(
     }
   }
   return items.sort((a, b) => b.ts - a.ts);
-}
-
-interface SecurityBlock {
-  key: string;
-  symbol: string;
-  side: string;
-  qty: number;
-  avgFillWeighted: number | null;
-  groups: GroupedRow[];
-}
-
-/** "Holdings under {Strategy}" axis — aggregate a strategy block's orders by symbol. */
-function buildSecurityBlocks(groups: GroupedRow[]): SecurityBlock[] {
-  const m = new Map<string, SecurityBlock>();
-  for (const g of groups) {
-    const r = g.parent;
-    const key = `${r.symbol}|${r.isin ?? ""}`;
-    let b = m.get(key);
-    if (!b) {
-      b = { key, symbol: r.symbol, side: r.side, qty: 0, avgFillWeighted: null, groups: [] };
-      m.set(key, b);
-    }
-    b.qty += r.qty;
-    b.groups.push(g);
-  }
-  for (const b of m.values()) {
-    const filled = b.groups.filter((g) => g.parent.avg_fill_price != null && g.parent.filled > 0);
-    const totalFilled = filled.reduce((s, g) => s + g.parent.filled, 0);
-    b.avgFillWeighted =
-      totalFilled > 0
-        ? filled.reduce((s, g) => s + (g.parent.avg_fill_price as number) * g.parent.filled, 0) / totalFilled
-        : null;
-  }
-  return [...m.values()].sort((a, b) => b.qty - a.qty);
 }
 
 /**
@@ -1410,11 +1376,8 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
   );
 
   const [expandedStrategy, setExpandedStrategy] = React.useState<Record<string, boolean>>({});
-  const [expandedSecurity, setExpandedSecurity] = React.useState<Record<string, boolean>>({});
-  const [selectedInvestorByStrategy, setSelectedInvestorByStrategy] = React.useState<Record<string, string | null>>({});
 
   const toggleStrategy = (key: string) => setExpandedStrategy((p) => ({ ...p, [key]: !p[key] }));
-  const toggleSecurity = (key: string) => setExpandedSecurity((p) => ({ ...p, [key]: !p[key] }));
 
   // Expansion state for the per-order lifecycle timeline — order_id →
   // expanded. Default collapsed; auto-expand when a NEW SSE delta lands so
@@ -1898,17 +1861,12 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                   return s + px * g.parent.qty;
                 }, 0);
                 const latestTs = block.groups.reduce((max, g) => Math.max(max, Date.parse(g.parent.ts || "") || 0), 0);
+                // Every strategy block now gets one disclosure level, same as a
+                // gift order: Strategy -> orders directly. The security sub-group
+                // + separate Investors table (previously shown for multi-client
+                // baskets) added a pointless extra click — each order row already
+                // carries its own CLIENT column, so per-investor identity isn't lost.
                 const investors = buildInvestorAgg(block.groups, lookupLast);
-                // A basket bought by exactly one client has no "which investor"
-                // question to answer, so the security sub-group + Investors table
-                // (built for the many-clients-in-one-book case) is a pointless
-                // third disclosure level — collapse it flat, same as a gift order.
-                const isFlatBlock = isGiftOrder || investors.length <= 1;
-                const selectedInvestor = selectedInvestorByStrategy[strategyKey] ?? null;
-                const visibleGroups = selectedInvestor
-                  ? block.groups.filter((g) => (g.parent.client_account || "—") === selectedInvestor)
-                  : block.groups;
-                const securityBlocks = buildSecurityBlocks(visibleGroups);
 
                 return (
                   <React.Fragment key={`strategy:${strategyKey}`}>
@@ -1963,104 +1921,16 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                     </tr>
                     {isStrategyOpen && (
                       <>
-                        {isFlatBlock ? (
-                          block.groups.map((g) => (
-                            <GroupRow
-                              key={g.parent.id}
-                              g={g}
-                              lookupLast={lookupLast}
-                              expanded={expanded}
-                              toggleExpanded={toggleGroupExpanded}
-                              actions={orderActions}
-                            />
-                          ))
-                        ) : securityBlocks.map((sec) => {
-                          const secKey = `${strategyKey}::${sec.key}`;
-                          const isSecOpen = !!expandedSecurity[secKey];
-                          const liveLast = lookupLast(sec.symbol);
-                          return (
-                            <React.Fragment key={secKey}>
-                              <tr
-                                className="cursor-pointer border-b border-border/30 hover:bg-accent/10"
-                                tabIndex={0}
-                                onClick={() => toggleSecurity(secKey)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    toggleSecurity(secKey);
-                                  }
-                                }}
-                              >
-                                <td className="px-2 py-1.5 pl-6 whitespace-nowrap">
-                                  <ChevronRight
-                                    className={cn(
-                                      "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
-                                      isSecOpen && "rotate-90",
-                                    )}
-                                  />
-                                </td>
-                                <td className="px-3 py-1.5 whitespace-nowrap">
-                                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
-                                    {sec.groups.length}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-1.5" />
-                                <td className="px-3 py-1.5 whitespace-nowrap">
-                                  <Badge variant={sec.side === "SELL" ? "destructive" : "success"}>{sec.side}</Badge>
-                                </td>
-                                <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap">
-                                  {sec.symbol}
-                                </td>
-                                <td className="px-3 py-1.5" />
-                                <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(sec.qty)}</td>
-                                <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap" colSpan={2}>
-                                  {sec.avgFillWeighted != null ? fmtMoney(sec.avgFillWeighted) : "—"}
-                                </td>
-                                <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
-                                  {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
-                                </td>
-                                <td className="px-3 py-1.5" colSpan={6} />
-                              </tr>
-                              {isSecOpen &&
-                                sec.groups.map((g) => (
-                                  <GroupRow
-                                    key={g.parent.id}
-                                    g={g}
-                                    lookupLast={lookupLast}
-                                    expanded={expanded}
-                                    toggleExpanded={toggleGroupExpanded}
-                                    actions={orderActions}
-                                  />
-                                ))}
-                            </React.Fragment>
-                          );
-                        })}
-                        {!isFlatBlock ? <tr>
-                          <td colSpan={COLS} className="p-0">
-                            <div className="space-y-1.5 border-t border-border/30 bg-card/20 px-4 py-3">
-                              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                                Investors in {strategyKey}
-                                {selectedInvestor ? (
-                                  <span className="ml-2 normal-case text-foreground">— filtered to {selectedInvestor}</span>
-                                ) : (
-                                  <span className="ml-2 normal-case text-muted-foreground/70">
-                                    (click a row to see this client&apos;s individual fills)
-                                  </span>
-                                )}
-                              </div>
-                              <InvestorFilterTable
-                                investors={investors}
-                                selectedKey={selectedInvestor}
-                                onSelect={(key) =>
-                                  setSelectedInvestorByStrategy((p) => ({
-                                    ...p,
-                                    [strategyKey]: p[strategyKey] === key ? null : key,
-                                  }))
-                                }
-                              />
-                            </div>
-                          </td>
-                        </tr> : null}
+                        {block.groups.map((g) => (
+                          <GroupRow
+                            key={g.parent.id}
+                            g={g}
+                            lookupLast={lookupLast}
+                            expanded={expanded}
+                            toggleExpanded={toggleGroupExpanded}
+                            actions={orderActions}
+                          />
+                        ))}
                       </>
                     )}
                   </React.Fragment>
