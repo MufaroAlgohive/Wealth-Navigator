@@ -1489,9 +1489,20 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
           fills: [{ symbol: row.symbol, qty: row.qty, avg_fill_price_cents: Math.round(priceRands * 100), timestamp: new Date().toISOString() }],
         }),
       });
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        settlement?: { attempted: number; ok: number; failed: Array<{ error?: string }> };
+      };
       if (!res.ok || body.ok === false) {
         setFillError((p) => ({ ...p, [row.id]: body.error ?? `Fill returned ${res.status}` }));
+      } else if (body.settlement && body.settlement.failed.length > 0) {
+        // Fill itself succeeded, but the auto-settlement call to MyMintAdmin
+        // failed — surface it rather than silently leaving the holding open.
+        setFillError((p) => ({
+          ...p,
+          [row.id]: `Filled, but auto-settlement failed: ${body.settlement!.failed[0]?.error ?? "unknown error"}`,
+        }));
       }
     } catch (err) {
       setFillError((p) => ({ ...p, [row.id]: err instanceof Error ? err.message : String(err) }));
