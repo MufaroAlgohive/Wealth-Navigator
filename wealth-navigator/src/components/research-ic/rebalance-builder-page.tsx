@@ -599,7 +599,8 @@ export function RebalanceBuilderPage({
         <select
           value={strategyId}
           onChange={(e) => setStrategyId(e.target.value)}
-          className="rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-2 text-sm outline-none focus:border-primary/50"
+          style={{ colorScheme: "dark" }}
+          className="rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50"
         >
           {strategies.length === 0 && <option value="">Loading strategies…</option>}
           {strategies.map((s) => (
@@ -1288,7 +1289,8 @@ function TradeSequencePanel({
                   const meta = buyUniverse.find((u) => u.symbol === e.target.value);
                   if (meta) onSelectBuyInstrument(meta.symbol, meta.name, meta.priceCents);
                 }}
-                className="min-w-[260px] flex-1 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
+                style={{ colorScheme: "dark" }}
+                className="min-w-[260px] flex-1 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs text-foreground outline-none focus:border-primary/50"
               >
                 <option value="">
                   {buyUniverseLoading
