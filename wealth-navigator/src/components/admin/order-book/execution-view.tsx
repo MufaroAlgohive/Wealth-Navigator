@@ -709,7 +709,7 @@ function GroupRow({
         </td>
         <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtPct(r.filled_pct)}</td>
         <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
-          <div className="flex flex-col items-start gap-0.5">
+          <div className="flex items-center gap-1">
             <span>{fmtMoney(r.limit_price)}</span>
             {r.order_type ? (
               <span
