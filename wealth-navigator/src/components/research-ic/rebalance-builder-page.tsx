@@ -953,9 +953,30 @@ function FeeProceedsBreakdown({
   const reserveAfter = investors.reduce((s, inv) => s + (inv.reserveAfterCents || 0), 0);
   const feeShortfall = totals.feeShortfallCents ?? 0;
   const residualAfter = proceedsMode === "liquidate" ? totals.strategyCashAfterCents : totals.cashAfterCents;
+  const shortfallInvestors = investors.filter((inv) => inv.shortfall);
+  const cashOk = totals.cashOk ?? true;
 
   return (
     <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-4">
+      {!cashOk ? (
+        <div className="rounded-xl border border-[hsl(var(--down)/0.4)] bg-[hsl(var(--down)/0.08)] p-4 text-xs">
+          <p className="font-semibold text-down">
+            Fees exceed what {shortfallInvestors.length === 1 ? "this client" : "these clients"} can absorb —
+            commit is blocked.
+          </p>
+          <p className="mt-1 text-foreground/80">
+            Sale proceeds don't cover the fees, and the shortfall isn't fully covered by their 8% execution
+            reserve either — the remainder would have to reduce invested portfolio value. This is never charged
+            to the client directly; the sequence simply can't commit until it's resolved (reduce the trade size,
+            or wait for reserve to rebuild).
+          </p>
+          {shortfallInvestors.length ? (
+            <p className="mt-1.5 font-medium text-down">
+              Affected: {shortfallInvestors.map((inv) => inv.name).join(", ")}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
         <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
           <Info className="h-3.5 w-3.5 text-primary" /> Sell Execution
@@ -1483,13 +1504,15 @@ function TradeSequencePanel({
           )}
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
             <div>
-              <div className="text-xs font-semibold">
+              <div className={cn("text-xs font-semibold", commitDisabled && "text-down")}>
                 {isExecute ? "Ready to commit this trade sequence?" : "Review the sequence before it goes to the IC"}
               </div>
-              <div className="mt-0.5 text-[10px] text-muted-foreground">
-                {isExecute
-                  ? "Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet."
-                  : "Continue to pick the buy instrument and review the full fee bridge before this is sent to the IC."}
+              <div className={cn("mt-0.5 text-[10px]", commitDisabled ? "font-medium text-down" : "text-muted-foreground")}>
+                {commitDisabled
+                  ? commitTitle
+                  : isExecute
+                    ? "Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet."
+                    : "Continue to pick the buy instrument and review the full fee bridge before this is sent to the IC."}
               </div>
             </div>
             <div className="flex items-center gap-2">
