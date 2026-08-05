@@ -9,7 +9,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, Info, Plus, Rocket, Send, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Info, Plus, Rocket, Send, X } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
@@ -1246,31 +1246,31 @@ function TradeSequencePanel({
         </div>
       ) : null}
       {isExecute && enabled && proceedsMode === "reinvest" ? (
-        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-3">
-          <div>
+        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
+          <div className="flex items-baseline justify-between gap-3">
             <div className="text-xs font-semibold">Buy Execution</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">
-              Net capital: {centsToR(totals?.netProceedsCents)}
+            <div className="text-[11px] text-muted-foreground">
+              Net capital: <span className="font-mono tabular-nums text-foreground/85">{centsToR(totals?.netProceedsCents)}</span>
             </div>
           </div>
-          <div>
-            <label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3">
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Instrument to buy
             </label>
             <input
               value={buySearch}
               onChange={(e) => onBuySearchChange(e.target.value)}
               placeholder="Search by name or symbol…"
-              className="mt-1.5 w-full max-w-md rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
+              className="mt-1.5 block w-full rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
             />
-            <div className="mt-2 flex flex-wrap items-center gap-3">
+            <div className="mt-2.5 flex flex-wrap items-center gap-3">
               <select
                 value={dropdownBuySymbol}
                 onChange={(e) => {
                   const meta = buyUniverse.find((u) => u.symbol === e.target.value);
                   if (meta) onSelectBuyInstrument(meta.symbol, meta.name, meta.priceCents);
                 }}
-                className="min-w-[260px] rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
+                className="min-w-[260px] flex-1 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
               >
                 <option value="">
                   {buyUniverseLoading
@@ -1285,7 +1285,7 @@ function TradeSequencePanel({
                 ))}
               </select>
               {selectedInstrument ? (
-                <span className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
                   Shares
                   <input
                     type="number"
@@ -1296,11 +1296,11 @@ function TradeSequencePanel({
                     placeholder="auto"
                     className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none"
                   />
-                </span>
+                </label>
               ) : null}
             </div>
           </div>
-          <label className="flex items-center gap-2 text-xs text-foreground/85">
+          <label className="mt-3 flex items-center gap-2 text-xs text-foreground/85">
             <input
               type="checkbox"
               checked={applyBuffer}
@@ -1315,9 +1315,10 @@ function TradeSequencePanel({
       {!enabled ? (
         <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
       ) : data?.ok === false ? (
-        <p className="border-l-2 border-down px-5 py-4 text-xs text-down">
-          {data.error ?? "The fee-adjusted impact preview could not be calculated."}
-        </p>
+        <div className="mx-5 my-4 flex items-start gap-2 rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.08)] px-3.5 py-3 text-xs text-down">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{data.error ?? "The fee-adjusted impact preview could not be calculated."}</span>
+        </div>
       ) : loading && investors.length === 0 ? (
         <p className="px-5 py-4 text-caption">Modelling impact…</p>
       ) : investors.length === 0 ? (
