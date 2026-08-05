@@ -46,7 +46,7 @@ import { usePolling } from "@/lib/hooks/use-polling";
 import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 import { allowsMarketRelease, allowsUatSelfFill } from "@/lib/oems/orderbook-lane-actions";
 import { isAmendable, isAwaitingBrokerAck, isCancellable } from "./format";
-import type { InvestorAgg } from "./investor-filter-table";
+import { InvestorFilterTable, type InvestorAgg } from "./investor-filter-table";
 
 export interface ExecutionRow {
   id: string;
@@ -1376,6 +1376,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
   );
 
   const [expandedStrategy, setExpandedStrategy] = React.useState<Record<string, boolean>>({});
+  const [selectedInvestorByStrategy, setSelectedInvestorByStrategy] = React.useState<Record<string, string | null>>({});
 
   const toggleStrategy = (key: string) => setExpandedStrategy((p) => ({ ...p, [key]: !p[key] }));
 
@@ -1861,12 +1862,14 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                   return s + px * g.parent.qty;
                 }, 0);
                 const latestTs = block.groups.reduce((max, g) => Math.max(max, Date.parse(g.parent.ts || "") || 0), 0);
-                // Every strategy block now gets one disclosure level, same as a
-                // gift order: Strategy -> orders directly. The security sub-group
-                // + separate Investors table (previously shown for multi-client
-                // baskets) added a pointless extra click — each order row already
-                // carries its own CLIENT column, so per-investor identity isn't lost.
+                // One disclosure level, same as a gift order: Strategy -> orders
+                // directly (no per-security sub-group). The Investors toggle below
+                // still lets you filter that flat list down to one client's orders.
                 const investors = buildInvestorAgg(block.groups, lookupLast);
+                const selectedInvestor = selectedInvestorByStrategy[strategyKey] ?? null;
+                const visibleGroups = selectedInvestor
+                  ? block.groups.filter((g) => (g.parent.client_account || "—") === selectedInvestor)
+                  : block.groups;
 
                 return (
                   <React.Fragment key={`strategy:${strategyKey}`}>
@@ -1921,7 +1924,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                     </tr>
                     {isStrategyOpen && (
                       <>
-                        {block.groups.map((g) => (
+                        {visibleGroups.map((g) => (
                           <GroupRow
                             key={g.parent.id}
                             g={g}
@@ -1931,6 +1934,36 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                             actions={orderActions}
                           />
                         ))}
+                        {!isGiftOrder && investors.length > 1 ? (
+                          <tr>
+                            <td colSpan={COLS} className="p-0">
+                              <div className="space-y-1.5 border-t border-border/30 bg-card/20 px-4 py-3">
+                                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                  Investors in {strategyKey}
+                                  {selectedInvestor ? (
+                                    <span className="ml-2 normal-case text-foreground">
+                                      — filtered to {selectedInvestor}
+                                    </span>
+                                  ) : (
+                                    <span className="ml-2 normal-case text-muted-foreground/70">
+                                      (click a row to see just that client&apos;s orders)
+                                    </span>
+                                  )}
+                                </div>
+                                <InvestorFilterTable
+                                  investors={investors}
+                                  selectedKey={selectedInvestor}
+                                  onSelect={(key) =>
+                                    setSelectedInvestorByStrategy((p) => ({
+                                      ...p,
+                                      [strategyKey]: p[strategyKey] === key ? null : key,
+                                    }))
+                                  }
+                                />
+                              </div>
+                            </td>
+                          </tr>
+                        ) : null}
                       </>
                     )}
                   </React.Fragment>
