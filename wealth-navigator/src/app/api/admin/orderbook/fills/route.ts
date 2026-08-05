@@ -204,19 +204,26 @@ export async function POST(req: Request) {
     const fill = fills.find((f) => f.symbol === row.symbol);
     if (!fill) continue;
     const qty = Number(fill.qty) || 0;
-    const avgFillRands = (Number(fill.avg_fill_price_cents) || 0) / 100;
+    const avgFillCents = Math.round(Number(fill.avg_fill_price_cents) || 0);
+    const avgFillRands = avgFillCents / 100;
     const totalQty = Number(row.quantity) || 0;
 
+    // `payload.avgPx` / `result_payload.avgFillPrice` are read as CENTS
+    // everywhere else (execution/route.ts, order-books/route.ts — matching
+    // the real IRESS convention of quoting the JSE in cents), so they MUST be
+    // written in cents here too, not rands. Storing rands here previously
+    // made every UAT self-fill display ~100x too small (a R52.50 fill showed
+    // as R0.53, with slip/P&L inheriting the same error downstream).
     const newPayload: Record<string, unknown> = {
       ...row.payload,
       filled: qty,
-      avgPx: avgFillRands,
+      avgPx: avgFillCents,
       lastFillAt: fill.timestamp ?? now,
     };
 
     const newResult: Record<string, unknown> = {
       ...row.result_payload,
-      avgFillPrice: avgFillRands,
+      avgFillPrice: avgFillCents,
       slippageBps:
         num(row.payload?.limitPrice) != null
           ? Math.round(((num(row.payload?.limitPrice) ?? 0) - avgFillRands) * 10000) /

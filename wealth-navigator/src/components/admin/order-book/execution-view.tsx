@@ -568,7 +568,11 @@ function buildInvestorAgg(groups: GroupedRow[], lookupLast: (symbol: string) => 
     const r = g.parent;
     const key = r.client_account && r.client_account.trim().length > 0 ? r.client_account : "—";
     const last = lookupLast(r.symbol);
-    const px = typeof last === "number" && Number.isFinite(last) ? last : (r.avg_fill_price ?? r.limit_price ?? 0);
+    // A live price of exactly 0 is never real — the intraday feed has been
+    // deliberately stalled since 2026-07-25 and leaves stale zero-value rows
+    // instead of no row at all, so treat 0 the same as "no live price" and
+    // fall back to the actual fill/limit price rather than zeroing it out.
+    const px = typeof last === "number" && Number.isFinite(last) && last > 0 ? last : (r.avg_fill_price ?? r.limit_price ?? 0);
     const marketValue = px * r.qty;
     const existing = m.get(key);
     if (existing) {
@@ -624,8 +628,13 @@ function GroupRow({
   actions: OrderActions;
 }) {
   const r = g.parent;
-  const liveLast = lookupLast(r.symbol);
-  const effectiveLast = typeof liveLast === "number" && Number.isFinite(liveLast) ? liveLast : r.avg_fill_price;
+  const liveLastRaw = lookupLast(r.symbol);
+  // A live price of exactly 0 is never real — the intraday feed has been
+  // deliberately stalled since 2026-07-25 and leaves stale zero-value rows
+  // instead of no row at all. Treat 0 as "no live price" everywhere it's
+  // used here, or it silently corrupts the fill-based slip/P&L math below.
+  const liveLast = typeof liveLastRaw === "number" && Number.isFinite(liveLastRaw) && liveLastRaw > 0 ? liveLastRaw : null;
+  const effectiveLast = liveLast ?? r.avg_fill_price;
   const liveSlipCents =
     r.limit_price != null && typeof effectiveLast === "number" && Number.isFinite(effectiveLast)
       ? Math.round((r.limit_price - effectiveLast) * 100)
