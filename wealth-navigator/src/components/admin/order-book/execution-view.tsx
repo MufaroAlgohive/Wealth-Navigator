@@ -1899,6 +1899,11 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                 }, 0);
                 const latestTs = block.groups.reduce((max, g) => Math.max(max, Date.parse(g.parent.ts || "") || 0), 0);
                 const investors = buildInvestorAgg(block.groups, lookupLast);
+                // A basket bought by exactly one client has no "which investor"
+                // question to answer, so the security sub-group + Investors table
+                // (built for the many-clients-in-one-book case) is a pointless
+                // third disclosure level — collapse it flat, same as a gift order.
+                const isFlatBlock = isGiftOrder || investors.length <= 1;
                 const selectedInvestor = selectedInvestorByStrategy[strategyKey] ?? null;
                 const visibleGroups = selectedInvestor
                   ? block.groups.filter((g) => (g.parent.client_account || "—") === selectedInvestor)
@@ -1958,7 +1963,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                     </tr>
                     {isStrategyOpen && (
                       <>
-                        {isGiftOrder ? (
+                        {isFlatBlock ? (
                           block.groups.map((g) => (
                             <GroupRow
                               key={g.parent.id}
@@ -2030,7 +2035,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                             </React.Fragment>
                           );
                         })}
-                        {!isGiftOrder ? <tr>
+                        {!isFlatBlock ? <tr>
                           <td colSpan={COLS} className="p-0">
                             <div className="space-y-1.5 border-t border-border/30 bg-card/20 px-4 py-3">
                               <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
