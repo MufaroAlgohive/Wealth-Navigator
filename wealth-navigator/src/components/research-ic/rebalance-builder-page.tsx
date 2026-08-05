@@ -94,7 +94,14 @@ type ImpactResponse = {
 };
 
 function keyOf(h: Holding) {
-  return h.ticker.toUpperCase();
+  // Must match on the bare symbol, not the raw ticker: baseline holdings
+  // (from the strategy's stored composition) carry the ".JO"/".JSE" suffix,
+  // but the buy-instrument dropdown's universe is bare-symbol only (see
+  // `buyUniverse` below). Comparing suffixed vs bare made every buy of an
+  // instrument already in the model register as a brand-new "add" instead
+  // of an "increase" — which the impact API correctly rejects, since an
+  // "add" is only valid when the symbol has zero current model units.
+  return bare(h.ticker);
 }
 
 /** "MTN.JO" / " mtn " -> "MTN" (matches the bare-symbol convention `working` uses). */
