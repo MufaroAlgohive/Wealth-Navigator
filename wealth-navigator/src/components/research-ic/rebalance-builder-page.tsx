@@ -484,7 +484,12 @@ export function RebalanceBuilderPage({
   ]);
   const impactQ = useQuery<ImpactResponse>({
     queryKey: ["ric-impact", strategyId, impactSig],
-    enabled: !!strategyId && changes > 0,
+    // Fetches even with zero changes: the "Client impact preview" screen
+    // should show every current holder of this strategy (baseline cash,
+    // reserve, holdings) before the user has proposed any move at all,
+    // not just after — the route already handles an all-"hold" `proposed`
+    // array fine, it just returns side:"none" lines with no fee impact.
+    enabled: !!strategyId,
     queryFn: async () => {
       const res = await fetch("/api/rebalance/impact", {
         method: "POST",
@@ -1014,7 +1019,7 @@ export function RebalanceBuilderPage({
 
       <TradeSequencePanel
         mode={stage}
-        enabled={!!strategyId && changes > 0}
+        enabled={!!strategyId}
         loading={impactQ.isFetching}
         data={impactQ.data}
         strategyName={strategyName}
@@ -1933,7 +1938,7 @@ function TradeSequencePanel({
         <FeeProceedsBreakdown data={data} proceedsMode={proceedsMode} />
       ) : null}
       {(!isExecute || wizardStage === "review") && (!enabled ? (
-        <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
+        <p className="px-5 py-4 text-caption">Select a strategy to preview client impact.</p>
       ) : data?.ok === false ? (
         <div className="mx-5 my-4 flex items-start gap-2 rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.08)] px-3.5 py-3 text-xs text-down">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
