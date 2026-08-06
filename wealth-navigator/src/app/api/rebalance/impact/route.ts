@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import {
+  type ModelUnitAction,
   calculateModelUnitImpact,
   fullModelLots,
-  type ModelUnitAction,
 } from "@/lib/rebalance/model-unit-impact";
 import { calculateProceedsBridge } from "@/lib/rebalance/proceeds";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
@@ -61,9 +61,7 @@ export async function POST(req: Request) {
   const strategyId = typeof body.strategy_id === "string" ? body.strategy_id.trim() : "";
   const strategyName = typeof body.strategy_name === "string" ? body.strategy_name.trim() : "";
   const proceedsMode =
-    body.proceeds_mode === "reinvest" || body.proceeds_mode === "liquidate"
-      ? body.proceeds_mode
-      : null;
+    body.proceeds_mode === "reinvest" || body.proceeds_mode === "liquidate" ? body.proceeds_mode : null;
   const proposedRaw = Array.isArray(body.proposed) ? (body.proposed as ProposedLine[]) : [];
   const currentRaw = Array.isArray(body.current) ? (body.current as CurrentModelLine[]) : [];
   if (!strategyId && !strategyName) {
@@ -139,7 +137,13 @@ export async function POST(req: Request) {
   try {
     db = createRetailServiceRoleClient();
   } catch {
-    return NextResponse.json({ ok: true, scope: "unavailable", investors: [], totals: null, notice: "RETAIL database not configured." });
+    return NextResponse.json({
+      ok: true,
+      scope: "unavailable",
+      investors: [],
+      totals: null,
+      notice: "RETAIL database not configured.",
+    });
   }
 
   // Fee estimates use the exact CRM/App Settings contract. Never silently
@@ -216,7 +220,14 @@ export async function POST(req: Request) {
       scope: investorEnvironment.toLowerCase(),
       strategy: { id: strategyId || null, name: strategyName || null },
       investors: [],
-      totals: { investorCount: 0, buyCents: 0, sellCents: 0, residualCents: 0, reserveCents: 0, cashOk: true },
+      totals: {
+        investorCount: 0,
+        buyCents: 0,
+        sellCents: 0,
+        residualCents: 0,
+        reserveCents: 0,
+        cashOk: true,
+      },
       notice: `No ${investorEnvironment} clients hold this strategy yet.`,
     });
   }
@@ -224,7 +235,9 @@ export async function POST(req: Request) {
   // Active BUY holdings for this strategy, bounded to eligible clients.
   let holdRes = await db
     .from("stock_holdings_c")
-    .select("user_id, security_id, quantity, strategy_id, strategy_name_snapshot, transaction_id, avg_fill, Expected_fill")
+    .select(
+      "user_id, security_id, quantity, strategy_id, strategy_name_snapshot, transaction_id, avg_fill, Expected_fill, Fill_date",
+    )
     .eq("is_active", true)
     .eq("trade_side", "BUY")
     .in("user_id", eligibleIds)
@@ -232,7 +245,9 @@ export async function POST(req: Request) {
   if ((!holdRes.data || holdRes.data.length === 0) && strategyName) {
     holdRes = await db
       .from("stock_holdings_c")
-      .select("user_id, security_id, quantity, strategy_id, strategy_name_snapshot, transaction_id, avg_fill, Expected_fill")
+      .select(
+        "user_id, security_id, quantity, strategy_id, strategy_name_snapshot, transaction_id, avg_fill, Expected_fill, Fill_date",
+      )
       .eq("is_active", true)
       .eq("trade_side", "BUY")
       .in("user_id", eligibleIds)
@@ -248,7 +263,13 @@ export async function POST(req: Request) {
     transaction_id: string | null;
     avg_fill: number | null;
     Expected_fill: number | null;
+    Fill_date: string | null;
   }>;
+  // Same "parked" signal as reconcile-parked-holdings.ts (see its docstring
+  // for the caveat) — surfaced here purely for the UI to highlight these
+  // clients, since they get rebalanced fee-free on IC approval instead of a
+  // real trade like everyone else.
+  const parkedUserIds = new Set(holdings.filter((h) => !h.Fill_date).map((h) => h.user_id));
 
   // (3) Resolve securities: held ids + proposed symbols → price (cents).
   const heldSecIds = [...new Set(holdings.map((h) => h.security_id).filter(Boolean))];
@@ -326,7 +347,9 @@ export async function POST(req: Request) {
   // Unused execution reserve is attached to the purchase transactions behind
   // the holdings. Settlement consumes this reserve before sale/buy fees reduce
   // the proceeds available for the replacement trade.
-  const transactionIds = [...new Set(holdings.map((holding) => holding.transaction_id).filter(Boolean))] as string[];
+  const transactionIds = [
+    ...new Set(holdings.map((holding) => holding.transaction_id).filter(Boolean)),
+  ] as string[];
   const reserveByUser = new Map<string, number>();
   if (transactionIds.length) {
     const transactionRes = await db
@@ -356,10 +379,7 @@ export async function POST(req: Request) {
   // (5) Per-investor model-unit impact. A model decrease always produces a
   // client SELL and an increase always produces a BUY. Existing odd shares are
   // retained on partial changes; a full remove exits the entire holding.
-  const byUser = new Map<
-    string,
-    Map<string, { quantity: number; costValueCents: number }>
-  >();
+  const byUser = new Map<string, Map<string, { quantity: number; costValueCents: number }>>();
   for (const h of holdings) {
     const meta = secById.get(h.security_id);
     if (!meta) continue;
@@ -368,8 +388,7 @@ export async function POST(req: Request) {
     const referencePriceCents = priceCentsForSymbol(meta.symbol) || meta.lastCents;
     const costPriceCents =
       rawFill > 0 && rawFill < referencePriceCents / 5 ? Math.round(rawFill * 100) : Math.round(rawFill);
-    const m =
-      byUser.get(h.user_id) ?? new Map<string, { quantity: number; costValueCents: number }>();
+    const m = byUser.get(h.user_id) ?? new Map<string, { quantity: number; costValueCents: number }>();
     const current = m.get(meta.symbol) ?? { quantity: 0, costValueCents: 0 };
     m.set(meta.symbol, {
       quantity: current.quantity + quantity,
@@ -405,10 +424,9 @@ export async function POST(req: Request) {
 
     const changedExistingLots = [...targets.entries()]
       .filter(([, target]) => target.action !== "hold" && target.action !== "add")
-      .map(([symbol]) => fullModelLots(
-        positions.get(symbol)?.quantity ?? 0,
-        currentModelUnits.get(symbol) ?? 0,
-      ))
+      .map(([symbol]) =>
+        fullModelLots(positions.get(symbol)?.quantity ?? 0, currentModelUnits.get(symbol) ?? 0),
+      )
       .filter((lots) => lots > 0);
     const allModelLots = [...currentModelUnits.entries()]
       .map(([symbol, units]) => fullModelLots(positions.get(symbol)?.quantity ?? 0, units))
@@ -517,10 +535,13 @@ export async function POST(req: Request) {
       ...bridge,
       lines: lines.sort((a, b) => Number(b.valueCents) - Number(a.valueCents)),
       driftLines,
+      parked: parkedUserIds.has(userId),
     });
   }
 
-  investors.sort((a, b) => Number(b.buyCents) + Number(b.sellCents) - (Number(a.buyCents) + Number(a.sellCents)));
+  investors.sort(
+    (a, b) => Number(b.buyCents) + Number(b.sellCents) - (Number(a.buyCents) + Number(a.sellCents)),
+  );
 
   const totals = {
     investorCount: investors.length,
