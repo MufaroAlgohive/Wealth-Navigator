@@ -2146,14 +2146,17 @@ function TradeSequencePanel({
                 role="switch"
                 aria-checked={splitIncreaseLegs}
                 onClick={() => onSplitIncreaseLegsChange(!splitIncreaseLegs)}
-                className={cn(
-                  "relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors",
-                  splitIncreaseLegs ? "bg-primary" : "bg-[hsl(var(--foreground)/0.15)]",
-                )}
+                className="relative mt-0.5 inline-flex h-5 w-9 shrink-0 appearance-none items-center rounded-full border-0 bg-transparent p-0 outline-none"
               >
                 <span
                   className={cn(
-                    "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform",
+                    "absolute inset-0 rounded-full transition-colors",
+                    splitIncreaseLegs ? "bg-primary" : "bg-[hsl(var(--foreground)/0.15)]",
+                  )}
+                />
+                <span
+                  className={cn(
+                    "relative h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
                     splitIncreaseLegs ? "translate-x-[18px]" : "translate-x-0.5",
                   )}
                 />
