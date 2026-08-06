@@ -9,7 +9,7 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDown, ArrowUp, Info, Plus, Rocket, Send, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, ChevronDown, Info, Plus, Rocket, Send, X } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
@@ -1019,7 +1019,8 @@ export function RebalanceBuilderPage({
         data={impactQ.data}
         strategyName={strategyName}
         legs={wizardLegs}
-        standaloneIncreaseLegs={splitIncreaseLegs ? [] : standaloneIncreaseLegs}
+        standaloneIncreaseLegs={standaloneIncreaseLegs}
+        unsplitIncreaseLegs={splitIncreaseLegs ? [] : standaloneIncreaseLegs}
         splitIncreaseLegs={splitIncreaseLegs}
         onSplitIncreaseLegsChange={setSplitIncreaseLegs}
         wizardStage={wizardStage}
@@ -1537,6 +1538,7 @@ function IncreaseLegStepView({
   legIndex,
   legCount,
   availablePoolCents,
+  investors,
   onPrev,
   onNext,
 }: {
@@ -1544,13 +1546,64 @@ function IncreaseLegStepView({
   legIndex: number;
   legCount: number;
   availablePoolCents: number;
+  // Only the investors this leg actually affects (i.e. hold a buy line for
+  // leg.symbol) — used to show each client's own cash + reserve impact.
+  investors: ImpactInvestor[];
   onPrev: () => void;
   onNext: () => void;
 }) {
   const affordable = leg.breakdown.totalCostCents <= availablePoolCents;
+  const [clientsOpen, setClientsOpen] = React.useState(false);
 
   return (
     <div>
+      {investors.length > 0 ? (
+        <div className="border-b border-[hsl(var(--glass-border))]">
+          <button
+            type="button"
+            onClick={() => setClientsOpen((v) => !v)}
+            className="flex w-full items-center justify-between px-5 py-3 text-left text-xs font-semibold hover:bg-[hsl(var(--foreground)/0.03)]"
+          >
+            <span>
+              Per-client cash impact <span className="font-normal text-muted-foreground">· {investors.length} client{investors.length === 1 ? "" : "s"}</span>
+            </span>
+            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", clientsOpen && "rotate-180")} />
+          </button>
+          {clientsOpen ? (
+            <div className="px-5 pb-4">
+              <p className="mb-2 text-[10px] text-muted-foreground">
+                "Now" is each client's cash + reserve before any leg in this sequence runs. "After full
+                sequence" is what it will be once every leg (not just this one) has been committed — there's
+                no separate "after this leg only" figure, since legs settle together in one commit.
+              </p>
+              <div className="overflow-x-auto rounded-lg border border-[hsl(var(--glass-border))]">
+                <table className="w-full min-w-[520px] text-[11px]">
+                  <thead className="bg-[hsl(var(--foreground)/0.03)] text-muted-foreground">
+                    <tr>
+                      <th className="px-3 py-1.5 text-left font-medium">Client</th>
+                      <th className="px-3 py-1.5 text-right font-medium">CA now</th>
+                      <th className="px-3 py-1.5 text-right font-medium">CA after full sequence</th>
+                      <th className="px-3 py-1.5 text-right font-medium">Reserve now</th>
+                      <th className="px-3 py-1.5 text-right font-medium">Reserve after full sequence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {investors.map((inv) => (
+                      <tr key={inv.user_id} className="border-t border-[hsl(var(--glass-border))]">
+                        <td className="px-3 py-1.5 font-medium">{inv.name}</td>
+                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{centsToR(inv.residualCents)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{centsToR(inv.cashAfterCents)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{centsToR(inv.reserveCents)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{centsToR(inv.reserveAfterCents)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
         <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
           <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
@@ -1614,6 +1667,7 @@ function TradeSequencePanel({
   strategyName,
   legs,
   standaloneIncreaseLegs,
+  unsplitIncreaseLegs,
   splitIncreaseLegs,
   onSplitIncreaseLegsChange,
   wizardStage,
@@ -1647,10 +1701,13 @@ function TradeSequencePanel({
   data: ImpactResponse | undefined;
   strategyName: string;
   legs: Leg[];
-  // Direct compose-level increases NOT currently in `legs` — populated only
-  // when splitIncreaseLegs is off, so the review screen can still mention
-  // them (read-only) instead of hiding them entirely.
+  // Every direct compose-level increase with no matching sell, regardless of
+  // splitIncreaseLegs — always populated, drives the toggle's own visibility
+  // and label so the control doesn't vanish once switched on.
   standaloneIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
+  // Same set, but empty whenever splitIncreaseLegs is on (those increases are
+  // in `legs` instead) — used only by the read-only Review-screen mention.
+  unsplitIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
   splitIncreaseLegs: boolean;
   onSplitIncreaseLegsChange: (value: boolean) => void;
   wizardStage: "leg" | "review";
@@ -1748,7 +1805,7 @@ function TradeSequencePanel({
           </div>
           <div className="text-right">
             <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              Strategy CA after
+              Strategy CA after full sequence
             </div>
             <div className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-up">
               {loading
@@ -1799,11 +1856,12 @@ function TradeSequencePanel({
                 .filter((l): l is Extract<Leg, { kind: "increase" }> => l.kind === "increase")
                 .reduce((s, l) => s + l.breakdown.totalCostCents, 0),
           )}
+          investors={investors.filter((inv) => inv.lines.some((l) => l.side === "buy" && l.symbol === currentLeg.symbol))}
           onPrev={onPrevLeg}
           onNext={() => onNextLeg(legs.length)}
         />
       ) : null}
-      {isExecute && wizardStage === "review" && (legs.length > 0 || standaloneIncreaseLegs.length > 0) ? (
+      {isExecute && wizardStage === "review" && (legs.length > 0 || unsplitIncreaseLegs.length > 0) ? (
         <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-2">
           <div className="text-xs font-semibold">Sequence — {legs.length} leg{legs.length === 1 ? "" : "s"}</div>
           <div className="space-y-1.5">
@@ -1850,12 +1908,12 @@ function TradeSequencePanel({
               );
             })}
           </div>
-          {standaloneIncreaseLegs.length > 0 ? (
+          {unsplitIncreaseLegs.length > 0 ? (
             <div className="mt-2 space-y-1.5 border-t border-[hsl(var(--glass-border))] pt-2">
               <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
                 Also increasing (funded from CA + reserve, not a separate leg)
               </p>
-              {standaloneIncreaseLegs.map((leg) => (
+              {unsplitIncreaseLegs.map((leg) => (
                 <div
                   key={leg.symbol}
                   className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-3 py-2 text-xs"
@@ -2077,13 +2135,24 @@ function TradeSequencePanel({
           </div>
           )}
           {!isExecute && standaloneIncreaseLegs.length > 0 ? (
-            <label className="flex items-start gap-2 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-3 text-xs">
-              <input
-                type="checkbox"
-                checked={splitIncreaseLegs}
-                onChange={(e) => onSplitIncreaseLegsChange(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-[hsl(var(--glass-border))] accent-primary"
-              />
+            <div className="flex items-start gap-3 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-3 text-xs">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={splitIncreaseLegs}
+                onClick={() => onSplitIncreaseLegsChange(!splitIncreaseLegs)}
+                className={cn(
+                  "relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors",
+                  splitIncreaseLegs ? "bg-primary" : "bg-[hsl(var(--foreground)/0.15)]",
+                )}
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform",
+                    splitIncreaseLegs ? "translate-x-[18px]" : "translate-x-0.5",
+                  )}
+                />
+              </button>
               <span>
                 <span className="font-medium">
                   Split {standaloneIncreaseLegs.map((l) => l.symbol).join(", ")} into{" "}
@@ -2091,10 +2160,11 @@ function TradeSequencePanel({
                 </span>
                 <span className="block text-[10px] text-muted-foreground">
                   Off (default): stays paired into the combined sequence, funded from strategy CA + reserve, no
-                  separate step. On: each increase gets its own wizard step and its own affordability check.
+                  separate step. On: each increase gets its own wizard step and its own affordability check. Safe
+                  to flip back off at any point before you commit — it just changes how these legs are grouped.
                 </span>
               </span>
-            </label>
+            </div>
           ) : null}
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
             <div>
