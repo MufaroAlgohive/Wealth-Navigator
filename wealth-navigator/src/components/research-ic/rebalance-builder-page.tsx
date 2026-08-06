@@ -578,6 +578,15 @@ export function RebalanceBuilderPage({
     }),
     ...(splitIncreaseLegs ? standaloneIncreaseLegs : []),
   ];
+  // Unambiguous single swap (one sell funding one increase) — auto-pair them
+  // in the sell leg's wizard step instead of making the user manually
+  // re-pick what they already staged in compose. Multiple sells and/or
+  // increases are ambiguous about which funds which, so no auto-pairing
+  // there — the user either picks explicitly or turns splitIncreaseLegs on.
+  const impliedPairedIncrease: Extract<Leg, { kind: "increase" }> | null =
+    !splitIncreaseLegs && sellActions.length === 1 && standaloneIncreaseLegs.length === 1
+      ? (standaloneIncreaseLegs[0] ?? null)
+      : null;
 
   // Picking an instrument for ONE leg — auto-sized off that leg's own net
   // proceeds (legSellBreakdown), never the pooled total across every sell.
@@ -1026,6 +1035,7 @@ export function RebalanceBuilderPage({
         legs={wizardLegs}
         standaloneIncreaseLegs={standaloneIncreaseLegs}
         unsplitIncreaseLegs={splitIncreaseLegs ? [] : standaloneIncreaseLegs}
+        impliedPairedIncrease={impliedPairedIncrease}
         splitIncreaseLegs={splitIncreaseLegs}
         onSplitIncreaseLegsChange={setSplitIncreaseLegs}
         wizardStage={wizardStage}
@@ -1313,6 +1323,7 @@ function LegStepView({
   applyBuffer,
   onApplyBufferChange,
   otherIncreaseLegs,
+  impliedPairedIncrease,
   onChooseMode,
   onSelectBuyInstrument,
   onSharesOverride,
@@ -1337,6 +1348,13 @@ function LegStepView({
   // this leg's proceeds) — surfaced here so the leg screen doesn't look like
   // this sell is happening in isolation when it isn't.
   otherIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
+  // When there's exactly one sell and one standalone increase staged (and
+  // splitIncreaseLegs is off), they're auto-paired: this leg defaults to
+  // Reinvest into that increase without the user having to re-pick it from
+  // the dropdown — restores the "sell rebalances into the buy automatically"
+  // behavior for the common single swap case. null whenever the pairing is
+  // ambiguous (multiple sells and/or increases) or already overridden.
+  impliedPairedIncrease: Extract<Leg, { kind: "increase" }> | null;
   onChooseMode: (mode: "reinvest" | "liquidate") => void;
   onSelectBuyInstrument: (symbol: string, name: string, priceCents: number) => void;
   onSharesOverride: (shares: number) => void;
@@ -1365,7 +1383,14 @@ function LegStepView({
   const buyCustodyCents = buyPick ? custodyFeeCents * leg.breakdown.investorCount : 0;
   const buyCostCents = buyGrossCents + buyBrokerageCents + buyCustodyCents;
   const affordable = !buyPick || buyCostCents <= leg.breakdown.netCents;
-  const resolved = choice === "liquidate" || (choice === "reinvest" && !!buyPick && affordable);
+  // Auto-paired unless the user has made an explicit choice for this leg —
+  // any explicit choice (even re-picking the same instrument) takes over.
+  const isAutoPaired = choice === undefined && !!impliedPairedIncrease;
+  const autoAffordable = isAutoPaired
+    ? (impliedPairedIncrease?.breakdown.totalCostCents ?? 0) <= leg.breakdown.netCents
+    : true;
+  const resolved =
+    choice === "liquidate" || (choice === "reinvest" && !!buyPick && affordable) || (isAutoPaired && autoAffordable);
   const buySearchQ = buySearch.trim().toLowerCase();
   const filteredBuyUniverse = buySearchQ
     ? buyUniverse.filter((u) => `${u.symbol} ${u.name}`.toLowerCase().includes(buySearchQ))
@@ -1405,7 +1430,7 @@ function LegStepView({
           onClick={() => onChooseMode("reinvest")}
           className={cn(
             "rounded-full border px-3 py-1 text-[11px] font-semibold transition",
-            choice === "reinvest"
+            choice === "reinvest" || isAutoPaired
               ? "border-primary/50 bg-primary/15 text-primary"
               : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
           )}
@@ -1424,7 +1449,59 @@ function LegStepView({
         >
           Liquidate to Cash
         </button>
+        {isAutoPaired ? (
+          <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+            Auto-paired
+          </span>
+        ) : null}
       </div>
+
+      {isAutoPaired && impliedPairedIncrease ? (
+        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
+          <div className="flex items-baseline justify-between gap-3">
+            <div className="text-xs font-semibold">Buy Execution</div>
+            <div className="text-[11px] text-muted-foreground">
+              Net capital: <span className="font-mono tabular-nums text-foreground/85">{centsToR(leg.breakdown.netCents)}</span>
+            </div>
+          </div>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Automatically paired — you already staged an increase in {impliedPairedIncrease.symbol} with nothing
+            else to fund it. Adjust the share count from the compose table, or{" "}
+            <button
+              type="button"
+              onClick={() => onChooseMode("reinvest")}
+              className="font-medium text-primary underline underline-offset-2"
+            >
+              pick a different instrument instead
+            </button>
+            .
+          </p>
+          <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3 space-y-2">
+            <BridgeRow label="Total Shares" value={impliedPairedIncrease.breakdown.qty.toLocaleString()} />
+            <BridgeRow label="Execution Price" value={centsToR(impliedPairedIncrease.breakdown.priceCents)} />
+            <BridgeRow label="Gross Cost" value={centsToR(impliedPairedIncrease.breakdown.grossCents)} />
+            <BridgeRow label="Brokerage" value={centsToR(impliedPairedIncrease.breakdown.brokerageCents)} deduct />
+            <BridgeRow
+              label={`Custody Fee (x${impliedPairedIncrease.breakdown.investorCount})`}
+              value={centsToR(impliedPairedIncrease.breakdown.custodyCents)}
+              deduct
+            />
+            <div className="border-t border-[hsl(var(--glass-border))] pt-2">
+              <BridgeRow label="Total Cost" value={centsToR(impliedPairedIncrease.breakdown.totalCostCents)} bold />
+            </div>
+          </div>
+          <div
+            className={cn(
+              "mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-medium",
+              autoAffordable ? "bg-[hsl(var(--up)/0.1)] text-up" : "bg-[hsl(var(--down)/0.1)] text-down",
+            )}
+          >
+            {autoAffordable
+              ? `Covered — ${centsToR(leg.breakdown.netCents - impliedPairedIncrease.breakdown.totalCostCents)} left over from this leg's proceeds (fees included).`
+              : `Not enough — this costs ${centsToR(impliedPairedIncrease.breakdown.totalCostCents)} with fees but only ${centsToR(leg.breakdown.netCents)} is available. Reduce ${impliedPairedIncrease.symbol}'s share count on the compose table to proceed.`}
+          </div>
+        </div>
+      ) : null}
 
       {otherIncreaseLegs.length > 0 ? (
         <div className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-5 py-2.5 text-[11px] text-muted-foreground">
@@ -1690,6 +1767,7 @@ function TradeSequencePanel({
   legs,
   standaloneIncreaseLegs,
   unsplitIncreaseLegs,
+  impliedPairedIncrease,
   splitIncreaseLegs,
   onSplitIncreaseLegsChange,
   wizardStage,
@@ -1730,6 +1808,9 @@ function TradeSequencePanel({
   // Same set, but empty whenever splitIncreaseLegs is on (those increases are
   // in `legs` instead) — used only by the read-only Review-screen mention.
   unsplitIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
+  // The one increase this sequence's lone sell leg auto-pairs with, or null
+  // when there's no unambiguous single swap to auto-pair.
+  impliedPairedIncrease: Extract<Leg, { kind: "increase" }> | null;
   splitIncreaseLegs: boolean;
   onSplitIncreaseLegsChange: (value: boolean) => void;
   wizardStage: "leg" | "review";
@@ -1854,7 +1935,8 @@ function TradeSequencePanel({
           buyUniverseResearchGated={buyUniverseResearchGated}
           applyBuffer={applyBuffer}
           onApplyBufferChange={onApplyBufferChange}
-          otherIncreaseLegs={unsplitIncreaseLegs}
+          otherIncreaseLegs={unsplitIncreaseLegs.filter((l) => l.symbol !== impliedPairedIncrease?.symbol)}
+          impliedPairedIncrease={impliedPairedIncrease}
           onChooseMode={(m) => onChooseLegMode(currentLeg.symbol, m)}
           onSelectBuyInstrument={(buySymbol, name, priceCents) =>
             onSelectLegBuyInstrument(currentLeg.symbol, buySymbol, name, priceCents)
@@ -1908,6 +1990,7 @@ function TradeSequencePanel({
               }
               const choice = legChoiceBySymbol[leg.symbol];
               const buyPick = legBuyBySymbol[leg.symbol];
+              const autoPaired = choice === undefined && impliedPairedIncrease?.symbol === leg.symbol;
               return (
                 <div
                   key={leg.symbol}
@@ -1921,6 +2004,10 @@ function TradeSequencePanel({
                     ) : choice === "reinvest" && buyPick ? (
                       <span className="text-muted-foreground">
                         → bought {buyPick.shares.toLocaleString()} {buyPick.symbol}
+                      </span>
+                    ) : autoPaired && impliedPairedIncrease ? (
+                      <span className="text-muted-foreground">
+                        → auto-paired with {impliedPairedIncrease.symbol} (+{impliedPairedIncrease.breakdown.qty.toLocaleString()})
                       </span>
                     ) : (
                       <span className="text-down">→ unresolved</span>
