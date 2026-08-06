@@ -1984,9 +1984,9 @@ function TradeSequencePanel({
                               className={cn(
                                 "rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
                                 line.side === "buy"
-                                  ? "border-[hsl(var(--down)/0.3)] bg-[hsl(var(--down)/0.08)] text-down"
+                                  ? "border-[hsl(var(--up)/0.3)] bg-[hsl(var(--up)/0.08)] text-up"
                                   : line.side === "sell"
-                                    ? "border-[hsl(var(--up)/0.3)] bg-[hsl(var(--up)/0.08)] text-up"
+                                    ? "border-[hsl(var(--down)/0.3)] bg-[hsl(var(--down)/0.08)] text-down"
                                     : "border-[hsl(var(--glass-border))] bg-muted/30 text-muted-foreground",
                               )}
                             >
