@@ -183,21 +183,28 @@ export function RebalanceBuilderPage({
   const [error, setError] = React.useState<string | null>(null);
 
   // Embedded two-stage trade sequence: "compose" is the editable basket (as
-  // today); "execute" swaps that out for the CRM-style Sell/Buy execution
-  // panel (instrument dropdown + inline fee bridge). Submit to IC only ever
-  // fires from the final Commit button inside "execute".
+  // today); "execute" swaps that out for a per-leg wizard — one sell at a
+  // time, each independently Liquidated or Reinvested and sized off its own
+  // proceeds — followed by a review screen. Submit to IC only ever fires from
+  // the final Commit button on the review screen.
   const [stage, setStage] = React.useState<"compose" | "execute">("compose");
-  const [dropdownBuySymbol, setDropdownBuySymbol] = React.useState<string>("");
-  // Explicit Liquidate-vs-Reinvest choice, made on the execute step — mirrors
-  // CRM's Sell modal offering both "Confirm & Proceed to Buy" and "Liquidate
-  // to Cash" as buttons rather than inferring it from the basket editor.
-  // null until the admin picks one on the execute step.
-  const [sequenceMode, setSequenceMode] = React.useState<"liquidate" | "reinvest" | null>(null);
-  // Buy Execution step (mirrors CRM's rebShowBuyModal): a search box above the
-  // dropdown, and an 8% conservative-price buffer applied to the auto-sized
-  // share count. "Use remaining + wallet credits to buy another security" and
-  // "View Detailed Effect" are CRM features not ported here — see chat.
-  const [buySearch, setBuySearch] = React.useState("");
+  // Wizard: "leg" while stepping through sell 1-of-N..N-of-N, "review" once
+  // every leg has a resolved choice (liquidate, or reinvest + buy picked).
+  const [wizardStage, setWizardStage] = React.useState<"leg" | "review">("leg");
+  const [currentLegIndex, setCurrentLegIndex] = React.useState(0);
+  // Per-leg state, keyed by the SELL symbol that leg is funded by. A leg with
+  // no entry here yet is unresolved (wizard can't advance past it).
+  const [legChoiceBySymbol, setLegChoiceBySymbol] = React.useState<
+    Record<string, "reinvest" | "liquidate">
+  >({});
+  const [legBuyBySymbol, setLegBuyBySymbol] = React.useState<
+    Record<string, { symbol: string; name: string; priceCents: number; shares: number } | null>
+  >({});
+  const [legBuySearchBySymbol, setLegBuySearchBySymbol] = React.useState<Record<string, string>>({});
+  // Buy Execution step (mirrors CRM's rebShowBuyModal): an 8% conservative-
+  // price buffer applied to the auto-sized share count, shared across every
+  // leg for simplicity. "Use remaining + wallet credits to buy another
+  // security" and "View Detailed Effect" are CRM features not ported — see chat.
   const [applyBuffer, setApplyBuffer] = React.useState(true);
 
   // Reset rationale when the basket switches strategies so old text doesn't
@@ -210,9 +217,11 @@ export function RebalanceBuilderPage({
     setWorking(baseline.map((h) => ({ ...h })));
     setAddOpen(false);
     setStage("compose");
-    setDropdownBuySymbol("");
-    setSequenceMode(null);
-    setBuySearch("");
+    setWizardStage("leg");
+    setCurrentLegIndex(0);
+    setLegChoiceBySymbol({});
+    setLegBuyBySymbol({});
+    setLegBuySearchBySymbol({});
     setApplyBuffer(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategyId, compQ.data]);
@@ -326,50 +335,41 @@ export function RebalanceBuilderPage({
   const setAbsoluteShares = (t: string, value: number) =>
     setWorking((prev) => prev.map((h) => (keyOf(h) === t ? { ...h, shares: Math.max(0, Math.floor(value)) } : h)));
   const removeHolding = (t: string) => setWorking((prev) => prev.filter((h) => keyOf(h) !== t));
-  // Trade-sequence dropdown: picking an instrument sets/replaces the single
-  // reinvest destination, auto-sized from net sale proceeds (CRM's
-  // "max-affordable" default) — the admin can still fine-tune via the shares
-  // input next to the dropdown.
-  const chooseBuyInstrument = (symbol: string, name: string, priceCents: number) => {
-    const netProceeds = impactQ.data?.totals?.netProceedsCents ?? 0;
-    const bufferedPriceCents = priceCents * (applyBuffer ? 1.08 : 1);
-    const affordable = bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
-    setWorking((prev) => {
-      const withoutOldPick = dropdownBuySymbol ? prev.filter((h) => keyOf(h) !== dropdownBuySymbol) : prev;
-      const already = withoutOldPick.find((h) => keyOf(h) === symbol);
-      if (already) {
-        return withoutOldPick.map((h) => (keyOf(h) === symbol ? { ...h, shares: affordable } : h));
-      }
-      return [...withoutOldPick, { ticker: symbol, name, shares: affordable }];
+
+  // Combine every leg's chosen buy into one set of rows, summing shares when
+  // two different legs happen to pick the same instrument (rather than one
+  // leg's pick silently overwriting another's).
+  const wizardBuyRows: ProposedHolding[] = React.useMemo(() => {
+    const bySymbol = new Map<string, { name: string; shares: number }>();
+    for (const leg of Object.values(legBuyBySymbol)) {
+      if (!leg) continue;
+      const key = leg.symbol.toUpperCase();
+      const cur = bySymbol.get(key) ?? { name: leg.name, shares: 0 };
+      cur.shares += leg.shares;
+      bySymbol.set(key, cur);
+    }
+    return [...bySymbol.entries()].map(([ticker, { name, shares }]) => {
+      const b = baseByKey.get(ticker);
+      const action: CompAction = !b
+        ? "add"
+        : shares > b.shares
+          ? "increase"
+          : shares < b.shares
+            ? "decrease"
+            : "hold";
+      return {
+        ticker,
+        name,
+        shares,
+        price: priceOf(ticker) ?? undefined,
+        weight: 0,
+        action,
+        researchRef: researchRefFor(ticker),
+        rationale: rationaleBySymbol[ticker] || undefined,
+      };
     });
-    setDropdownBuySymbol(symbol);
-  };
-  // "Liquidate to Cash" choice on the execute step: drop whatever buy leg the
-  // dropdown had staged, so the impact call goes out sell-only.
-  const clearBuyInstrument = () => {
-    if (dropdownBuySymbol) removeHolding(dropdownBuySymbol);
-    setDropdownBuySymbol("");
-  };
-  // "Start Over" on the Buy Execution step (CRM's rebBuyResetBtn): clear the
-  // selection and search without leaving the execute stage.
-  const startOverBuy = () => {
-    clearBuyInstrument();
-    setBuySearch("");
-    setApplyBuffer(true);
-  };
-  // Re-price the auto-computed share count when the buffer toggle changes —
-  // matches CRM recomputing autoBuyPerLot off the buffered price. A manual
-  // shares override afterward still wins until the buffer is toggled again.
-  React.useEffect(() => {
-    if (!dropdownBuySymbol) return;
-    const meta = buyUniverse.find((u) => u.symbol === dropdownBuySymbol);
-    if (!meta) return;
-    const netProceeds = impactQ.data?.totals?.netProceedsCents ?? 0;
-    const bufferedPriceCents = meta.priceCents * (applyBuffer ? 1.08 : 1);
-    const affordable = bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
-    setAbsoluteShares(dropdownBuySymbol, affordable);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyBuffer]);
+  }, [legBuyBySymbol, baseByKey, priceOf, rationaleBySymbol]);
+
   const addHolding = () => {
     const t = addTicker.trim().toUpperCase();
     const sh = Number(addShares);
@@ -428,6 +428,9 @@ export function RebalanceBuilderPage({
         researchRef: researchRefFor(b.ticker),
         rationale: rationaleBySymbol[b.ticker.toUpperCase()] || undefined,
       })),
+    // Buys picked in the per-leg wizard — never written into `working` itself
+    // (see chooseLegBuyInstrument), so they're folded in here instead.
+    ...wizardBuyRows,
   ];
 
   // Per-row gate flags surfaced in the table + Submit button:
@@ -455,10 +458,12 @@ export function RebalanceBuilderPage({
   // reinvested. Increases use only existing strategy CA and execution reserve.
   const inferredProceedsMode: "reinvest" | "liquidate" | null =
     sellActions.length > 0 ? (buyActions.length > 0 ? "reinvest" : "liquidate") : null;
-  // Once the admin has explicitly picked a direction on the execute step,
-  // that choice wins; before that (still composing), fall back to what the
-  // basket editor implies.
-  const effectiveProceedsMode = sequenceMode ?? inferredProceedsMode;
+  // The per-leg wizard resolves each sell independently (liquidate or
+  // reinvest-with-buy), so the overall mode is just whatever that mix
+  // produces — reinvest the moment any leg has a buy, liquidate otherwise.
+  // No separate override needed: `buyActions`/`sellActions` already reflect
+  // every leg's resolved choice via `wizardBuyRows` above.
+  const effectiveProceedsMode = inferredProceedsMode;
   const inferredProceedsDestination = effectiveProceedsMode === "reinvest" ? proposedDestination : "";
 
   // Client impact is read-only and re-modelled immediately whenever proposed
@@ -486,6 +491,78 @@ export function RebalanceBuilderPage({
       return (await res.json().catch(() => ({ ok: false }))) as ImpactResponse;
     },
   });
+
+  // Per-leg sell breakdown (qty, price, gross, fees, net proceeds) computed
+  // directly from the impact response's own per-investor lines, filtered to
+  // one sell symbol — the same math the server's calculateProceedsBridge
+  // uses, just scoped to a single leg instead of the pooled total. This is
+  // what lets each leg size its own buy off its own proceeds, not everyone
+  // else's combined pool.
+  const legSellBreakdown = React.useCallback(
+    (sellSymbol: string) => {
+      const investorsData = impactQ.data?.investors ?? [];
+      const brokerageRate = impactQ.data?.feeConfig?.brokerageRate ?? 0;
+      const custodyFeeCents = impactQ.data?.feeConfig?.custodyFeeCents ?? 0;
+      const lines = investorsData.flatMap((inv) =>
+        inv.lines.filter((l) => l.side === "sell" && l.symbol === sellSymbol),
+      );
+      const qty = lines.reduce((s, l) => s + Math.abs(l.deltaQty), 0);
+      const grossCents = lines.reduce((s, l) => s + l.valueCents, 0);
+      const priceCents = qty > 0 ? grossCents / qty : (lines[0]?.priceCents ?? 0);
+      const investorCount = investorsData.filter((inv) =>
+        inv.lines.some((l) => l.side === "sell" && l.symbol === sellSymbol),
+      ).length;
+      const brokerageCents = Math.round(grossCents * brokerageRate);
+      const custodyCents = investorCount * custodyFeeCents;
+      const netCents = Math.max(0, grossCents - brokerageCents - custodyCents);
+      return { qty, priceCents, grossCents, brokerageCents, custodyCents, netCents, investorCount };
+    },
+    [impactQ.data],
+  );
+
+  // Picking an instrument for ONE leg — auto-sized off that leg's own net
+  // proceeds (legSellBreakdown), never the pooled total across every sell.
+  const chooseLegBuyInstrument = (sellSymbol: string, symbol: string, name: string, priceCents: number) => {
+    const netProceeds = legSellBreakdown(sellSymbol).netCents;
+    const bufferedPriceCents = priceCents * (applyBuffer ? 1.08 : 1);
+    const affordable = bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
+    setLegBuyBySymbol((prev) => ({ ...prev, [sellSymbol]: { symbol, name, priceCents, shares: affordable } }));
+    setLegChoiceBySymbol((prev) => ({ ...prev, [sellSymbol]: "reinvest" }));
+  };
+  const setLegBuyShares = (sellSymbol: string, shares: number) =>
+    setLegBuyBySymbol((prev) => {
+      const cur = prev[sellSymbol];
+      if (!cur) return prev;
+      return { ...prev, [sellSymbol]: { ...cur, shares: Math.max(0, Math.floor(shares)) } };
+    });
+  const chooseLegMode = (sellSymbol: string, mode: "reinvest" | "liquidate") => {
+    setLegChoiceBySymbol((prev) => ({ ...prev, [sellSymbol]: mode }));
+    if (mode === "liquidate") {
+      setLegBuyBySymbol((prev) => ({ ...prev, [sellSymbol]: null }));
+      setLegBuySearchBySymbol((prev) => ({ ...prev, [sellSymbol]: "" }));
+    }
+  };
+  // Re-price every leg's auto-computed share count when the buffer toggle
+  // changes — matches CRM recomputing autoBuyPerLot off the buffered price.
+  // A manual shares override afterward still wins until the buffer flips again.
+  React.useEffect(() => {
+    setLegBuyBySymbol((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const [sellSymbol, leg] of Object.entries(prev)) {
+        if (!leg) continue;
+        const netProceeds = legSellBreakdown(sellSymbol).netCents;
+        const bufferedPriceCents = leg.priceCents * (applyBuffer ? 1.08 : 1);
+        const affordable = bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
+        if (affordable !== leg.shares) {
+          next[sellSymbol] = { ...leg, shares: affordable };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyBuffer]);
 
   async function submitToIc() {
     setError(null);
@@ -559,9 +636,11 @@ export function RebalanceBuilderPage({
       // the just-committed edits on screen.
       setWorking(baseline.map((h) => ({ ...h })));
       setRationaleBySymbol({});
-      setDropdownBuySymbol("");
-      setSequenceMode(null);
-      setBuySearch("");
+      setWizardStage("leg");
+      setCurrentLegIndex(0);
+      setLegChoiceBySymbol({});
+      setLegBuyBySymbol({});
+      setLegBuySearchBySymbol({});
       setApplyBuffer(true);
       setStage("compose");
     } finally {
@@ -570,6 +649,10 @@ export function RebalanceBuilderPage({
   }
 
   const reinvestMissingBuy = effectiveProceedsMode === "reinvest" && buyActions.length === 0;
+  // Belt-and-braces: the real Commit button only ever renders on the review
+  // screen (see wizardStage wiring below), but guard the disabled state too
+  // in case that ever changes.
+  const wizardNotReady = stage === "execute" && wizardStage !== "review";
   const commitDisabled =
     submitting ||
     changes === 0 ||
@@ -579,6 +662,7 @@ export function RebalanceBuilderPage({
     impactQ.data?.ok !== true ||
     impactQ.data?.totals?.cashOk === false ||
     reinvestMissingBuy ||
+    wizardNotReady ||
     !perms.raiseRebalance;
   const commitTitle =
     !isTestStrategy && missingResearch.length > 0
@@ -879,38 +963,54 @@ export function RebalanceBuilderPage({
         loading={impactQ.isFetching}
         data={impactQ.data}
         strategyName={strategyName}
-        sellSymbols={sellActions.map((action) => action.ticker.toUpperCase())}
+        legs={sellActions.map((a) => {
+          const symbol = a.ticker.toUpperCase();
+          return { symbol, name: a.name ?? symbol, breakdown: legSellBreakdown(symbol) };
+        })}
+        wizardStage={wizardStage}
+        currentLegIndex={currentLegIndex}
+        legChoiceBySymbol={legChoiceBySymbol}
+        legBuyBySymbol={legBuyBySymbol}
+        legBuySearchBySymbol={legBuySearchBySymbol}
         submitting={submitting}
         commitDisabled={commitDisabled}
         commitTitle={commitTitle}
         onProceed={() => {
           if (commitDisabled) return;
-          setSequenceMode(inferredProceedsMode);
+          setWizardStage("leg");
+          setCurrentLegIndex(0);
           setStage("execute");
         }}
         onCommit={submitToIc}
         onBack={() => {
-          setSequenceMode(null);
+          setWizardStage("leg");
+          setCurrentLegIndex(0);
           setStage("compose");
         }}
+        onChooseLegMode={chooseLegMode}
+        onSelectLegBuyInstrument={chooseLegBuyInstrument}
+        onLegSharesOverride={setLegBuyShares}
+        onLegBuySearchChange={(symbol, value) =>
+          setLegBuySearchBySymbol((prev) => ({ ...prev, [symbol]: value }))
+        }
+        onPrevLeg={() => setCurrentLegIndex((i) => Math.max(0, i - 1))}
+        onNextLeg={(legCount) =>
+          setCurrentLegIndex((i) => {
+            const next = i + 1;
+            if (next >= legCount) setWizardStage("review");
+            return next;
+          })
+        }
+        onBackToLegs={() => {
+          setCurrentLegIndex(Math.max(0, sellActions.length - 1));
+          setWizardStage("leg");
+        }}
         proceedsMode={effectiveProceedsMode}
-        buySymbols={destinationSymbols}
         buyUniverse={buyUniverseForStrategy}
         buyUniverseLoading={equitiesQ.isLoading}
         buyUniverseResearchGated={!isTestStrategy}
-        dropdownBuySymbol={dropdownBuySymbol}
-        onSelectBuyInstrument={chooseBuyInstrument}
-        onSharesOverride={(value) => dropdownBuySymbol && setAbsoluteShares(dropdownBuySymbol, value)}
-        onChooseLiquidate={() => {
-          clearBuyInstrument();
-          setSequenceMode("liquidate");
-        }}
-        onChooseReinvest={() => setSequenceMode("reinvest")}
-        buySearch={buySearch}
-        onBuySearchChange={setBuySearch}
         applyBuffer={applyBuffer}
         onApplyBufferChange={setApplyBuffer}
-        onStartOverBuy={startOverBuy}
       />
 
       <ProposalsList pushingId={pushingId} setPushingId={setPushingId} canPush={perms.pushRebalance} />
@@ -1107,62 +1207,281 @@ function FeeProceedsBreakdown({
   );
 }
 
+type LegBuyPick = { symbol: string; name: string; priceCents: number; shares: number };
+type LegSellBreakdown = {
+  qty: number;
+  priceCents: number;
+  grossCents: number;
+  brokerageCents: number;
+  custodyCents: number;
+  netCents: number;
+  investorCount: number;
+};
+type Leg = { symbol: string; name: string; breakdown: LegSellBreakdown };
+
+/**
+ * One step of the sell→buy wizard: this leg's own sell breakdown, an
+ * independent Liquidate/Reinvest choice, and — if reinvesting — a buy picker
+ * sized off THIS leg's own net proceeds only, never the pooled total across
+ * every sell in the sequence. Reuses the same visual language as the rest of
+ * the panel (bordered cards, BridgeRow, the dark-mode-fixed select).
+ */
+function LegStepView({
+  leg,
+  legIndex,
+  legCount,
+  choice,
+  buyPick,
+  buySearch,
+  buyUniverse,
+  buyUniverseLoading,
+  buyUniverseResearchGated,
+  applyBuffer,
+  onApplyBufferChange,
+  onChooseMode,
+  onSelectBuyInstrument,
+  onSharesOverride,
+  onBuySearchChange,
+  onPrev,
+  onNext,
+}: {
+  leg: Leg;
+  legIndex: number;
+  legCount: number;
+  choice: "reinvest" | "liquidate" | undefined;
+  buyPick: LegBuyPick | null | undefined;
+  buySearch: string;
+  buyUniverse: Array<{ symbol: string; name: string; priceCents: number }>;
+  buyUniverseLoading: boolean;
+  buyUniverseResearchGated: boolean;
+  applyBuffer: boolean;
+  onApplyBufferChange: (value: boolean) => void;
+  onChooseMode: (mode: "reinvest" | "liquidate") => void;
+  onSelectBuyInstrument: (symbol: string, name: string, priceCents: number) => void;
+  onSharesOverride: (shares: number) => void;
+  onBuySearchChange: (value: string) => void;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const resolved = choice === "liquidate" || (choice === "reinvest" && !!buyPick);
+  const buySearchQ = buySearch.trim().toLowerCase();
+  const filteredBuyUniverse = buySearchQ
+    ? buyUniverse.filter((u) => `${u.symbol} ${u.name}`.toLowerCase().includes(buySearchQ))
+    : buyUniverse;
+
+  return (
+    <div>
+      <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
+        <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
+          <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
+            <Info className="h-3.5 w-3.5 text-primary" /> Sell Execution
+            <span className="font-normal text-muted-foreground">· {leg.symbol}</span>
+          </div>
+          <div className="space-y-2">
+            <BridgeRow label="Total Shares to Sell" value={leg.breakdown.qty.toLocaleString()} />
+            <BridgeRow label="Price per Share" value={centsToR(leg.breakdown.priceCents)} />
+            <BridgeRow label="Gross Proceeds" value={centsToR(leg.breakdown.grossCents)} />
+            <BridgeRow label="Brokerage" value={centsToR(leg.breakdown.brokerageCents)} deduct />
+            <BridgeRow
+              label={`Off-Custody Fee (x${leg.breakdown.investorCount})`}
+              value={centsToR(leg.breakdown.custodyCents)}
+              deduct
+            />
+            <div className="border-t border-[hsl(var(--glass-border))] pt-2">
+              <BridgeRow label="Net Proceeds" value={centsToR(leg.breakdown.netCents)} bold />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 border-b border-[hsl(var(--glass-border))] px-5 py-3">
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          This leg's proceeds:
+        </span>
+        <button
+          type="button"
+          onClick={() => onChooseMode("reinvest")}
+          className={cn(
+            "rounded-full border px-3 py-1 text-[11px] font-semibold transition",
+            choice === "reinvest"
+              ? "border-primary/50 bg-primary/15 text-primary"
+              : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
+          )}
+        >
+          Reinvest · buy replacement
+        </button>
+        <button
+          type="button"
+          onClick={() => onChooseMode("liquidate")}
+          className={cn(
+            "rounded-full border px-3 py-1 text-[11px] font-semibold transition",
+            choice === "liquidate"
+              ? "border-primary/50 bg-primary/15 text-primary"
+              : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
+          )}
+        >
+          Liquidate to Cash
+        </button>
+      </div>
+
+      {choice === "reinvest" ? (
+        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
+          <div className="flex items-baseline justify-between gap-3">
+            <div className="text-xs font-semibold">Buy Execution</div>
+            <div className="text-[11px] text-muted-foreground">
+              Net capital: <span className="font-mono tabular-nums text-foreground/85">{centsToR(leg.breakdown.netCents)}</span>
+            </div>
+          </div>
+          <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3">
+            <label className="block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Instrument to buy
+            </label>
+            {buyUniverseResearchGated ? (
+              <p className="mt-0.5 text-[10px] text-muted-foreground/70">
+                Only instruments with an existing research note are listed — add one in the Research Library to unlock it here.
+              </p>
+            ) : null}
+            <input
+              value={buySearch}
+              onChange={(e) => onBuySearchChange(e.target.value)}
+              placeholder="Search by name or symbol…"
+              className="mt-1.5 block w-full rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
+            />
+            <div className="mt-2.5 flex flex-wrap items-center gap-3">
+              <select
+                value={buyPick?.symbol ?? ""}
+                onChange={(e) => {
+                  const meta = buyUniverse.find((u) => u.symbol === e.target.value);
+                  if (meta) onSelectBuyInstrument(meta.symbol, meta.name, meta.priceCents);
+                }}
+                style={{ colorScheme: "dark" }}
+                className="min-w-[260px] flex-1 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs text-foreground outline-none focus:border-primary/50"
+              >
+                <option value="">
+                  {buyUniverseLoading
+                    ? "Loading instruments…"
+                    : `Select instrument (${filteredBuyUniverse.length})…`}
+                </option>
+                {filteredBuyUniverse.map((u) => (
+                  <option key={u.symbol} value={u.symbol}>
+                    {u.symbol} · {u.name}
+                    {u.priceCents > 0 ? ` · ${centsToR(u.priceCents)}` : " · N/A"}
+                  </option>
+                ))}
+              </select>
+              {buyPick ? (
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  Shares
+                  <input
+                    type="number"
+                    min={0}
+                    step={1}
+                    value={buyPick.shares}
+                    onChange={(e) => onSharesOverride(Number(e.target.value) || 0)}
+                    placeholder="auto"
+                    className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none"
+                  />
+                </label>
+              ) : null}
+            </div>
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-xs text-foreground/85">
+            <input
+              type="checkbox"
+              checked={applyBuffer}
+              onChange={(e) => onApplyBufferChange(e.target.checked)}
+              className="h-4 w-4 rounded border-[hsl(var(--glass-border))] accent-primary"
+            />
+            Apply 8% buffer to price (conservative)
+          </label>
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-between border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
+        <button
+          type="button"
+          onClick={onPrev}
+          disabled={legIndex === 0}
+          className="rounded-lg border border-[hsl(var(--glass-border))] px-4 py-2 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)] disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          ← Back
+        </button>
+        <button
+          type="button"
+          onClick={onNext}
+          disabled={!resolved}
+          title={resolved ? undefined : "Choose Liquidate or pick a replacement buy for this leg"}
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {legIndex + 1 < legCount ? "Next leg →" : "Review sequence →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TradeSequencePanel({
   mode,
   enabled,
   loading,
   data,
   strategyName,
-  sellSymbols,
+  legs,
+  wizardStage,
+  currentLegIndex,
+  legChoiceBySymbol,
+  legBuyBySymbol,
+  legBuySearchBySymbol,
   submitting,
   commitDisabled,
   commitTitle,
   onProceed,
   onCommit,
   onBack,
+  onChooseLegMode,
+  onSelectLegBuyInstrument,
+  onLegSharesOverride,
+  onLegBuySearchChange,
+  onPrevLeg,
+  onNextLeg,
+  onBackToLegs,
   proceedsMode,
-  buySymbols,
   buyUniverse,
   buyUniverseLoading,
   buyUniverseResearchGated,
-  dropdownBuySymbol,
-  onSelectBuyInstrument,
-  onSharesOverride,
-  onChooseLiquidate,
-  onChooseReinvest,
-  buySearch,
-  onBuySearchChange,
   applyBuffer,
   onApplyBufferChange,
-  onStartOverBuy,
 }: {
   mode: "compose" | "execute";
   enabled: boolean;
   loading: boolean;
   data: ImpactResponse | undefined;
   strategyName: string;
-  sellSymbols: string[];
+  legs: Leg[];
+  wizardStage: "leg" | "review";
+  currentLegIndex: number;
+  legChoiceBySymbol: Record<string, "reinvest" | "liquidate">;
+  legBuyBySymbol: Record<string, LegBuyPick | null>;
+  legBuySearchBySymbol: Record<string, string>;
   submitting: boolean;
   commitDisabled: boolean;
   commitTitle: string;
   onProceed: () => void;
   onCommit: () => void;
   onBack: () => void;
+  onChooseLegMode: (symbol: string, mode: "reinvest" | "liquidate") => void;
+  onSelectLegBuyInstrument: (symbol: string, buySymbol: string, name: string, priceCents: number) => void;
+  onLegSharesOverride: (symbol: string, shares: number) => void;
+  onLegBuySearchChange: (symbol: string, value: string) => void;
+  onPrevLeg: () => void;
+  onNextLeg: (legCount: number) => void;
+  onBackToLegs: () => void;
   proceedsMode: "reinvest" | "liquidate" | null;
-  buySymbols: string[];
   buyUniverse: Array<{ symbol: string; name: string; priceCents: number }>;
   buyUniverseLoading: boolean;
   buyUniverseResearchGated: boolean;
-  dropdownBuySymbol: string;
-  onSelectBuyInstrument: (symbol: string, name: string, priceCents: number) => void;
-  onSharesOverride: (value: number) => void;
-  onChooseLiquidate: () => void;
-  onChooseReinvest: () => void;
-  buySearch: string;
-  onBuySearchChange: (value: string) => void;
   applyBuffer: boolean;
   onApplyBufferChange: (value: boolean) => void;
-  onStartOverBuy: () => void;
 }) {
   const investors = data?.investors ?? [];
   const totals = data?.totals ?? null;
@@ -1170,13 +1489,10 @@ function TradeSequencePanel({
   const [residualView, setResidualView] = React.useState(false);
   const scopeLabel =
     data?.scope === "live" ? "LIVE clients" : data?.scope === "uat" ? "UAT clients" : "Scope unavailable";
+  const sellSymbols = legs.map((l) => l.symbol);
   const impactLabel = sellSymbols.length ? sellSymbols.join(" + ") : strategyName;
-  const selectedInstrument = buyUniverse.find((u) => u.symbol === dropdownBuySymbol) ?? null;
   const isExecute = mode === "execute";
-  const buySearchQ = buySearch.trim().toLowerCase();
-  const filteredBuyUniverse = buySearchQ
-    ? buyUniverse.filter((u) => `${u.symbol} ${u.name}`.toLowerCase().includes(buySearchQ))
-    : buyUniverse;
+  const currentLeg: Leg | undefined = legs[currentLegIndex];
 
   return (
     <GlassSection
@@ -1217,14 +1533,22 @@ function TradeSequencePanel({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--glass-border))] bg-primary/[0.035] px-5 py-3">
           <div>
             <div className="text-[10px] font-semibold uppercase tracking-wide text-primary">
-              {proceedsMode === "liquidate" ? "Liquidate to Cash" : proceedsMode === "reinvest" ? "Reinvest / Buy" : "Increase"}
+              {wizardStage === "leg" && currentLeg
+                ? `Leg ${currentLegIndex + 1} of ${legs.length}`
+                : proceedsMode === "liquidate"
+                  ? "Liquidate to Cash"
+                  : proceedsMode === "reinvest"
+                    ? "Reinvest / Buy"
+                    : "Increase"}
             </div>
             <div className="mt-0.5 text-xs font-medium">
-              {proceedsMode === "liquidate"
-                ? "Sell-only · net proceeds settle into this strategy’s CA"
-                : proceedsMode === "reinvest"
-                  ? `Sell + buy · proceeds fund ${buySymbols.join(", ")}`
-                  : "Increase · funding is checked against strategy CA and reserve"}
+              {wizardStage === "leg" && currentLeg
+                ? `Selling ${currentLeg.symbol} — decide this leg's proceeds`
+                : proceedsMode === "liquidate"
+                  ? "Sell-only · net proceeds settle into this strategy’s CA"
+                  : proceedsMode === "reinvest"
+                    ? "Sell + buy · each leg funds its own replacement"
+                    : "Increase · funding is checked against strategy CA and reserve"}
             </div>
           </div>
           <div className="text-right">
@@ -1241,114 +1565,65 @@ function TradeSequencePanel({
           </div>
         </div>
       ) : null}
-      {/* Explicit Liquidate-vs-Reinvest choice — mirrors CRM's Sell modal,
-          which always offers both "Confirm & Proceed to Buy" and "Liquidate
-          to Cash (skip buy)" as buttons rather than inferring the direction. */}
-      {isExecute && enabled && sellSymbols.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 border-b border-[hsl(var(--glass-border))] px-5 py-3">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            Sale proceeds:
-          </span>
-          <button
-            type="button"
-            onClick={onChooseReinvest}
-            className={cn(
-              "rounded-full border px-3 py-1 text-[11px] font-semibold transition",
-              proceedsMode === "reinvest"
-                ? "border-primary/50 bg-primary/15 text-primary"
-                : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
-            )}
-          >
-            Reinvest · buy replacement
-          </button>
-          <button
-            type="button"
-            onClick={onChooseLiquidate}
-            className={cn(
-              "rounded-full border px-3 py-1 text-[11px] font-semibold transition",
-              proceedsMode === "liquidate"
-                ? "border-primary/50 bg-primary/15 text-primary"
-                : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
-            )}
-          >
-            Liquidate to Cash
-          </button>
+      {isExecute && wizardStage === "leg" && currentLeg ? (
+        <LegStepView
+          leg={currentLeg}
+          legIndex={currentLegIndex}
+          legCount={legs.length}
+          choice={legChoiceBySymbol[currentLeg.symbol]}
+          buyPick={legBuyBySymbol[currentLeg.symbol]}
+          buySearch={legBuySearchBySymbol[currentLeg.symbol] ?? ""}
+          buyUniverse={buyUniverse}
+          buyUniverseLoading={buyUniverseLoading}
+          buyUniverseResearchGated={buyUniverseResearchGated}
+          applyBuffer={applyBuffer}
+          onApplyBufferChange={onApplyBufferChange}
+          onChooseMode={(m) => onChooseLegMode(currentLeg.symbol, m)}
+          onSelectBuyInstrument={(buySymbol, name, priceCents) =>
+            onSelectLegBuyInstrument(currentLeg.symbol, buySymbol, name, priceCents)
+          }
+          onSharesOverride={(shares) => onLegSharesOverride(currentLeg.symbol, shares)}
+          onBuySearchChange={(value) => onLegBuySearchChange(currentLeg.symbol, value)}
+          onPrev={onPrevLeg}
+          onNext={() => onNextLeg(legs.length)}
+        />
+      ) : null}
+      {isExecute && wizardStage === "review" && legs.length > 0 ? (
+        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-2">
+          <div className="text-xs font-semibold">Sequence — {legs.length} leg{legs.length === 1 ? "" : "s"}</div>
+          <div className="space-y-1.5">
+            {legs.map((leg, i) => {
+              const choice = legChoiceBySymbol[leg.symbol];
+              const buyPick = legBuyBySymbol[leg.symbol];
+              return (
+                <div
+                  key={leg.symbol}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-2 text-xs"
+                >
+                  <span>
+                    <span className="font-mono text-muted-foreground">{i + 1} of {legs.length}</span>{" "}
+                    <span className="font-semibold">{leg.symbol}</span>{" "}
+                    {choice === "liquidate" ? (
+                      <span className="text-muted-foreground">→ liquidated to cash</span>
+                    ) : choice === "reinvest" && buyPick ? (
+                      <span className="text-muted-foreground">
+                        → bought {buyPick.shares.toLocaleString()} {buyPick.symbol}
+                      </span>
+                    ) : (
+                      <span className="text-down">→ unresolved</span>
+                    )}
+                  </span>
+                  <span className="font-mono font-semibold text-up">{centsToR(leg.breakdown.netCents)}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       ) : null}
-      {isExecute && enabled && proceedsMode === "reinvest" ? (
-        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
-          <div className="flex items-baseline justify-between gap-3">
-            <div className="text-xs font-semibold">Buy Execution</div>
-            <div className="text-[11px] text-muted-foreground">
-              Net capital: <span className="font-mono tabular-nums text-foreground/85">{centsToR(totals?.netProceedsCents)}</span>
-            </div>
-          </div>
-          <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3">
-            <label className="block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Instrument to buy
-            </label>
-            {buyUniverseResearchGated ? (
-              <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-                Only instruments with an existing research note are listed — add one in the Research Library to unlock it here.
-              </p>
-            ) : null}
-            <input
-              value={buySearch}
-              onChange={(e) => onBuySearchChange(e.target.value)}
-              placeholder="Search by name or symbol…"
-              className="mt-1.5 block w-full rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs outline-none focus:border-primary/50"
-            />
-            <div className="mt-2.5 flex flex-wrap items-center gap-3">
-              <select
-                value={dropdownBuySymbol}
-                onChange={(e) => {
-                  const meta = buyUniverse.find((u) => u.symbol === e.target.value);
-                  if (meta) onSelectBuyInstrument(meta.symbol, meta.name, meta.priceCents);
-                }}
-                style={{ colorScheme: "dark" }}
-                className="min-w-[260px] flex-1 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 py-1.5 text-xs text-foreground outline-none focus:border-primary/50"
-              >
-                <option value="">
-                  {buyUniverseLoading
-                    ? "Loading instruments…"
-                    : `Select instrument (${filteredBuyUniverse.length})…`}
-                </option>
-                {filteredBuyUniverse.map((u) => (
-                  <option key={u.symbol} value={u.symbol}>
-                    {u.symbol} · {u.name}
-                    {u.priceCents > 0 ? ` · ${centsToR(u.priceCents)}` : " · N/A"}
-                  </option>
-                ))}
-              </select>
-              {selectedInstrument ? (
-                <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  Shares
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    defaultValue={undefined}
-                    onChange={(e) => onSharesOverride(Number(e.target.value) || 0)}
-                    placeholder="auto"
-                    className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none"
-                  />
-                </label>
-              ) : null}
-            </div>
-          </div>
-          <label className="mt-3 flex items-center gap-2 text-xs text-foreground/85">
-            <input
-              type="checkbox"
-              checked={applyBuffer}
-              onChange={(e) => onApplyBufferChange(e.target.checked)}
-              className="h-4 w-4 rounded border-[hsl(var(--glass-border))] accent-primary"
-            />
-            Apply 8% buffer to price (conservative)
-          </label>
-        </div>
+      {isExecute && wizardStage === "review" && data ? (
+        <FeeProceedsBreakdown data={data} proceedsMode={proceedsMode} />
       ) : null}
-      {isExecute && data ? <FeeProceedsBreakdown data={data} proceedsMode={proceedsMode} /> : null}
-      {!enabled ? (
+      {(!isExecute || wizardStage === "review") && (!enabled ? (
         <p className="px-5 py-4 text-caption">Make a change to model the impact on investors.</p>
       ) : data?.ok === false ? (
         <div className="mx-5 my-4 flex items-start gap-2 rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.08)] px-3.5 py-3 text-xs text-down">
@@ -1554,17 +1829,17 @@ function TradeSequencePanel({
                   ? commitTitle
                   : isExecute
                     ? "Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet."
-                    : "Continue to pick the buy instrument and review the full fee bridge before this is sent to the IC."}
+                    : "Continue to pick each leg's buy instrument and review the full fee bridge before this is sent to the IC."}
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {isExecute && proceedsMode === "reinvest" ? (
+              {isExecute ? (
                 <button
                   type="button"
-                  onClick={onStartOverBuy}
+                  onClick={onBackToLegs}
                   className="rounded-lg border border-[hsl(var(--glass-border))] px-4 py-2 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
                 >
-                  Start Over
+                  ← Edit legs
                 </button>
               ) : null}
               <button
@@ -1575,12 +1850,12 @@ function TradeSequencePanel({
                 className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
               >
                 <Send className="h-3.5 w-3.5" />
-                {isExecute ? (submitting ? "Committing…" : "Commit trade sequence") : "Commit trade sequence"}
+                {isExecute ? (submitting ? "Committing…" : "Commit trade sequence") : "Continue to trade sequence →"}
               </button>
             </div>
           </div>
         </>
-      )}
+      ))}
     </GlassSection>
   );
 }
