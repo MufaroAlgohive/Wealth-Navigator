@@ -554,40 +554,6 @@ export function buildOrderBookDisplayItems(
   return items.sort((a, b) => b.ts - a.ts);
 }
 
-interface SecurityBlock {
-  key: string;
-  symbol: string;
-  side: string;
-  qty: number;
-  avgFillWeighted: number | null;
-  groups: GroupedRow[];
-}
-
-/** "Holdings under {Strategy}" axis — aggregate a strategy block's orders by symbol. */
-function buildSecurityBlocks(groups: GroupedRow[]): SecurityBlock[] {
-  const m = new Map<string, SecurityBlock>();
-  for (const g of groups) {
-    const r = g.parent;
-    const key = `${r.symbol}|${r.isin ?? ""}`;
-    let b = m.get(key);
-    if (!b) {
-      b = { key, symbol: r.symbol, side: r.side, qty: 0, avgFillWeighted: null, groups: [] };
-      m.set(key, b);
-    }
-    b.qty += r.qty;
-    b.groups.push(g);
-  }
-  for (const b of m.values()) {
-    const filled = b.groups.filter((g) => g.parent.avg_fill_price != null && g.parent.filled > 0);
-    const totalFilled = filled.reduce((s, g) => s + g.parent.filled, 0);
-    b.avgFillWeighted =
-      totalFilled > 0
-        ? filled.reduce((s, g) => s + (g.parent.avg_fill_price as number) * g.parent.filled, 0) / totalFilled
-        : null;
-  }
-  return [...m.values()].sort((a, b) => b.qty - a.qty);
-}
-
 /**
  * "Investors in {Strategy}" axis — aggregate a strategy block's orders by
  * client. Mirrors the CRM's investor list (click a row to filter the
@@ -602,7 +568,11 @@ function buildInvestorAgg(groups: GroupedRow[], lookupLast: (symbol: string) => 
     const r = g.parent;
     const key = r.client_account && r.client_account.trim().length > 0 ? r.client_account : "—";
     const last = lookupLast(r.symbol);
-    const px = typeof last === "number" && Number.isFinite(last) ? last : (r.avg_fill_price ?? r.limit_price ?? 0);
+    // A live price of exactly 0 is never real — the intraday feed has been
+    // deliberately stalled since 2026-07-25 and leaves stale zero-value rows
+    // instead of no row at all, so treat 0 the same as "no live price" and
+    // fall back to the actual fill/limit price rather than zeroing it out.
+    const px = typeof last === "number" && Number.isFinite(last) && last > 0 ? last : (r.avg_fill_price ?? r.limit_price ?? 0);
     const marketValue = px * r.qty;
     const existing = m.get(key);
     if (existing) {
@@ -658,8 +628,13 @@ function GroupRow({
   actions: OrderActions;
 }) {
   const r = g.parent;
-  const liveLast = lookupLast(r.symbol);
-  const effectiveLast = typeof liveLast === "number" && Number.isFinite(liveLast) ? liveLast : r.avg_fill_price;
+  const liveLastRaw = lookupLast(r.symbol);
+  // A live price of exactly 0 is never real — the intraday feed has been
+  // deliberately stalled since 2026-07-25 and leaves stale zero-value rows
+  // instead of no row at all. Treat 0 as "no live price" everywhere it's
+  // used here, or it silently corrupts the fill-based slip/P&L math below.
+  const liveLast = typeof liveLastRaw === "number" && Number.isFinite(liveLastRaw) && liveLastRaw > 0 ? liveLastRaw : null;
+  const effectiveLast = liveLast ?? r.avg_fill_price;
   const liveSlipCents =
     r.limit_price != null && typeof effectiveLast === "number" && Number.isFinite(effectiveLast)
       ? Math.round((r.limit_price - effectiveLast) * 100)
@@ -690,7 +665,7 @@ function GroupRow({
   return (
     <React.Fragment key={`grp:${groupKey}`}>
       <tr className={cn("border-b border-border/40 hover:bg-accent/10", childCount > 0 && "bg-accent/5")}>
-        <td className="px-2 py-1.5 whitespace-nowrap">
+        <td className="px-2 py-1 whitespace-nowrap">
           <button
             type="button"
             onClick={toggle}
@@ -711,7 +686,7 @@ function GroupRow({
             {isExpanded ? "▾" : "▸"}
           </button>
         </td>
-        <td className="px-3 py-1.5 font-mono text-[11px] text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 font-mono text-[11px] text-foreground whitespace-nowrap">
           <div className="flex items-center gap-1.5">
             <span>{r.order_id}</span>
             {childCount > 0 ? (
@@ -724,14 +699,14 @@ function GroupRow({
             ) : null}
           </div>
         </td>
-        <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">{fmtTs(r.ts)}</td>
-        <td className="px-3 py-1.5 whitespace-nowrap">
+        <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">{fmtTs(r.ts)}</td>
+        <td className="px-2 py-1 whitespace-nowrap">
           <Badge variant={r.side === "SELL" ? "destructive" : "success"}>{r.side}</Badge>
         </td>
-        <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap">{r.symbol}</td>
-        <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">{r.client_account || "—"}</td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(r.qty)}</td>
-        <td className="px-3 py-1.5 text-[12px] font-medium text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 text-[12px] font-semibold text-foreground whitespace-nowrap">{r.symbol}</td>
+        <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">{r.client_account || "—"}</td>
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtQty(r.qty)}</td>
+        <td className="px-2 py-1 text-[12px] font-medium text-foreground whitespace-nowrap">
           {(() => {
             // Prefer the limit, then the actual fill, then the live
             // last price — so MARKET orders (no limit, unfilled)
@@ -741,9 +716,9 @@ function GroupRow({
             return px != null && Number.isFinite(px) ? fmtMoney(px * r.qty) : "—";
           })()}
         </td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtPct(r.filled_pct)}</td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
-          <div className="flex flex-col items-start gap-0.5">
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtPct(r.filled_pct)}</td>
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
+          <div className="flex items-center gap-1">
             <span>{fmtMoney(r.limit_price)}</span>
             {r.order_type ? (
               <span
@@ -762,17 +737,17 @@ function GroupRow({
             ) : null}
           </div>
         </td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
           {r.filled > 0 && r.avg_fill_price ? fmtMoney(r.avg_fill_price) : "—"}
         </td>
-        <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
+        <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
           {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
         </td>
-        <td className={cn("px-3 py-1.5 text-[12px] font-semibold whitespace-nowrap", slipColor(liveSlipCents))}>
+        <td className={cn("px-2 py-1 text-[12px] font-semibold whitespace-nowrap", slipColor(liveSlipCents))}>
           {slipDisplay}
         </td>
-        <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">{r.tif}</td>
-        <td className="px-3 py-1.5 whitespace-nowrap">
+        <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">{r.tif}</td>
+        <td className="px-2 py-1 whitespace-nowrap">
           <div className="flex flex-col items-start gap-0.5">
             <span title={stateTooltip(r)} className="inline-flex">
               <Badge variant={STATE_VARIANT[r.state] ?? "outline"}>{r.state}</Badge>
@@ -818,17 +793,20 @@ function GroupRow({
             ) : null}
           </div>
         </td>
-        <td className="px-3 py-1.5 whitespace-nowrap">
-          {/* Fill (UAT) — self-fill in the OEM, never sent to the broker. Shown
-              for UAT-lane orders that aren't terminal. See handleFillUat. */}
-          {allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) && !TERMINAL_STATES.has(r.state) ? (
-            <div className="mb-1 flex flex-col gap-1">
+        <td className="px-2 py-1 whitespace-nowrap">
+          {/* All actions for this row sit on one horizontal line — a row's
+              height must never exceed a single button's height. Any error
+              text drops onto its own thin line below, only when present. */}
+          <div className="flex flex-wrap items-center gap-1">
+            {/* Fill (UAT) — self-fill in the OEM, never sent to the broker. Shown
+                for UAT-lane orders that aren't terminal. See handleFillUat. */}
+            {allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) && !TERMINAL_STATES.has(r.state) ? (
               <Button
                 variant="ghost"
                 size="sm"
                 disabled={!!fillInFlight[r.id]}
                 onClick={() => void handleFillUat(r)}
-                className="h-7 px-2 text-[10px] uppercase tracking-wider text-success hover:bg-success/10"
+                className="h-6 px-2 text-[10px] uppercase tracking-wider text-success hover:bg-success/10"
                 title="Self-fill this UAT order in the OEM (fills from us — never sent to LONGMARK)."
               >
                 {fillInFlight[r.id] ? (
@@ -843,22 +821,15 @@ function GroupRow({
                   </>
                 )}
               </Button>
-              {fillError[r.id] ? (
-                <span className="text-[9px] text-destructive" title={fillError[r.id] ?? undefined}>
-                  {fillError[r.id]}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-          {isCancellable(r.state) ? (
-            <div className="flex flex-col gap-1">
-              <div className="flex gap-1">
+            ) : null}
+            {isCancellable(r.state) ? (
+              <>
                 <Button
                   variant="ghost"
                   size="sm"
                   disabled={!!cancelInFlight[r.id]}
                   onClick={() => void handleCancel(r)}
-                  className="h-7 px-2 text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10"
+                  className="h-6 px-2 text-[10px] uppercase tracking-wider text-destructive hover:bg-destructive/10"
                   title={
                     r.state === "PARKED"
                       ? "Cancel this parked order — never left our system, so this just marks it cancelled locally. No broker contact."
@@ -879,33 +850,30 @@ function GroupRow({
                     variant="ghost"
                     size="sm"
                     onClick={() => openAmend(r)}
-                    className="h-7 px-2 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"
+                    className="h-6 px-2 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"
                     title={`Amend order ${r.order_id} on IRESS (OrderAmend2 via worker). Only Volume / Price / TimeInForce / TriggerPrice can be amended — LIMIT↔MARKET is not amendable, cancel + re-create instead.`}
                   >
                     Amend
                   </Button>
                 ) : null}
-              </div>
-              {cancelError[r.id] ? (
-                <span className="text-[9px] text-destructive" title={cancelError[r.id] ?? undefined}>
-                  {cancelError[r.id]}
-                </span>
-              ) : null}
-            </div>
-          ) : isAwaitingBrokerAck(r.state) ? (
-            <div className="flex flex-col gap-0.5">
+              </>
+            ) : isAwaitingBrokerAck(r.state) ? (
               <span
                 className="inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning/5 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-warning"
                 title="OrderCreate3 has left our session and is owned by the destination. Cancel / Amend are disabled until the broker acknowledges the order."
               >
                 <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                awaiting broker ack
+                awaiting ack
               </span>
-              <span className="text-[9px] text-muted-foreground">Actions locked until Hermes acknowledges</span>
-            </div>
-          ) : (
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
-          )}
+            ) : !allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) || TERMINAL_STATES.has(r.state) ? (
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
+            ) : null}
+          </div>
+          {fillError[r.id] || cancelError[r.id] ? (
+            <span className="text-[9px] text-destructive" title={fillError[r.id] || cancelError[r.id] || undefined}>
+              {fillError[r.id] || cancelError[r.id]}
+            </span>
+          ) : null}
         </td>
       </tr>
       {isExpanded && childCount > 0 ? (
@@ -1410,11 +1378,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
   );
 
   const [expandedStrategy, setExpandedStrategy] = React.useState<Record<string, boolean>>({});
-  const [expandedSecurity, setExpandedSecurity] = React.useState<Record<string, boolean>>({});
   const [selectedInvestorByStrategy, setSelectedInvestorByStrategy] = React.useState<Record<string, string | null>>({});
 
   const toggleStrategy = (key: string) => setExpandedStrategy((p) => ({ ...p, [key]: !p[key] }));
-  const toggleSecurity = (key: string) => setExpandedSecurity((p) => ({ ...p, [key]: !p[key] }));
 
   // Expansion state for the per-order lifecycle timeline — order_id →
   // expanded. Default collapsed; auto-expand when a NEW SSE delta lands so
@@ -1489,9 +1455,20 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
           fills: [{ symbol: row.symbol, qty: row.qty, avg_fill_price_cents: Math.round(priceRands * 100), timestamp: new Date().toISOString() }],
         }),
       });
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        settlement?: { attempted: number; ok: number; failed: Array<{ error?: string }> };
+      };
       if (!res.ok || body.ok === false) {
         setFillError((p) => ({ ...p, [row.id]: body.error ?? `Fill returned ${res.status}` }));
+      } else if (body.settlement && body.settlement.failed.length > 0) {
+        // Fill itself succeeded, but the auto-settlement call to MyMintAdmin
+        // failed — surface it rather than silently leaving the holding open.
+        setFillError((p) => ({
+          ...p,
+          [row.id]: `Filled, but auto-settlement failed: ${body.settlement!.failed[0]?.error ?? "unknown error"}`,
+        }));
       }
     } catch (err) {
       setFillError((p) => ({ ...p, [row.id]: err instanceof Error ? err.message : String(err) }));
@@ -1842,7 +1819,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
               ].map((h) => (
                 <th
                   key={h}
-                  className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap"
+                  className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap"
                 >
                   {h}
                 </th>
@@ -1887,12 +1864,14 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                   return s + px * g.parent.qty;
                 }, 0);
                 const latestTs = block.groups.reduce((max, g) => Math.max(max, Date.parse(g.parent.ts || "") || 0), 0);
+                // One disclosure level, same as a gift order: Strategy -> orders
+                // directly (no per-security sub-group). The Investors toggle below
+                // still lets you filter that flat list down to one client's orders.
                 const investors = buildInvestorAgg(block.groups, lookupLast);
                 const selectedInvestor = selectedInvestorByStrategy[strategyKey] ?? null;
                 const visibleGroups = selectedInvestor
                   ? block.groups.filter((g) => (g.parent.client_account || "—") === selectedInvestor)
                   : block.groups;
-                const securityBlocks = buildSecurityBlocks(visibleGroups);
 
                 return (
                   <React.Fragment key={`strategy:${strategyKey}`}>
@@ -1907,7 +1886,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                         }
                       }}
                     >
-                      <td className="px-2 py-1.5 whitespace-nowrap">
+                      <td className="px-2 py-1 whitespace-nowrap">
                         <ChevronRight
                           className={cn(
                             "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
@@ -1915,7 +1894,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                           )}
                         />
                       </td>
-                      <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap" colSpan={3}>
+                      <td className="px-2 py-1 text-[12px] font-semibold text-foreground whitespace-nowrap" colSpan={3}>
                         <span className="inline-flex items-center gap-1.5">
                           <span className={cn(isGiftOrder && "font-mono")}>{strategyKey}</span>
                           {isGiftOrder ? (
@@ -1935,116 +1914,58 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                           </span>
                         </span>
                       </td>
-                      <td className="px-3 py-1.5 text-[11px] text-muted-foreground whitespace-nowrap">
+                      <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">
                         {latestTs ? fmtTs(new Date(latestTs).toISOString()) : "—"}
                       </td>
-                      <td className="px-3 py-1.5" />
-                      <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(totalQty)}</td>
-                      <td className="px-3 py-1.5 text-[12px] font-medium text-foreground whitespace-nowrap">
+                      <td className="px-2 py-1" />
+                      <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtQty(totalQty)}</td>
+                      <td className="px-2 py-1 text-[12px] font-medium text-foreground whitespace-nowrap">
                         {fmtMoney(totalValue)}
                       </td>
-                      <td className="px-3 py-1.5" colSpan={8} />
+                      <td className="px-2 py-1" colSpan={8} />
                     </tr>
                     {isStrategyOpen && (
                       <>
-                        {isGiftOrder ? (
-                          block.groups.map((g) => (
-                            <GroupRow
-                              key={g.parent.id}
-                              g={g}
-                              lookupLast={lookupLast}
-                              expanded={expanded}
-                              toggleExpanded={toggleGroupExpanded}
-                              actions={orderActions}
-                            />
-                          ))
-                        ) : securityBlocks.map((sec) => {
-                          const secKey = `${strategyKey}::${sec.key}`;
-                          const isSecOpen = !!expandedSecurity[secKey];
-                          const liveLast = lookupLast(sec.symbol);
-                          return (
-                            <React.Fragment key={secKey}>
-                              <tr
-                                className="cursor-pointer border-b border-border/30 hover:bg-accent/10"
-                                tabIndex={0}
-                                onClick={() => toggleSecurity(secKey)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    toggleSecurity(secKey);
+                        {visibleGroups.map((g) => (
+                          <GroupRow
+                            key={g.parent.id}
+                            g={g}
+                            lookupLast={lookupLast}
+                            expanded={expanded}
+                            toggleExpanded={toggleGroupExpanded}
+                            actions={orderActions}
+                          />
+                        ))}
+                        {!isGiftOrder && investors.length > 1 ? (
+                          <tr>
+                            <td colSpan={COLS} className="p-0">
+                              <div className="space-y-1.5 border-t border-border/30 bg-card/20 px-4 py-3">
+                                <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                  Investors in {strategyKey}
+                                  {selectedInvestor ? (
+                                    <span className="ml-2 normal-case text-foreground">
+                                      — filtered to {selectedInvestor}
+                                    </span>
+                                  ) : (
+                                    <span className="ml-2 normal-case text-muted-foreground/70">
+                                      (click a row to see just that client&apos;s orders)
+                                    </span>
+                                  )}
+                                </div>
+                                <InvestorFilterTable
+                                  investors={investors}
+                                  selectedKey={selectedInvestor}
+                                  onSelect={(key) =>
+                                    setSelectedInvestorByStrategy((p) => ({
+                                      ...p,
+                                      [strategyKey]: p[strategyKey] === key ? null : key,
+                                    }))
                                   }
-                                }}
-                              >
-                                <td className="px-2 py-1.5 pl-6 whitespace-nowrap">
-                                  <ChevronRight
-                                    className={cn(
-                                      "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
-                                      isSecOpen && "rotate-90",
-                                    )}
-                                  />
-                                </td>
-                                <td className="px-3 py-1.5 whitespace-nowrap">
-                                  <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
-                                    {sec.groups.length}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-1.5" />
-                                <td className="px-3 py-1.5 whitespace-nowrap">
-                                  <Badge variant={sec.side === "SELL" ? "destructive" : "success"}>{sec.side}</Badge>
-                                </td>
-                                <td className="px-3 py-1.5 text-[12px] font-semibold text-foreground whitespace-nowrap">
-                                  {sec.symbol}
-                                </td>
-                                <td className="px-3 py-1.5" />
-                                <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">{fmtQty(sec.qty)}</td>
-                                <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap" colSpan={2}>
-                                  {sec.avgFillWeighted != null ? fmtMoney(sec.avgFillWeighted) : "—"}
-                                </td>
-                                <td className="px-3 py-1.5 text-[12px] text-foreground whitespace-nowrap">
-                                  {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
-                                </td>
-                                <td className="px-3 py-1.5" colSpan={6} />
-                              </tr>
-                              {isSecOpen &&
-                                sec.groups.map((g) => (
-                                  <GroupRow
-                                    key={g.parent.id}
-                                    g={g}
-                                    lookupLast={lookupLast}
-                                    expanded={expanded}
-                                    toggleExpanded={toggleGroupExpanded}
-                                    actions={orderActions}
-                                  />
-                                ))}
-                            </React.Fragment>
-                          );
-                        })}
-                        {!isGiftOrder ? <tr>
-                          <td colSpan={COLS} className="p-0">
-                            <div className="space-y-1.5 border-t border-border/30 bg-card/20 px-4 py-3">
-                              <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                                Investors in {strategyKey}
-                                {selectedInvestor ? (
-                                  <span className="ml-2 normal-case text-foreground">— filtered to {selectedInvestor}</span>
-                                ) : (
-                                  <span className="ml-2 normal-case text-muted-foreground/70">
-                                    (click a row to see this client&apos;s individual fills)
-                                  </span>
-                                )}
+                                />
                               </div>
-                              <InvestorFilterTable
-                                investors={investors}
-                                selectedKey={selectedInvestor}
-                                onSelect={(key) =>
-                                  setSelectedInvestorByStrategy((p) => ({
-                                    ...p,
-                                    [strategyKey]: p[strategyKey] === key ? null : key,
-                                  }))
-                                }
-                              />
-                            </div>
-                          </td>
-                        </tr> : null}
+                            </td>
+                          </tr>
+                        ) : null}
                       </>
                     )}
                   </React.Fragment>

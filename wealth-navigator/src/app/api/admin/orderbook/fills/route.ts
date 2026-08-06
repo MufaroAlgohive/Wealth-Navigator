@@ -18,6 +18,12 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  *   - when all execution rows for the book are 'filled', the response
  *     advertises `book_ready_for_confirmation: true` so the UI can enable
  *     the Send Confirmation button.
+ *   - when a row lands on 'filled' AND its payload is tagged uat_test=true
+ *     (see client-order/route.ts), best-effort auto-settles it against
+ *     MyMintAdmin's real settlement engine (closes the holding, credits the
+ *     wallet, refunds reserve/residual) — see settleUatFill below. Never
+ *     touches a live order: that engine independently re-verifies every
+ *     targeted holding belongs to a test account before writing anything.
  *
  * Body: { order_id: string, fills: Array<{ symbol, qty, avg_fill_price_cents, timestamp }> }
  */
@@ -37,8 +43,65 @@ interface AuditRow {
   symbol: string;
   quantity: number;
   status: string;
+  side: string | null;
   payload: Record<string, unknown>;
   result_payload: Record<string, unknown>;
+}
+
+interface SettlementResult {
+  audit_id: string;
+  attempted: boolean;
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Best-effort call to MyMintAdmin's real settlement engine
+ * (api/orderbook/update-price.js) for a UAT self-fill — see this file's doc
+ * comment. Never throws: a settlement-call failure must not fail the fill
+ * itself, but IS surfaced in the response (never silently swallowed).
+ */
+async function settleUatFill(row: AuditRow, fillPriceCents: number): Promise<SettlementResult> {
+  const payload = row.payload ?? {};
+  const uatTest = payload.uat_test === true;
+  const holdingId = typeof payload.holding_id === "string" ? payload.holding_id : "";
+  if (!uatTest || !holdingId) {
+    return { audit_id: row.id, attempted: false, ok: false };
+  }
+  const baseUrl = process.env.MYMINTADMIN_API_URL;
+  const secret = process.env.OEM_UAT_SETTLEMENT_SECRET;
+  if (!baseUrl || !secret) {
+    return {
+      audit_id: row.id,
+      attempted: true,
+      ok: false,
+      error: "MYMINTADMIN_API_URL or OEM_UAT_SETTLEMENT_SECRET not configured",
+    };
+  }
+  const side = String(row.side || "buy").toLowerCase();
+  const updatePayload =
+    side === "sell"
+      ? { avg_exit: fillPriceCents }
+      : { avg_fill: fillPriceCents, Fill_date: new Date().toISOString().slice(0, 10) };
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/orderbook/update-price`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
+      body: JSON.stringify({ ids: [holdingId], payload: updatePayload }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok || body.error) {
+      return { audit_id: row.id, attempted: true, ok: false, error: body.error || `HTTP ${res.status}` };
+    }
+    return { audit_id: row.id, attempted: true, ok: true };
+  } catch (e) {
+    return {
+      audit_id: row.id,
+      attempted: true,
+      ok: false,
+      error: e instanceof Error ? e.message : "settlement request failed",
+    };
+  }
 }
 
 function openInstitutional(): SupabaseClient | null {
@@ -85,7 +148,7 @@ export async function POST(req: Request) {
   const oid = orderId.replace(/[\\"]/g, "");
   const bookLookup = await db
     .from("oems_order_audit")
-    .select("id, order_id, symbol, quantity, status, payload, result_payload")
+    .select("id, order_id, symbol, quantity, status, side, payload, result_payload")
     .or(`order_id.eq."${oid}",payload->>book_id.eq."${oid}",payload->>strategy.eq."${oid}"`)
     .order("updated_at", { ascending: false })
     .limit(500);
@@ -133,24 +196,34 @@ export async function POST(req: Request) {
     result_payload: Record<string, unknown>;
     status: string;
   }> = [];
+  // Rows that land on "filled" this call, paired with the fill price that
+  // filled them — settlement runs after the DB update succeeds, below.
+  const toSettle: Array<{ row: AuditRow; fillPriceCents: number }> = [];
 
   for (const row of bookRows) {
     const fill = fills.find((f) => f.symbol === row.symbol);
     if (!fill) continue;
     const qty = Number(fill.qty) || 0;
-    const avgFillRands = (Number(fill.avg_fill_price_cents) || 0) / 100;
+    const avgFillCents = Math.round(Number(fill.avg_fill_price_cents) || 0);
+    const avgFillRands = avgFillCents / 100;
     const totalQty = Number(row.quantity) || 0;
 
+    // `payload.avgPx` / `result_payload.avgFillPrice` are read as CENTS
+    // everywhere else (execution/route.ts, order-books/route.ts — matching
+    // the real IRESS convention of quoting the JSE in cents), so they MUST be
+    // written in cents here too, not rands. Storing rands here previously
+    // made every UAT self-fill display ~100x too small (a R52.50 fill showed
+    // as R0.53, with slip/P&L inheriting the same error downstream).
     const newPayload: Record<string, unknown> = {
       ...row.payload,
       filled: qty,
-      avgPx: avgFillRands,
+      avgPx: avgFillCents,
       lastFillAt: fill.timestamp ?? now,
     };
 
     const newResult: Record<string, unknown> = {
       ...row.result_payload,
-      avgFillPrice: avgFillRands,
+      avgFillPrice: avgFillCents,
       slippageBps:
         num(row.payload?.limitPrice) != null
           ? Math.round(((num(row.payload?.limitPrice) ?? 0) - avgFillRands) * 10000) /
@@ -172,6 +245,10 @@ export async function POST(req: Request) {
       result_payload: newResult,
       status: newStatus,
     });
+
+    if (newStatus === "filled") {
+      toSettle.push({ row, fillPriceCents: Math.round(Number(fill.avg_fill_price_cents) || 0) });
+    }
   }
 
   if (updates.length === 0) {
@@ -220,11 +297,30 @@ export async function POST(req: Request) {
 
   const allFilled = bookAfter.length > 0 && bookAfter.every((r) => r.status === "filled");
 
+  // Auto-settle any row that just landed on "filled" and is tagged
+  // uat_test=true — best-effort, after the DB update above has succeeded.
+  // Never attempted for a live row (settleUatFill checks payload.uat_test
+  // itself too — this is belt-and-braces, not the only guard).
+  const settlements = await Promise.all(
+    toSettle.map(({ row, fillPriceCents }) => settleUatFill(row, fillPriceCents)),
+  );
+  const attemptedSettlements = settlements.filter((s) => s.attempted);
+  const failedSettlements = attemptedSettlements.filter((s) => !s.ok);
+
   return NextResponse.json({
     ok: true,
     updated: updates.length,
     book_id: bookId,
     book_ready_for_confirmation: allFilled,
     state: allFilled ? "READY_FOR_CONFIRMATION" : "WORKING",
+    ...(attemptedSettlements.length
+      ? {
+          settlement: {
+            attempted: attemptedSettlements.length,
+            ok: attemptedSettlements.length - failedSettlements.length,
+            failed: failedSettlements,
+          },
+        }
+      : {}),
   });
 }

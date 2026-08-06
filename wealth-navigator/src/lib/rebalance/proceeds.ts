@@ -6,7 +6,6 @@ export interface ProceedsBridgeInput {
   brokerageRate: number;
   custodyFeeCents: number;
   reserveCents: number;
-  walletCents: number;
   residualCents?: number;
 }
 
@@ -38,14 +37,10 @@ export function calculateProceedsBridge(input: ProceedsBridgeInput) {
   const reserveUsedCents = Math.min(reserveCents, totalFeesCents);
   const feeShortfallCents = totalFeesCents - reserveUsedCents;
   const netProceedsCents = Math.max(0, grossSellCents - sellFeesCents);
-  const walletCents = safeMoney(input.walletCents);
   const residualCents = safeMoney(input.residualCents ?? 0);
-  const strategyCashBeforeWalletCents =
+  const strategyCashDeltaCents =
     residualCents + grossSellCents - grossBuyCents - feeShortfallCents;
-  const walletDrawCents = Math.min(walletCents, Math.max(0, -strategyCashBeforeWalletCents));
-  const strategyCashAfterCents = Math.max(0, strategyCashBeforeWalletCents);
-  const walletAfterCents = walletCents - walletDrawCents;
-  const cashAfterCents = walletCents + strategyCashBeforeWalletCents;
+  const strategyCashAfterCents = Math.max(0, strategyCashDeltaCents);
 
   return {
     grossSellCents,
@@ -62,13 +57,9 @@ export function calculateProceedsBridge(input: ProceedsBridgeInput) {
     reserveUsedCents,
     reserveAfterCents: reserveCents - reserveUsedCents,
     feeShortfallCents,
-    walletCents,
     residualCents,
-    availableCashCents: walletCents + residualCents + grossSellCents,
-    walletDrawCents,
-    walletAfterCents,
     strategyCashAfterCents,
-    cashAfterCents,
-    shortfall: cashAfterCents < 0,
+    cashAfterCents: strategyCashDeltaCents,
+    shortfall: strategyCashDeltaCents < 0,
   };
 }
