@@ -1978,7 +1978,7 @@ function TradeSequencePanel({
           onNext={() => onNextLeg(0)}
         />
       ) : null}
-      {isExecute && wizardStage === "review" && reviewLegs.length > 0 ? (
+      {isExecute && wizardStage === "review" && splitIncreaseLegs && reviewLegs.length > 0 ? (
         <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-2">
           <div className="text-xs font-semibold">Sequence — {reviewLegs.length} leg{reviewLegs.length === 1 ? "" : "s"}</div>
           <div className="space-y-1.5">
