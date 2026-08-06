@@ -1693,6 +1693,12 @@ function TradeSequencePanel({
               <span>
                 Buys <span className="font-mono font-semibold text-down">{centsToR(totals?.buyCents)}</span>
               </span>
+              <span className="inline-flex items-center gap-1">
+                Total cost{" "}
+                <span className="font-mono font-semibold text-down">
+                  {centsToR((totals?.buyCents ?? 0) + (totals?.buyFeesCents ?? 0))}
+                </span>
+              </span>
               <span>
                 Sells <span className="font-mono font-semibold text-up">{centsToR(totals?.sellCents)}</span>
               </span>
