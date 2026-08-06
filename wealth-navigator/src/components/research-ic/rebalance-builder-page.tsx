@@ -2047,18 +2047,24 @@ function SingleClientRebalancePanel({
           <thead className="bg-[hsl(var(--foreground)/0.03)] text-muted-foreground">
             <tr>
               <th className="px-3 py-1.5 text-left font-medium">Symbol</th>
+              <th className="px-3 py-1.5 text-right font-medium">Price</th>
               <th className="px-3 py-1.5 text-right font-medium">Current</th>
               <th className="px-3 py-1.5 text-right font-medium">Target</th>
               <th className="px-3 py-1.5 text-right font-medium">Δ</th>
+              <th className="px-3 py-1.5 text-right font-medium">Cash Δ</th>
             </tr>
           </thead>
           <tbody>
             {driftLines.map((line) => {
               const target = targetQtyBySymbol[line.symbol] ?? line.currentQty;
               const delta = target - line.currentQty;
+              const cashDeltaCents = delta * line.priceCents;
               return (
                 <tr key={line.symbol} className="border-t border-[hsl(var(--glass-border))]">
                   <td className="px-3 py-1.5 font-medium">{line.symbol}</td>
+                  <td className="px-3 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
+                    {centsToR(line.priceCents)}
+                  </td>
                   <td className="px-3 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
                     {line.currentQty.toLocaleString()}
                   </td>
@@ -2082,6 +2088,15 @@ function SingleClientRebalancePanel({
                   >
                     {delta > 0 ? "+" : ""}
                     {delta}
+                  </td>
+                  <td
+                    className={cn(
+                      "px-3 py-1.5 text-right font-mono font-semibold tabular-nums",
+                      cashDeltaCents > 0 ? "text-up" : cashDeltaCents < 0 ? "text-down" : "text-muted-foreground",
+                    )}
+                  >
+                    {cashDeltaCents > 0 ? "+" : cashDeltaCents < 0 ? "−" : ""}
+                    {centsToR(Math.abs(cashDeltaCents))}
                   </td>
                 </tr>
               );
