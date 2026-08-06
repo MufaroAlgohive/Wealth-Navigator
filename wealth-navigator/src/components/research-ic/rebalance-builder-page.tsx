@@ -2235,6 +2235,7 @@ function ProposalsList({
   });
   const requests = q.data?.requests ?? []; // show all; the status chip differentiates
   const codes = rebalanceCodeMap(requests);
+  const [open, setOpen] = React.useState(false);
 
   async function push(id: string) {
     setPushingId(id);
@@ -2255,9 +2256,27 @@ function ProposalsList({
   };
 
   return (
-    <GlassSection title="Proposals — at IC or executed" endpoint="GET /api/rebalance/requests" dataSource="supabase" db="institutional">
-      {q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p>}
-      {requests.length === 0 && !q.isLoading ? (
+    <GlassSection
+      title="Proposals — at IC or executed"
+      subtitle={`${requests.length} proposal${requests.length === 1 ? "" : "s"}`}
+      endpoint="GET /api/rebalance/requests"
+      dataSource="supabase"
+      db="institutional"
+      right={
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--glass-border))] px-2.5 py-1 text-[11px] font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
+        >
+          {open ? "Collapse" : "Expand"}
+          <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-180")} />
+        </button>
+      }
+    >
+      {open ? (
+        q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p>
+      ) : null}
+      {!open ? null : requests.length === 0 && !q.isLoading ? (
         <p className="text-caption">No proposals yet. Build one above and submit it to the IC.</p>
       ) : (
         <div className="space-y-2">
