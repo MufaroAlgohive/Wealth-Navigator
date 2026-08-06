@@ -28,6 +28,7 @@ import {
   isRetailSupabaseConfigured,
 } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
+import { getAdminContext } from "@/lib/admin/rbac";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,7 +63,7 @@ interface RetailStrategyRow {
 async function loadRetailStrategies(
   retail: ReturnType<typeof createRetailServiceRoleClient>,
   part: "full" | "core" | "market" = "full",
-): Promise<{ strategies: ReturnType<typeof mapRow>[]; market: Array<{ symbol: string; price: number | null; changePct: number | null }>; source: string; count: number; lastUpdatedAt: string | null }> {
+): Promise<{ strategies: Array<Record<string, unknown>>; market: Array<{ symbol: string; price: number | null; changePct: number | null }>; source: string; count: number; lastUpdatedAt: string | null }> {
   // Both stock_intraday_c reads are bounded to the last 2 days — the table
   // holds months of ticks (3.5M+ rows) and an unbounded DESC scan was
   // measured at ~7.5s on the saturated Micro tier (production-readiness
@@ -467,14 +468,26 @@ export async function GET(req: Request) {
   // from two independent requests instead of blocking the whole page on one.
   const partParam = new URL(req.url).searchParams.get("part");
   const part = partParam === "market" ? "market" : partParam === "core" ? "core" : "full";
+  // UAT strategies (Test Strategy, etc.) are only for dev-tier admins to see
+  // in this OEM catalogue — a routine admin has no reason to see, pick, or
+  // rebalance a test strategy, and hiding it here is the one choke point
+  // every consumer of this route (Rebalance Builder's picker, strategy
+  // lists, etc.) inherits automatically. Default to hidden on any auth
+  // failure — the safe side.
+  const auth = await getAdminContext();
+  const isDev = auth.status === "ok" && auth.ctx.approverTier === "dev";
   // Prefer the retail catalogue — it's the populated source (9 model
   // portfolios + live per-strategy AUM/PnL). Fall back to the institutional
   // oems_strategy_c rollup only if retail isn't configured or returns nothing.
   if (isRetailSupabaseConfigured()) {
     try {
       const retailResult = await loadRetailStrategies(createRetailServiceRoleClient(), part);
-      if (part === "market" || retailResult.strategies.length > 0) {
-        return Response.json(retailResult);
+      const visibleStrategies = isDev
+        ? retailResult.strategies
+        : retailResult.strategies.filter((s) => s.investorEnvironment !== "UAT");
+      const filteredResult = { ...retailResult, strategies: visibleStrategies, count: visibleStrategies.length };
+      if (part === "market" || filteredResult.strategies.length > 0) {
+        return Response.json(filteredResult);
       }
     } catch {
       // fall through to the institutional rollup
