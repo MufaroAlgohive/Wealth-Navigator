@@ -378,6 +378,13 @@ export async function POST(req: Request) {
     byUser.set(h.user_id, m);
   }
 
+  // Strategy-wide model basket value (same for every investor) — denominator
+  // for each symbol's model weight %, used by the per-client drift panel.
+  let modelBasketCents = 0;
+  for (const [sym, units] of currentModelUnits) {
+    modelBasketCents += units * priceCentsForSymbol(sym);
+  }
+
   const investors: Array<Record<string, unknown>> = [];
   let tBuy = 0;
   let tSell = 0;
@@ -417,6 +424,35 @@ export async function POST(req: Request) {
     let sellCents = 0;
     // Every name that is either held or targeted.
     const names = new Set<string>([...positions.keys(), ...targets.keys()]);
+
+    // Compliance drift — current holding vs. the strategy's PERSISTED model
+    // (currentModelUnits, never the staged/proposed target), scaled to this
+    // client's own lot count. Unlike `lines` below, this covers every held
+    // or modelled symbol regardless of whether it has a proposed change, so
+    // it works even when `proposed` is all-"hold" (nothing staged yet).
+    const driftLines: Array<Record<string, unknown>> = [];
+    for (const sym of names) {
+      const priceCents = priceCentsForSymbol(sym);
+      const position = positions.get(sym) ?? { quantity: 0, costValueCents: 0 };
+      const currentQty = position.quantity;
+      const modelUnits = currentModelUnits.get(sym) ?? 0;
+      const modelQty = Math.round(modelUnits * fallbackLots);
+      const modelValueCents = modelQty * priceCents;
+      driftLines.push({
+        symbol: sym,
+        lots: fallbackLots,
+        currentQty,
+        modelQty,
+        deltaQty: modelQty - currentQty,
+        priceCents,
+        currentValueCents: currentQty * priceCents,
+        modelValueCents,
+        currentWeightPct: basketCents > 0 ? (currentQty * priceCents * 100) / basketCents : 0,
+        modelWeightPct: modelBasketCents > 0 ? (modelUnits * priceCents * 100) / modelBasketCents : 0,
+        currentPnlCents: Math.round(currentQty * priceCents - position.costValueCents),
+      });
+    }
+    driftLines.sort((a, b) => Number(b.currentValueCents) - Number(a.currentValueCents));
     for (const sym of names) {
       const target = targets.get(sym);
       const priceCents = priceCentsForSymbol(sym);
@@ -480,6 +516,7 @@ export async function POST(req: Request) {
       netCashCents: sellCents - buyCents - bridge.feeShortfallCents,
       ...bridge,
       lines: lines.sort((a, b) => Number(b.valueCents) - Number(a.valueCents)),
+      driftLines,
     });
   }
 

@@ -33,11 +33,30 @@ type ImpactLine = {
   valueCents: number;
   currentPnlCents: number;
 };
+// One symbol's compliance drift for a single client — current holding vs.
+// where the strategy's persisted model says they should be, independent of
+// whatever's staged in compose. Always populated for every held/modelled
+// symbol (unlike ImpactLine, which only exists for symbols with an actual
+// proposed change) — used by the "expand a client row" comparison panel.
+type DriftLine = {
+  symbol: string;
+  lots: number;
+  currentQty: number;
+  modelQty: number;
+  deltaQty: number;
+  priceCents: number;
+  currentValueCents: number;
+  modelValueCents: number;
+  currentWeightPct: number;
+  modelWeightPct: number;
+  currentPnlCents: number;
+};
 type ImpactInvestor = {
   user_id: string;
   name: string;
   account?: string;
   basketCents: number;
+  driftLines: DriftLine[];
   buyCents: number;
   sellCents: number;
   netCashCents: number;
@@ -1758,6 +1777,92 @@ function CombinedStepView({
   );
 }
 
+/**
+ * Expanded-row content for one client on the (pre-any-change) Client impact
+ * preview: their actual holdings vs. the strategy's persisted model
+ * (compliance drift, computed server-side in driftLines — see impact/route.ts),
+ * independent of anything staged in compose. "Rebalance single user" is a
+ * placeholder for now — scoping the trade-sequence wizard down to one client
+ * is a separate, larger piece of work the user asked to defer.
+ */
+function ClientDriftPanel({ investor, strategyName }: { investor: ImpactInvestor; strategyName: string }) {
+  const lines = investor.driftLines ?? [];
+  if (lines.length === 0) {
+    return <p className="px-5 py-3 text-caption">No holdings to compare against {strategyName} yet.</p>;
+  }
+  return (
+    <div className="border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.015)] px-5 py-3">
+      <div className="overflow-x-auto rounded-lg border border-[hsl(var(--glass-border))]">
+        <table className="w-full min-w-[560px] text-[11px]">
+          <thead className="bg-[hsl(var(--foreground)/0.03)] text-muted-foreground">
+            <tr>
+              <th className="px-3 py-1.5 text-left font-medium">Symbol</th>
+              <th className="px-3 py-1.5 text-right font-medium">Lots</th>
+              <th className="px-3 py-1.5 text-right font-medium">Current</th>
+              <th className="px-3 py-1.5 text-right font-medium">Model</th>
+              <th className="px-3 py-1.5 text-right font-medium">Δ</th>
+              <th className="px-3 py-1.5 text-right font-medium">P/L</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((line) => (
+              <tr key={line.symbol} className="border-t border-[hsl(var(--glass-border))]">
+                <td className="px-3 py-1.5 font-medium">{line.symbol}</td>
+                <td className="px-3 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
+                  {line.lots > 0
+                    ? Number.isInteger(line.lots)
+                      ? line.lots
+                      : line.lots.toLocaleString("en-ZA", { maximumFractionDigits: 2 })
+                    : "—"}
+                </td>
+                <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                  {line.currentQty.toLocaleString()}
+                  <span className="ml-1 text-muted-foreground">({line.currentWeightPct.toFixed(1)}%)</span>
+                </td>
+                <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                  {line.modelQty.toLocaleString()}
+                  <span className="ml-1 text-muted-foreground">({line.modelWeightPct.toFixed(1)}%)</span>
+                </td>
+                <td
+                  className={cn(
+                    "px-3 py-1.5 text-right font-mono font-semibold tabular-nums",
+                    line.deltaQty > 0 ? "text-up" : line.deltaQty < 0 ? "text-down" : "text-muted-foreground",
+                  )}
+                >
+                  {line.deltaQty > 0 ? "+" : ""}
+                  {line.deltaQty}
+                </td>
+                <td
+                  className={cn(
+                    "px-3 py-1.5 text-right font-mono font-semibold tabular-nums",
+                    line.currentPnlCents > 0 ? "text-up" : line.currentPnlCents < 0 ? "text-down" : "text-muted-foreground",
+                  )}
+                >
+                  {line.currentPnlCents > 0 ? "+" : ""}
+                  {centsToR(line.currentPnlCents)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-2.5 flex items-center justify-between">
+        <p className="text-[10px] text-muted-foreground">
+          Model column compares against {strategyName}'s current persisted composition, not anything staged above.
+        </p>
+        <button
+          type="button"
+          disabled
+          title="Coming soon — will open a trade sequence scoped to just this client"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-[11px] font-medium text-muted-foreground opacity-60"
+        >
+          Rebalance single user
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TradeSequencePanel({
   mode,
   enabled,
@@ -1844,6 +1949,7 @@ function TradeSequencePanel({
   const totals = data?.totals ?? null;
   const cashOk = totals?.cashOk ?? true;
   const [residualView, setResidualView] = React.useState(false);
+  const [expandedUserId, setExpandedUserId] = React.useState<string | null>(null);
   const scopeLabel =
     data?.scope === "live" ? "LIVE clients" : data?.scope === "uat" ? "UAT clients" : "Scope unavailable";
   const sellSymbols = reviewLegs.map((l) => l.symbol);
@@ -2123,11 +2229,24 @@ function TradeSequencePanel({
                 </tr>
               </thead>
               <tbody>
-                {investors.map((inv) => (
+                {investors.map((inv) => {
+                  const isExpanded = expandedUserId === inv.user_id;
+                  return (
                   <React.Fragment key={inv.user_id}>
                     <tr
+                      onClick={() => setExpandedUserId((id) => (id === inv.user_id ? null : inv.user_id))}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setExpandedUserId((id) => (id === inv.user_id ? null : inv.user_id));
+                        }
+                      }}
+                      // biome-ignore lint/a11y/useSemanticElements: a <button> can't be a valid child of <tbody>/<tr>; role+tabIndex+onKeyDown on the row is the standard pattern for a clickable table row.
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isExpanded}
                       className={cn(
-                        "border-b border-[hsl(var(--glass-border))] transition-colors",
+                        "cursor-pointer border-b border-[hsl(var(--glass-border))] transition-colors",
                         inv.shortfall
                           ? "bg-[hsl(var(--down)/0.07)]"
                           : "bg-amber-500/[0.035] hover:bg-amber-500/[0.065]",
@@ -2135,6 +2254,12 @@ function TradeSequencePanel({
                     >
                       <td className="px-5 py-3">
                         <div className="flex flex-wrap items-center gap-1.5">
+                          <ChevronDown
+                            className={cn(
+                              "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                              isExpanded && "rotate-180",
+                            )}
+                          />
                           <span className="font-medium">{inv.name}</span>
                           {!residualView && inv.lines.map((line) => (
                             <span
@@ -2228,8 +2353,23 @@ function TradeSequencePanel({
                         </>
                       )}
                     </tr>
+                    <tr>
+                      <td colSpan={6} className="p-0">
+                        <div
+                          className={cn(
+                            "grid transition-[grid-template-rows] duration-300 ease-out",
+                            isExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+                          )}
+                        >
+                          <div className="overflow-hidden">
+                            <ClientDriftPanel investor={inv} strategyName={strategyName} />
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
                   </React.Fragment>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
