@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
+import { reconcileParkedHoldings } from "@/lib/rebalance/reconcile-parked-holdings";
+import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * POST /api/rebalance/requests/[id]/transition
@@ -65,7 +66,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const { data: request, error: reqErr } = await db
     .from("rebalance_request_c")
-    .select("id, status, requested_by")
+    .select("id, status, requested_by, strategy_id, current_composition, proposed_composition")
     .eq("id", id)
     .maybeSingle();
 
@@ -119,5 +120,28 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     .maybeSingle();
 
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true, request: data });
+
+  // IC approval is the point this rebalance becomes a real decision — even
+  // though real broker dispatch is a separate, still-disabled step (see
+  // requests/[id]/push/route.ts), any client whose buy into this strategy
+  // hasn't been sent to the broker yet should stop being stale the moment
+  // the decision is made, not wait for execution to land. Best-effort: a
+  // failure here doesn't block the IC transition itself, it's just reported.
+  let parked: { reconciledUserIds: string[]; errors: string[] } | null = null;
+  if (toStatus === "ic_approved" && request.strategy_id) {
+    try {
+      const retailDb = createRetailServiceRoleClient();
+      parked = await reconcileParkedHoldings(
+        retailDb,
+        request.strategy_id as string,
+        null,
+        Array.isArray(request.current_composition) ? request.current_composition : [],
+        Array.isArray(request.proposed_composition) ? request.proposed_composition : [],
+      );
+    } catch (err) {
+      parked = { reconciledUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
+    }
+  }
+
+  return NextResponse.json({ ok: true, request: data, parked });
 }

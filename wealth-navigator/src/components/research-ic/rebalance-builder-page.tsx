@@ -1101,7 +1101,12 @@ export function RebalanceBuilderPage({
         onApplyBufferChange={setApplyBuffer}
       />
 
-      <ProposalsList pushingId={pushingId} setPushingId={setPushingId} canPush={perms.pushRebalance} />
+      <ProposalsList
+        pushingId={pushingId}
+        setPushingId={setPushingId}
+        canPush={perms.pushRebalance}
+        canApprove={perms.approveRebalance}
+      />
     </ResearchLabCanvas>
   );
 }
@@ -2743,10 +2748,12 @@ function ProposalsList({
   pushingId,
   setPushingId,
   canPush,
+  canApprove,
 }: {
   pushingId: string | null;
   setPushingId: (id: string | null) => void;
   canPush: boolean;
+  canApprove: boolean;
 }) {
   const qc = useQueryClient();
   const q = useQuery<{ requests: RebalanceRequest[]; notice?: string }>({
@@ -2763,6 +2770,8 @@ function ProposalsList({
   const requests = q.data?.requests ?? []; // show all; the status chip differentiates
   const codes = rebalanceCodeMap(requests);
   const [open, setOpen] = React.useState(false);
+  const [approvingId, setApprovingId] = React.useState<string | null>(null);
+  const [approveNotice, setApproveNotice] = React.useState<string | null>(null);
 
   async function push(id: string) {
     setPushingId(id);
@@ -2771,6 +2780,40 @@ function ProposalsList({
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
     } finally {
       setPushingId(null);
+    }
+  }
+
+  async function approve(id: string) {
+    setApprovingId(id);
+    setApproveNotice(null);
+    try {
+      const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to_status: "ic_approved" }),
+      });
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        parked?: { reconciledUserIds: string[]; errors: string[] };
+      };
+      if (!res.ok || !json.ok) {
+        setApproveNotice(json.error ?? `Approve failed (${res.status}).`);
+        return;
+      }
+      if (json.parked) {
+        const n = json.parked.reconciledUserIds.length;
+        setApproveNotice(
+          n > 0
+            ? `Approved — ${n} parked (not-yet-filled) client${n === 1 ? "" : "s"} rewritten to the new basket, no fees charged.`
+            : json.parked.errors.length
+              ? `Approved, but parked-holdings reconciliation had errors: ${json.parked.errors.join("; ")}`
+              : "Approved — no parked (not-yet-filled) holdings found for this strategy.",
+        );
+      }
+      await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+    } finally {
+      setApprovingId(null);
     }
   }
 
@@ -2801,7 +2844,10 @@ function ProposalsList({
       }
     >
       {open ? (
-        q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p>
+        <>
+          {q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p>}
+          {approveNotice && <p className="mb-3 text-xs text-up">{approveNotice}</p>}
+        </>
       ) : null}
       {!open ? null : requests.length === 0 && !q.isLoading ? (
         <p className="text-caption">No proposals yet. Build one above and submit it to the IC.</p>
@@ -2833,14 +2879,29 @@ function ProposalsList({
                     </p>
                   </div>
                 </div>
-                <div className="shrink-0">
+                <div className="flex shrink-0 items-center gap-2">
                   {r.status === "pending" && (
-                    <Link
-                      href="/oems/committee"
-                      className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)]"
-                    >
-                      At IC
-                    </Link>
+                    <>
+                      <Link
+                        href="/oems/committee"
+                        className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)]"
+                      >
+                        At IC
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => approve(r.id)}
+                        disabled={!canApprove || approvingId === r.id}
+                        title={
+                          canApprove
+                            ? "Approve — also rewrites any not-yet-filled client holdings for this strategy to the new basket, fee-free"
+                            : "Requires IC approval permission"
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                      >
+                        {approvingId === r.id ? "Approving…" : "Approve"}
+                      </button>
+                    </>
                   )}
                   {r.status === "ic_approved" && (
                     <button
