@@ -1047,6 +1047,7 @@ export function RebalanceBuilderPage({
         enabled={!!strategyId}
         loading={impactQ.isFetching}
         data={impactQ.data}
+        strategyId={strategyId}
         strategyName={strategyName}
         legs={wizardLegs}
         reviewLegs={allLegsForReview}
@@ -1781,12 +1782,22 @@ function CombinedStepView({
  * Expanded-row content for one client on the (pre-any-change) Client impact
  * preview: their actual holdings vs. the strategy's persisted model
  * (compliance drift, computed server-side in driftLines — see impact/route.ts),
- * independent of anything staged in compose. "Rebalance single user" is a
- * placeholder for now — scoping the trade-sequence wizard down to one client
- * is a separate, larger piece of work the user asked to defer.
+ * independent of anything staged in compose. "Rebalance single user" opens
+ * SingleClientRebalancePanel below, which raises an isolated trade for just
+ * this account via /api/rebalance/client-target-impact — it never touches
+ * the shared strategy composition or any other investor.
  */
-function ClientDriftPanel({ investor, strategyName }: { investor: ImpactInvestor; strategyName: string }) {
+function ClientDriftPanel({
+  investor,
+  strategyId,
+  strategyName,
+}: {
+  investor: ImpactInvestor;
+  strategyId: string;
+  strategyName: string;
+}) {
   const lines = investor.driftLines ?? [];
+  const [rebalanceOpen, setRebalanceOpen] = React.useState(false);
   if (lines.length === 0) {
     return <p className="px-5 py-3 text-caption">No holdings to compare against {strategyName} yet.</p>;
   }
@@ -1856,11 +1867,268 @@ function ClientDriftPanel({ investor, strategyName }: { investor: ImpactInvestor
         </p>
         <button
           type="button"
-          disabled
-          title="Coming soon — will open a trade sequence scoped to just this client"
-          className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-[11px] font-medium text-muted-foreground opacity-60"
+          onClick={() => setRebalanceOpen((v) => !v)}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-[11px] font-medium transition",
+            rebalanceOpen
+              ? "border-primary/50 bg-primary/15 text-primary"
+              : "border-[hsl(var(--glass-border))] hover:bg-[hsl(var(--foreground)/0.05)]",
+          )}
         >
-          Rebalance single user
+          {rebalanceOpen ? "Close" : "Rebalance single user"}
+        </button>
+      </div>
+      {rebalanceOpen ? (
+        <SingleClientRebalancePanel
+          investor={investor}
+          driftLines={lines}
+          strategyId={strategyId}
+          strategyName={strategyName}
+          onClose={() => setRebalanceOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Opened from "Rebalance single user" — proposes bringing THIS ONE client's
+ * own holdings to a set of target quantities (defaulted to fully closing
+ * their drift, i.e. the Model column), editable per symbol. Computed via
+ * /api/rebalance/client-target-impact, which has no model-unit/lots concept
+ * at all — it's a raw per-symbol quantity delta for one account, priced with
+ * the same calculateProceedsBridge fee math used everywhere else. Submitting
+ * raises a normal rebalance_request_c row via the existing, unmodified
+ * POST /api/rebalance/requests, tagged affected_investors.scope = "single_user"
+ * so it never gets confused with a strategy-wide proposal.
+ */
+function SingleClientRebalancePanel({
+  investor,
+  driftLines,
+  strategyId,
+  strategyName,
+  onClose,
+}: {
+  investor: ImpactInvestor;
+  driftLines: DriftLine[];
+  strategyId: string;
+  strategyName: string;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [targetQtyBySymbol, setTargetQtyBySymbol] = React.useState<Record<string, number>>(() =>
+    Object.fromEntries(driftLines.map((l) => [l.symbol, l.modelQty])),
+  );
+  // Debounced so typing a share count doesn't fire a request per keystroke.
+  const [debounced, setDebounced] = React.useState(targetQtyBySymbol);
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebounced(targetQtyBySymbol), 400);
+    return () => clearTimeout(t);
+  }, [targetQtyBySymbol]);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [submitted, setSubmitted] = React.useState(false);
+
+  const targetsPayload = Object.entries(debounced).map(([symbol, targetQty]) => ({ symbol, targetQty }));
+  const previewQ = useQuery<{
+    ok?: boolean;
+    error?: string;
+    lines?: Array<{
+      symbol: string;
+      currentQty: number;
+      targetQty: number;
+      deltaQty: number;
+      side: "buy" | "sell" | "none";
+      priceCents: number;
+      valueCents: number;
+    }>;
+    bridge?: {
+      grossSellCents: number;
+      grossBuyCents: number;
+      sellFeesCents: number;
+      buyFeesCents: number;
+      totalFeesCents: number;
+      reserveCents: number;
+      reserveUsedCents: number;
+      feeShortfallCents: number;
+      residualCents: number;
+      strategyCashAfterCents: number;
+      shortfall: boolean;
+    };
+  }>({
+    queryKey: ["client-target-impact", strategyId, investor.user_id, JSON.stringify(debounced)],
+    enabled: targetsPayload.length > 0,
+    queryFn: async () => {
+      const res = await fetch("/api/rebalance/client-target-impact", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          strategy_id: strategyId,
+          strategy_name: strategyName,
+          user_id: investor.user_id,
+          targets: targetsPayload,
+        }),
+      });
+      return (await res.json().catch(() => ({ ok: false }))) as Record<string, unknown>;
+    },
+  });
+
+  const bridge = previewQ.data?.bridge;
+  const changedLines = (previewQ.data?.lines ?? []).filter((l) => l.side !== "none");
+  const commitDisabled =
+    submitting || previewQ.isFetching || previewQ.data?.ok !== true || !!bridge?.shortfall || changedLines.length === 0;
+
+  async function submit() {
+    if (!bridge || !previewQ.data?.lines) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const current_composition = previewQ.data.lines.map((l) => ({
+        ticker: l.symbol,
+        name: l.symbol,
+        shares: l.currentQty,
+        price: l.priceCents,
+      }));
+      const proposed_composition = previewQ.data.lines.map((l) => ({
+        ticker: l.symbol,
+        name: l.symbol,
+        shares: l.targetQty,
+        price: l.priceCents,
+        action: l.side === "buy" ? "increase" : l.side === "sell" ? "decrease" : "hold",
+      }));
+      const res = await fetch("/api/rebalance/requests", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          strategy_id: strategyId,
+          current_composition,
+          proposed_composition,
+          affected_investors: {
+            scope: "single_user",
+            user_id: investor.user_id,
+            name: investor.name,
+            account: investor.account,
+            bridge,
+          },
+        }),
+      });
+      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !json.ok) {
+        setSubmitError(json.error ?? `Submit failed (${res.status}).`);
+        return;
+      }
+      await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+      setSubmitted(true);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (submitted) {
+    return (
+      <div className="mt-3 rounded-lg border border-[hsl(var(--up)/0.3)] bg-[hsl(var(--up)/0.08)] px-3.5 py-3 text-xs text-up">
+        Raised — {investor.name}'s single-account rebalance is now in "Proposals — at IC or executed".
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <p className="text-[11px] font-semibold">
+          Rebalance {investor.name} only <span className="font-normal text-muted-foreground">· doesn't affect any other client or the model</span>
+        </p>
+        <button type="button" onClick={onClose} className="text-[11px] text-muted-foreground hover:text-foreground">
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-[hsl(var(--glass-border))]">
+        <table className="w-full min-w-[420px] text-[11px]">
+          <thead className="bg-[hsl(var(--foreground)/0.03)] text-muted-foreground">
+            <tr>
+              <th className="px-3 py-1.5 text-left font-medium">Symbol</th>
+              <th className="px-3 py-1.5 text-right font-medium">Current</th>
+              <th className="px-3 py-1.5 text-right font-medium">Target</th>
+              <th className="px-3 py-1.5 text-right font-medium">Δ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {driftLines.map((line) => {
+              const target = targetQtyBySymbol[line.symbol] ?? line.currentQty;
+              const delta = target - line.currentQty;
+              return (
+                <tr key={line.symbol} className="border-t border-[hsl(var(--glass-border))]">
+                  <td className="px-3 py-1.5 font-medium">{line.symbol}</td>
+                  <td className="px-3 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
+                    {line.currentQty.toLocaleString()}
+                  </td>
+                  <td className="px-3 py-1.5 text-right">
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={target}
+                      onChange={(e) =>
+                        setTargetQtyBySymbol((prev) => ({ ...prev, [line.symbol]: Math.max(0, Number(e.target.value) || 0) }))
+                      }
+                      className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-right font-mono text-[11px] tabular-nums outline-none focus:border-primary/50"
+                    />
+                  </td>
+                  <td
+                    className={cn(
+                      "px-3 py-1.5 text-right font-mono font-semibold tabular-nums",
+                      delta > 0 ? "text-up" : delta < 0 ? "text-down" : "text-muted-foreground",
+                    )}
+                  >
+                    {delta > 0 ? "+" : ""}
+                    {delta}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {previewQ.isFetching ? (
+        <p className="mt-2.5 text-[11px] text-muted-foreground">Calculating…</p>
+      ) : previewQ.data?.ok === false ? (
+        <p className="mt-2.5 text-[11px] text-down">{previewQ.data.error ?? "Preview failed."}</p>
+      ) : bridge ? (
+        <div className="mt-2.5 space-y-1.5 rounded-lg border border-[hsl(var(--glass-border))] p-2.5">
+          <BridgeRow label="Gross Sell" value={centsToR(bridge.grossSellCents)} />
+          <BridgeRow label="Gross Buy" value={centsToR(bridge.grossBuyCents)} deduct />
+          <BridgeRow label="Fees (sell + buy)" value={centsToR(bridge.totalFeesCents)} deduct />
+          <BridgeRow label="From reserve" value={centsToR(bridge.reserveUsedCents)} />
+          <div className="border-t border-[hsl(var(--glass-border))] pt-1.5">
+            <BridgeRow label="CA after" value={centsToR(bridge.strategyCashAfterCents)} bold />
+          </div>
+        </div>
+      ) : null}
+      {bridge?.shortfall ? (
+        <div className="mt-2 rounded-md bg-[hsl(var(--down)/0.1)] px-2.5 py-1.5 text-[11px] font-medium text-down">
+          Not enough — {investor.name}'s own sell proceeds, CA, and reserve don't cover these buys. Reduce a target
+          quantity or drop an asset to proceed.
+        </div>
+      ) : null}
+      {submitError ? (
+        <p className="mt-2 text-[11px] text-down">{submitError}</p>
+      ) : null}
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-[11px] font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={submit}
+          disabled={commitDisabled}
+          title={changedLines.length === 0 ? "No change from current holdings yet" : undefined}
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-3.5 py-1.5 text-[11px] font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {submitting ? "Raising…" : "Raise for this client"}
         </button>
       </div>
     </div>
@@ -1872,6 +2140,7 @@ function TradeSequencePanel({
   enabled,
   loading,
   data,
+  strategyId,
   strategyName,
   legs,
   reviewLegs,
@@ -1908,6 +2177,7 @@ function TradeSequencePanel({
   enabled: boolean;
   loading: boolean;
   data: ImpactResponse | undefined;
+  strategyId: string;
   strategyName: string;
   // Interactive per-leg steps — empty unless splitIncreaseLegs is on, since
   // otherwise there's nothing per-leg to decide (see CombinedStepView).
@@ -2366,7 +2636,7 @@ function TradeSequencePanel({
                           )}
                         >
                           <div className="overflow-hidden">
-                            <ClientDriftPanel investor={inv} strategyName={strategyName} />
+                            <ClientDriftPanel investor={inv} strategyId={strategyId} strategyName={strategyName} />
                           </div>
                         </div>
                       </td>
