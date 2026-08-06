@@ -1797,6 +1797,7 @@ function ClientDriftPanel({ investor, strategyName }: { investor: ImpactInvestor
           <thead className="bg-[hsl(var(--foreground)/0.03)] text-muted-foreground">
             <tr>
               <th className="px-3 py-1.5 text-left font-medium">Symbol</th>
+              <th className="px-3 py-1.5 text-right font-medium">Price</th>
               <th className="px-3 py-1.5 text-right font-medium">Lots</th>
               <th className="px-3 py-1.5 text-right font-medium">Current</th>
               <th className="px-3 py-1.5 text-right font-medium">Model</th>
@@ -1808,6 +1809,9 @@ function ClientDriftPanel({ investor, strategyName }: { investor: ImpactInvestor
             {lines.map((line) => (
               <tr key={line.symbol} className="border-t border-[hsl(var(--glass-border))]">
                 <td className="px-3 py-1.5 font-medium">{line.symbol}</td>
+                <td className="px-3 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
+                  {centsToR(line.priceCents)}
+                </td>
                 <td className="px-3 py-1.5 text-right font-mono tabular-nums text-muted-foreground">
                   {line.lots > 0
                     ? Number.isInteger(line.lots)
