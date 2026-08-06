@@ -1312,6 +1312,7 @@ function LegStepView({
   buyUniverseResearchGated,
   applyBuffer,
   onApplyBufferChange,
+  otherIncreaseLegs,
   onChooseMode,
   onSelectBuyInstrument,
   onSharesOverride,
@@ -1332,6 +1333,10 @@ function LegStepView({
   buyUniverseResearchGated: boolean;
   applyBuffer: boolean;
   onApplyBufferChange: (value: boolean) => void;
+  // Standalone increases riding along in this same sequence (not funded by
+  // this leg's proceeds) — surfaced here so the leg screen doesn't look like
+  // this sell is happening in isolation when it isn't.
+  otherIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
   onChooseMode: (mode: "reinvest" | "liquidate") => void;
   onSelectBuyInstrument: (symbol: string, name: string, priceCents: number) => void;
   onSharesOverride: (shares: number) => void;
@@ -1420,6 +1425,18 @@ function LegStepView({
           Liquidate to Cash
         </button>
       </div>
+
+      {otherIncreaseLegs.length > 0 ? (
+        <div className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-5 py-2.5 text-[11px] text-muted-foreground">
+          Also running in this sequence — funded from strategy CA + reserve, independent of this leg's choice:{" "}
+          {otherIncreaseLegs.map((l, i) => (
+            <span key={l.symbol}>
+              {i > 0 ? ", " : ""}
+              <span className="font-semibold text-foreground/85">{l.symbol}</span> +{l.breakdown.qty.toLocaleString()}
+            </span>
+          ))}
+        </div>
+      ) : null}
 
       {choice === "reinvest" ? (
         <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
@@ -1837,6 +1854,7 @@ function TradeSequencePanel({
           buyUniverseResearchGated={buyUniverseResearchGated}
           applyBuffer={applyBuffer}
           onApplyBufferChange={onApplyBufferChange}
+          otherIncreaseLegs={unsplitIncreaseLegs}
           onChooseMode={(m) => onChooseLegMode(currentLeg.symbol, m)}
           onSelectBuyInstrument={(buySymbol, name, priceCents) =>
             onSelectLegBuyInstrument(currentLeg.symbol, buySymbol, name, priceCents)
