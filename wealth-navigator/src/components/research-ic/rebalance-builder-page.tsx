@@ -1263,7 +1263,14 @@ function LegStepView({
   onPrev: () => void;
   onNext: () => void;
 }) {
-  const resolved = choice === "liquidate" || (choice === "reinvest" && !!buyPick);
+  // Same formula chooseLegBuyInstrument's auto-size uses, run in reverse: does
+  // the chosen (possibly manually-overridden) share count still fit inside
+  // this leg's own proceeds? A manual override can push it over budget even
+  // though the auto-sized default never would.
+  const bufferedPriceCents = buyPick ? buyPick.priceCents * (applyBuffer ? 1.08 : 1) : 0;
+  const buyCostCents = buyPick ? buyPick.shares * bufferedPriceCents : 0;
+  const affordable = !buyPick || buyCostCents <= leg.breakdown.netCents;
+  const resolved = choice === "liquidate" || (choice === "reinvest" && !!buyPick && affordable);
   const buySearchQ = buySearch.trim().toLowerCase();
   const filteredBuyUniverse = buySearchQ
     ? buyUniverse.filter((u) => `${u.symbol} ${u.name}`.toLowerCase().includes(buySearchQ))
@@ -1384,6 +1391,18 @@ function LegStepView({
                 </label>
               ) : null}
             </div>
+            {buyPick ? (
+              <div
+                className={cn(
+                  "mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-medium",
+                  affordable ? "bg-[hsl(var(--up)/0.1)] text-up" : "bg-[hsl(var(--down)/0.1)] text-down",
+                )}
+              >
+                {affordable
+                  ? `Covered — ${centsToR(leg.breakdown.netCents - buyCostCents)} left over from this leg's proceeds.`
+                  : `Not enough — this costs ${centsToR(buyCostCents)} but only ${centsToR(leg.breakdown.netCents)} is available. Reduce share amount or choose another asset to proceed.`}
+              </div>
+            ) : null}
           </div>
           <label className="mt-3 flex items-center gap-2 text-xs text-foreground/85">
             <input
