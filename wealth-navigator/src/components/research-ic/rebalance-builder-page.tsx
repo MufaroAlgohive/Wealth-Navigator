@@ -563,30 +563,27 @@ export function RebalanceBuilderPage({
 
   // Every direct compose-level increase with no matching sell — used both as
   // the (optional) standalone wizard legs when splitIncreaseLegs is on, and
-  // as a read-only summary line on the Review screen when it's off, so an
-  // increase is never entirely invisible in the sequence recap either way.
+  // pooled into the combined step's totals when it's off.
   const standaloneIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>> = working
     .filter((h) => actionFor(h) === "increase")
     .map((h) => {
       const symbol = keyOf(h);
       return { kind: "increase" as const, symbol, name: h.name ?? symbol, breakdown: legBuyBreakdown(symbol) };
     });
-  const wizardLegs: Leg[] = [
-    ...sellActions.map((a) => {
-      const symbol = a.ticker.toUpperCase();
-      return { kind: "sell" as const, symbol, name: a.name ?? symbol, breakdown: legSellBreakdown(symbol) };
-    }),
-    ...(splitIncreaseLegs ? standaloneIncreaseLegs : []),
-  ];
-  // Unambiguous single swap (one sell funding one increase) — auto-pair them
-  // in the sell leg's wizard step instead of making the user manually
-  // re-pick what they already staged in compose. Multiple sells and/or
-  // increases are ambiguous about which funds which, so no auto-pairing
-  // there — the user either picks explicitly or turns splitIncreaseLegs on.
-  const impliedPairedIncrease: Extract<Leg, { kind: "increase" }> | null =
-    !splitIncreaseLegs && sellActions.length === 1 && standaloneIncreaseLegs.length === 1
-      ? (standaloneIncreaseLegs[0] ?? null)
-      : null;
+  const combinedSellLegs: Array<Extract<Leg, { kind: "sell" }>> = sellActions.map((a) => {
+    const symbol = a.ticker.toUpperCase();
+    return { kind: "sell" as const, symbol, name: a.name ?? symbol, breakdown: legSellBreakdown(symbol) };
+  });
+  // Interactive per-leg stepping (LegStepView / IncreaseLegStepView, each
+  // with its own Liquidate/Reinvest choice) only applies when the user has
+  // explicitly asked to split — otherwise every sell and every increase,
+  // no matter how many of each, are pooled into ONE combined step (see
+  // CombinedStepView) and there's nothing per-leg to decide.
+  const wizardLegs: Leg[] = splitIncreaseLegs ? [...combinedSellLegs, ...standaloneIncreaseLegs] : [];
+  // Always the full set, used to render the Review screen's sequence list
+  // regardless of split state — a pooled increase is still a real leg that
+  // happened, just not one the user stepped through individually.
+  const allLegsForReview: Leg[] = [...combinedSellLegs, ...standaloneIncreaseLegs];
 
   // Picking an instrument for ONE leg — auto-sized off that leg's own net
   // proceeds (legSellBreakdown), never the pooled total across every sell.
@@ -1033,9 +1030,9 @@ export function RebalanceBuilderPage({
         data={impactQ.data}
         strategyName={strategyName}
         legs={wizardLegs}
+        reviewLegs={allLegsForReview}
+        combinedSellLegs={combinedSellLegs}
         standaloneIncreaseLegs={standaloneIncreaseLegs}
-        unsplitIncreaseLegs={splitIncreaseLegs ? [] : standaloneIncreaseLegs}
-        impliedPairedIncrease={impliedPairedIncrease}
         splitIncreaseLegs={splitIncreaseLegs}
         onSplitIncreaseLegsChange={setSplitIncreaseLegs}
         wizardStage={wizardStage}
@@ -1322,8 +1319,6 @@ function LegStepView({
   buyUniverseResearchGated,
   applyBuffer,
   onApplyBufferChange,
-  otherIncreaseLegs,
-  impliedPairedIncrease,
   onChooseMode,
   onSelectBuyInstrument,
   onSharesOverride,
@@ -1344,17 +1339,6 @@ function LegStepView({
   buyUniverseResearchGated: boolean;
   applyBuffer: boolean;
   onApplyBufferChange: (value: boolean) => void;
-  // Standalone increases riding along in this same sequence (not funded by
-  // this leg's proceeds) — surfaced here so the leg screen doesn't look like
-  // this sell is happening in isolation when it isn't.
-  otherIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
-  // When there's exactly one sell and one standalone increase staged (and
-  // splitIncreaseLegs is off), they're auto-paired: this leg defaults to
-  // Reinvest into that increase without the user having to re-pick it from
-  // the dropdown — restores the "sell rebalances into the buy automatically"
-  // behavior for the common single swap case. null whenever the pairing is
-  // ambiguous (multiple sells and/or increases) or already overridden.
-  impliedPairedIncrease: Extract<Leg, { kind: "increase" }> | null;
   onChooseMode: (mode: "reinvest" | "liquidate") => void;
   onSelectBuyInstrument: (symbol: string, name: string, priceCents: number) => void;
   onSharesOverride: (shares: number) => void;
@@ -1383,14 +1367,7 @@ function LegStepView({
   const buyCustodyCents = buyPick ? custodyFeeCents * leg.breakdown.investorCount : 0;
   const buyCostCents = buyGrossCents + buyBrokerageCents + buyCustodyCents;
   const affordable = !buyPick || buyCostCents <= leg.breakdown.netCents;
-  // Auto-paired unless the user has made an explicit choice for this leg —
-  // any explicit choice (even re-picking the same instrument) takes over.
-  const isAutoPaired = choice === undefined && !!impliedPairedIncrease;
-  const autoAffordable = isAutoPaired
-    ? (impliedPairedIncrease?.breakdown.totalCostCents ?? 0) <= leg.breakdown.netCents
-    : true;
-  const resolved =
-    choice === "liquidate" || (choice === "reinvest" && !!buyPick && affordable) || (isAutoPaired && autoAffordable);
+  const resolved = choice === "liquidate" || (choice === "reinvest" && !!buyPick && affordable);
   const buySearchQ = buySearch.trim().toLowerCase();
   const filteredBuyUniverse = buySearchQ
     ? buyUniverse.filter((u) => `${u.symbol} ${u.name}`.toLowerCase().includes(buySearchQ))
@@ -1430,7 +1407,7 @@ function LegStepView({
           onClick={() => onChooseMode("reinvest")}
           className={cn(
             "rounded-full border px-3 py-1 text-[11px] font-semibold transition",
-            choice === "reinvest" || isAutoPaired
+            choice === "reinvest"
               ? "border-primary/50 bg-primary/15 text-primary"
               : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
           )}
@@ -1449,71 +1426,7 @@ function LegStepView({
         >
           Liquidate to Cash
         </button>
-        {isAutoPaired ? (
-          <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
-            Auto-paired
-          </span>
-        ) : null}
       </div>
-
-      {isAutoPaired && impliedPairedIncrease ? (
-        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
-          <div className="flex items-baseline justify-between gap-3">
-            <div className="text-xs font-semibold">Buy Execution</div>
-            <div className="text-[11px] text-muted-foreground">
-              Net capital: <span className="font-mono tabular-nums text-foreground/85">{centsToR(leg.breakdown.netCents)}</span>
-            </div>
-          </div>
-          <p className="mt-1 text-[10px] text-muted-foreground">
-            Automatically paired — you already staged an increase in {impliedPairedIncrease.symbol} with nothing
-            else to fund it. Adjust the share count from the compose table, or{" "}
-            <button
-              type="button"
-              onClick={() => onChooseMode("reinvest")}
-              className="font-medium text-primary underline underline-offset-2"
-            >
-              pick a different instrument instead
-            </button>
-            .
-          </p>
-          <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3 space-y-2">
-            <BridgeRow label="Total Shares" value={impliedPairedIncrease.breakdown.qty.toLocaleString()} />
-            <BridgeRow label="Execution Price" value={centsToR(impliedPairedIncrease.breakdown.priceCents)} />
-            <BridgeRow label="Gross Cost" value={centsToR(impliedPairedIncrease.breakdown.grossCents)} />
-            <BridgeRow label="Brokerage" value={centsToR(impliedPairedIncrease.breakdown.brokerageCents)} deduct />
-            <BridgeRow
-              label={`Custody Fee (x${impliedPairedIncrease.breakdown.investorCount})`}
-              value={centsToR(impliedPairedIncrease.breakdown.custodyCents)}
-              deduct
-            />
-            <div className="border-t border-[hsl(var(--glass-border))] pt-2">
-              <BridgeRow label="Total Cost" value={centsToR(impliedPairedIncrease.breakdown.totalCostCents)} bold />
-            </div>
-          </div>
-          <div
-            className={cn(
-              "mt-2 rounded-md px-2.5 py-1.5 text-[11px] font-medium",
-              autoAffordable ? "bg-[hsl(var(--up)/0.1)] text-up" : "bg-[hsl(var(--down)/0.1)] text-down",
-            )}
-          >
-            {autoAffordable
-              ? `Covered — ${centsToR(leg.breakdown.netCents - impliedPairedIncrease.breakdown.totalCostCents)} left over from this leg's proceeds (fees included).`
-              : `Not enough — this costs ${centsToR(impliedPairedIncrease.breakdown.totalCostCents)} with fees but only ${centsToR(leg.breakdown.netCents)} is available. Reduce ${impliedPairedIncrease.symbol}'s share count on the compose table to proceed.`}
-          </div>
-        </div>
-      ) : null}
-
-      {otherIncreaseLegs.length > 0 ? (
-        <div className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-5 py-2.5 text-[11px] text-muted-foreground">
-          Also running in this sequence — funded from strategy CA + reserve, independent of this leg's choice:{" "}
-          {otherIncreaseLegs.map((l, i) => (
-            <span key={l.symbol}>
-              {i > 0 ? ", " : ""}
-              <span className="font-semibold text-foreground/85">{l.symbol}</span> +{l.breakdown.qty.toLocaleString()}
-            </span>
-          ))}
-        </div>
-      ) : null}
 
       {choice === "reinvest" ? (
         <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
@@ -1758,6 +1671,93 @@ function IncreaseLegStepView({
   );
 }
 
+/**
+ * The default (non-split) view: every sell and every standalone increase in
+ * this sequence, pooled into one screen — no per-leg Liquidate/Reinvest
+ * choice, because with splitIncreaseLegs off there's nothing to decide per
+ * leg. Sells fund the pool, increases draw from it; this is just a listing
+ * of both sides plus the net, so it's visible before Review rather than
+ * only inside the aggregate FeeProceedsBreakdown there. Works for any
+ * number of sells and increases, not just a 1:1 pair.
+ */
+function CombinedStepView({
+  sellLegs,
+  increaseLegs,
+  onNext,
+}: {
+  sellLegs: Array<Extract<Leg, { kind: "sell" }>>;
+  increaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
+  onNext: () => void;
+}) {
+  const totalSellNetCents = sellLegs.reduce((s, l) => s + l.breakdown.netCents, 0);
+  const totalBuyCostCents = increaseLegs.reduce((s, l) => s + l.breakdown.totalCostCents, 0);
+  const netCents = totalSellNetCents - totalBuyCostCents;
+
+  return (
+    <div>
+      {sellLegs.length > 0 ? (
+        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
+          <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
+            <Info className="h-3.5 w-3.5 text-primary" /> Sell Execution
+          </div>
+          <div className="space-y-2">
+            {sellLegs.map((leg) => (
+              <BridgeRow
+                key={leg.symbol}
+                label={`${leg.symbol} · ${leg.breakdown.qty.toLocaleString()} shares`}
+                value={centsToR(leg.breakdown.netCents)}
+              />
+            ))}
+            <div className="border-t border-[hsl(var(--glass-border))] pt-2">
+              <BridgeRow label="Total Net Proceeds" value={centsToR(totalSellNetCents)} bold />
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {increaseLegs.length > 0 ? (
+        <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4">
+          <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
+            <Info className="h-3.5 w-3.5 text-primary" /> Buy Execution
+          </div>
+          <div className="space-y-2">
+            {increaseLegs.map((leg) => (
+              <BridgeRow
+                key={leg.symbol}
+                label={`${leg.symbol} · ${leg.breakdown.qty.toLocaleString()} shares`}
+                value={centsToR(leg.breakdown.totalCostCents)}
+                deduct
+              />
+            ))}
+            <div className="border-t border-[hsl(var(--glass-border))] pt-2">
+              <BridgeRow label="Total Cost" value={centsToR(totalBuyCostCents)} bold />
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className="flex items-center justify-between border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-5 py-3">
+        <span className="text-xs font-semibold">Net (sells − buys, fees included)</span>
+        <span
+          className={cn(
+            "font-mono text-sm font-semibold tabular-nums",
+            netCents >= 0 ? "text-up" : "text-down",
+          )}
+        >
+          {centsToR(netCents)}
+        </span>
+      </div>
+      <div className="flex items-center justify-end border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
+        <button
+          type="button"
+          onClick={onNext}
+          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5"
+        >
+          Review sequence →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TradeSequencePanel({
   mode,
   enabled,
@@ -1765,9 +1765,9 @@ function TradeSequencePanel({
   data,
   strategyName,
   legs,
+  reviewLegs,
+  combinedSellLegs,
   standaloneIncreaseLegs,
-  unsplitIncreaseLegs,
-  impliedPairedIncrease,
   splitIncreaseLegs,
   onSplitIncreaseLegsChange,
   wizardStage,
@@ -1800,17 +1800,19 @@ function TradeSequencePanel({
   loading: boolean;
   data: ImpactResponse | undefined;
   strategyName: string;
+  // Interactive per-leg steps — empty unless splitIncreaseLegs is on, since
+  // otherwise there's nothing per-leg to decide (see CombinedStepView).
   legs: Leg[];
+  // Every sell and every standalone increase, always populated regardless of
+  // splitIncreaseLegs — used for the Review screen's sequence list and the
+  // combined (non-split) step, neither of which cares whether a leg was
+  // stepped through individually.
+  reviewLegs: Leg[];
+  combinedSellLegs: Array<Extract<Leg, { kind: "sell" }>>;
   // Every direct compose-level increase with no matching sell, regardless of
   // splitIncreaseLegs — always populated, drives the toggle's own visibility
   // and label so the control doesn't vanish once switched on.
   standaloneIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
-  // Same set, but empty whenever splitIncreaseLegs is on (those increases are
-  // in `legs` instead) — used only by the read-only Review-screen mention.
-  unsplitIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
-  // The one increase this sequence's lone sell leg auto-pairs with, or null
-  // when there's no unambiguous single swap to auto-pair.
-  impliedPairedIncrease: Extract<Leg, { kind: "increase" }> | null;
   splitIncreaseLegs: boolean;
   onSplitIncreaseLegsChange: (value: boolean) => void;
   wizardStage: "leg" | "review";
@@ -1844,9 +1846,10 @@ function TradeSequencePanel({
   const [residualView, setResidualView] = React.useState(false);
   const scopeLabel =
     data?.scope === "live" ? "LIVE clients" : data?.scope === "uat" ? "UAT clients" : "Scope unavailable";
-  const sellSymbols = legs.map((l) => l.symbol);
+  const sellSymbols = reviewLegs.map((l) => l.symbol);
   const impactLabel = sellSymbols.length ? sellSymbols.join(" + ") : strategyName;
   const isExecute = mode === "execute";
+  const isCombinedMode = !splitIncreaseLegs;
   const currentLeg: Leg | undefined = legs[currentLegIndex];
 
   return (
@@ -1890,17 +1893,21 @@ function TradeSequencePanel({
             <div className="text-[10px] font-semibold uppercase tracking-wide text-primary">
               {wizardStage === "leg" && currentLeg
                 ? `Leg ${currentLegIndex + 1} of ${legs.length}`
-                : proceedsMode === "liquidate"
-                  ? "Liquidate to Cash"
-                  : proceedsMode === "reinvest"
-                    ? "Reinvest / Buy"
-                    : "Increase"}
+                : wizardStage === "leg" && isCombinedMode
+                  ? "Combined sequence"
+                  : proceedsMode === "liquidate"
+                    ? "Liquidate to Cash"
+                    : proceedsMode === "reinvest"
+                      ? "Reinvest / Buy"
+                      : "Increase"}
             </div>
             <div className="mt-0.5 text-xs font-medium">
               {wizardStage === "leg" && currentLeg
                 ? `Selling ${currentLeg.symbol} — decide this leg's proceeds`
-                : proceedsMode === "liquidate"
-                  ? "Sell-only · net proceeds settle into this strategy’s CA"
+                : wizardStage === "leg" && isCombinedMode
+                  ? "Every sell and increase pooled together — no separate legs to decide"
+                  : proceedsMode === "liquidate"
+                    ? "Sell-only · net proceeds settle into this strategy’s CA"
                   : proceedsMode === "reinvest"
                     ? "Sell + buy · each leg funds its own replacement"
                     : "Increase · funding is checked against strategy CA and reserve"}
@@ -1935,8 +1942,6 @@ function TradeSequencePanel({
           buyUniverseResearchGated={buyUniverseResearchGated}
           applyBuffer={applyBuffer}
           onApplyBufferChange={onApplyBufferChange}
-          otherIncreaseLegs={unsplitIncreaseLegs.filter((l) => l.symbol !== impliedPairedIncrease?.symbol)}
-          impliedPairedIncrease={impliedPairedIncrease}
           onChooseMode={(m) => onChooseLegMode(currentLeg.symbol, m)}
           onSelectBuyInstrument={(buySymbol, name, priceCents) =>
             onSelectLegBuyInstrument(currentLeg.symbol, buySymbol, name, priceCents)
@@ -1966,11 +1971,18 @@ function TradeSequencePanel({
           onNext={() => onNextLeg(legs.length)}
         />
       ) : null}
-      {isExecute && wizardStage === "review" && (legs.length > 0 || unsplitIncreaseLegs.length > 0) ? (
+      {isExecute && wizardStage === "leg" && isCombinedMode && (combinedSellLegs.length > 0 || standaloneIncreaseLegs.length > 0) ? (
+        <CombinedStepView
+          sellLegs={combinedSellLegs}
+          increaseLegs={standaloneIncreaseLegs}
+          onNext={() => onNextLeg(0)}
+        />
+      ) : null}
+      {isExecute && wizardStage === "review" && reviewLegs.length > 0 ? (
         <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-2">
-          <div className="text-xs font-semibold">Sequence — {legs.length} leg{legs.length === 1 ? "" : "s"}</div>
+          <div className="text-xs font-semibold">Sequence — {reviewLegs.length} leg{reviewLegs.length === 1 ? "" : "s"}</div>
           <div className="space-y-1.5">
-            {legs.map((leg, i) => {
+            {reviewLegs.map((leg, i) => {
               if (leg.kind === "increase") {
                 return (
                   <div
@@ -1978,7 +1990,7 @@ function TradeSequencePanel({
                     className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-2 text-xs"
                   >
                     <span>
-                      <span className="font-mono text-muted-foreground">{i + 1} of {legs.length}</span>{" "}
+                      <span className="font-mono text-muted-foreground">{i + 1} of {reviewLegs.length}</span>{" "}
                       <span className="font-semibold">{leg.symbol}</span>{" "}
                       <span className="text-muted-foreground">
                         → increased by {leg.breakdown.qty.toLocaleString()}, funded from CA + reserve
@@ -1990,14 +2002,13 @@ function TradeSequencePanel({
               }
               const choice = legChoiceBySymbol[leg.symbol];
               const buyPick = legBuyBySymbol[leg.symbol];
-              const autoPaired = choice === undefined && impliedPairedIncrease?.symbol === leg.symbol;
               return (
                 <div
                   key={leg.symbol}
                   className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-2 text-xs"
                 >
                   <span>
-                    <span className="font-mono text-muted-foreground">{i + 1} of {legs.length}</span>{" "}
+                    <span className="font-mono text-muted-foreground">{i + 1} of {reviewLegs.length}</span>{" "}
                     <span className="font-semibold">{leg.symbol}</span>{" "}
                     {choice === "liquidate" ? (
                       <span className="text-muted-foreground">→ liquidated to cash</span>
@@ -2005,10 +2016,8 @@ function TradeSequencePanel({
                       <span className="text-muted-foreground">
                         → bought {buyPick.shares.toLocaleString()} {buyPick.symbol}
                       </span>
-                    ) : autoPaired && impliedPairedIncrease ? (
-                      <span className="text-muted-foreground">
-                        → auto-paired with {impliedPairedIncrease.symbol} (+{impliedPairedIncrease.breakdown.qty.toLocaleString()})
-                      </span>
+                    ) : isCombinedMode ? (
+                      <span className="text-muted-foreground">→ pooled into the combined sequence</span>
                     ) : (
                       <span className="text-down">→ unresolved</span>
                     )}
@@ -2018,25 +2027,6 @@ function TradeSequencePanel({
               );
             })}
           </div>
-          {unsplitIncreaseLegs.length > 0 ? (
-            <div className="mt-2 space-y-1.5 border-t border-[hsl(var(--glass-border))] pt-2">
-              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                Also increasing (funded from CA + reserve, not a separate leg)
-              </p>
-              {unsplitIncreaseLegs.map((leg) => (
-                <div
-                  key={leg.symbol}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] px-3 py-2 text-xs"
-                >
-                  <span>
-                    <span className="font-semibold">{leg.symbol}</span>{" "}
-                    <span className="text-muted-foreground">+{leg.breakdown.qty.toLocaleString()} shares</span>
-                  </span>
-                  <span className="font-mono font-semibold text-down">{centsToR(leg.breakdown.totalCostCents)}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
         </div>
       ) : null}
       {isExecute && wizardStage === "review" && data ? (
