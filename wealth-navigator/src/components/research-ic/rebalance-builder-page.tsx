@@ -1268,16 +1268,24 @@ function LegStepView({
   onNext: () => void;
 }) {
   // Mirrors what the commit-time aggregate (calculateProceedsBridge /
-  // impact/route.ts) actually charges: brokerage % + a flat custody fee on
-  // the REAL price, not the buffered sizing price — the 8% buffer only
-  // exists to size the auto-suggested share count conservatively, the
-  // server never applies it to the real trade value or fees. Checking
-  // against the buffered price alone (as this used to) could say "covered"
-  // here and then have the aggregate fee bridge say "insufficient" on the
-  // review screen, because it silently ignored the buy's own fees.
-  const buyGrossCents = buyPick ? buyPick.shares * buyPick.priceCents : 0;
+  // impact/route.ts) actually charges: brokerage % + a flat custody fee per
+  // investor on the REAL price, not the buffered sizing price — the 8%
+  // buffer only sizes the auto-suggested share count, the server never
+  // applies it to real trade value or fees.
+  //
+  // Critically, `buyPick.shares` is the MODEL-UNIT share count — it gets
+  // applied to EVERY investor in this leg independently (calculateModelUnitImpact
+  // multiplies by each investor's own lot count), not spent once. leg's own
+  // sell breakdown already reflects this (its `qty` is the summed total
+  // across every investor), so the buy side must scale the same way or the
+  // two sides of this comparison aren't the same unit — which is exactly
+  // how a leg could show "covered" here and then fail the real aggregate:
+  // a 2-investor leg buying "9 shares" actually spends 9-per-investor (18
+  // total), not 9 total. Assumes uniform 1-lot-per-investor, matching the
+  // common case — not a guarantee for an investor holding multiple lots.
+  const buyGrossCents = buyPick ? buyPick.shares * buyPick.priceCents * leg.breakdown.investorCount : 0;
   const buyBrokerageCents = Math.round(buyGrossCents * brokerageRate);
-  const buyCustodyCents = buyPick ? custodyFeeCents : 0;
+  const buyCustodyCents = buyPick ? custodyFeeCents * leg.breakdown.investorCount : 0;
   const buyCostCents = buyGrossCents + buyBrokerageCents + buyCustodyCents;
   const affordable = !buyPick || buyCostCents <= leg.breakdown.netCents;
   const resolved = choice === "liquidate" || (choice === "reinvest" && !!buyPick && affordable);
