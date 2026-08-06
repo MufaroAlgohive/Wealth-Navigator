@@ -1232,6 +1232,8 @@ function LegStepView({
   legCount,
   choice,
   buyPick,
+  brokerageRate,
+  custodyFeeCents,
   buySearch,
   buyUniverse,
   buyUniverseLoading,
@@ -1250,6 +1252,8 @@ function LegStepView({
   legCount: number;
   choice: "reinvest" | "liquidate" | undefined;
   buyPick: LegBuyPick | null | undefined;
+  brokerageRate: number;
+  custodyFeeCents: number;
   buySearch: string;
   buyUniverse: Array<{ symbol: string; name: string; priceCents: number }>;
   buyUniverseLoading: boolean;
@@ -1263,12 +1267,18 @@ function LegStepView({
   onPrev: () => void;
   onNext: () => void;
 }) {
-  // Same formula chooseLegBuyInstrument's auto-size uses, run in reverse: does
-  // the chosen (possibly manually-overridden) share count still fit inside
-  // this leg's own proceeds? A manual override can push it over budget even
-  // though the auto-sized default never would.
-  const bufferedPriceCents = buyPick ? buyPick.priceCents * (applyBuffer ? 1.08 : 1) : 0;
-  const buyCostCents = buyPick ? buyPick.shares * bufferedPriceCents : 0;
+  // Mirrors what the commit-time aggregate (calculateProceedsBridge /
+  // impact/route.ts) actually charges: brokerage % + a flat custody fee on
+  // the REAL price, not the buffered sizing price — the 8% buffer only
+  // exists to size the auto-suggested share count conservatively, the
+  // server never applies it to the real trade value or fees. Checking
+  // against the buffered price alone (as this used to) could say "covered"
+  // here and then have the aggregate fee bridge say "insufficient" on the
+  // review screen, because it silently ignored the buy's own fees.
+  const buyGrossCents = buyPick ? buyPick.shares * buyPick.priceCents : 0;
+  const buyBrokerageCents = Math.round(buyGrossCents * brokerageRate);
+  const buyCustodyCents = buyPick ? custodyFeeCents : 0;
+  const buyCostCents = buyGrossCents + buyBrokerageCents + buyCustodyCents;
   const affordable = !buyPick || buyCostCents <= leg.breakdown.netCents;
   const resolved = choice === "liquidate" || (choice === "reinvest" && !!buyPick && affordable);
   const buySearchQ = buySearch.trim().toLowerCase();
@@ -1399,8 +1409,8 @@ function LegStepView({
                 )}
               >
                 {affordable
-                  ? `Covered — ${centsToR(leg.breakdown.netCents - buyCostCents)} left over from this leg's proceeds.`
-                  : `Not enough — this costs ${centsToR(buyCostCents)} but only ${centsToR(leg.breakdown.netCents)} is available. Reduce share amount or choose another asset to proceed.`}
+                  ? `Covered — ${centsToR(leg.breakdown.netCents - buyCostCents)} left over from this leg's proceeds (fees included).`
+                  : `Not enough — this costs ${centsToR(buyCostCents)} with fees but only ${centsToR(leg.breakdown.netCents)} is available. Reduce share amount or choose another asset to proceed.`}
               </div>
             ) : null}
           </div>
@@ -1591,6 +1601,8 @@ function TradeSequencePanel({
           legCount={legs.length}
           choice={legChoiceBySymbol[currentLeg.symbol]}
           buyPick={legBuyBySymbol[currentLeg.symbol]}
+          brokerageRate={data?.feeConfig?.brokerageRate ?? 0}
+          custodyFeeCents={data?.feeConfig?.custodyFeeCents ?? 0}
           buySearch={legBuySearchBySymbol[currentLeg.symbol] ?? ""}
           buyUniverse={buyUniverse}
           buyUniverseLoading={buyUniverseLoading}
