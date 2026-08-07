@@ -854,27 +854,61 @@ export function RebalanceBuilderPage({
             noPadding
           >
             {addOpen && (
-              <div className="flex items-center gap-2 border-b border-[hsl(var(--glass-border))] px-5 py-3">
-                <input
-                  value={addTicker}
-                  onChange={(e) => setAddTicker(e.target.value)}
-                  placeholder="Ticker"
-                  className="w-24 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none"
-                />
-                <input
-                  value={addShares}
-                  onChange={(e) => setAddShares(e.target.value)}
-                  placeholder="Units"
-                  inputMode="numeric"
-                  className="w-24 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={addHolding}
-                  className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground"
-                >
-                  Add
-                </button>
+              <div className="border-b border-[hsl(var(--glass-border))] px-5 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={addTicker}
+                    onChange={(e) => setAddTicker(e.target.value)}
+                    placeholder="Search ticker or name…"
+                    className="w-52 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none"
+                  />
+                  <input
+                    value={addShares}
+                    onChange={(e) => setAddShares(e.target.value)}
+                    placeholder="Units"
+                    inputMode="numeric"
+                    className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={addHolding}
+                    className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground"
+                  >
+                    Add
+                  </button>
+                </div>
+                {addTicker.trim()
+                  ? (() => {
+                      const q = addTicker.trim().toUpperCase();
+                      const matches = buyUniverseForStrategy
+                        .filter((u) => u.symbol.toUpperCase().startsWith(q))
+                        .slice(0, 25);
+                      return (
+                        <div className="mt-2 max-h-48 overflow-y-auto rounded-md border border-[hsl(var(--glass-border))]">
+                          {matches.length === 0 ? (
+                            <p className="px-3 py-1.5 text-xs text-muted-foreground">No matches for "{q}".</p>
+                          ) : (
+                            matches.map((u) => (
+                              <button
+                                key={u.symbol}
+                                type="button"
+                                onClick={() => setAddTicker(u.symbol)}
+                                className="flex w-full items-center justify-between border-b border-[hsl(var(--glass-border))] px-3 py-1.5 text-left text-xs last:border-0 hover:bg-[hsl(var(--foreground)/0.05)]"
+                              >
+                                <span>
+                                  <span className="font-semibold">{u.symbol}</span>{" "}
+                                  <span className="text-muted-foreground">{u.name}</span>
+                                </span>
+                                <span className="font-mono text-muted-foreground">
+                                  {u.priceCents > 0 ? centsToR(u.priceCents) : "N/A"}
+                                </span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      );
+                    })()
+                  : null}
               </div>
             )}
             <div className="overflow-x-auto">
