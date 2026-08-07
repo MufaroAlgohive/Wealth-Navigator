@@ -12,7 +12,7 @@ async function sendViaResend({ to, subject, html }: { to: string, subject: strin
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) throw new Error('Email service not configured (RESEND_API_KEY)');
 
-  const fromEmail = 'Investors at MINT <Investors@mymint.co.za>';
+  const fromEmail = 'Investors at myMINT <Investors@mymint.co.za>';
 
   const resp = await fetch('https://api.resend.com/emails', {
     method: 'POST',
@@ -143,7 +143,7 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MINT Baskets | Dividend Payout</title>
+<title>myMINT Baskets | Dividend Payout</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -242,13 +242,17 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
         ? `We have processed upcoming dividend payouts for your portfolio, scheduled for ${formattedDate || 'soon'}.`
         : 'We have successfully processed dividend payouts for your portfolio.'
     }</p>
-    <div class="header-meta">MINT BASKETS &middot; INVESTOR STATEMENT &middot; ${new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' }).toUpperCase()}</div>
+    <div class="header-meta">myMINT BASKETS &middot; INVESTOR STATEMENT &middot; ${new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' }).toUpperCase()}</div>
   </div>
 
   <!-- BODY -->
   <div class="body">
 
-    <p class="lead">Hi ${name},<br><br>When you invested with MINT, you became a shareholder in real companies. And shareholders get paid.<br><br>${
+    <p class="lead">Hi ${name},<br><br>${
+      profile.is_child
+        ? 'When you invested in your childs future with myMINT, you became a shareholder in real companies. And shareholders get paid.'
+        : 'When you invested with myMINT, you became a shareholder in real companies. And shareholders get paid.'
+    }<br><br>${
       isFuture
         ? `The companies in your basket have declared upcoming dividends. Here is what you will be earning${formattedDate ? ` on <strong>${formattedDate}</strong>` : ''}:`
         : 'Since you started investing, the companies in your basket have shared their profits with you:'
