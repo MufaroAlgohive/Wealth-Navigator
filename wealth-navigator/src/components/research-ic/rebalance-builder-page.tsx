@@ -2626,8 +2626,8 @@ function TradeSequencePanel({
                               inv.shortfall
                                 ? "bg-[hsl(var(--down)/0.07)]"
                                 : inv.parked
-                                  ? "bg-violet-500/[0.06] hover:bg-violet-500/[0.1]"
-                                  : "bg-amber-500/[0.035] hover:bg-amber-500/[0.065]",
+                                  ? "bg-amber-500/[0.07] hover:bg-amber-500/[0.11]"
+                                  : "bg-[hsl(var(--up)/0.05)] hover:bg-[hsl(var(--up)/0.09)]",
                             )}
                           >
                             <td className="px-5 py-3">
@@ -2642,7 +2642,7 @@ function TradeSequencePanel({
                                 {inv.parked ? (
                                   <span
                                     title="Not yet filled — will be rewritten to the new basket fee-free on IC approval instead of a real trade"
-                                    className="rounded-md border border-violet-400/40 bg-violet-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-300"
+                                    className="rounded-md border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-300"
                                   >
                                     Parked · rebalanced differently
                                   </span>
