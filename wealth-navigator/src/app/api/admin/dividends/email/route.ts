@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getPayouts } from '@/lib/dividends-db';
-import { createSupabaseServerClient, createInstitutionalServiceRoleClient } from '@/lib/supabase/server';
+import { createSupabaseServerClient, createRetailServiceRoleClient } from '@/lib/supabase/server';
 
 const writeAudit = async (supabase: any, entry: any) => {
   try {
@@ -330,7 +330,7 @@ async function handleEmailRequest(req: Request, method: string) {
 
     if (!runId) return NextResponse.json({ ok: false, error: 'run_id is required' }, { status: 400 });
 
-    const supabase = createInstitutionalServiceRoleClient();
+    const supabase = createRetailServiceRoleClient();
     
     const payouts = await getPayouts(Number(runId), 5000);
     if (!payouts || !payouts.length) {
