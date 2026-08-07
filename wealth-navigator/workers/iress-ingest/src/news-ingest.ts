@@ -50,11 +50,11 @@
 
 import { getIressClient } from "../../../src/lib/iress";
 import { IressError } from "../../../src/lib/iress/errors";
-import { getMarketDataSession } from "./market-data";
 import { recordWorkerEvent } from "./events";
 import type { WorkerEnv } from "./env";
 import type { WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
+import { isUatEnv } from "../../../src/lib/oems/uat-scope";
 
 /** ISO-naive date string `YYYY-MM-DDTHH:MM:SS` for a UTC day window. */
 function isoDayWindow(d: Date, end: "start" | "end"): string {
@@ -235,21 +235,50 @@ export interface VendorCatalogResult {
 
 export async function syncNewsVendorCatalog(): Promise<VendorCatalogResult> {
   const t0 = Date.now();
-  const md = await getMarketDataSession();
-  if (!md) {
+  // Single-seat (2026-08-07): no separate prod market-data session. The
+  // coordinator owns the seat. On the prod worker, `sessions` is the prod
+  // session; on the UAT worker the catalog probe is skipped by the
+  // caller's `iressMode !== "live"` guard. We take the session via the
+  // caller (the prod entrypoint hands us its `sessions` and we'll add it
+  // below — for now error out cleanly if no session was supplied).
+  throw new Error("syncNewsVendorCatalog requires a session — use the sessions-aware variant");
+}
+
+// Backwards-compatible wrapper used by `main-prod.ts::oneShotVendorCatalog`.
+// Reads the vendor catalog via the coordinator's session (single seat,
+// 2026-08-07 cutover). On UAT the caller's `iressMode !== "live"` guard
+// skips this entirely; on prod we always have a coordinator session by
+// the time we reach this function.
+export async function syncNewsVendorCatalogViaSessions(sessions: WorkerSessionManager): Promise<VendorCatalogResult> {
+  const t0 = Date.now();
+  if (isUatEnv()) {
     return {
       count: 0,
       rows: [],
       endpoint: "",
       durationMs: Date.now() - t0,
-      error: "market-data prod session unavailable (IRESS_MARKET_DATA_PROD=0 or session bring-up failed)",
+      error: "vendor catalog probe skipped on UAT endpoint",
     };
   }
+  let session;
+  try {
+    session = await sessions.getSession();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      count: 0,
+      rows: [],
+      endpoint: "",
+      durationMs: Date.now() - t0,
+      error: `session acquire failed: ${msg}`,
+    };
+  }
+  const client = getIressClient("live");
   let res;
   try {
-    res = await md.client.newsVendorGet({
+    res = await client.newsVendorGet({
       Header: {
-        SessionKey: md.sessionKey,
+        SessionKey: session.iressSessionKey,
         RequestID: `news-vendor-catalog-${Date.now()}`,
         WaitForResponse: true,
       },
@@ -719,33 +748,28 @@ export async function syncNewsHeadlines(opts: {
     };
   }
 
-  // Acquire the prod market-data session. If not enabled (worker-wide
-  // `IRESS_MARKET_DATA_PROD` not set), fall back to the main session
-  // — same fallback path as the existing code.
-  const md = await getMarketDataSession();
-  let client: ReturnType<typeof getIressClient>;
-  let sessionKey: string;
-  if (md) {
-    client = md.client;
-    sessionKey = md.sessionKey;
-  } else {
-    let session;
-    try {
-      session = await sessions.getSession();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return {
-        requested: 0, upserted: 0, skipped: 0, dryRun: true,
-        windowStart, windowEnd, vendorCode: requestedVendor,
-        vendorFallback: false, pages: 0,
-        durationMs: Date.now() - t0,
-        universeSize: 0, matchedCount: 0,
-        error: `session acquire failed: ${msg}`,
-      };
-    }
-    client = getIressClient("live");
-    sessionKey = session.iressSessionKey;
+  // Acquire the coordinator's session — single-seat (2026-08-07).
+  // The prod worker's coordinator session IS the prod seat. News reads
+  // (NewsHeadlineGet, NewsVendorGet) use the BASE IRESS session — they
+  // do not need an IOS+ service session. The previous code branched
+  // through `getMarketDataSession()` which opened a 2nd IRESSSession and
+  // triggered the 25008 loop; that branch is removed.
+  let session;
+  try {
+    session = await sessions.getSession();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      requested: 0, upserted: 0, skipped: 0, dryRun: true,
+      windowStart, windowEnd, vendorCode: requestedVendor,
+      vendorFallback: false, pages: 0,
+      durationMs: Date.now() - t0,
+      universeSize: 0, matchedCount: 0,
+      error: `session acquire failed: ${msg}`,
+    };
   }
+  const client = getIressClient("live");
+  const sessionKey = session.iressSessionKey;
 
   // Universe is cached for the loop lifetime. Refresh on error inside
   // loadUniverseSet is already handled — we only re-load if the

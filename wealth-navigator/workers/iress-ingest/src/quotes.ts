@@ -11,7 +11,7 @@ import type { WorkerEnv } from "./env";
 import type { WorkerMintSession, WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
 import { recordWorkerEvent } from "./events";
-import { getMarketDataSession, marketDataProdEnabled, noteMarketDataError } from "./market-data";
+import { marketDataProdEnabled } from "./market-data";
 import { isUatEnv } from "../../../src/lib/oems/uat-scope";
 import { withinWriteGuard } from "./cutover";
 // The money-track write trusts mapQuote's OHLC-anchored quote.last (Rands→cents), but
@@ -48,18 +48,20 @@ export async function fetchLiveQuote(
   symbol: string,
   exchange: string,
 ): Promise<FetchLiveResult> {
-  // Market-data reads route to the PROD market-data session when the split is
-  // enabled (IRESS_MARKET_DATA_PROD=1); otherwise the passed UAT session. The
-  // order path never uses this.
-  const md = await getMarketDataSession();
-  if (!md && marketDataProdEnabled()) {
-    // Split is on but the prod session is momentarily unavailable. Do NOT fall
-    // back to the UAT/CT endpoint (it has no live market-data IDS -> "No IDS is
-    // online"); return no-row so the caller keeps its Yahoo reference.
-    return { row: null, rowKeys: "<md-prod-unavailable>", outcome: "no-row", rawRow: null };
+  // Single-seat (2026-08-07 cutover): the prod market-data session IS the
+  // coordinator's `WorkerMintSession`. The previous dual-session code path
+  // (`getMarketDataSession()` opening a 2nd IRESSSession) is removed — see
+  // `market-data.ts` header. We always use the passed coordinator session
+  // directly. On the prod worker the seat is the prod seat; on the UAT
+  // worker the seat is the CT seat, and `marketDataProdEnabled()` is false
+  // (UAT env), so the UAT-mode callers short-circuit at their own layer.
+  if (!marketDataProdEnabled() && !isUatEnv()) {
+    // Neither a prod market-data seat nor a UAT/CT seat — nothing to read
+    // against. Return no-row so the caller keeps its Yahoo reference.
+    return { row: null, rowKeys: "<no-market-data-seat>", outcome: "no-row", rawRow: null };
   }
-  const client = md ? md.client : getIressClient("live");
-  const sessionKey = md ? md.sessionKey : session.iressSessionKey;
+  const client = getIressClient("live");
+  const sessionKey = session.iressSessionKey;
   const stripped = normaliseSymbol(symbol);
   const res = await client
     .pricingQuoteGet({
@@ -70,10 +72,6 @@ export async function fetchLiveQuote(
       },
       SecurityCode: stripped,
       Exchange: exchange,
-    })
-    .catch((err) => {
-      if (md) noteMarketDataError(err);
-      throw err;
     });
   const row = res.DataRows[0];
   const rawRow = res.RawDataRows?.[0] ?? null;
@@ -646,17 +644,18 @@ export async function syncWatchlistQuotes(
   // UAT (IRESS_PRICE_OVERLAY=0): IRESS L1 is test data; do not persist it to the
   // shared quote_snapshot_c (read-gated today, but a latent leak for any reader).
   // Contamination guard: only persist to the shared quote_snapshot_c when the
-  // price actually came from a PROD source — the market-data split is on
-  // (marketDataProdEnabled) OR the base endpoint is already prod (!isUatEnv()).
-  // Without this, setting IRESS_PRICE_OVERLAY=1 while IRESS_MARKET_DATA_PROD=0
-  // would fall through to the CT/UAT session and write TEST prices into the
-  // institutional display table. (Dormant today: priceOverlayOff is true in UAT.)
+  // price actually came from a PROD source. Single-seat (2026-08-07) means
+  // there is no separate prod market-data session — the prod worker is on
+  // the prod endpoint, so the guard collapses to `!isUatEnv()`. Without
+  // this, setting IRESS_PRICE_OVERLAY=1 on UAT would fall through to
+  // the CT/UAT session and write TEST prices into the institutional
+  // display table. (Dormant today: priceOverlayOff is true in UAT.)
   if (
     supabase &&
     env.allowWrites &&
     !env.dryRun &&
     !env.priceOverlayOff &&
-    (marketDataProdEnabled() || !isUatEnv()) &&
+    !isUatEnv() &&
     snapshotRows.length > 0
   ) {
     const { error: snapErr } = await supabase

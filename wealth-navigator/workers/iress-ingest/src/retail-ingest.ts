@@ -35,7 +35,6 @@ import { chooseDisplayCents } from "../../../src/lib/iress/price-scale";
 import { iressOwnsSymbol, loadApprovedIressSymbols, withinWriteGuard } from "./cutover";
 import { isIressSessionDeadError } from "../../../src/lib/iress/errors";
 import { isUatEnv } from "../../../src/lib/oems/uat-scope";
-import { marketDataProdEnabled } from "./market-data";
 import type { WorkerEnv } from "./env";
 import type { WorkerSessionManager } from "./session";
 import type { WorkerSupabase } from "./supabase";
@@ -363,15 +362,17 @@ export async function syncRetailPrices(opts: {
     console.info(
       JSON.stringify({ level: "info", event: "quote_snapshot_c_skipped_uat", reason: "IRESS_PRICE_OVERLAY=0", count: snapshotRows.length }),
     );
-  } else if (institutional && snapshotRows.length > 0 && !(marketDataProdEnabled() || !isUatEnv())) {
-    // Contamination guard: overlay is on but the price came from the CT/UAT
-    // session (market-data split off while base endpoint is UAT). Do NOT write
-    // TEST prices into the shared institutional quote_snapshot_c.
+  } else if (institutional && snapshotRows.length > 0 && isUatEnv()) {
+    // Contamination guard: the worker is on the UAT endpoint — do NOT
+    // write CT/UAT prices into the shared institutional quote_snapshot_c.
+    // Single-seat (2026-08-07): there is no separate prod market-data
+    // session anymore, so the previous `(marketDataProdEnabled() || !isUatEnv())`
+    // truthy check collapses to `!isUatEnv()`. On UAT we never write.
     console.info(
       JSON.stringify({
         level: "info",
         event: "quote_snapshot_c_skipped_not_prod",
-        reason: "IRESS_MARKET_DATA_PROD=0 on UAT endpoint",
+        reason: "UAT endpoint — institutional quote_snapshot_c is prod-only",
         count: snapshotRows.length,
       }),
     );

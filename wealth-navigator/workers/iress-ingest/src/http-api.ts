@@ -2016,19 +2016,16 @@ export async function handleRequest(
     const to = new Date().toISOString().slice(0, 10);
     const started = Date.now();
     try {
-      // Price history is MARKET DATA: read it from the PROD market-data seat
-      // (getMarketDataSession), NEVER the CT/UAT order seat. When the split is
-      // off or the prod seat is momentarily down, return empty so the BFF
-      // (/api/history, /api/analysis) falls back to Yahoo — mirrors the
-      // news/quotes/timeseries handlers. History is therefore PROD-or-Yahoo,
-      // never UAT.
-      const md = await getMarketDataSession();
-      if (!md) {
-        send(res, 200, { ok: false, sym, points: [], reason: "market_data_prod_unavailable" });
-        return;
-      }
-      const res2 = await md.client.timeSeriesGet2({
-        Header: { SessionKey: md.sessionKey, RequestID: newRequestID(`hist-${sym}`), Timeout: 30 },
+      // Price history is MARKET DATA. Single-seat (2026-08-07): the prod
+      // market-data session IS the coordinator's `WorkerSessionManager`.
+      // We acquire the coordinator session and use the base IRESS
+      // session key directly. There is no separate prod seat to wait
+      // on — `getMarketDataSession()` is now a no-op shim that returns
+      // null, so we cannot use it for the actual IRESS call.
+      const session = await deps.sessions.getSession();
+      const client = getIressClient("live");
+      const res2 = await client.timeSeriesGet2({
+        Header: { SessionKey: session.iressSessionKey, RequestID: newRequestID(`hist-${sym}`), Timeout: 30 },
         Code: sym,
         Exchange: exchange,
         DataSource: dataSource,
@@ -2556,24 +2553,28 @@ export async function handleRequest(
   // The response is 1:1 with the IRESS reply (header row + sample data rows) or
   // the raw fault string — no mapping, no fabrication.
   if (req.method === "GET" && path === "/debug/market-data") {
-    // Reports the prod-market-data / UAT-orders split status so the operator can
-    // confirm it before trusting prod prices. `?live=1&sym=AGL` also fetches a
-    // live quote from the PROD session to prove the feed is real market data.
+    // Single-seat (2026-08-07): the prod-market-data / UAT-orders split is
+    // GONE. The coordinator's `WorkerSessionManager` owns the only IRESS
+    // wire session, used for both orders and market data. This endpoint
+    // now reports the coordinator's session state — operator-friendly
+    // stand-in for the old split-status display. `?live=1&sym=AGL` still
+    // fetches a live quote to prove the feed is real market data.
     const enabled = marketDataProdEnabled();
     const ordersEndpoint = process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4";
-    const mdEndpoint = enabled ? marketDataBaseUrl() : ordersEndpoint;
+    const mdEndpoint = marketDataBaseUrl();
     let sessionUp = false;
     let sessionKeyPrefix: string | null = null;
     let liveQuote: { sym: string; last: number | null } | null = null;
     let error: string | null = null;
     try {
-      const md = await getMarketDataSession();
-      sessionUp = Boolean(md);
-      sessionKeyPrefix = md ? md.sessionKey.slice(0, 8) : null;
-      if (md && url.searchParams.get("live") === "1") {
+      const session = await deps.sessions.getSession();
+      sessionUp = Boolean(session?.iressSessionKey);
+      sessionKeyPrefix = session?.iressSessionKey ? session.iressSessionKey.slice(0, 8) : null;
+      if (session && url.searchParams.get("live") === "1") {
         const sym = (url.searchParams.get("sym") ?? "AGL").trim().replace(/\.(JO|JSE)$/i, "") || "AGL";
-        const q = await md.client.pricingQuoteGet({
-          Header: { SessionKey: md.sessionKey, RequestID: newRequestID("md-check"), Timeout: 20 },
+        const client = getIressClient("live");
+        const q = await client.pricingQuoteGet({
+          Header: { SessionKey: session.iressSessionKey, RequestID: newRequestID("md-check"), Timeout: 20 },
           SecurityCode: sym,
           Exchange: "JSE",
         });
@@ -2587,11 +2588,12 @@ export async function handleRequest(
       marketDataProdEnabled: enabled,
       marketDataEndpoint: mdEndpoint,
       ordersEndpoint,
-      split: enabled ? "market data = PROD, orders = UAT" : "single endpoint (both on IRESS_BASE_URL)",
+      singleSeat: true,
+      split: "single-seat (2026-08-07): orders + market data share the coordinator's IRESS wire session",
       prodSession: { up: sessionUp, keyPrefix: sessionKeyPrefix, error },
       liveQuote,
       hint:
-        "Set IRESS_MARKET_DATA_PROD=1 (and optionally IRESS_MARKETDATA_BASE_URL / IRESS_PROD_USERNAME+PASSWORD) on the worker to enable. If prodSession.up is false, the prod login failed (no seat / not entitled) and market data safely stays on Yahoo; orders are unaffected.",
+        "Single-seat mode. The coordinator's session is the only IRESS wire session; orders and market data share it. If prodSession.up is false, the worker is not on the prod seat yet — check the structured event log for `license_seat_occupied` or `25008` and the worker heartbeat status.",
     });
     return;
   }
@@ -2830,21 +2832,17 @@ export async function handleRequest(
     // against REAL prod data (e.g. confirm the JSE cents-vs-Rands convention, or
     // test whether SENS needs a From/To/Category param). Prod market data only
     // uses the iress header (no service session), so headerKind=service is ignored.
+    //
+    // Single-seat (2026-08-07): there is no separate prod market-data session.
+    // `useMarketData` now controls the ENDPOINT the probe targets (the prod
+    // market-data endpoint vs. the orders endpoint) but the session key is
+    // always the coordinator's. On the prod worker `useMarketData` is the
+    // default; on the UAT worker only the CT endpoint is reachable.
     const useMarketData = b["useMarketData"] === true || b["useMarketData"] === "1";
     const started = Date.now();
     try {
       const session = await deps.sessions.getSession();
-      const md = useMarketData ? await getMarketDataSession() : null;
-      if (useMarketData && !md) {
-        sendError(
-          res,
-          503,
-          "market_data_session_down",
-          "PROD market-data session is not up (check IRESS_MARKET_DATA_PROD + the seat). Cannot run a useMarketData probe.",
-        );
-        return;
-      }
-      const probeSessionKey = md ? md.sessionKey : session.iressSessionKey;
+      const probeSessionKey = session.iressSessionKey;
       // Placeholder substitution so we can probe putting the live session key in
       // <Parameters> (some V4 methods read it there, not just the header):
       //   "$IRESS_SESSION_KEY" → the live IRESSSessionKey (prod key when useMarketData)
@@ -2857,16 +2855,16 @@ export async function handleRequest(
         }
       }
       const transport = createSoapTransport({
-        baseUrl: md
+        baseUrl: useMarketData
           ? marketDataBaseUrl()
           : (process.env.IRESS_BASE_URL ?? "https://webservices-ct.iress.co.za/v4"),
       });
       const serviceKey =
-        !md && headerKind === "service" && typeof b["service"] === "string"
+        !useMarketData && headerKind === "service" && typeof b["service"] === "string"
           ? session.serviceKeys[b["service"] as IressService]
           : undefined;
       const header = makeHeader(
-        !md && headerKind === "service"
+        !useMarketData && headerKind === "service"
           ? { serviceSessionKey: serviceKey, requestID: newRequestID("raw"), timeout, waitForResponse: true }
           : {
               sessionKey: probeSessionKey,
