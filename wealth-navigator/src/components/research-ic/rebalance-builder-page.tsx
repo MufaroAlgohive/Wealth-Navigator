@@ -1323,7 +1323,8 @@ function FeeProceedsBreakdown({
                   <div key={investor.user_id} className="flex items-center justify-between text-xs">
                     <span>{investor.name}</span>
                     <span className="font-mono text-muted-foreground">
-                      {shares.toLocaleString()} shares · {centsToR(investor.cashAfterCents)} residual
+                      {shares.toLocaleString()} shares · {centsToR(investor.cashAfterCents)} residual ·{" "}
+                      {centsToR(investor.reserveAfterCents)} reserve (8%)
                     </span>
                   </div>
                 );
