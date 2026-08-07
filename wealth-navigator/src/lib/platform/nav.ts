@@ -118,6 +118,7 @@ export const PLATFORM_NAV: NavSection[] = [
     items: [
       { label: "Clients", href: "/admin/clients", icon: Users, roles: [WM, OPS] },
       { label: "Investors", href: "/admin/investors", icon: TrendingUp, roles: [WM, BIZ] },
+      { label: "Dividends", href: "/admin/investors/dividends", icon: Banknote, roles: [WM, OPS, BIZ] },
       { label: "Client View Studio", href: "/admin/studio", icon: MonitorSmartphone, roles: [WM] },
     ],
   },
