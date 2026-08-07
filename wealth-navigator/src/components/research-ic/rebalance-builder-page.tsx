@@ -2630,7 +2630,7 @@ function TradeSequencePanel({
                                   : "bg-[hsl(var(--up)/0.05)] hover:bg-[hsl(var(--up)/0.09)]",
                             )}
                           >
-                            <td className="px-5 py-3">
+                            <td className="px-5 py-1.5">
                               <div className="flex flex-wrap items-center gap-1.5">
                                 <ChevronDown
                                   className={cn(
@@ -2670,21 +2670,21 @@ function TradeSequencePanel({
                             </td>
                             {residualView ? (
                               <>
-                                <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                                <td className="px-3 py-1 text-right font-mono tabular-nums text-muted-foreground">
                                   {centsToR(inv.basketCents)}
                                 </td>
-                                <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
+                                <td className="px-3 py-1 text-right font-mono tabular-nums text-emerald-500">
                                   {centsToR(inv.residualCents)}
                                 </td>
-                                <td className="px-3 py-2 text-right font-mono tabular-nums text-violet-400">
+                                <td className="px-3 py-1 text-right font-mono tabular-nums text-violet-400">
                                   {centsToR(inv.reserveCents)}
                                 </td>
-                                <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
+                                <td className="px-3 py-1 text-right font-mono tabular-nums text-emerald-500">
                                   {centsToR(inv.strategyCashAfterCents)}
                                 </td>
                                 <td
                                   className={cn(
-                                    "px-5 py-2 text-right font-mono tabular-nums font-semibold",
+                                    "px-5 py-1 text-right font-mono tabular-nums font-semibold",
                                     inv.shortfall ? "text-down" : "text-foreground",
                                   )}
                                 >
@@ -2693,8 +2693,8 @@ function TradeSequencePanel({
                               </>
                             ) : (
                               <>
-                                <td className="px-3 py-2 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-                                  <div className="space-y-1">
+                                <td className="px-3 py-1 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                                  <div className="space-y-0.5">
                                     {inv.lines.map((line) => (
                                       <div key={line.symbol}>
                                         {line.lots == null
@@ -2706,22 +2706,22 @@ function TradeSequencePanel({
                                     ))}
                                   </div>
                                 </td>
-                                <td className="px-3 py-2 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-                                  <div className="space-y-1">
+                                <td className="px-3 py-1 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                                  <div className="space-y-0.5">
                                     {inv.lines.map((line) => (
                                       <div key={line.symbol}>{line.currentQty}</div>
                                     ))}
                                   </div>
                                 </td>
-                                <td className="px-3 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
-                                  <div className="space-y-1">
+                                <td className="px-3 py-1 text-right font-mono text-[11px] font-semibold tabular-nums">
+                                  <div className="space-y-0.5">
                                     {inv.lines.map((line) => (
                                       <div key={line.symbol}>{line.targetQty}</div>
                                     ))}
                                   </div>
                                 </td>
-                                <td className="px-3 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
-                                  <div className="space-y-1">
+                                <td className="px-3 py-1 text-right font-mono text-[11px] font-semibold tabular-nums">
+                                  <div className="space-y-0.5">
                                     {inv.lines.map((line) => (
                                       <div
                                         key={line.symbol}
@@ -2733,8 +2733,8 @@ function TradeSequencePanel({
                                     ))}
                                   </div>
                                 </td>
-                                <td className="px-5 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
-                                  <div className="space-y-1">
+                                <td className="px-5 py-1 text-right font-mono text-[11px] font-semibold tabular-nums">
+                                  <div className="space-y-0.5">
                                     {inv.lines.map((line) => (
                                       <div
                                         key={line.symbol}
