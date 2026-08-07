@@ -1184,14 +1184,43 @@ function FeeProceedsBreakdown({
 
   const buyLines = investors.flatMap((inv) => inv.lines.filter((l) => l.side === "buy"));
   const showBuyCard = proceedsMode === "reinvest" && buyLines.length > 0;
-  const totalSharesToBuy = buyLines.reduce((s, l) => s + Math.abs(l.deltaQty), 0);
-  const grossCost = buyLines.reduce((s, l) => s + l.valueCents, 0);
   const buyBrokerage = investors.reduce((s, inv) => s + (inv.buyBrokerageCents || 0), 0);
   const buyCustody = investors.reduce((s, inv) => s + (inv.buyCustodyCents || 0), 0);
-  const buyInvestorCount = investors.filter((inv) => inv.lines.some((l) => l.side === "buy")).length;
+  const grossCost = buyLines.reduce((s, l) => s + l.valueCents, 0);
   const totalCost = grossCost + buyBrokerage + buyCustody;
-  const avgBuyPriceCents = totalSharesToBuy > 0 ? grossCost / totalSharesToBuy : 0;
   const buyTickers = [...new Set(buyLines.map((l) => l.symbol))];
+  // Custody is charged per ISIN per client — blending every buy ticker into
+  // one averaged "Execution Price" hid that (an "(x3)" label next to the
+  // combined fee undercounted the real per-instrument charge whenever a
+  // client bought more than one ticker). Break the card down per symbol,
+  // each with its own price/shares/fees, then total underneath.
+  const custodyFeeCentsPerIsin = data.feeConfig?.custodyFeeCents ?? 0;
+  const buyBySymbol = new Map<string, { qty: number; grossCents: number; investorIds: Set<string> }>();
+  for (const inv of investors) {
+    for (const line of inv.lines) {
+      if (line.side !== "buy") continue;
+      const cur = buyBySymbol.get(line.symbol) ?? { qty: 0, grossCents: 0, investorIds: new Set<string>() };
+      cur.qty += Math.abs(line.deltaQty);
+      cur.grossCents += line.valueCents;
+      cur.investorIds.add(inv.user_id);
+      buyBySymbol.set(line.symbol, cur);
+    }
+  }
+  const buySymbolBreakdowns = [...buyBySymbol.entries()].map(([symbol, v]) => {
+    const priceCents = v.qty > 0 ? v.grossCents / v.qty : 0;
+    const brokerageCents = Math.round(v.grossCents * (data.feeConfig?.brokerageRate ?? 0));
+    const custodyCents = v.investorIds.size * custodyFeeCentsPerIsin;
+    return {
+      symbol,
+      qty: v.qty,
+      priceCents,
+      grossCents: v.grossCents,
+      brokerageCents,
+      custodyCents,
+      totalCents: v.grossCents + brokerageCents + custodyCents,
+      investorCount: v.investorIds.size,
+    };
+  });
   const reserveBefore = totals.reserveCents ?? 0;
   const reserveUsed = totals.reserveUsedCents ?? 0;
   const reserveAfter = investors.reduce((s, inv) => s + (inv.reserveAfterCents || 0), 0);
@@ -1244,14 +1273,31 @@ function FeeProceedsBreakdown({
             <Info className="h-3.5 w-3.5 text-primary" /> Buy Execution
             <span className="font-normal text-muted-foreground">· {buyTickers.join(", ") || "—"}</span>
           </div>
-          <div className="space-y-2">
-            <BridgeRow label="Execution Price" value={centsToR(avgBuyPriceCents)} />
-            <BridgeRow label="Total Shares" value={totalSharesToBuy.toLocaleString()} />
-            <BridgeRow label="Gross Cost" value={centsToR(grossCost)} />
-            <BridgeRow label={`Brokerage (${feeRate.toFixed(1)}%)`} value={centsToR(buyBrokerage)} deduct />
-            <BridgeRow label={`Custody Fee (x${buyInvestorCount})`} value={centsToR(buyCustody)} deduct />
+          <div className="space-y-3">
+            {buySymbolBreakdowns.map((b, i) => (
+              <div
+                key={b.symbol}
+                className={cn("space-y-1.5", i > 0 && "border-t border-[hsl(var(--glass-border))] pt-3")}
+              >
+                <p className="text-[11px] font-semibold text-muted-foreground">{b.symbol}</p>
+                <BridgeRow label="Execution Price" value={centsToR(b.priceCents)} />
+                <BridgeRow label="Total Shares" value={b.qty.toLocaleString()} />
+                <BridgeRow label="Gross Cost" value={centsToR(b.grossCents)} />
+                <BridgeRow
+                  label={`Brokerage (${feeRate.toFixed(1)}%)`}
+                  value={centsToR(b.brokerageCents)}
+                  deduct
+                />
+                <BridgeRow
+                  label={`Custody Fee (x${b.investorCount})`}
+                  value={centsToR(b.custodyCents)}
+                  deduct
+                />
+                <BridgeRow label="Total Cost" value={centsToR(b.totalCents)} bold />
+              </div>
+            ))}
             <div className="border-t border-[hsl(var(--glass-border))] pt-2">
-              <BridgeRow label="Total Cost" value={centsToR(totalCost)} bold />
+              <BridgeRow label="Buy Total" value={centsToR(totalCost)} bold />
             </div>
             <div className="border-t border-[hsl(var(--glass-border))] pt-2 mt-1">
               <BridgeRow label="8% Reserve Before" value={centsToR(reserveBefore)} />
