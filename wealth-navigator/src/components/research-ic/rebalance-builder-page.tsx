@@ -2644,7 +2644,7 @@ function TradeSequencePanel({
                                     title="Not yet filled — will be rewritten to the new basket fee-free on IC approval instead of a real trade"
                                     className="rounded-md border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-300"
                                   >
-                                    Parked · rebalanced differently
+                                    Unfilled
                                   </span>
                                 ) : null}
                                 {!residualView &&
