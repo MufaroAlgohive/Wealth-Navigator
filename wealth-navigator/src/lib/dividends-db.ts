@@ -1,7 +1,7 @@
-import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
+import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 export async function saveRun(data: any, extractedRows: any[] = []) {
-  const supabase = createInstitutionalServiceRoleClient();
+  const supabase = createRetailServiceRoleClient();
   
   const { data: inserted, error: runError } = await supabase.from('dividend_runs').insert({
     file_name: data.file_name || 'unknown.xlsx',
@@ -39,14 +39,14 @@ export async function saveRun(data: any, extractedRows: any[] = []) {
 }
 
 export async function getRuns(limit = 50) {
-  const supabase = createInstitutionalServiceRoleClient();
+  const supabase = createRetailServiceRoleClient();
   const { data, error } = await supabase.from('dividend_runs').select('*').order('created_at', { ascending: false }).limit(limit);
   if (error) throw new Error(`getRuns failed: ${error.message}`);
   return data;
 }
 
 export async function getStats() {
-  const supabase = createInstitutionalServiceRoleClient();
+  const supabase = createRetailServiceRoleClient();
   const { data: rows, error } = await supabase.from('dividend_runs').select('records,total_net_cash,status,created_at');
   if (error) throw new Error(`getStats failed: ${error.message}`);
 
@@ -72,7 +72,7 @@ export async function getStats() {
 }
 
 export async function getPayouts(runId: number | string, limit = 2000) {
-  const supabase = createInstitutionalServiceRoleClient();
+  const supabase = createRetailServiceRoleClient();
   const { data, error } = await supabase.from('dividend_payouts_staging').select('id,security_code,net_cash,raw_row,created_at').eq('run_id', runId).order('id', { ascending: true }).limit(limit);
   if (error) throw new Error(`getPayouts failed: ${error.message}`);
   return data;
