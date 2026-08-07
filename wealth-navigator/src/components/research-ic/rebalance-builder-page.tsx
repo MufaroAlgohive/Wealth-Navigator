@@ -193,6 +193,7 @@ export function RebalanceBuilderPage({
   const [addOpen, setAddOpen] = React.useState(false);
   const [addTicker, setAddTicker] = React.useState("");
   const [addShares, setAddShares] = React.useState("");
+  const [addSharesShake, setAddSharesShake] = React.useState(false);
   // Per-row rationale (freeform one-liner shown in the IC action table) and a
   // buyer-vs-seller choice when reducing a position. Required by Lonwabo's
   // meeting rule (transcript 2026-07-13): "you can't submit without saying
@@ -405,7 +406,12 @@ export function RebalanceBuilderPage({
   const addHolding = () => {
     const t = addTicker.trim().toUpperCase();
     const sh = Number(addShares);
-    if (!t || !Number.isFinite(sh) || sh <= 0) return;
+    if (!t) return;
+    if (!Number.isFinite(sh) || sh <= 0) {
+      setAddSharesShake(true);
+      setTimeout(() => setAddSharesShake(false), 400);
+      return;
+    }
     setWorking((prev) =>
       prev.some((h) => keyOf(h) === t) ? prev : [...prev, { ticker: t, name: t, shares: sh }],
     );
@@ -867,7 +873,12 @@ export function RebalanceBuilderPage({
                     onChange={(e) => setAddShares(e.target.value)}
                     placeholder="Units"
                     inputMode="numeric"
-                    className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none"
+                    className={cn(
+                      "w-20 rounded-md border bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none",
+                      addSharesShake
+                        ? "animate-shake border-[hsl(var(--down))] focus:border-[hsl(var(--down))]"
+                        : "border-[hsl(var(--glass-border))]",
+                    )}
                   />
                   <button
                     type="button"
