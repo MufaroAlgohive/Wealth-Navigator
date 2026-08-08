@@ -205,6 +205,27 @@ export function RebalanceBuilderPage({
   const [submitting, setSubmitting] = React.useState(false);
   const [pushingId, setPushingId] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  // Auto-expanded right after a successful Submit to IC, so the just-raised
+  // proposal is immediately visible instead of hidden behind the list's
+  // default-collapsed state.
+  const [proposalsOpen, setProposalsOpen] = React.useState(false);
+  // Same query key as ProposalsList's own fetch — React Query dedupes/shares
+  // the cache, so this doesn't add a second network call. Used only to show
+  // a "pending for this strategy" banner on the compose screen.
+  const pendingReqQ = useQuery<{ requests: RebalanceRequest[]; notice?: string }>({
+    queryKey: ["ric-rebalance-requests"],
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const res = await fetch("/api/rebalance/requests", { cache: "no-store" });
+      return (await res.json().catch(() => ({ requests: [] }))) as {
+        requests: RebalanceRequest[];
+        notice?: string;
+      };
+    },
+  });
+  const pendingForThisStrategy = (pendingReqQ.data?.requests ?? []).filter(
+    (r) => r.strategy_id === strategyName && (r.status === "pending" || r.status === "ic_approved"),
+  );
 
   // Embedded two-stage trade sequence: "compose" is the editable basket (as
   // today); "execute" swaps that out for a per-leg wizard — one sell at a
@@ -739,6 +760,7 @@ export function RebalanceBuilderPage({
         return;
       }
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+      setProposalsOpen(true);
       // Proposal raised — return the page to a clean slate instead of leaving
       // the just-committed edits on screen.
       setWorking(baseline.map((h) => ({ ...h })));
@@ -815,6 +837,24 @@ export function RebalanceBuilderPage({
         <p className="rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-3 py-2 text-xs text-down">
           {error}
         </p>
+      )}
+
+      {pendingForThisStrategy.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/35 bg-primary/10 px-3 py-2 text-xs text-primary">
+          <span>
+            {pendingForThisStrategy.length} proposal{pendingForThisStrategy.length === 1 ? "" : "s"} for{" "}
+            {strategyName} already {pendingForThisStrategy.length === 1 ? "sent to" : "with"} the IC —
+            awaiting {pendingForThisStrategy.some((r) => r.status === "pending") ? "a decision" : "execution"}
+            . Any further changes here start a new, separate proposal.
+          </span>
+          <button
+            type="button"
+            onClick={() => setProposalsOpen(true)}
+            className="shrink-0 rounded-md border border-primary/40 px-2 py-0.5 text-[11px] font-medium hover:bg-primary/10"
+          >
+            View below
+          </button>
+        </div>
       )}
 
       {isTestStrategy && (
@@ -1166,6 +1206,8 @@ export function RebalanceBuilderPage({
         setPushingId={setPushingId}
         canPush={perms.pushRebalance}
         canApprove={perms.approveRebalance}
+        open={proposalsOpen}
+        onOpenChange={setProposalsOpen}
       />
     </ResearchLabCanvas>
   );
@@ -2968,11 +3010,15 @@ function ProposalsList({
   setPushingId,
   canPush,
   canApprove,
+  open,
+  onOpenChange,
 }: {
   pushingId: string | null;
   setPushingId: (id: string | null) => void;
   canPush: boolean;
   canApprove: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const qc = useQueryClient();
   const q = useQuery<{ requests: RebalanceRequest[]; notice?: string }>({
@@ -2988,7 +3034,6 @@ function ProposalsList({
   });
   const requests = q.data?.requests ?? []; // show all; the status chip differentiates
   const codes = rebalanceCodeMap(requests);
-  const [open, setOpen] = React.useState(false);
   const [approvingId, setApprovingId] = React.useState<string | null>(null);
   const [approveNotice, setApproveNotice] = React.useState<string | null>(null);
 
@@ -3054,7 +3099,7 @@ function ProposalsList({
       right={
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => onOpenChange(!open)}
           className="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--glass-border))] px-2.5 py-1 text-[11px] font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
         >
           {open ? "Collapse" : "Expand"}
