@@ -595,11 +595,14 @@ export function RebalanceBuilderPage({
     [impactQ.data],
   );
 
-  // Every direct compose-level increase with no matching sell — used both as
-  // the (optional) standalone wizard legs when splitIncreaseLegs is on, and
-  // pooled into the combined step's totals when it's off.
+  // Every direct compose-level increase OR brand-new add with no matching
+  // sell — used both as the (optional) standalone wizard legs when
+  // splitIncreaseLegs is on, and pooled into the combined step's totals when
+  // it's off. A new ticker (action "add") is the same shape as an increase
+  // for this purpose — 0 -> N shares — and was previously excluded entirely,
+  // silently dropping it from both the combined view and the trade sequence.
   const standaloneIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>> = working
-    .filter((h) => actionFor(h) === "increase")
+    .filter((h) => actionFor(h) === "increase" || actionFor(h) === "add")
     .map((h) => {
       const symbol = keyOf(h);
       return {
