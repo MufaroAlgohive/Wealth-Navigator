@@ -1,16 +1,30 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { type ModelUnitAction, calculateModelUnitImpact, fullModelLots } from "./model-unit-impact";
+import { calculateProceedsBridge } from "./proceeds";
 
 /**
  * When an IC-approved rebalance changes a strategy's model composition, any
  * client whose BUY into that strategy hasn't been sent to the broker yet is
  * sitting on a stale order — it would eventually fill against the OLD
  * composition. This rewrites those "parked" holdings directly to the new
- * target (same treatment a settled client gets from the model-unit math),
- * WITHOUT charging brokerage/custody — the order never touched the market,
- * so there's nothing to charge a fee against. Their strategy CA ends up
- * higher than a fee-paying settled client's by exactly that fee amount.
+ * target (same treatment a settled client gets from the model-unit math).
+ *
+ * Fee treatment (confirmed with the desk): the client already paid one ISIN
+ * custody fee per asset in their ORIGINAL basket at purchase time — nothing
+ * has been sent to a broker yet, so repositioning weights among assets they
+ * were already going to buy (including selling one down to zero) costs
+ * nothing more; it's still the same single not-yet-dispatched order, just
+ * recomposed. A genuinely NEW asset added to the strategy (one they weren't
+ * already going to hold) DOES cost one fresh ISIN custody fee — same as it
+ * costs every already-settled client buying that new asset for real. No
+ * brokerage ever applies here (nothing hits the market for a parked order).
+ *
+ * Also note for whoever eventually wires real broker dispatch: a parked
+ * client's "sell" is bookkeeping only. The broker has never heard of this
+ * client holding that ISIN — their original order never went out — so a
+ * decrease/removal must never be translated into an actual SELL instruction
+ * for them; it's simply fewer lines in the one still-pending BUY order.
  *
  * "Parked" detection: a BUY holding with no `Fill_date` yet. This is a
  * pragmatic signal, not a perfect one — a real dispatched-but-still-filling
@@ -65,6 +79,17 @@ export async function reconcileParkedHoldings(
     });
   }
   if (targets.size === 0) return result;
+
+  // Same fee config every rebalance preview uses — only the custody/ISIN
+  // fee applies here (see file docstring); brokerage never does. Best
+  // effort: an unavailable fee config degrades to fee-free rather than
+  // blocking the whole IC approval over a holdings-only correction.
+  const feeRes = await db.from("app_settings").select("value").eq("key", "fees").limit(1).maybeSingle();
+  const custodyFeeRands = Number((feeRes.data?.value as Record<string, unknown> | null)?.rebCustodyFee);
+  const custodyFeeCentsPerIsin =
+    Number.isFinite(custodyFeeRands) && custodyFeeRands >= 0 ? Math.round(custodyFeeRands * 100) : 0;
+  if (!feeRes.data)
+    result.errors.push("Fee config unavailable — new-asset ISIN fee skipped for parked clients.");
 
   // Parked = active BUY holdings for this strategy with no confirmed fill yet.
   let parkedRes = await db
@@ -151,6 +176,7 @@ export async function reconcileParkedHoldings(
 
       let grossSellCents = 0;
       let grossBuyCents = 0;
+      let newAssetCount = 0; // only these incur a custody/ISIN fee — see docstring
       const names = new Set<string>([...positions.keys(), ...targets.keys()]);
       for (const sym of names) {
         const target = targets.get(sym);
@@ -170,6 +196,7 @@ export async function reconcileParkedHoldings(
         const valueCents = Math.abs(deltaQty) * priceCents;
         if (deltaQty > 0) grossBuyCents += valueCents;
         else grossSellCents += valueCents;
+        if (!position && target.action === "add") newAssetCount += 1;
 
         const security = secBySymbol.get(sym);
         if (position) {
@@ -205,7 +232,6 @@ export async function reconcileParkedHoldings(
       }
 
       if (grossSellCents !== 0 || grossBuyCents !== 0) {
-        const deltaCents = grossSellCents - grossBuyCents; // no fees — never hit the market
         const residualRes = await db
           .from("strategy_rebalance_residuals")
           .select("id, balance_cents")
@@ -213,16 +239,77 @@ export async function reconcileParkedHoldings(
           .eq("strategy_id", strategyId)
           .limit(1)
           .maybeSingle();
+        const residualCents = Number(residualRes.data?.balance_cents ?? 0);
+
+        const txnIds = [...new Set(rows.map((r) => r.transaction_id).filter(Boolean))] as string[];
+        const transactionsForReserve: Array<{
+          id: string;
+          buffer_cents: number;
+          buffer_consumed_cents: number;
+        }> = [];
+        let reserveCents = 0;
+        if (txnIds.length) {
+          const txnRes = await db
+            .from("transactions")
+            .select("id,buffer_cents,buffer_consumed_cents,status,reversed")
+            .in("id", txnIds);
+          for (const t of (txnRes.data ?? []) as Array<{
+            id: string;
+            buffer_cents: number | null;
+            buffer_consumed_cents: number | null;
+            status: string | null;
+            reversed: boolean | null;
+          }>) {
+            if (t.status !== "posted" || t.reversed === true) continue;
+            const bufferCents = Number(t.buffer_cents ?? 0);
+            const bufferConsumedCents = Number(t.buffer_consumed_cents ?? 0);
+            reserveCents += Math.max(0, bufferCents - bufferConsumedCents);
+            transactionsForReserve.push({
+              id: t.id,
+              buffer_cents: bufferCents,
+              buffer_consumed_cents: bufferConsumedCents,
+            });
+          }
+        }
+
+        // Only a genuinely new asset costs a fee (sellAssetCount is always 0
+        // — a parked sell never touched a market, so it's never charged;
+        // brokerageRate is always 0 for the same reason).
+        const bridge = calculateProceedsBridge({
+          grossSellCents,
+          grossBuyCents,
+          sellAssetCount: 0,
+          buyAssetCount: newAssetCount,
+          brokerageRate: 0,
+          custodyFeeCents: custodyFeeCentsPerIsin,
+          reserveCents,
+          residualCents,
+        });
+
+        let remainingReserveUse = bridge.reserveUsedCents;
+        for (const t of transactionsForReserve) {
+          if (remainingReserveUse <= 0) break;
+          const available = Math.max(0, t.buffer_cents - t.buffer_consumed_cents);
+          const use = Math.min(available, remainingReserveUse);
+          if (use > 0) {
+            await db
+              .from("transactions")
+              .update({ buffer_consumed_cents: t.buffer_consumed_cents + use })
+              .eq("id", t.id);
+            remainingReserveUse -= use;
+          }
+        }
+
         if (residualRes.data) {
           await db
             .from("strategy_rebalance_residuals")
-            .update({ balance_cents: Number(residualRes.data.balance_cents ?? 0) + deltaCents })
+            .update({ balance_cents: bridge.strategyCashAfterCents })
             .eq("id", residualRes.data.id);
         } else {
           await db.from("strategy_rebalance_residuals").insert({
             user_id: userId,
             strategy_id: strategyId,
-            balance_cents: deltaCents,
+            balance_cents: bridge.strategyCashAfterCents,
           });
         }
       }
