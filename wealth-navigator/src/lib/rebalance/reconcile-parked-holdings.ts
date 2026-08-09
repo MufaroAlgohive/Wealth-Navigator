@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { isUatEnv } from "@/lib/oems/uat-scope";
 import { type ModelUnitAction, calculateModelUnitImpact, fullModelLots } from "./model-unit-impact";
 import { calculateProceedsBridge } from "./proceeds";
 
@@ -56,12 +57,17 @@ export interface ReconcileParkedResult {
 
 export async function reconcileParkedHoldings(
   db: SupabaseClient,
+  institutionalDb: SupabaseClient,
   strategyId: string,
   strategyName: string | null,
   currentComposition: ProposedLine[],
   proposedComposition: ProposedLine[],
 ): Promise<ReconcileParkedResult> {
   const result: ReconcileParkedResult = { reconciledUserIds: [], errors: [] };
+  const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
+  const BROKER = isUatEnv()
+    ? process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE"
+    : process.env.IRESS_DESTINATION?.trim() || "LONGMARK CARE";
 
   const currentModelUnits = new Map<string, number>();
   for (const line of currentComposition) {
@@ -157,8 +163,18 @@ export async function reconcileParkedHoldings(
     if (!secBySymbol.has(sym)) secBySymbol.set(sym, { id: s.id, priceCents: cents });
   }
 
+  const userIds = [...byUser.keys()];
+  const profilesRes = userIds.length
+    ? await db.from("profiles").select("id, email").in("id", userIds)
+    : { data: [] as Array<{ id: string; email: string | null }> };
+  const emailByUser = new Map<string, string>();
+  for (const p of profilesRes.data ?? []) {
+    if (p.email) emailByUser.set(p.id, p.email);
+  }
+
   for (const [userId, rows] of byUser) {
     try {
+      const clientEmail = emailByUser.get(userId) ?? "unknown@mymint.co.za";
       const positions = new Map<string, { quantity: number; rowId: string }>();
       for (const row of rows) {
         const meta = secById.get(row.security_id);
@@ -200,34 +216,116 @@ export async function reconcileParkedHoldings(
 
         const security = secBySymbol.get(sym);
         if (position) {
-          // Existing parked row for this symbol — rewrite in place.
+          // Existing parked row for this symbol — rewrite in place, and keep
+          // the order-book row (oems_order_audit) in sync — it was silently
+          // going stale otherwise, since nothing else touches it for a
+          // holdings-only correction like this.
           if (targetQty <= 0) {
             await db
               .from("stock_holdings_c")
               .update({ quantity: 0, is_active: false })
               .eq("id", position.rowId);
+            await institutionalDb
+              .from("oems_order_audit")
+              .update({ status: "cancelled", updated_at: new Date().toISOString() })
+              .eq("payload->>holding_id", position.rowId)
+              .eq("status", "parked");
           } else {
             await db
               .from("stock_holdings_c")
               .update({ quantity: targetQty, Expected_fill: priceCents / 100 })
               .eq("id", position.rowId);
+            const auditRes = await institutionalDb
+              .from("oems_order_audit")
+              .select("id, payload")
+              .eq("payload->>holding_id", position.rowId)
+              .eq("status", "parked")
+              .maybeSingle();
+            if (auditRes.data) {
+              await institutionalDb
+                .from("oems_order_audit")
+                .update({
+                  quantity: targetQty,
+                  price_cents: priceCents,
+                  payload: {
+                    ...(auditRes.data.payload as Record<string, unknown>),
+                    limitPrice: priceCents / 100,
+                  },
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("id", auditRes.data.id);
+            }
           }
         } else if (targetQty > 0 && security) {
           // New symbol this client didn't already hold — insert a parked row
-          // for it, matching the shape of the rows we're reading from.
+          // for it, matching the shape of the rows we're reading from, plus
+          // a matching parked order-book row (same shape as a real client
+          // buy — see client-order/route.ts) so it's visible on the UAT/live
+          // order book like any other parked order.
           const sourceRow = rows[0];
-          await db.from("stock_holdings_c").insert({
-            user_id: userId,
-            security_id: security.id,
-            quantity: targetQty,
-            strategy_id: strategyId,
-            strategy_name_snapshot: strategyName,
-            transaction_id: sourceRow?.transaction_id ?? null,
-            trade_side: "BUY",
-            is_active: true,
-            avg_fill: 0,
-            Expected_fill: priceCents / 100,
-          });
+          const insertedRes = await db
+            .from("stock_holdings_c")
+            .insert({
+              user_id: userId,
+              security_id: security.id,
+              quantity: targetQty,
+              strategy_id: strategyId,
+              strategy_name_snapshot: strategyName,
+              transaction_id: sourceRow?.transaction_id ?? null,
+              trade_side: "BUY",
+              is_active: true,
+              avg_fill: 0,
+              Expected_fill: priceCents / 100,
+            })
+            .select("id")
+            .maybeSingle();
+          const newHoldingId = insertedRes.data?.id;
+          if (newHoldingId && ACCOUNT_CODE) {
+            const now = new Date().toISOString();
+            await institutionalDb.from("oems_order_audit").insert({
+              order_id: `REBALANCE-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+              client_account: clientEmail,
+              broker_account_code: ACCOUNT_CODE,
+              symbol: sym,
+              side: "buy",
+              quantity: targetQty,
+              price_cents: priceCents,
+              status: "parked",
+              source: "PAPER_MODEL_REBALANCE",
+              payload: {
+                book_id: strategyName,
+                broker: BROKER,
+                order_type: "market",
+                strategy: strategyName,
+                security_id: security.id,
+                isin: null,
+                holding_id: newHoldingId,
+                family_member_id: null,
+                user_id: userId,
+                limitPrice: priceCents / 100,
+                sent_by: clientEmail,
+                sent_at: now,
+                trader: clientEmail,
+                uat_test: true,
+                broker_account_code: ACCOUNT_CODE,
+              },
+              result_payload: {
+                tif: "DAY",
+                venue: "JSE",
+                broker: BROKER,
+                uat_test: true,
+                preflight: {
+                  ok: true,
+                  code: "pass",
+                  message: "Not yet preflighted — parked, awaiting Send to Market release.",
+                  verdict: "pass",
+                },
+                arrivalMid: priceCents / 100,
+              },
+              created_at: now,
+              updated_at: now,
+            });
+          }
         }
       }
 

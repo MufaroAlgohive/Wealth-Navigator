@@ -146,6 +146,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         .maybeSingle();
       parked = await reconcileParkedHoldings(
         retailDb,
+        db,
         (strategyRes.data?.id as string) ?? "",
         strategyName,
         Array.isArray(request.current_composition) ? request.current_composition : [],
