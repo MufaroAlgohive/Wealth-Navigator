@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { bookSettledRebalanceOrders } from "@/lib/rebalance/book-settled-rebalance-orders";
 import { reconcileParkedHoldings } from "@/lib/rebalance/reconcile-parked-holdings";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
@@ -128,34 +129,58 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // the decision is made, not wait for execution to land. Best-effort: a
   // failure here doesn't block the IC transition itself, it's just reported.
   let parked: { reconciledUserIds: string[]; errors: string[] } | null = null;
+  let booked: { bookedUserIds: string[]; errors: string[] } | null = null;
   if (toStatus === "ic_approved" && request.strategy_id) {
+    // rebalance_request_c.strategy_id actually stores the strategy's
+    // display NAME (see rebalance-builder-page.tsx::submitToIc), not its
+    // real id — stock_holdings_c.strategy_id is the real id. Resolve it so
+    // neither query below ends up comparing a name against a UUID column
+    // (which always returns zero rows, silently no-op'ing this whole
+    // feature — caught via a real approval producing no reconciled clients
+    // despite genuinely parked holdings existing).
+    const retailDb = createRetailServiceRoleClient();
+    const strategyName = request.strategy_id as string;
+    const strategyRes = await retailDb
+      .from("strategies_c")
+      .select("id")
+      .eq("name", strategyName)
+      .maybeSingle();
+    const resolvedStrategyId = (strategyRes.data?.id as string) ?? "";
+    const currentComposition = Array.isArray(request.current_composition) ? request.current_composition : [];
+    const proposedComposition = Array.isArray(request.proposed_composition)
+      ? request.proposed_composition
+      : [];
+
     try {
-      const retailDb = createRetailServiceRoleClient();
-      // rebalance_request_c.strategy_id actually stores the strategy's
-      // display NAME (see rebalance-builder-page.tsx::submitToIc), not its
-      // real id — stock_holdings_c.strategy_id is the real id. Resolve it so
-      // the parked-holdings query isn't comparing a name against a UUID
-      // column (which always returns zero rows, silently no-op'ing this
-      // whole feature — caught via a real approval producing no reconciled
-      // clients despite genuinely parked holdings existing).
-      const strategyName = request.strategy_id as string;
-      const strategyRes = await retailDb
-        .from("strategies_c")
-        .select("id")
-        .eq("name", strategyName)
-        .maybeSingle();
       parked = await reconcileParkedHoldings(
         retailDb,
         db,
-        (strategyRes.data?.id as string) ?? "",
+        resolvedStrategyId,
         strategyName,
-        Array.isArray(request.current_composition) ? request.current_composition : [],
-        Array.isArray(request.proposed_composition) ? request.proposed_composition : [],
+        currentComposition,
+        proposedComposition,
       );
     } catch (err) {
       parked = { reconciledUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
     }
+
+    // Settled (already-filled) clients don't get their holdings touched at
+    // approval time — only a real fill can change what they hold. This
+    // books the parked delta orders (+1/-5 etc.) the desk reviews on the
+    // UAT order book instead.
+    try {
+      booked = await bookSettledRebalanceOrders(
+        retailDb,
+        db,
+        resolvedStrategyId,
+        strategyName,
+        currentComposition,
+        proposedComposition,
+      );
+    } catch (err) {
+      booked = { bookedUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
+    }
   }
 
-  return NextResponse.json({ ok: true, request: data, parked });
+  return NextResponse.json({ ok: true, request: data, parked, booked });
 }
