@@ -226,6 +226,14 @@ export function RebalanceBuilderPage({
   const pendingForThisStrategy = (pendingReqQ.data?.requests ?? []).filter(
     (r) => r.strategy_id === strategyName && (r.status === "pending" || r.status === "ic_approved"),
   );
+  // Most recent outstanding proposal for this strategy — while there's
+  // nothing actively being edited, "Proposed basket" shows THIS instead of
+  // an empty/reset draft, so the holdings+weights currently sitting with the
+  // IC are visible instead of looking like nothing was ever submitted.
+  const activePendingProposal =
+    [...pendingForThisStrategy].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    )[0] ?? null;
 
   // Embedded two-stage trade sequence: "compose" is the editable basket (as
   // today); "execute" swaps that out for a per-leg wizard — one sell at a
@@ -1055,90 +1063,160 @@ export function RebalanceBuilderPage({
             </div>
           </GlassSection>
 
-          {/* proposed basket */}
-          <GlassSection
-            title="Proposed basket"
-            dataSource="hybrid"
-            subtitle={`${changes} change${changes === 1 ? "" : "s"} pending`}
-            right={
-              <span className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
-                Review client impact
-              </span>
-            }
-            noPadding
-          >
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                    <th className="px-5 py-2 font-medium">Ticker</th>
-                    <th className="px-3 py-2 font-medium">Name</th>
-                    <th className="px-3 py-2 text-right font-medium">Units</th>
-                    <th className="px-3 py-2 font-medium">Action</th>
-                    <th className="px-3 py-2 font-medium">Research</th>
-                    <th className="px-5 py-2 font-medium">Rationale</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {working.map((h) => {
-                    const b = baseByKey.get(keyOf(h));
-                    const changed = !b || b.shares !== h.shares;
-                    const a = actionFor(h);
-                    const ref = researchRefFor(h.ticker);
-                    return (
-                      <tr
-                        key={keyOf(h)}
-                        className={cn(
-                          "border-b border-[hsl(var(--glass-border))] last:border-0 align-top",
-                          changed && "bg-primary/5",
-                        )}
-                      >
-                        <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
-                        <td className="px-3 py-2 text-foreground/85">{h.name}</td>
-                        <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
-                        <td className="px-3 py-2">
-                          <ActionBadge action={a} />
-                        </td>
-                        <td className="px-3 py-2">
-                          {ref ? (
-                            <Link
-                              href="/oems/research"
-                              className="font-mono text-[11px] font-semibold text-primary hover:underline"
-                              title="Open research note"
-                            >
-                              {ref}
-                            </Link>
-                          ) : (
-                            <span className="text-caption">—</span>
-                          )}
-                        </td>
-                        <td className="px-5 py-2">
-                          {changed ? (
-                            <input
-                              value={rationaleBySymbol[h.ticker.toUpperCase()] ?? ""}
-                              onChange={(e) => setRationale(h.ticker, e.target.value)}
-                              placeholder={
-                                a === "decrease" || a === "remove"
-                                  ? "What are the proceeds funding?"
-                                  : "Thesis / target / horizon…"
-                              }
-                              className="w-full min-w-[220px] rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none focus:border-primary/50"
-                            />
-                          ) : (
-                            <span className="text-caption">—</span>
-                          )}
-                        </td>
+          {/* proposed basket — while nothing is being actively edited (changes
+              === 0), show the most recent outstanding IC proposal instead of
+              an empty/reset draft, so what's actually sitting with the IC is
+              visible here rather than looking like nothing was submitted. */}
+          {(() => {
+            const showingPending = changes === 0 && !!activePendingProposal;
+            const pendingRows = activePendingProposal?.proposed_composition ?? [];
+            const pendingChangesCount = pendingRows.filter((h) => h.action && h.action !== "hold").length;
+            const pendingBasketValue = pendingRows.reduce(
+              (s, h) => s + (Number(h.shares) || 0) * (Number(h.price) || 0),
+              0,
+            );
+            return (
+              <GlassSection
+                title="Proposed basket"
+                dataSource="hybrid"
+                subtitle={
+                  showingPending
+                    ? `${pendingChangesCount} change${pendingChangesCount === 1 ? "" : "s"} pending · in IC`
+                    : `${changes} change${changes === 1 ? "" : "s"} pending`
+                }
+                right={
+                  showingPending ? (
+                    <span
+                      className={cn(
+                        "rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                        activePendingProposal?.status === "ic_approved"
+                          ? "border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.12)] text-up"
+                          : "border-primary/25 bg-primary/10 text-primary",
+                      )}
+                    >
+                      {activePendingProposal?.status === "ic_approved" ? "IC approved" : "Pending IC review"}
+                    </span>
+                  ) : (
+                    <span className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                      Review client impact
+                    </span>
+                  )
+                }
+                noPadding
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <th className="px-5 py-2 font-medium">Ticker</th>
+                        <th className="px-3 py-2 font-medium">Name</th>
+                        <th className="px-3 py-2 text-right font-medium">Units</th>
+                        <th className="px-3 py-2 font-medium">Action</th>
+                        <th className="px-3 py-2 font-medium">Research</th>
+                        <th className="px-5 py-2 font-medium">Rationale</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex items-center justify-between border-t border-[hsl(var(--glass-border))] px-5 py-2.5 text-xs">
-              <span className="uppercase tracking-wide text-muted-foreground">Basket value</span>
-              <span className="font-mono font-semibold tabular-nums">{moneyR(basketValue)}</span>
-            </div>
-          </GlassSection>
+                    </thead>
+                    <tbody>
+                      {showingPending
+                        ? pendingRows.map((h) => (
+                            <tr
+                              key={h.ticker}
+                              className={cn(
+                                "border-b border-[hsl(var(--glass-border))] last:border-0 align-top",
+                                h.action && h.action !== "hold" && "bg-primary/5",
+                              )}
+                            >
+                              <td className="px-5 py-2 font-mono font-semibold text-foreground">
+                                {h.ticker}
+                              </td>
+                              <td className="px-3 py-2 text-foreground/85">{h.name}</td>
+                              <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
+                              <td className="px-3 py-2">
+                                <ActionBadge action={h.action} />
+                              </td>
+                              <td className="px-3 py-2">
+                                {h.researchRef ? (
+                                  <span className="font-mono text-[11px] font-semibold text-primary">
+                                    {h.researchRef}
+                                  </span>
+                                ) : (
+                                  <span className="text-caption">—</span>
+                                )}
+                              </td>
+                              <td className="px-5 py-2">
+                                {h.rationale ? (
+                                  <span className="text-xs text-foreground/85">{h.rationale}</span>
+                                ) : (
+                                  <span className="text-caption">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        : working.map((h) => {
+                            const b = baseByKey.get(keyOf(h));
+                            const changed = !b || b.shares !== h.shares;
+                            const a = actionFor(h);
+                            const ref = researchRefFor(h.ticker);
+                            return (
+                              <tr
+                                key={keyOf(h)}
+                                className={cn(
+                                  "border-b border-[hsl(var(--glass-border))] last:border-0 align-top",
+                                  changed && "bg-primary/5",
+                                )}
+                              >
+                                <td className="px-5 py-2 font-mono font-semibold text-foreground">
+                                  {h.ticker}
+                                </td>
+                                <td className="px-3 py-2 text-foreground/85">{h.name}</td>
+                                <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
+                                <td className="px-3 py-2">
+                                  <ActionBadge action={a} />
+                                </td>
+                                <td className="px-3 py-2">
+                                  {ref ? (
+                                    <Link
+                                      href="/oems/research"
+                                      className="font-mono text-[11px] font-semibold text-primary hover:underline"
+                                      title="Open research note"
+                                    >
+                                      {ref}
+                                    </Link>
+                                  ) : (
+                                    <span className="text-caption">—</span>
+                                  )}
+                                </td>
+                                <td className="px-5 py-2">
+                                  {changed ? (
+                                    <input
+                                      value={rationaleBySymbol[h.ticker.toUpperCase()] ?? ""}
+                                      onChange={(e) => setRationale(h.ticker, e.target.value)}
+                                      placeholder={
+                                        a === "decrease" || a === "remove"
+                                          ? "What are the proceeds funding?"
+                                          : "Thesis / target / horizon…"
+                                      }
+                                      className="w-full min-w-[220px] rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none focus:border-primary/50"
+                                    />
+                                  ) : (
+                                    <span className="text-caption">—</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center justify-between border-t border-[hsl(var(--glass-border))] px-5 py-2.5 text-xs">
+                  <span className="uppercase tracking-wide text-muted-foreground">Basket value</span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {moneyR(showingPending ? pendingBasketValue : basketValue)}
+                  </span>
+                </div>
+              </GlassSection>
+            );
+          })()}
         </div>
       )}
 
@@ -1205,7 +1283,6 @@ export function RebalanceBuilderPage({
         pushingId={pushingId}
         setPushingId={setPushingId}
         canPush={perms.pushRebalance}
-        canApprove={perms.approveRebalance}
         open={proposalsOpen}
         onOpenChange={setProposalsOpen}
       />
@@ -3009,14 +3086,12 @@ function ProposalsList({
   pushingId,
   setPushingId,
   canPush,
-  canApprove,
   open,
   onOpenChange,
 }: {
   pushingId: string | null;
   setPushingId: (id: string | null) => void;
   canPush: boolean;
-  canApprove: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -3034,8 +3109,6 @@ function ProposalsList({
   });
   const requests = q.data?.requests ?? []; // show all; the status chip differentiates
   const codes = rebalanceCodeMap(requests);
-  const [approvingId, setApprovingId] = React.useState<string | null>(null);
-  const [approveNotice, setApproveNotice] = React.useState<string | null>(null);
 
   async function push(id: string) {
     setPushingId(id);
@@ -3044,40 +3117,6 @@ function ProposalsList({
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
     } finally {
       setPushingId(null);
-    }
-  }
-
-  async function approve(id: string) {
-    setApprovingId(id);
-    setApproveNotice(null);
-    try {
-      const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ to_status: "ic_approved" }),
-      });
-      const json = (await res.json().catch(() => ({}))) as {
-        ok?: boolean;
-        error?: string;
-        parked?: { reconciledUserIds: string[]; errors: string[] };
-      };
-      if (!res.ok || !json.ok) {
-        setApproveNotice(json.error ?? `Approve failed (${res.status}).`);
-        return;
-      }
-      if (json.parked) {
-        const n = json.parked.reconciledUserIds.length;
-        setApproveNotice(
-          n > 0
-            ? `Approved — ${n} parked (not-yet-filled) client${n === 1 ? "" : "s"} rewritten to the new basket, no fees charged.`
-            : json.parked.errors.length
-              ? `Approved, but parked-holdings reconciliation had errors: ${json.parked.errors.join("; ")}`
-              : "Approved — no parked (not-yet-filled) holdings found for this strategy.",
-        );
-      }
-      await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
-    } finally {
-      setApprovingId(null);
     }
   }
 
@@ -3107,12 +3146,7 @@ function ProposalsList({
         </button>
       }
     >
-      {open ? (
-        <>
-          {q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p>}
-          {approveNotice && <p className="mb-3 text-xs text-up">{approveNotice}</p>}
-        </>
-      ) : null}
+      {open ? q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p> : null}
       {!open ? null : requests.length === 0 && !q.isLoading ? (
         <p className="text-caption">No proposals yet. Build one above and submit it to the IC.</p>
       ) : (
@@ -3145,27 +3179,12 @@ function ProposalsList({
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {r.status === "pending" && (
-                    <>
-                      <Link
-                        href="/oems/committee"
-                        className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)]"
-                      >
-                        At IC
-                      </Link>
-                      <button
-                        type="button"
-                        onClick={() => approve(r.id)}
-                        disabled={!canApprove || approvingId === r.id}
-                        title={
-                          canApprove
-                            ? "Approve — also rewrites any not-yet-filled client holdings for this strategy to the new basket, fee-free"
-                            : "Requires IC approval permission"
-                        }
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-                      >
-                        {approvingId === r.id ? "Approving…" : "Approve"}
-                      </button>
-                    </>
+                    <Link
+                      href="/oems/committee"
+                      className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
+                    >
+                      Review in IC
+                    </Link>
                   )}
                   {r.status === "ic_approved" && (
                     <button
