@@ -83,7 +83,11 @@ export default function OrderBookPage() {
             </div>
             <ExecutionView
               key={`orderbook-active-${activeEnvironment}`}
-              sources={activeEnvironment === "uat" ? ["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"] : ["MINT_CLIENT_ORDER"]}
+              sources={
+                activeEnvironment === "uat"
+                  ? ["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER", "PAPER_MODEL_REBALANCE"]
+                  : ["MINT_CLIENT_ORDER", "PAPER_MODEL_REBALANCE"]
+              }
               scope={activeEnvironment}
             />
             {/* The archive is shared across order-entry lanes. Older books and
@@ -93,8 +97,8 @@ export default function OrderBookPage() {
             <ActiveOrderBooks
               sources={
                 activeEnvironment === "uat"
-                  ? ["UAT_ADHOC_ORDER", "CRM_UAT"]
-                  : ["MINT_CLIENT_ORDER", "CRM_LIVE"]
+                  ? ["UAT_ADHOC_ORDER", "CRM_UAT", "PAPER_MODEL_REBALANCE"]
+                  : ["MINT_CLIENT_ORDER", "CRM_LIVE", "PAPER_MODEL_REBALANCE"]
               }
             />
           </TabsContent>
