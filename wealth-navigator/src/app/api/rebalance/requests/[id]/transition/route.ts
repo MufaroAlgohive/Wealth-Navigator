@@ -131,10 +131,23 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (toStatus === "ic_approved" && request.strategy_id) {
     try {
       const retailDb = createRetailServiceRoleClient();
+      // rebalance_request_c.strategy_id actually stores the strategy's
+      // display NAME (see rebalance-builder-page.tsx::submitToIc), not its
+      // real id — stock_holdings_c.strategy_id is the real id. Resolve it so
+      // the parked-holdings query isn't comparing a name against a UUID
+      // column (which always returns zero rows, silently no-op'ing this
+      // whole feature — caught via a real approval producing no reconciled
+      // clients despite genuinely parked holdings existing).
+      const strategyName = request.strategy_id as string;
+      const strategyRes = await retailDb
+        .from("strategies_c")
+        .select("id")
+        .eq("name", strategyName)
+        .maybeSingle();
       parked = await reconcileParkedHoldings(
         retailDb,
-        request.strategy_id as string,
-        null,
+        (strategyRes.data?.id as string) ?? "",
+        strategyName,
         Array.isArray(request.current_composition) ? request.current_composition : [],
         Array.isArray(request.proposed_composition) ? request.proposed_composition : [],
       );
