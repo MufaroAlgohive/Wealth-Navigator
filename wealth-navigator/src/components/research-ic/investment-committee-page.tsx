@@ -44,9 +44,9 @@ import * as React from "react";
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
 import {
+  type CommitteeMember,
   IC_COMMITTEE_SIZE,
   IC_MAJORITY_REQUIRED_YES,
-  type CommitteeMember,
 } from "@/lib/research-ic/committee";
 import {
   agendaKindForNote,
@@ -60,8 +60,14 @@ import type { ProposedHolding, RebalanceRequest, ResearchNote, ResearchPerms } f
 import { ActionBadge, RatingBadge, moneyR, rebalanceCodeMap, signedPct, useQuotes, weightPct } from "./ui";
 
 const CHARTER = [
-  ["Quorum", `${IC_COMMITTEE_SIZE} voting members. Strict majority (≥ ${IC_MAJORITY_REQUIRED_YES} of ${IC_COMMITTEE_SIZE}) carries a decision; abstentions do not lower the bar.`],
-  ["Chair tie-break", "If a vote ends 1-1, the chair's ballot (cast on or before the deadline) counts as the deciding vote. A 0-0-3 does not pass."],
+  [
+    "Quorum",
+    `${IC_COMMITTEE_SIZE} voting members. Strict majority (≥ ${IC_MAJORITY_REQUIRED_YES} of ${IC_COMMITTEE_SIZE}) carries a decision; abstentions do not lower the bar.`,
+  ],
+  [
+    "Chair tie-break",
+    "If a vote ends 1-1, the chair's ballot (cast on or before the deadline) counts as the deciding vote. A 0-0-3 does not pass.",
+  ],
   ["Pre-read", "Analyst circulates research note ≥ 24h before session."],
   ["Rebalance gate", "IC approval required before any change flows to the Rebalance Engine."],
   ["Cadence", "Tue & Thu 14:00 SAST · 60 min · minutes filed in Committee log."],
@@ -91,10 +97,7 @@ const TITLES_BY_ROLE: Record<MemberPill["role"], string> = {
 };
 
 /** Build the committee pill list, marking the viewer's own slot. */
-function buildCommitteePills(
-  members: CommitteeMember[],
-  viewerEmail: string | null,
-): MemberPill[] {
+function buildCommitteePills(members: CommitteeMember[], viewerEmail: string | null): MemberPill[] {
   const v = viewerEmail?.toLowerCase() ?? null;
   return members.map((m) => ({
     initials: m.initials,
@@ -159,6 +162,19 @@ export function InvestmentCommitteePage({
         .catch(() => ({ requests: [] }))) as { requests: RebalanceRequest[] },
   });
 
+  // rebalance_request_c.strategy_id actually stores the strategy's display
+  // NAME (see rebalance-builder-page.tsx::submitToIc), not its id — matches
+  // strategies by name here to know which agenda rows are UAT/test.
+  const strategiesQ = useQuery<{
+    strategies?: Array<{ id: string; name: string; investorEnvironment?: "LIVE" | "UAT" }>;
+  }>({
+    queryKey: ["ric-strategies"],
+    queryFn: async () => (await fetch("/api/strategies", { cache: "no-store" })).json(),
+  });
+  const testStrategyNames = new Set(
+    (strategiesQ.data?.strategies ?? []).filter((s) => s.investorEnvironment === "UAT").map((s) => s.name),
+  );
+
   const notes = notesQ.data?.notes ?? [];
   const requests = reqQ.data?.requests ?? [];
   const agendaNotes = notes.filter((n) => n.status === "ic_pending");
@@ -198,12 +214,16 @@ export function InvestmentCommitteePage({
     charter: false,
     checklist: false,
   }));
-  const toggleSection = (k: string) =>
-    setOpenSections((prev) => ({ ...prev, [k]: !prev[k] }));
+  const toggleSection = (k: string) => setOpenSections((prev) => ({ ...prev, [k]: !prev[k] }));
 
   // ── Sticky tab bar + scroll-spy ──────────────────────────────────────────
   type SectionId = "agenda" | "approved" | "recent" | "members" | "charter" | "checklist";
-  const sections: Array<{ id: SectionId; label: string; count?: number; icon: React.ComponentType<{ className?: string }> }> = [
+  const sections: Array<{
+    id: SectionId;
+    label: string;
+    count?: number;
+    icon: React.ComponentType<{ className?: string }>;
+  }> = [
     { id: "agenda", label: "Agenda", count: agendaCount, icon: ScrollText },
     { id: "approved", label: "Approved", count: approvedReqs.length, icon: Rocket },
     { id: "recent", label: "Recent", count: recent.length, icon: Calendar },
@@ -258,7 +278,10 @@ export function InvestmentCommitteePage({
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1">
           <h1 className="text-xl font-semibold tracking-tight">Investment Committee</h1>
-          <p className="text-caption">Tuesdays &amp; Thursdays · 14:00 SAST · majority vote ({IC_MAJORITY_REQUIRED_YES} of {IC_COMMITTEE_SIZE}).</p>
+          <p className="text-caption">
+            Tuesdays &amp; Thursdays · 14:00 SAST · majority vote ({IC_MAJORITY_REQUIRED_YES} of{" "}
+            {IC_COMMITTEE_SIZE}).
+          </p>
         </div>
         <span className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs text-muted-foreground">
           <Calendar className="h-3.5 w-3.5" /> Next session · Tuesday, 14 Jul
@@ -321,7 +344,14 @@ export function InvestmentCommitteePage({
               db="institutional"
               open={!!openSections.agenda}
               onToggle={() => toggleSection("agenda")}
-              badge={agendaCount > 0 ? { tone: "warn", label: `${pendingReqs.length} rebalance · ${agendaNotes.length} research` } : null}
+              badge={
+                agendaCount > 0
+                  ? {
+                      tone: "warn",
+                      label: `${pendingReqs.length} rebalance · ${agendaNotes.length} research`,
+                    }
+                  : null
+              }
             >
               {agendaCount === 0 ? (
                 <p className="text-caption">
@@ -341,6 +371,7 @@ export function InvestmentCommitteePage({
                       viewerEmail={viewerEmail}
                       pills={pills}
                       onChanged={refresh}
+                      isTestStrategy={testStrategyNames.has(r.strategy_id)}
                     />
                   ))}
                   {agendaNotes.map((n) => (
@@ -484,9 +515,7 @@ export function InvestmentCommitteePage({
             >
               <ChecklistList
                 checks={checks}
-                onChange={(i, v) =>
-                  setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))
-                }
+                onChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
               />
             </CollapsibleCard>
           </section>
@@ -505,9 +534,7 @@ export function InvestmentCommitteePage({
           <GlassSection title="Session prep checklist">
             <ChecklistList
               checks={checks}
-              onChange={(i, v) =>
-                setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))
-              }
+              onChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
             />
           </GlassSection>
         </div>
@@ -535,11 +562,7 @@ export function InvestmentCommitteePage({
 function MembersList({ pills, viewerEmail }: { pills: MemberPill[]; viewerEmail: string | null }) {
   void viewerEmail;
   if (pills.length === 0) {
-    return (
-      <p className="text-caption">
-        Resolving committee roster…
-      </p>
-    );
+    return <p className="text-caption">Resolving committee roster…</p>;
   }
   return (
     <div className="space-y-3">
@@ -784,6 +807,7 @@ function RebalanceAgendaItem({
   viewerEmail,
   pills,
   onChanged,
+  isTestStrategy,
 }: {
   req: RebalanceRequest;
   code: string;
@@ -794,6 +818,9 @@ function RebalanceAgendaItem({
   viewerEmail: string | null;
   pills: MemberPill[];
   onChanged: () => void;
+  // UAT/test strategies skip the committee vote requirement entirely — same
+  // relaxation as the research-note/rationale gates elsewhere in rebalance.
+  isTestStrategy: boolean;
 }) {
   const { busy, go } = useTransition("rebalance");
   const noteTransition = useTransition("note");
@@ -806,26 +833,54 @@ function RebalanceAgendaItem({
   const canCombinedApprove = kind === "both" && canApprove && canApproveNote && linkedNote;
 
   const votes = req.votes ?? [];
-  const tally =
-    req.tally ?? {
-      yes: 0,
-      no: 0,
-      abstain: 0,
-      quorum: IC_COMMITTEE_SIZE,
-      threshold: IC_MAJORITY_REQUIRED_YES / IC_COMMITTEE_SIZE,
-      requiredYes: IC_MAJORITY_REQUIRED_YES,
-      ratio: 0,
-      passed: false,
-    };
+  const tally = req.tally ?? {
+    yes: 0,
+    no: 0,
+    abstain: 0,
+    quorum: IC_COMMITTEE_SIZE,
+    threshold: IC_MAJORITY_REQUIRED_YES / IC_COMMITTEE_SIZE,
+    requiredYes: IC_MAJORITY_REQUIRED_YES,
+    ratio: 0,
+    passed: false,
+  };
   const myVote = viewerEmail
-    ? votes.find((v) => v.voter_email.toLowerCase() === viewerEmail.toLowerCase())?.vote ?? null
+    ? (votes.find((v) => v.voter_email.toLowerCase() === viewerEmail.toLowerCase())?.vote ?? null)
     : null;
   const busyAny = busy != null || vote.busy != null || noteTransition.busy != null;
+
+  // Standalone rebalance approval (no linked research note — the "both" path
+  // above has its own combined-approve gate). UAT/test strategies skip the
+  // vote requirement entirely, same relaxation as research-note/rationale
+  // gates elsewhere. For a LIVE strategy: Approve only appears once yes
+  // votes outnumber no votes; with zero votes cast it's disabled rather than
+  // hidden (nothing to disagree with yet); once no votes outnumber yes,
+  // Approve is hidden entirely — only Reject remains available.
+  const hasVotes = tally.yes > 0 || tally.no > 0;
+  const noAhead = tally.no > tally.yes;
+  const yesAhead = tally.yes > tally.no;
+  const showStandaloneApprove = kind !== "both" && (isTestStrategy || !noAhead);
+  const standaloneApproveDisabled = !canApprove || busyAny || (!isTestStrategy && (!hasVotes || !yesAhead));
+  const standaloneApproveTitle = isTestStrategy
+    ? "UAT test strategy — no committee vote required"
+    : !hasVotes
+      ? "Awaiting votes — no votes cast yet"
+      : !yesAhead
+        ? "Awaiting votes — yes does not yet outnumber no"
+        : "Approve — majority yes";
 
   async function approveBoth() {
     if (!linkedNote) return;
     await noteTransition.go(linkedNote.id, "approved", onChanged, "IC approved with rebalance");
     await go(req.id, "ic_approved", onChanged, "IC approved with research");
+  }
+
+  async function approveStandalone() {
+    await go(
+      req.id,
+      "ic_approved",
+      onChanged,
+      isTestStrategy ? "IC approved (UAT — no committee vote required)" : "IC approved by majority vote",
+    );
   }
 
   // Per-member vote state for the committee-member pills. Only the viewer's
@@ -907,6 +962,16 @@ function RebalanceAgendaItem({
             >
               <Check className="h-3.5 w-3.5" /> {actionLabel}
             </button>
+          ) : showStandaloneApprove ? (
+            <button
+              type="button"
+              disabled={standaloneApproveDisabled}
+              onClick={approveStandalone}
+              title={standaloneApproveTitle}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+            >
+              <Check className="h-3.5 w-3.5" /> {isTestStrategy ? "Approve (UAT)" : "Approve"}
+            </button>
           ) : null}
           <button
             type="button"
@@ -922,9 +987,7 @@ function RebalanceAgendaItem({
 
       {/* Vote: row with member pills (Lovable spec). */}
       <div className="mb-3 flex flex-wrap items-center gap-3">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Vote:
-        </span>
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Vote:</span>
         {pills.map((m) => (
           <div key={m.initials + m.email} className="flex items-center gap-1.5">
             {pillFor(m)}
@@ -935,7 +998,9 @@ function RebalanceAgendaItem({
           {tally.passed ? (
             <span className="text-up">passed</span>
           ) : (
-            <span>needs {tally.requiredYes} of {tally.quorum} ({Math.round(tally.threshold * 100)}%)</span>
+            <span>
+              needs {tally.requiredYes} of {tally.quorum} ({Math.round(tally.threshold * 100)}%)
+            </span>
           )}
         </span>
       </div>
@@ -980,8 +1045,8 @@ function RebalanceAgendaItem({
           <CompositionTable rows={rows} />
           {changes > 0 && (
             <p className="text-[11px] text-muted-foreground">
-              Each change references an approved research note via the Research column above. Open
-              the note from the Research Library to view the thesis, valuation & triggers.
+              Each change references an approved research note via the Research column above. Open the note
+              from the Research Library to view the thesis, valuation & triggers.
             </p>
           )}
         </div>
