@@ -30,6 +30,7 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  Loader2,
   MinusCircle,
   Rocket,
   ScrollText,
@@ -1140,7 +1141,15 @@ function ApprovedItem({
           onClick={release}
           className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
         >
-          <Rocket className="h-3.5 w-3.5" /> {busy ? "Releasing…" : "Release to Rebalance Tab"}
+          {busy ? (
+            <>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Releasing…
+            </>
+          ) : (
+            <>
+              <Rocket className="h-3.5 w-3.5" /> Release to Rebalance Tab
+            </>
+          )}
         </button>
       </div>
       <CompositionTable rows={rows} />

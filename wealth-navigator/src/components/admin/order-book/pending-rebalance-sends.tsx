@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, Rocket } from "lucide-react";
+import { ChevronRight, Loader2, Rocket } from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -201,7 +201,13 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                       onClick={() => cancelProposal(r.id)}
                       disabled={cancellingId === r.id || bookingId === r.id}
                     >
-                      {cancellingId === r.id ? "Cancelling..." : "Cancel"}
+                      {cancellingId === r.id ? (
+                        <>
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Cancelling...
+                        </>
+                      ) : (
+                        "Cancel"
+                      )}
                     </Button>
                     <Button
                       type="button"
@@ -209,7 +215,13 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                       onClick={() => releaseToRebalanceTab(r.id)}
                       disabled={bookingId === r.id || cancellingId === r.id}
                     >
-                      {bookingId === r.id ? "Releasing..." : "Release to Rebalance Tab"}
+                      {bookingId === r.id ? (
+                        <>
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Releasing...
+                        </>
+                      ) : (
+                        "Release to Rebalance Tab"
+                      )}
                     </Button>
                   </div>
                 </div>
@@ -271,7 +283,7 @@ function BookedRebalanceRow({
   open: boolean;
   onToggle: () => void;
   releasing: boolean;
-  onRelease: () => void;
+  onRelease: () => Promise<void>;
 }) {
   const ordersQuery = usePolling<{ orders?: BookedOrder[] }>(`/api/rebalance/requests/${r.id}/orders`, {
     interval: open ? 10_000 : 60_000,
@@ -280,6 +292,15 @@ function BookedRebalanceRow({
   const orders = ordersQuery.data?.orders ?? [];
   const stillParked = orders.filter((o) => o.source === "PAPER_MODEL_REBALANCE" && o.status === "parked");
   const released = orders.length > 0 && stillParked.length === 0;
+
+  // onRelease only refreshes the parent's request list — this row's own
+  // order table polls separately (up to 10s while expanded) and wouldn't
+  // otherwise reflect the release for a few seconds, making a successful
+  // click look like it did nothing and inviting a second one.
+  async function handleRelease() {
+    await onRelease();
+    await ordersQuery.refresh();
+  }
 
   return (
     <div>
@@ -296,9 +317,16 @@ function BookedRebalanceRow({
             {r.executed_at ? new Date(r.executed_at).toLocaleString("en-ZA") : "—"}
           </span>
           {!released && stillParked.length > 0 ? (
-            <Button type="button" size="sm" onClick={onRelease} disabled={releasing}>
-              <Rocket className="mr-1.5 h-3.5 w-3.5" />
-              {releasing ? "Sending..." : "Send to Order Book"}
+            <Button type="button" size="sm" onClick={handleRelease} disabled={releasing}>
+              {releasing ? (
+                <>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Sending...
+                </>
+              ) : (
+                <>
+                  <Rocket className="mr-1.5 h-3.5 w-3.5" /> Send to Order Book
+                </>
+              )}
             </Button>
           ) : null}
         </div>

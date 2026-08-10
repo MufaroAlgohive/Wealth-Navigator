@@ -9,7 +9,18 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDown, ArrowUp, ChevronDown, Info, Plus, Rocket, Send, X } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  Info,
+  Loader2,
+  Plus,
+  Rocket,
+  Send,
+  X,
+} from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
@@ -3235,7 +3246,13 @@ function ProposalsList({
                         disabled={cancellingId === r.id || pushingId === r.id}
                         className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
                       >
-                        {cancellingId === r.id ? "Cancelling…" : "Cancel"}
+                        {cancellingId === r.id ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Cancelling…
+                          </>
+                        ) : (
+                          "Cancel"
+                        )}
                       </button>
                       <button
                         type="button"
@@ -3243,8 +3260,15 @@ function ProposalsList({
                         disabled={!canPush || pushingId === r.id || cancellingId === r.id}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
                       >
-                        <Rocket className="h-3.5 w-3.5" />{" "}
-                        {pushingId === r.id ? "Releasing…" : "Release to Rebalance Tab"}
+                        {pushingId === r.id ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Releasing…
+                          </>
+                        ) : (
+                          <>
+                            <Rocket className="h-3.5 w-3.5" /> Release to Rebalance Tab
+                          </>
+                        )}
                       </button>
                     </>
                   )}
