@@ -5,6 +5,7 @@ import { getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { observedFillFromAudit, settleFill } from "@workers/iress-ingest/src/settlement";
 
 /**
  * POST /api/admin/orderbook/fills
@@ -20,11 +21,26 @@ import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } f
  *     advertises `book_ready_for_confirmation: true` so the UI can enable
  *     the Send Confirmation button.
  *   - when a row lands on 'filled' AND its payload is tagged uat_test=true
- *     (see client-order/route.ts), best-effort auto-settles it against
- *     MyMintAdmin's real settlement engine (closes the holding, credits the
- *     wallet, refunds reserve/residual) — see settleUatFill below. Never
- *     touches a live order: that engine independently re-verifies every
- *     targeted holding belongs to a test account before writing anything.
+ *     (see client-order/route.ts), best-effort auto-settles it. Never
+ *     touches a live order — the uat_test tag gates it, AND (for the sell
+ *     path specifically, see settleUatSellFill) an independent check that
+ *     every targeted holding actually belongs to a verified test account.
+ *   - a BUY fill (settleUatFill) still calls MyMintAdmin's update-price
+ *     endpoint for avg_fill/Fill_date, and separately writes the order's own
+ *     `quantity` directly onto the referenced `stock_holdings_c` row (RETAIL,
+ *     same repo — no CRM round-trip needed for this one field).
+ *   - a SELL fill (settleUatSellFill) goes through the SAME settlement
+ *     engine used for real IRESS fills (workers/iress-ingest/src/settlement.ts
+ *     `settleFill`), not CRM's update-price endpoint. CRM's sell-settlement
+ *     always fully closes whatever holding_id the order names — for an
+ *     ordinary sell that's correct, but a rebalance-driven PARTIAL sell (sell
+ *     5 of 10) references the client's ORIGINAL, still-larger lot, and a full
+ *     close there would wipe out shares nobody intended to sell. The real
+ *     engine FIFOs the client's actual active lots for that security and
+ *     splits a partial correctly (shrinks the original, closes a separate
+ *     lot for just the sold quantity, preserves the original cost basis) —
+ *     it doesn't trust holding_id's specific row for sizing, only for
+ *     scoping which owner's lots to touch.
  *   - for a BUY fill, also writes the order's own `quantity` directly onto
  *     the referenced `stock_holdings_c` row (RETAIL, same repo — no CRM
  *     round-trip needed for this one field). This is a no-op for an ordinary
@@ -63,7 +79,7 @@ interface AuditRow {
   result_payload: Record<string, unknown>;
 }
 
-interface SettlementResult {
+interface UatSettlementResult {
   audit_id: string;
   attempted: boolean;
   ok: boolean;
@@ -72,15 +88,16 @@ interface SettlementResult {
 
 /**
  * Best-effort call to MyMintAdmin's real settlement engine
- * (api/orderbook/update-price.js) for a UAT self-fill — see this file's doc
- * comment. Never throws: a settlement-call failure must not fail the fill
- * itself, but IS surfaced in the response (never silently swallowed).
+ * (api/orderbook/update-price.js) for a UAT BUY self-fill — see this file's
+ * doc comment. SELL fills do NOT go through here — see settleUatSellFill.
+ * Never throws: a settlement-call failure must not fail the fill itself, but
+ * IS surfaced in the response (never silently swallowed).
  */
 async function settleUatFill(
   row: AuditRow,
   fillPriceCents: number,
   retailDb: SupabaseClient,
-): Promise<SettlementResult> {
+): Promise<UatSettlementResult> {
   const payload = row.payload ?? {};
   const uatTest = payload.uat_test === true;
   const holdingId = typeof payload.holding_id === "string" ? payload.holding_id : "";
@@ -97,11 +114,7 @@ async function settleUatFill(
       error: "MYMINTADMIN_API_URL or OEM_UAT_SETTLEMENT_SECRET not configured",
     };
   }
-  const side = String(row.side || "buy").toLowerCase();
-  const updatePayload =
-    side === "sell"
-      ? { avg_exit: fillPriceCents }
-      : { avg_fill: fillPriceCents, Fill_date: new Date().toISOString().slice(0, 10) };
+  const updatePayload = { avg_fill: fillPriceCents, Fill_date: new Date().toISOString().slice(0, 10) };
   try {
     const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/orderbook/update-price`, {
       method: "POST",
@@ -116,12 +129,10 @@ async function settleUatFill(
     // see the file docstring. Best-effort: this must not fail the fill
     // itself (the CRM settlement call above already succeeded), so a failure
     // here is swallowed rather than turning a real fill into an error.
-    if (side !== "sell") {
-      await retailDb
-        .from("stock_holdings_c")
-        .update({ quantity: row.quantity, is_active: true })
-        .eq("id", holdingId);
-    }
+    await retailDb
+      .from("stock_holdings_c")
+      .update({ quantity: row.quantity, is_active: true })
+      .eq("id", holdingId);
     return { audit_id: row.id, attempted: true, ok: true };
   } catch (e) {
     return {
@@ -129,6 +140,89 @@ async function settleUatFill(
       attempted: true,
       ok: false,
       error: e instanceof Error ? e.message : "settlement request failed",
+    };
+  }
+}
+
+/**
+ * A UAT SELL self-fill goes through the REAL settlement engine
+ * (workers/iress-ingest/src/settlement.ts `settleFill`) instead of CRM's
+ * update-price endpoint — see this file's doc comment for exactly why (CRM's
+ * sell path fully closes whatever holding_id names, which is wrong for a
+ * PARTIAL rebalance sell). That engine correctly FIFOs the client's actual
+ * active lots and splits a partial sell, crediting the wallet with the real
+ * proceeds — this is a genuine settlement, not a mock.
+ *
+ * Independently re-verifies the order belongs to a test account before
+ * calling it — CRM's endpoint used to be the thing standing between a
+ * spoofed/stale uat_test tag and a real client's money; now that we bypass
+ * CRM for this path, this check has to stand in for that guarantee itself.
+ */
+async function settleUatSellFill(
+  row: AuditRow,
+  retailDb: SupabaseClient,
+  institutionalDb: SupabaseClient,
+  updatedPayload: Record<string, unknown>,
+): Promise<UatSettlementResult> {
+  const payload = row.payload ?? {};
+  const uatTest = payload.uat_test === true;
+  const holdingId = typeof payload.holding_id === "string" ? payload.holding_id : "";
+  const userId = typeof payload.user_id === "string" ? payload.user_id : "";
+  if (!uatTest || !holdingId || !userId) {
+    return { audit_id: row.id, attempted: false, ok: false };
+  }
+
+  const [{ data: profile }, { data: testWallets }] = await Promise.all([
+    retailDb.from("profiles").select("is_test").eq("id", userId).maybeSingle(),
+    retailDb.from("wallets").select("user_id").eq("user_id", userId).eq("status", "test").limit(1),
+  ]);
+  const isVerifiedTestAccount = profile?.is_test === true || (testWallets ?? []).length > 0;
+  if (!isVerifiedTestAccount) {
+    return {
+      audit_id: row.id,
+      attempted: true,
+      ok: false,
+      error: `refusing: user ${userId} is not a verified test account`,
+    };
+  }
+
+  const fill = observedFillFromAudit({
+    order_id: row.order_id,
+    symbol: row.symbol,
+    side: "sell",
+    status: "filled",
+    quantity: row.quantity,
+    payload: updatedPayload,
+  });
+  if (!fill) {
+    return {
+      audit_id: row.id,
+      attempted: true,
+      ok: false,
+      error: "could not derive a settleable fill from this order",
+    };
+  }
+
+  try {
+    const result = await settleFill(
+      { institutional: institutionalDb, retail: retailDb, enabled: true, dryRun: false },
+      fill,
+    );
+    if (!result.applied) {
+      return {
+        audit_id: row.id,
+        attempted: true,
+        ok: false,
+        error: result.error ?? "settlement did not apply",
+      };
+    }
+    return { audit_id: row.id, attempted: true, ok: true };
+  } catch (e) {
+    return {
+      audit_id: row.id,
+      attempted: true,
+      ok: false,
+      error: e instanceof Error ? e.message : "settlement failed",
     };
   }
 }
@@ -225,9 +319,12 @@ export async function POST(req: Request) {
     result_payload: Record<string, unknown>;
     status: string;
   }> = [];
-  // Rows that land on "filled" this call, paired with the fill price that
-  // filled them — settlement runs after the DB update succeeds, below.
-  const toSettle: Array<{ row: AuditRow; fillPriceCents: number }> = [];
+  // Rows that land on "filled" this call, paired with the fill price and the
+  // freshly-updated payload (filled/avgPx) — settlement runs after the DB
+  // update succeeds, below, and needs the POST-update payload, not the stale
+  // pre-fill one still sitting on `row`.
+  const toSettle: Array<{ row: AuditRow; fillPriceCents: number; updatedPayload: Record<string, unknown> }> =
+    [];
 
   for (const row of bookRows) {
     const fill = fills.find((f) => f.symbol === row.symbol);
@@ -276,7 +373,11 @@ export async function POST(req: Request) {
     });
 
     if (newStatus === "filled") {
-      toSettle.push({ row, fillPriceCents: Math.round(Number(fill.avg_fill_price_cents) || 0) });
+      toSettle.push({
+        row,
+        fillPriceCents: Math.round(Number(fill.avg_fill_price_cents) || 0),
+        updatedPayload: newPayload,
+      });
     }
   }
 
@@ -338,7 +439,11 @@ export async function POST(req: Request) {
   }
   const settlements = retailDb
     ? await Promise.all(
-        toSettle.map(({ row, fillPriceCents }) => settleUatFill(row, fillPriceCents, retailDb)),
+        toSettle.map(({ row, fillPriceCents, updatedPayload }) =>
+          String(row.side || "buy").toLowerCase() === "sell"
+            ? settleUatSellFill(row, retailDb, db, updatedPayload)
+            : settleUatFill(row, fillPriceCents, retailDb),
+        ),
       )
     : toSettle.map(({ row }) => ({
         audit_id: row.id,
