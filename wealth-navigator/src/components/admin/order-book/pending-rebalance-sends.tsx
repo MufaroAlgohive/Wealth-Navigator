@@ -19,7 +19,7 @@ import { usePolling } from "@/lib/hooks/use-polling";
  * Three stages, each an explicit action — nothing ever "hits the order
  * book" as a side effect of an earlier one:
  *   1. ic_approved  — pure decision, nothing written yet.
- *   2. "Book Orders" (-> executed) — reconcileParkedHoldings /
+ *   2. "Release to Rebalance Tab" (-> executed) — reconcileParkedHoldings /
  *      bookSettledRebalanceOrders run, parking real orders in
  *      oems_order_audit tagged source="PAPER_MODEL_REBALANCE". These orders
  *      exist for real now, but deliberately stay OFF the Active Orderbook —
@@ -111,12 +111,14 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
     });
     const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!res.ok || !body.ok) {
-      window.alert(body.error ?? `Failed to ${toStatus === "executed" ? "book orders" : "cancel"}.`);
+      window.alert(
+        body.error ?? `Failed to ${toStatus === "executed" ? "release to the Rebalance tab" : "cancel"}.`,
+      );
     }
     await Promise.all([approvedQuery.refresh(), executedQuery.refresh()]);
   }
 
-  async function bookOrders(id: string) {
+  async function releaseToRebalanceTab(id: string) {
     setBookingId(id);
     try {
       await transition(id, "executed");
@@ -126,7 +128,8 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   }
 
   async function cancelProposal(id: string) {
-    if (!window.confirm("Cancel this IC-approved rebalance? No orders will be booked.")) return;
+    if (!window.confirm("Cancel this IC-approved rebalance? It will not be released to the Rebalance tab."))
+      return;
     setCancellingId(id);
     try {
       await transition(id, "cancelled");
@@ -152,13 +155,15 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card/40">
       <div className="border-b border-border px-4 py-3">
-        <h2 className="text-xs font-semibold uppercase text-muted-foreground">Ready to Book Orders</h2>
+        <h2 className="text-xs font-semibold uppercase text-muted-foreground">
+          Ready to Release to Rebalance Tab
+        </h2>
       </div>
       {approvedQuery.loading ? (
         <div className="px-4 py-8 text-center text-xs text-muted-foreground">Loading approvals...</div>
       ) : pending.length === 0 ? (
         <div className="px-4 py-6 text-center text-xs text-muted-foreground">
-          No IC-approved rebalances awaiting order booking.
+          No IC-approved rebalances awaiting release.
         </div>
       ) : (
         <div className="divide-y divide-border/50">
@@ -201,10 +206,10 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() => bookOrders(r.id)}
+                      onClick={() => releaseToRebalanceTab(r.id)}
                       disabled={bookingId === r.id || cancellingId === r.id}
                     >
-                      {bookingId === r.id ? "Booking..." : "Book Orders"}
+                      {bookingId === r.id ? "Releasing..." : "Release to Rebalance Tab"}
                     </Button>
                   </div>
                 </div>
@@ -224,12 +229,12 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
         onClick={() => setShowHistory((v) => !v)}
       >
         <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", showHistory && "rotate-90")} />
-        Booked ({history.length})
+        On Rebalance Tab ({history.length})
       </button>
       {showHistory ? (
         <div className="divide-y divide-border/50 border-t border-border/40">
           {history.length === 0 ? (
-            <div className="px-4 py-4 text-center text-xs text-muted-foreground">Nothing booked yet.</div>
+            <div className="px-4 py-4 text-center text-xs text-muted-foreground">Nothing released yet.</div>
           ) : (
             history.map((r) => (
               <BookedRebalanceRow
@@ -284,7 +289,9 @@ function BookedRebalanceRow({
           <span className="truncate">Rebalance · {r.strategy_id}</span>
         </button>
         <div className="flex items-center gap-2">
-          <Badge variant={released ? "success" : "outline"}>{released ? "In Order Book" : "Booked"}</Badge>
+          <Badge variant={released ? "success" : "outline"}>
+            {released ? "In Order Book" : "On Rebalance Tab"}
+          </Badge>
           <span className="text-[11px] text-muted-foreground">
             {r.executed_at ? new Date(r.executed_at).toLocaleString("en-ZA") : "—"}
           </span>

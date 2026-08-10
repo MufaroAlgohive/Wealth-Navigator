@@ -3243,13 +3243,14 @@ function ProposalsList({
                         disabled={!canPush || pushingId === r.id || cancellingId === r.id}
                         className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
                       >
-                        <Rocket className="h-3.5 w-3.5" /> {pushingId === r.id ? "Booking…" : "Book Orders"}
+                        <Rocket className="h-3.5 w-3.5" />{" "}
+                        {pushingId === r.id ? "Releasing…" : "Release to Rebalance Tab"}
                       </button>
                     </>
                   )}
                   {r.status === "executed" && (
                     <span className="text-xs text-muted-foreground">
-                      Booked — send to order book from the Order Book page's Rebalances tab
+                      Released to Rebalance tab — send to order book from there
                     </span>
                   )}
                 </div>

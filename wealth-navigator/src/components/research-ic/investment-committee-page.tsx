@@ -443,7 +443,7 @@ export function InvestmentCommitteePage({
             className="scroll-mt-32"
           >
             <CollapsibleCard
-              title={`Approved — ready for order book · ${approvedReqs.length}`}
+              title={`Approved — ready for Rebalance tab · ${approvedReqs.length}`}
               dataSource="supabase"
               db="institutional"
               open={!!openSections.approved}
@@ -1110,7 +1110,15 @@ function ApprovedItem({
   async function release() {
     setBusy(true);
     try {
-      await fetch(`/api/rebalance/requests/${req.id}/push`, { method: "POST" });
+      const res = await fetch(`/api/rebalance/requests/${req.id}/transition`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to_status: "executed" }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        window.alert(body.error ?? "Failed to release to the Rebalance tab.");
+      }
       onChanged();
     } finally {
       setBusy(false);
@@ -1132,7 +1140,7 @@ function ApprovedItem({
           onClick={release}
           className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
         >
-          <Rocket className="h-3.5 w-3.5" /> {busy ? "Releasing…" : "Release to Order Book"}
+          <Rocket className="h-3.5 w-3.5" /> {busy ? "Releasing…" : "Release to Rebalance Tab"}
         </button>
       </div>
       <CompositionTable rows={rows} />
