@@ -13,21 +13,25 @@ import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } f
  *
  *   pending      → ic_approved | rejected   (requires `rebalance.approve_rebalance`)
  *   pending      → cancelled                (requester or dev)
+ *   ic_approved  → executed                 (requires `rebalance.approve_rebalance`) — "Send to Order Book"
  *   ic_approved  → cancelled                (requester or dev)
  *
- * This is the missing link between the Rebalance Builder ("Submit to IC" →
- * status='pending') and the push endpoint (which requires status='ic_approved'
- * before it will write orders). `executed` is reached only via the push route,
- * never here.
+ * `ic_approved` is a pure decision — nothing is written anywhere yet, so an
+ * admin can see exactly what's about to change (on the Rebalances tab) before
+ * committing to it. `executed` is the actual "Send to Order Book" action: this
+ * is the one moment parked clients' holdings get repositioned and settled
+ * clients get their delta orders booked (see reconcileParkedHoldings /
+ * bookSettledRebalanceOrders below) — real broker dispatch from there is a
+ * separate, still-disabled step (requests/[id]/push/route.ts).
  *
- * Body: `{ to_status: "ic_approved" | "rejected" | "cancelled", reason?: string }`.
+ * Body: `{ to_status: "ic_approved" | "executed" | "rejected" | "cancelled", reason?: string }`.
  */
 
 export const dynamic = "force-dynamic";
 
 const ALLOWED: Record<string, ReadonlyArray<string>> = {
   pending: ["ic_approved", "rejected", "cancelled"],
-  ic_approved: ["cancelled"],
+  ic_approved: ["executed", "cancelled"],
   rejected: [],
   executed: [],
   cancelled: [],
@@ -54,9 +58,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
   const toStatus = typeof body.to_status === "string" ? body.to_status : "";
-  if (!toStatus || !["ic_approved", "rejected", "cancelled"].includes(toStatus)) {
+  if (!toStatus || !["ic_approved", "executed", "rejected", "cancelled"].includes(toStatus)) {
     return NextResponse.json(
-      { ok: false, error: "to_status must be one of: ic_approved, rejected, cancelled" },
+      { ok: false, error: "to_status must be one of: ic_approved, executed, rejected, cancelled" },
       { status: 400 },
     );
   }
@@ -96,12 +100,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
-  // ic_approved / rejected are IC decisions — gated on the approve permission.
-  // cancelled can be done by the requester (or dev) to withdraw their own proposal.
+  // ic_approved / executed / rejected are IC/desk decisions — gated on the
+  // approve permission. cancelled can be done by the requester (or dev) to
+  // withdraw their own proposal.
   const isRequester = auth.ctx.email.toLowerCase() === String(request.requested_by ?? "").toLowerCase();
   const isDev = auth.ctx.approverTier === "dev";
   if (
-    (toStatus === "ic_approved" || toStatus === "rejected") &&
+    (toStatus === "ic_approved" || toStatus === "executed" || toStatus === "rejected") &&
     !can(auth.ctx, "rebalance", "approve_rebalance")
   ) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
@@ -115,22 +120,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const { data, error } = await db
     .from("rebalance_request_c")
-    .update({ status: toStatus, updated_at: new Date().toISOString() })
+    .update({
+      status: toStatus,
+      updated_at: new Date().toISOString(),
+      ...(toStatus === "executed" ? { executed_at: new Date().toISOString() } : {}),
+    })
     .eq("id", id)
     .select()
     .maybeSingle();
 
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
 
-  // IC approval is the point this rebalance becomes a real decision — even
-  // though real broker dispatch is a separate, still-disabled step (see
-  // requests/[id]/push/route.ts), any client whose buy into this strategy
-  // hasn't been sent to the broker yet should stop being stale the moment
-  // the decision is made, not wait for execution to land. Best-effort: a
-  // failure here doesn't block the IC transition itself, it's just reported.
+  // "Send to Order Book" (ic_approved -> executed) is the one moment this
+  // rebalance actually touches anything — any client whose buy into this
+  // strategy hasn't been sent to the broker yet gets repositioned for free,
+  // and settled clients get their delta orders booked. Best-effort: a
+  // failure here doesn't block the transition itself, it's just reported.
   let parked: { reconciledUserIds: string[]; errors: string[] } | null = null;
   let booked: { bookedUserIds: string[]; errors: string[] } | null = null;
-  if (toStatus === "ic_approved" && request.strategy_id) {
+  if (toStatus === "executed" && request.strategy_id) {
     // rebalance_request_c.strategy_id actually stores the strategy's
     // display NAME (see rebalance-builder-page.tsx::submitToIc), not its
     // real id — stock_holdings_c.strategy_id is the real id. Resolve it so

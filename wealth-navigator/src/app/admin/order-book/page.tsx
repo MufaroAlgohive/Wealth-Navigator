@@ -6,6 +6,7 @@ import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-boo
 import { CancelledOrders } from "@/components/admin/order-book/cancelled-orders";
 import { ClosedBooks } from "@/components/admin/order-book/closed-books";
 import { ExecutionView } from "@/components/admin/order-book/execution-view";
+import { PendingRebalanceSends } from "@/components/admin/order-book/pending-rebalance-sends";
 import { RebalanceBooks } from "@/components/admin/order-book/rebalance-books";
 import { StrateBir } from "@/components/admin/order-book/strate-bir";
 import { UatBanner } from "@/components/admin/order-book/uat-banner";
@@ -120,6 +121,7 @@ export default function OrderBookPage() {
                 Environment: {activeEnvironment === "uat" ? "UAT" : "LIVE"}
               </Button>
             </div>
+            <PendingRebalanceSends scope={activeEnvironment} />
             <RebalanceBooks scope={activeEnvironment} />
           </TabsContent>
         ) : tab === "strate-bir" ? (
