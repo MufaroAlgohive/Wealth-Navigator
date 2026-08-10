@@ -75,10 +75,17 @@ export async function reconcileParkedHoldings(
   currentComposition: ProposedLine[],
   proposedComposition: ProposedLine[],
   rebalanceRequestId?: string,
+  isUatStrategy?: boolean,
 ): Promise<ReconcileParkedResult> {
   const result: ReconcileParkedResult = { reconciledUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
-  const IS_UAT = isUatEnv();
+  // Whether THIS strategy is UAT/test drives the broker destination and the
+  // uat_test tag — not a blanket server-wide flag. A UAT strategy's orders
+  // must show under "UAT orders" on Active Orderbook regardless of what
+  // IRESS_UAT_MODE happens to be set to on this deployment. Falls back to
+  // the server-wide flag only if the caller couldn't resolve the strategy's
+  // own environment.
+  const IS_UAT = isUatStrategy ?? isUatEnv();
   const BROKER = IS_UAT
     ? process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE"
     : process.env.IRESS_DESTINATION?.trim() || "LONGMARK CARE";

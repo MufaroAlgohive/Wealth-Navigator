@@ -58,10 +58,14 @@ export async function bookSettledRebalanceOrders(
   currentComposition: ProposedLine[],
   proposedComposition: ProposedLine[],
   rebalanceRequestId?: string,
+  isUatStrategy?: boolean,
 ): Promise<BookSettledResult> {
   const result: BookSettledResult = { bookedUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
-  const IS_UAT = isUatEnv();
+  // Whether THIS strategy is UAT/test drives the broker destination and the
+  // uat_test tag — not a blanket server-wide flag (see
+  // reconcile-parked-holdings.ts for the full rationale).
+  const IS_UAT = isUatStrategy ?? isUatEnv();
   const BROKER = IS_UAT
     ? process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE"
     : process.env.IRESS_DESTINATION?.trim() || "LONGMARK CARE";

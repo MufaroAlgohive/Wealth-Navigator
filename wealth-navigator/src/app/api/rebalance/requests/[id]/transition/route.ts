@@ -150,10 +150,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const strategyName = request.strategy_id as string;
     const strategyRes = await retailDb
       .from("strategies_c")
-      .select("id")
+      .select("id, investor_environment")
       .eq("name", strategyName)
       .maybeSingle();
     const resolvedStrategyId = (strategyRes.data?.id as string) ?? "";
+    // Drives the uat_test tag and broker destination on every order booked
+    // below — a UAT/test strategy's orders must show under "UAT orders" on
+    // Active Orderbook regardless of this deployment's own env flag.
+    const isUatStrategy = String(strategyRes.data?.investor_environment ?? "").toUpperCase() === "UAT";
     const currentComposition = Array.isArray(request.current_composition) ? request.current_composition : [];
     const proposedComposition = Array.isArray(request.proposed_composition)
       ? request.proposed_composition
@@ -168,6 +172,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         currentComposition,
         proposedComposition,
         id,
+        isUatStrategy,
       );
     } catch (err) {
       parked = { reconciledUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
@@ -186,6 +191,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         currentComposition,
         proposedComposition,
         id,
+        isUatStrategy,
       );
     } catch (err) {
       booked = { bookedUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
