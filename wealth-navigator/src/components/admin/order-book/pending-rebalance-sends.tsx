@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, Send } from "lucide-react";
+import { ChevronRight, Rocket } from "lucide-react";
 import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -11,16 +11,23 @@ import { usePolling } from "@/lib/hooks/use-polling";
 /**
  * A rebalance's IC approval (`ic_approved`) is a pure decision — nothing has
  * been written anywhere yet, so an admin can see exactly what's about to
- * change before it does. This panel is that review surface: it lists
- * `rebalance_request_c` rows waiting to be sent, and a short recent history
- * of ones already sent. Clicking "Send to Order Book" fires the transition
- * that actually reprices parked clients and books settled clients' delta
- * orders (see requests/[id]/transition/route.ts, toStatus="executed").
+ * change before it does. This panel is the review surface, entirely native
+ * to this app's own `rebalance_request_c` queue — deliberately separate
+ * from `RebalanceBooks` below it, which reads CRM's own read-only
+ * `rebalance_batch`/`rebalance_event` tables.
  *
- * Deliberately separate from `RebalanceBooks` below it on this tab — that
- * component reads CRM's own `rebalance_batch`/`rebalance_event` tables and
- * this app has no write access to them; this one is native to this app's own
- * `rebalance_request_c` queue and never touches CRM's tables.
+ * Three stages, each an explicit action — nothing ever "hits the order
+ * book" as a side effect of an earlier one:
+ *   1. ic_approved  — pure decision, nothing written yet.
+ *   2. "Book Orders" (-> executed) — reconcileParkedHoldings /
+ *      bookSettledRebalanceOrders run, parking real orders in
+ *      oems_order_audit tagged source="PAPER_MODEL_REBALANCE". These orders
+ *      exist for real now, but deliberately stay OFF the Active Orderbook —
+ *      they only show up right here, expanded under the executed row.
+ *   3. "Send to Order Book" (release-to-orderbook route) — flips those
+ *      orders' source to MINT_CLIENT_ORDER, the same bucket a normal app
+ *      order lives in. Only from this point on do they appear on Active
+ *      Orderbook and become sendable to market.
  */
 
 interface ProposedLine {
@@ -42,6 +49,16 @@ interface Strategy {
   name: string;
   investorEnvironment?: "LIVE" | "UAT";
 }
+interface BookedOrder {
+  id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  price_cents: number | null;
+  status: string;
+  source: string;
+  client_account: string | null;
+}
 
 function summarizeChanges(lines: ProposedLine[]): string {
   const changed = lines.filter((l) => l.action && l.action !== "hold");
@@ -55,9 +72,11 @@ function summarizeChanges(lines: ProposedLine[]): string {
 }
 
 export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "uat" }) {
-  const [sendingId, setSendingId] = React.useState<string | null>(null);
+  const [bookingId, setBookingId] = React.useState<string | null>(null);
   const [cancellingId, setCancellingId] = React.useState<string | null>(null);
+  const [releasingId, setReleasingId] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+  const [expandedHistory, setExpandedHistory] = React.useState<Set<string>>(new Set());
   const [showHistory, setShowHistory] = React.useState(false);
 
   const strategiesQuery = usePolling<{ strategies?: Strategy[] }>("/api/strategies", {
@@ -75,7 +94,7 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   );
   const executedQuery = usePolling<{ requests?: RebalanceRequestRow[] }>(
     "/api/rebalance/requests?status=executed",
-    { interval: 30_000 },
+    { interval: 15_000 },
   );
 
   const inScope = (r: RebalanceRequestRow) =>
@@ -92,22 +111,22 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
     });
     const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!res.ok || !body.ok) {
-      window.alert(body.error ?? `Failed to ${toStatus === "executed" ? "send to order book" : "cancel"}.`);
+      window.alert(body.error ?? `Failed to ${toStatus === "executed" ? "book orders" : "cancel"}.`);
     }
     await Promise.all([approvedQuery.refresh(), executedQuery.refresh()]);
   }
 
-  async function sendToOrderBook(id: string) {
-    setSendingId(id);
+  async function bookOrders(id: string) {
+    setBookingId(id);
     try {
       await transition(id, "executed");
     } finally {
-      setSendingId(null);
+      setBookingId(null);
     }
   }
 
   async function cancelProposal(id: string) {
-    if (!window.confirm("Cancel this IC-approved rebalance? It will not be sent to the order book.")) return;
+    if (!window.confirm("Cancel this IC-approved rebalance? No orders will be booked.")) return;
     setCancellingId(id);
     try {
       await transition(id, "cancelled");
@@ -116,16 +135,30 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
     }
   }
 
+  async function releaseToOrderBook(id: string) {
+    setReleasingId(id);
+    try {
+      const res = await fetch(`/api/rebalance/requests/${id}/release-to-orderbook`, { method: "POST" });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        window.alert(body.error ?? "Failed to send to order book.");
+      }
+      await executedQuery.refresh();
+    } finally {
+      setReleasingId(null);
+    }
+  }
+
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card/40">
       <div className="border-b border-border px-4 py-3">
-        <h2 className="text-xs font-semibold uppercase text-muted-foreground">Ready to Send to Order Book</h2>
+        <h2 className="text-xs font-semibold uppercase text-muted-foreground">Ready to Book Orders</h2>
       </div>
       {approvedQuery.loading ? (
         <div className="px-4 py-8 text-center text-xs text-muted-foreground">Loading approvals...</div>
       ) : pending.length === 0 ? (
         <div className="px-4 py-6 text-center text-xs text-muted-foreground">
-          No IC-approved rebalances awaiting Send to Order Book.
+          No IC-approved rebalances awaiting order booking.
         </div>
       ) : (
         <div className="divide-y divide-border/50">
@@ -161,18 +194,17 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                       size="sm"
                       variant="outline"
                       onClick={() => cancelProposal(r.id)}
-                      disabled={cancellingId === r.id || sendingId === r.id}
+                      disabled={cancellingId === r.id || bookingId === r.id}
                     >
                       {cancellingId === r.id ? "Cancelling..." : "Cancel"}
                     </Button>
                     <Button
                       type="button"
                       size="sm"
-                      onClick={() => sendToOrderBook(r.id)}
-                      disabled={sendingId === r.id || cancellingId === r.id}
+                      onClick={() => bookOrders(r.id)}
+                      disabled={bookingId === r.id || cancellingId === r.id}
                     >
-                      <Send className="mr-1.5 h-3.5 w-3.5" />
-                      {sendingId === r.id ? "Sending..." : "Send to Order Book"}
+                      {bookingId === r.id ? "Booking..." : "Book Orders"}
                     </Button>
                   </div>
                 </div>
@@ -192,24 +224,107 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
         onClick={() => setShowHistory((v) => !v)}
       >
         <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", showHistory && "rotate-90")} />
-        Recently sent ({history.length})
+        Booked ({history.length})
       </button>
       {showHistory ? (
         <div className="divide-y divide-border/50 border-t border-border/40">
           {history.length === 0 ? (
-            <div className="px-4 py-4 text-center text-xs text-muted-foreground">Nothing sent yet.</div>
+            <div className="px-4 py-4 text-center text-xs text-muted-foreground">Nothing booked yet.</div>
           ) : (
             history.map((r) => (
-              <div key={r.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-                <span className="text-xs font-medium">Rebalance · {r.strategy_id}</span>
-                <div className="flex items-center gap-2">
-                  <Badge variant="success">Sent</Badge>
-                  <span className="text-[11px] text-muted-foreground">
-                    {r.executed_at ? new Date(r.executed_at).toLocaleString("en-ZA") : "—"}
-                  </span>
-                </div>
-              </div>
+              <BookedRebalanceRow
+                key={r.id}
+                r={r}
+                open={expandedHistory.has(r.id)}
+                onToggle={() =>
+                  setExpandedHistory((current) => {
+                    const next = new Set(current);
+                    if (next.has(r.id)) next.delete(r.id);
+                    else next.add(r.id);
+                    return next;
+                  })
+                }
+                releasing={releasingId === r.id}
+                onRelease={() => releaseToOrderBook(r.id)}
+              />
             ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BookedRebalanceRow({
+  r,
+  open,
+  onToggle,
+  releasing,
+  onRelease,
+}: {
+  r: RebalanceRequestRow;
+  open: boolean;
+  onToggle: () => void;
+  releasing: boolean;
+  onRelease: () => void;
+}) {
+  const ordersQuery = usePolling<{ orders?: BookedOrder[] }>(`/api/rebalance/requests/${r.id}/orders`, {
+    interval: open ? 10_000 : 60_000,
+    query: { enabled: open },
+  });
+  const orders = ordersQuery.data?.orders ?? [];
+  const stillParked = orders.filter((o) => o.source === "PAPER_MODEL_REBALANCE" && o.status === "parked");
+  const released = orders.length > 0 && stillParked.length === 0;
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
+        <button type="button" className="flex min-w-0 items-center gap-2 text-left text-xs font-medium" onClick={onToggle}>
+          <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+          <span className="truncate">Rebalance · {r.strategy_id}</span>
+        </button>
+        <div className="flex items-center gap-2">
+          <Badge variant={released ? "success" : "outline"}>{released ? "In Order Book" : "Booked"}</Badge>
+          <span className="text-[11px] text-muted-foreground">
+            {r.executed_at ? new Date(r.executed_at).toLocaleString("en-ZA") : "—"}
+          </span>
+          {!released && stillParked.length > 0 ? (
+            <Button type="button" size="sm" onClick={onRelease} disabled={releasing}>
+              <Rocket className="mr-1.5 h-3.5 w-3.5" />
+              {releasing ? "Sending..." : "Send to Order Book"}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      {open ? (
+        <div className="overflow-x-auto border-t border-border/40 px-4 py-2">
+          {ordersQuery.loading ? (
+            <p className="text-[11px] text-muted-foreground">Loading orders...</p>
+          ) : orders.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">No orders booked for this rebalance.</p>
+          ) : (
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-left text-[10px] uppercase text-muted-foreground">
+                  <th className="py-1 pr-3">Client</th>
+                  <th className="py-1 pr-3">Symbol</th>
+                  <th className="py-1 pr-3">Side</th>
+                  <th className="py-1 pr-3 text-right">Qty</th>
+                  <th className="py-1 pr-3">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map((o) => (
+                  <tr key={o.id} className="border-t border-border/30">
+                    <td className="py-1.5 pr-3 font-medium">{o.client_account ?? "—"}</td>
+                    <td className="py-1.5 pr-3">{o.symbol}</td>
+                    <td className="py-1.5 pr-3 uppercase">{o.side}</td>
+                    <td className="py-1.5 pr-3 text-right">{o.quantity}</td>
+                    <td className="py-1.5 pr-3">{o.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       ) : null}

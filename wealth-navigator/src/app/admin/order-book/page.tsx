@@ -84,23 +84,20 @@ export default function OrderBookPage() {
             </div>
             <ExecutionView
               key={`orderbook-active-${activeEnvironment}`}
-              sources={
-                activeEnvironment === "uat"
-                  ? ["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER", "PAPER_MODEL_REBALANCE"]
-                  : ["MINT_CLIENT_ORDER", "PAPER_MODEL_REBALANCE"]
-              }
+              sources={activeEnvironment === "uat" ? ["UAT_ADHOC_ORDER", "MINT_CLIENT_ORDER"] : ["MINT_CLIENT_ORDER"]}
               scope={activeEnvironment}
             />
             {/* The archive is shared across order-entry lanes. Older books and
                 releases made through the desk/UAT routes do not carry the
                 MINT_CLIENT_ORDER source, so filtering here can hide the only
-                place from which an admin can close them. */}
+                place from which an admin can close them.
+                Note: PAPER_MODEL_REBALANCE deliberately does NOT appear here —
+                a booked rebalance order stays on the Rebalances tab until an
+                admin explicitly releases it (release-to-orderbook/route.ts),
+                which flips its source to MINT_CLIENT_ORDER so it then shows
+                up here like any other app order. */}
             <ActiveOrderBooks
-              sources={
-                activeEnvironment === "uat"
-                  ? ["UAT_ADHOC_ORDER", "CRM_UAT", "PAPER_MODEL_REBALANCE"]
-                  : ["MINT_CLIENT_ORDER", "CRM_LIVE", "PAPER_MODEL_REBALANCE"]
-              }
+              sources={activeEnvironment === "uat" ? ["UAT_ADHOC_ORDER", "CRM_UAT"] : ["MINT_CLIENT_ORDER", "CRM_LIVE"]}
             />
           </TabsContent>
         ) : tab === "rebalances" ? (

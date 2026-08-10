@@ -3110,10 +3110,18 @@ function ProposalsList({
   const requests = q.data?.requests ?? []; // show all; the status chip differentiates
   const codes = rebalanceCodeMap(requests);
 
-  async function push(id: string) {
+  async function bookOrders(id: string) {
     setPushingId(id);
     try {
-      await fetch(`/api/rebalance/requests/${id}/push`, { method: "POST" });
+      const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to_status: "executed" }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        window.alert(body.error ?? "Failed to book orders.");
+      }
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
     } finally {
       setPushingId(null);
@@ -3189,15 +3197,18 @@ function ProposalsList({
                   {r.status === "ic_approved" && (
                     <button
                       type="button"
-                      onClick={() => push(r.id)}
+                      onClick={() => bookOrders(r.id)}
                       disabled={!canPush || pushingId === r.id}
                       className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
                     >
-                      <Rocket className="h-3.5 w-3.5" />{" "}
-                      {pushingId === r.id ? "Sending…" : "Send to Order Book"}
+                      <Rocket className="h-3.5 w-3.5" /> {pushingId === r.id ? "Booking…" : "Book Orders"}
                     </button>
                   )}
-                  {r.status === "executed" && <span className="text-xs text-muted-foreground">Executed</span>}
+                  {r.status === "executed" && (
+                    <span className="text-xs text-muted-foreground">
+                      Booked — send to order book from the Order Book page's Rebalances tab
+                    </span>
+                  )}
                 </div>
               </div>
             );
