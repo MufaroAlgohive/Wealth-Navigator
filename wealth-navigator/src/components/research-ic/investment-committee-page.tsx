@@ -202,6 +202,9 @@ export function InvestmentCommitteePage({
     .slice(0, 6);
 
   const agendaCount = agendaNotes.length + pendingReqs.length;
+  const [agendaFilter, setAgendaFilter] = React.useState<"all" | "research" | "rebalance">("all");
+  const visibleReqs = agendaFilter === "research" ? [] : pendingReqs;
+  const visibleNotes = agendaFilter === "rebalance" ? [] : agendaNotes;
   const rebCodes = rebalanceCodeMap(requests);
   const [checks, setChecks] = React.useState<boolean[]>(CHECKLIST.map((_, i) => i < 3));
 
@@ -353,13 +356,54 @@ export function InvestmentCommitteePage({
                   : null
               }
             >
+              {agendaCount > 0 ? (
+                <div className="mb-3 inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--background)/0.6)] p-1">
+                  {(
+                    [
+                      { id: "all", label: "All", count: agendaCount },
+                      { id: "research", label: "Research", count: agendaNotes.length },
+                      { id: "rebalance", label: "Rebalance", count: pendingReqs.length },
+                    ] as const
+                  ).map((f) => {
+                    const isActive = agendaFilter === f.id;
+                    return (
+                      <button
+                        key={f.id}
+                        type="button"
+                        onClick={() => setAgendaFilter(f.id)}
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+                          isActive
+                            ? "bg-primary/15 text-primary"
+                            : "text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] hover:text-foreground",
+                        )}
+                        aria-pressed={isActive}
+                      >
+                        {f.label}
+                        <span
+                          className={cn(
+                            "rounded-full px-1.5 py-0.5 text-[9px] font-semibold tabular-nums",
+                            isActive
+                              ? "bg-primary/25 text-primary"
+                              : "bg-[hsl(var(--foreground)/0.08)] text-muted-foreground",
+                          )}
+                        >
+                          {f.count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
               {agendaCount === 0 ? (
                 <p className="text-caption">
                   Nothing on the agenda. Submitted proposals and notes appear here.
                 </p>
+              ) : visibleReqs.length === 0 && visibleNotes.length === 0 ? (
+                <p className="text-caption">Nothing matches this filter.</p>
               ) : (
                 <div className="space-y-4">
-                  {pendingReqs.map((r) => (
+                  {visibleReqs.map((r) => (
                     <RebalanceAgendaItem
                       key={r.id}
                       req={r}
@@ -374,7 +418,7 @@ export function InvestmentCommitteePage({
                       isTestStrategy={testStrategyNames.has(r.strategy_id)}
                     />
                   ))}
-                  {agendaNotes.map((n) => (
+                  {visibleNotes.map((n) => (
                     <ResearchAgendaItem
                       key={n.id}
                       note={n}
