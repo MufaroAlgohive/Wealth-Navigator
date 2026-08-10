@@ -258,6 +258,7 @@ export async function bookSettledRebalanceOrders(
               uat_test: IS_UAT,
               broker_account_code: ACCOUNT_CODE,
               rebalance_request_id: rebalanceRequestId ?? null,
+              client_treatment: "settled",
             },
             result_payload: {
               tif: "DAY",
@@ -305,6 +306,7 @@ export async function bookSettledRebalanceOrders(
               uat_test: IS_UAT,
               broker_account_code: ACCOUNT_CODE,
               rebalance_request_id: rebalanceRequestId ?? null,
+              client_treatment: "settled",
             },
             result_payload: {
               tif: "DAY",

@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
+import { settleRebalanceCashForClients } from "@/lib/rebalance/settle-rebalance-cash";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { observedFillFromAudit, settleFill } from "@workers/iress-ingest/src/settlement";
 
@@ -201,6 +202,15 @@ async function settleUatSellFill(
       ok: false,
       error: "could not derive a settleable fill from this order",
     };
+  }
+  // A rebalance sell's proceeds fund the rebalance's own buys — it's an
+  // internal swap, not a withdrawal. The wallet must not be credited
+  // directly here; settleRebalanceCashForClients (called once the whole
+  // rebalance is done) applies the real proceeds bridge instead — fees drawn
+  // from the 8% execution reserve, any genuine leftover becoming residual
+  // cash. Only the lot mechanics (FIFO close/split, cost basis) run here.
+  if (typeof payload.rebalance_request_id === "string" && payload.rebalance_request_id) {
+    fill.skipCashMovement = true;
   }
 
   try {
@@ -466,10 +476,17 @@ export async function POST(req: Request) {
   const completions =
     retailDb && rebalanceIds.size > 0
       ? await Promise.all(
-          [...rebalanceIds].map(async (rid) => ({
-            rebalance_request_id: rid,
-            ...(await maybeCompleteRebalance(retailDb as SupabaseClient, db, rid)),
-          })),
+          [...rebalanceIds].map(async (rid) => {
+            const outcome = await maybeCompleteRebalance(retailDb as SupabaseClient, db, rid);
+            // Settled clients' cash economics (reserve-funded fees, residual
+            // leftover) only make sense once the whole rebalance — every
+            // leg, every client — has actually finished, same trigger as the
+            // model flip above.
+            const cash = outcome.completed
+              ? await settleRebalanceCashForClients(retailDb as SupabaseClient, db, rid)
+              : null;
+            return { rebalance_request_id: rid, ...outcome, cashSettlement: cash };
+          }),
         )
       : [];
 

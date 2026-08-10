@@ -269,6 +269,7 @@ export async function reconcileParkedHoldings(
                     ...(auditRes.data.payload as Record<string, unknown>),
                     limitPrice: priceCents / 100,
                     rebalance_request_id: rebalanceRequestId ?? null,
+                    client_treatment: "parked",
                   },
                   updated_at: new Date().toISOString(),
                 })
@@ -328,6 +329,7 @@ export async function reconcileParkedHoldings(
                 uat_test: IS_UAT,
                 broker_account_code: ACCOUNT_CODE,
                 rebalance_request_id: rebalanceRequestId ?? null,
+                client_treatment: "parked",
               },
               result_payload: {
                 tif: "DAY",

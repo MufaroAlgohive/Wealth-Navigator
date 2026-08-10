@@ -78,6 +78,18 @@ export interface ObservedFill {
    * position. The client holds 40 shares nobody bought.
    */
   orderedQty: number;
+  /**
+   * This fill's cash leg is settled elsewhere, not by moving `wallets.balance`
+   * directly — e.g. a rebalance swap, where a sell's proceeds fund the
+   * paired buys and only the net leftover (after fees drawn from the 8%
+   * execution reserve) becomes residual cash inside the strategy, never a
+   * raw wallet credit/debit. Lot mechanics (open, close, FIFO split, cost
+   * basis) are completely unaffected — this only skips the wallet UPDATE and
+   * keeps the settlement ledger's cash total at what it already was, so nothing
+   * about quantity idempotency changes either. Defaults to false: every
+   * existing caller (real IRESS fills) is completely unaffected.
+   */
+  skipCashMovement?: boolean;
 }
 
 /** What a settlement would do, or did. Amounts in the units named. */
@@ -861,27 +873,31 @@ export async function settleFill(deps: SettlementDeps, fill: ObservedFill): Prom
     return { plan, applied: true, dryRun: false, error: null };
   }
 
-  const { data: moved, error: walletErr } = await deps.retail
-    .from("wallets")
-    .update({ balance: plan.walletAfter, updated_at: nowIso })
-    // Primary key, not user_id — a user can have two wallet rows.
-    .eq("id", plan.walletId)
-    // Optimistic concurrency: refuse if anything moved the balance since we planned.
-    .eq("balance", plan.walletBefore)
-    .select("id");
-  if (walletErr) return abort(`wallet update failed: ${walletErr.message}`);
-  if (!moved || moved.length === 0) {
-    return abort("wallet balance changed between plan and apply — retrying next cycle");
+  if (!fill.skipCashMovement) {
+    const { data: moved, error: walletErr } = await deps.retail
+      .from("wallets")
+      .update({ balance: plan.walletAfter, updated_at: nowIso })
+      // Primary key, not user_id — a user can have two wallet rows.
+      .eq("id", plan.walletId)
+      // Optimistic concurrency: refuse if anything moved the balance since we planned.
+      .eq("balance", plan.walletBefore)
+      .select("id");
+    if (walletErr) return abort(`wallet update failed: ${walletErr.message}`);
+    if (!moved || moved.length === 0) {
+      return abort("wallet balance changed between plan and apply — retrying next cycle");
+    }
   }
 
   // ---- CONFIRM. -----------------------------------------------------------
+  // skipCashMovement: the cash total stays at whatever it already was — the
+  // wallet was never touched, so nothing here should claim it was.
   await deps.institutional
     .from("oems_fill_settlement_c")
     .update({
       last_error: null,
       holding_ids: touchedHoldingIds,
       settled_qty: plan.alreadySettledQty + appliedQty,
-      settled_cash_rands: plan.settledCashAfter,
+      settled_cash_rands: fill.skipCashMovement ? plan.alreadySettledCash : plan.settledCashAfter,
       last_settled_at: nowIso,
     })
     .eq("order_id", plan.orderId);
@@ -895,9 +911,10 @@ export async function settleFill(deps: SettlementDeps, fill: ObservedFill): Prom
       symbol: plan.symbol,
       qty: plan.deltaQty,
       avgFillRands: plan.avgFillCents / 100,
-      cashDeltaRands: plan.cashDeltaRands,
-      walletBefore: plan.walletBefore,
-      walletAfter: plan.walletAfter,
+      cashSettledElsewhere: fill.skipCashMovement === true,
+      cashDeltaRands: fill.skipCashMovement ? 0 : plan.cashDeltaRands,
+      walletBefore: fill.skipCashMovement ? null : plan.walletBefore,
+      walletAfter: fill.skipCashMovement ? null : plan.walletAfter,
       holdings: touchedHoldingIds,
     }),
   );
