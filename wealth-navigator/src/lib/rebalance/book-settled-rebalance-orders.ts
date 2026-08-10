@@ -15,12 +15,16 @@ import { type ModelUnitAction, calculateModelUnitImpact, fullModelLots } from ".
  * is allowed to touch stock_holdings_c.
  *
  * Leg immutability: an increase never rewrites the client's existing filled
- * row. It inserts a brand-new, separate row (Fill_date=null, quantity=delta
- * only) and parks a BUY against THAT row's id — the live filled leg is never
- * touched, matching the no-retroactive-cost-basis-rewrite principle CRM uses
- * for its own rebalances. A decrease/removal parks a SELL referencing the
- * EXISTING filled holding's id directly; the holding itself isn't touched
- * until that sell actually fills.
+ * row. It inserts a brand-new, separate row (Fill_date=null, quantity=0 as a
+ * placeholder) and parks a BUY against THAT row's id — the live filled leg is
+ * never touched, matching the no-retroactive-cost-basis-rewrite principle CRM
+ * uses for its own rebalances. The placeholder's quantity only becomes the
+ * real delta once the order fills, same as a parked client's reposition
+ * (reconcile-parked-holdings.ts) — a client shouldn't see their numbers move
+ * before someone else's identical delta has filled just because theirs
+ * happened to be a brand-new row instead of an in-place edit. A
+ * decrease/removal parks a SELL referencing the EXISTING filled holding's id
+ * directly; the holding itself isn't touched until that sell actually fills.
  *
  * No fees, no reserve/residual changes happen here — a parked order that
  * hasn't filled hasn't cost anything yet. Fee/residual accounting for a
@@ -53,6 +57,7 @@ export async function bookSettledRebalanceOrders(
   strategyName: string | null,
   currentComposition: ProposedLine[],
   proposedComposition: ProposedLine[],
+  rebalanceRequestId?: string,
 ): Promise<BookSettledResult> {
   const result: BookSettledResult = { bookedUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
@@ -201,12 +206,14 @@ export async function bookSettledRebalanceOrders(
         if (deltaQty > 0) {
           if (!security) continue;
           const sourceRow = rows[0];
+          // Placeholder row: quantity 0 until this order actually fills (see
+          // file docstring) — the fill path writes the real delta then.
           const insertedRes = await db
             .from("stock_holdings_c")
             .insert({
               user_id: userId,
               security_id: security.id,
-              quantity: deltaQty,
+              quantity: 0,
               strategy_id: strategyId,
               strategy_name_snapshot: strategyName,
               transaction_id: sourceRow?.transaction_id ?? null,
@@ -246,6 +253,7 @@ export async function bookSettledRebalanceOrders(
               trader: clientEmail,
               uat_test: IS_UAT,
               broker_account_code: ACCOUNT_CODE,
+              rebalance_request_id: rebalanceRequestId ?? null,
             },
             result_payload: {
               tif: "DAY",
@@ -292,6 +300,7 @@ export async function bookSettledRebalanceOrders(
               trader: clientEmail,
               uat_test: IS_UAT,
               broker_account_code: ACCOUNT_CODE,
+              rebalance_request_id: rebalanceRequestId ?? null,
             },
             result_payload: {
               tif: "DAY",

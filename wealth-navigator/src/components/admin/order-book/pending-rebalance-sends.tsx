@@ -56,6 +56,7 @@ function summarizeChanges(lines: ProposedLine[]): string {
 
 export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "uat" }) {
   const [sendingId, setSendingId] = React.useState<string | null>(null);
+  const [cancellingId, setCancellingId] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [showHistory, setShowHistory] = React.useState(false);
 
@@ -83,21 +84,35 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   const pending = (approvedQuery.data?.requests ?? []).filter(inScope);
   const history = (executedQuery.data?.requests ?? []).filter(inScope).slice(0, 10);
 
+  async function transition(id: string, toStatus: "executed" | "cancelled") {
+    const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ to_status: toStatus }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!res.ok || !body.ok) {
+      window.alert(body.error ?? `Failed to ${toStatus === "executed" ? "send to order book" : "cancel"}.`);
+    }
+    await Promise.all([approvedQuery.refresh(), executedQuery.refresh()]);
+  }
+
   async function sendToOrderBook(id: string) {
     setSendingId(id);
     try {
-      const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ to_status: "executed" }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-      if (!res.ok || !body.ok) {
-        window.alert(body.error ?? "Failed to send to order book.");
-      }
-      await Promise.all([approvedQuery.refresh(), executedQuery.refresh()]);
+      await transition(id, "executed");
     } finally {
       setSendingId(null);
+    }
+  }
+
+  async function cancelProposal(id: string) {
+    if (!window.confirm("Cancel this IC-approved rebalance? It will not be sent to the order book.")) return;
+    setCancellingId(id);
+    try {
+      await transition(id, "cancelled");
+    } finally {
+      setCancellingId(null);
     }
   }
 
@@ -144,8 +159,17 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                     <Button
                       type="button"
                       size="sm"
+                      variant="outline"
+                      onClick={() => cancelProposal(r.id)}
+                      disabled={cancellingId === r.id || sendingId === r.id}
+                    >
+                      {cancellingId === r.id ? "Cancelling..." : "Cancel"}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
                       onClick={() => sendToOrderBook(r.id)}
-                      disabled={sendingId === r.id}
+                      disabled={sendingId === r.id || cancellingId === r.id}
                     >
                       <Send className="mr-1.5 h-3.5 w-3.5" />
                       {sendingId === r.id ? "Sending..." : "Send to Order Book"}

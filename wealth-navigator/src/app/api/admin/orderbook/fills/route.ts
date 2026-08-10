@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
+import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
+import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * POST /api/admin/orderbook/fills
@@ -24,6 +25,20 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  *     wallet, refunds reserve/residual) — see settleUatFill below. Never
  *     touches a live order: that engine independently re-verifies every
  *     targeted holding belongs to a test account before writing anything.
+ *   - for a BUY fill, also writes the order's own `quantity` directly onto
+ *     the referenced `stock_holdings_c` row (RETAIL, same repo — no CRM
+ *     round-trip needed for this one field). This is a no-op for an ordinary
+ *     order (quantity was already correct at park time) but is exactly what
+ *     makes a rebalance-driven order's holding become real at the right
+ *     moment: reconcile-parked-holdings.ts / book-settled-rebalance-orders.ts
+ *     deliberately leave `stock_holdings_c.quantity` untouched (0 or stale)
+ *     until this fill lands, so a client's numbers never move ahead of an
+ *     order that hasn't actually filled yet.
+ *   - if the filled row carries `payload.rebalance_request_id`, checks
+ *     whether every order booked for that rebalance has now finished
+ *     (filled/cancelled/rejected) and, if so, flips the strategy's own
+ *     canonical model composition (`strategies_c.holdings`) to the approved
+ *     target — see maybeCompleteRebalance.
  *
  * Body: { order_id: string, fills: Array<{ symbol, qty, avg_fill_price_cents, timestamp }> }
  */
@@ -61,7 +76,11 @@ interface SettlementResult {
  * comment. Never throws: a settlement-call failure must not fail the fill
  * itself, but IS surfaced in the response (never silently swallowed).
  */
-async function settleUatFill(row: AuditRow, fillPriceCents: number): Promise<SettlementResult> {
+async function settleUatFill(
+  row: AuditRow,
+  fillPriceCents: number,
+  retailDb: SupabaseClient,
+): Promise<SettlementResult> {
   const payload = row.payload ?? {};
   const uatTest = payload.uat_test === true;
   const holdingId = typeof payload.holding_id === "string" ? payload.holding_id : "";
@@ -92,6 +111,16 @@ async function settleUatFill(row: AuditRow, fillPriceCents: number): Promise<Set
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     if (!res.ok || body.error) {
       return { audit_id: row.id, attempted: true, ok: false, error: body.error || `HTTP ${res.status}` };
+    }
+    // The order's own quantity is what actually becomes real at fill time —
+    // see the file docstring. Best-effort: this must not fail the fill
+    // itself (the CRM settlement call above already succeeded), so a failure
+    // here is swallowed rather than turning a real fill into an error.
+    if (side !== "sell") {
+      await retailDb
+        .from("stock_holdings_c")
+        .update({ quantity: row.quantity, is_active: true })
+        .eq("id", holdingId);
     }
     return { audit_id: row.id, attempted: true, ok: true };
   } catch (e) {
@@ -301,11 +330,43 @@ export async function POST(req: Request) {
   // uat_test=true — best-effort, after the DB update above has succeeded.
   // Never attempted for a live row (settleUatFill checks payload.uat_test
   // itself too — this is belt-and-braces, not the only guard).
-  const settlements = await Promise.all(
-    toSettle.map(({ row, fillPriceCents }) => settleUatFill(row, fillPriceCents)),
-  );
+  let retailDb: SupabaseClient | null = null;
+  try {
+    retailDb = createRetailServiceRoleClient();
+  } catch {
+    retailDb = null;
+  }
+  const settlements = retailDb
+    ? await Promise.all(
+        toSettle.map(({ row, fillPriceCents }) => settleUatFill(row, fillPriceCents, retailDb)),
+      )
+    : toSettle.map(({ row }) => ({
+        audit_id: row.id,
+        attempted: true,
+        ok: false,
+        error: "RETAIL database not configured",
+      }));
   const attemptedSettlements = settlements.filter((s) => s.attempted);
   const failedSettlements = attemptedSettlements.filter((s) => !s.ok);
+
+  // A fill that finishes off every order booked for a rebalance is the
+  // moment the strategy's own model composition finally flips — see
+  // maybeCompleteRebalance's doc comment. Best-effort, one attempt per
+  // distinct rebalance touched by this call.
+  const rebalanceIds = new Set(
+    toSettle
+      .map(({ row }) => row.payload?.rebalance_request_id)
+      .filter((v): v is string => typeof v === "string" && v.length > 0),
+  );
+  const completions =
+    retailDb && rebalanceIds.size > 0
+      ? await Promise.all(
+          [...rebalanceIds].map(async (rid) => ({
+            rebalance_request_id: rid,
+            ...(await maybeCompleteRebalance(retailDb as SupabaseClient, db, rid)),
+          })),
+        )
+      : [];
 
   return NextResponse.json({
     ok: true,
@@ -313,6 +374,7 @@ export async function POST(req: Request) {
     book_id: bookId,
     book_ready_for_confirmation: allFilled,
     state: allFilled ? "READY_FOR_CONFIRMATION" : "WORKING",
+    ...(completions.length ? { rebalance_completions: completions } : {}),
     ...(attemptedSettlements.length
       ? {
           settlement: {

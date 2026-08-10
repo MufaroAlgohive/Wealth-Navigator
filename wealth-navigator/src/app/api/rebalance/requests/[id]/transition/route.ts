@@ -102,16 +102,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   // ic_approved / executed / rejected are IC/desk decisions — gated on the
   // approve permission. cancelled can be done by the requester (or dev) to
-  // withdraw their own proposal.
+  // withdraw their own draft, OR by anyone who could have approved it —
+  // once a proposal is already ic_approved, aborting it before it reaches
+  // the order book is a desk decision, not just the original requester's.
   const isRequester = auth.ctx.email.toLowerCase() === String(request.requested_by ?? "").toLowerCase();
   const isDev = auth.ctx.approverTier === "dev";
-  if (
-    (toStatus === "ic_approved" || toStatus === "executed" || toStatus === "rejected") &&
-    !can(auth.ctx, "rebalance", "approve_rebalance")
-  ) {
+  const canApprove = can(auth.ctx, "rebalance", "approve_rebalance");
+  if ((toStatus === "ic_approved" || toStatus === "executed" || toStatus === "rejected") && !canApprove) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (toStatus === "cancelled" && !isRequester && !isDev) {
+  if (toStatus === "cancelled" && !isRequester && !isDev && !(from === "ic_approved" && canApprove)) {
     return NextResponse.json(
       { ok: false, error: "only the requester may cancel this proposal" },
       { status: 403 },
@@ -167,6 +167,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         strategyName,
         currentComposition,
         proposedComposition,
+        id,
       );
     } catch (err) {
       parked = { reconciledUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
@@ -184,6 +185,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         strategyName,
         currentComposition,
         proposedComposition,
+        id,
       );
     } catch (err) {
       booked = { bookedUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };

@@ -8,8 +8,20 @@ import { calculateProceedsBridge } from "./proceeds";
  * When an IC-approved rebalance changes a strategy's model composition, any
  * client whose BUY into that strategy hasn't been sent to the broker yet is
  * sitting on a stale order — it would eventually fill against the OLD
- * composition. This rewrites those "parked" holdings directly to the new
- * target (same treatment a settled client gets from the model-unit math).
+ * composition. This rewrites the ORDER (oems_order_audit) to the new target
+ * immediately — nothing stops us from recomposing an order that was never
+ * sent anywhere — but deliberately does NOT touch the client's visible
+ * `stock_holdings_c.quantity` yet. Holdings must reflect the same thing for
+ * every client regardless of parked-vs-settled status: nothing changes until
+ * an order actually fills. Repositioning a parked client instantly while a
+ * settled client waits for their delta order to fill would show one client's
+ * numbers flipping ahead of everyone else who held the identical position —
+ * confusing on its own book. The fill path (settleUatFill,
+ * admin/orderbook/fills/route.ts) is what finally writes the order's
+ * quantity onto the referenced holding, for parked and settled clients alike.
+ * The one exception is a full sell-to-zero: there's no future order left to
+ * fill (the pending BUY is simply cancelled), so that has to apply now or
+ * never.
  *
  * Fee treatment (confirmed with the desk): the client already paid one ISIN
  * custody fee per asset in their ORIGINAL basket at purchase time — nothing
@@ -62,6 +74,7 @@ export async function reconcileParkedHoldings(
   strategyName: string | null,
   currentComposition: ProposedLine[],
   proposedComposition: ProposedLine[],
+  rebalanceRequestId?: string,
 ): Promise<ReconcileParkedResult> {
   const result: ReconcileParkedResult = { reconciledUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
@@ -217,10 +230,11 @@ export async function reconcileParkedHoldings(
 
         const security = secBySymbol.get(sym);
         if (position) {
-          // Existing parked row for this symbol — rewrite in place, and keep
-          // the order-book row (oems_order_audit) in sync — it was silently
-          // going stale otherwise, since nothing else touches it for a
-          // holdings-only correction like this.
+          // Existing parked row for this symbol. A full sell-to-zero has no
+          // future fill to wait for (the pending BUY is simply cancelled),
+          // so that applies now. A reposition only rewrites the ORDER —
+          // `stock_holdings_c.quantity` stays untouched until the order
+          // actually fills (see file docstring).
           if (targetQty <= 0) {
             await db
               .from("stock_holdings_c")
@@ -232,10 +246,6 @@ export async function reconcileParkedHoldings(
               .eq("payload->>holding_id", position.rowId)
               .eq("status", "parked");
           } else {
-            await db
-              .from("stock_holdings_c")
-              .update({ quantity: targetQty, Expected_fill: priceCents / 100 })
-              .eq("id", position.rowId);
             const auditRes = await institutionalDb
               .from("oems_order_audit")
               .select("id, payload")
@@ -251,6 +261,7 @@ export async function reconcileParkedHoldings(
                   payload: {
                     ...(auditRes.data.payload as Record<string, unknown>),
                     limitPrice: priceCents / 100,
+                    rebalance_request_id: rebalanceRequestId ?? null,
                   },
                   updated_at: new Date().toISOString(),
                 })
@@ -258,18 +269,18 @@ export async function reconcileParkedHoldings(
             }
           }
         } else if (targetQty > 0 && security) {
-          // New symbol this client didn't already hold — insert a parked row
-          // for it, matching the shape of the rows we're reading from, plus
-          // a matching parked order-book row (same shape as a real client
-          // buy — see client-order/route.ts) so it's visible on the UAT/live
-          // order book like any other parked order.
+          // New symbol this client didn't already hold — insert a placeholder
+          // row (quantity 0, unfilled) so the order below has a holding_id to
+          // reference, plus a matching parked order-book row (same shape as a
+          // real client buy — see client-order/route.ts). The row's quantity
+          // only becomes real at fill time, same as every other case here.
           const sourceRow = rows[0];
           const insertedRes = await db
             .from("stock_holdings_c")
             .insert({
               user_id: userId,
               security_id: security.id,
-              quantity: targetQty,
+              quantity: 0,
               strategy_id: strategyId,
               strategy_name_snapshot: strategyName,
               transaction_id: sourceRow?.transaction_id ?? null,
@@ -309,6 +320,7 @@ export async function reconcileParkedHoldings(
                 trader: clientEmail,
                 uat_test: IS_UAT,
                 broker_account_code: ACCOUNT_CODE,
+                rebalance_request_id: rebalanceRequestId ?? null,
               },
               result_payload: {
                 tif: "DAY",
