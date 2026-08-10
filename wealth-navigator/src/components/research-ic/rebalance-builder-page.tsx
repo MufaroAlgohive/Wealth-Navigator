@@ -1513,7 +1513,17 @@ function FeeProceedsBreakdown({
                 className="border-b border-[hsl(var(--glass-border))] p-3 last:border-0"
               >
                 <div className="flex items-center justify-between gap-3 text-xs font-medium">
-                  <span>{investor.name}</span>
+                  <span className="flex items-center gap-1.5">
+                    {investor.name}
+                    {investor.parked ? (
+                      <span
+                        title="Not yet filled — repositioned fee-free; only a genuinely new asset costs one custody fee"
+                        className="rounded-md border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-300"
+                      >
+                        Unfilled
+                      </span>
+                    ) : null}
+                  </span>
                   <span className={cn("font-mono", investor.shortfall ? "text-down" : "text-up")}>
                     {centsToR(investor.cashAfterCents)} cash after
                   </span>
@@ -1521,7 +1531,10 @@ function FeeProceedsBreakdown({
                 <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-muted-foreground sm:grid-cols-3">
                   <span>Gross sell {centsToR(investor.grossSellCents)}</span>
                   <span>Net proceeds {centsToR(investor.netProceedsCents)}</span>
-                  <span>Total fees {centsToR(investor.totalFeesCents)}</span>
+                  <span>
+                    Total fees {centsToR(investor.totalFeesCents)}
+                    {investor.parked ? " (new-asset only)" : ""}
+                  </span>
                   <span>Reserve used {centsToR(investor.reserveUsedCents)}</span>
                   <span>Strategy CA after {centsToR(investor.strategyCashAfterCents)}</span>
                   <span>Reserve remaining {centsToR(investor.reserveAfterCents)}</span>

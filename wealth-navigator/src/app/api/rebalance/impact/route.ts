@@ -503,12 +503,20 @@ export async function POST(req: Request) {
 
     const residualCents = residualByUser.get(userId) ?? 0;
     const reserveCents = reserveByUser.get(userId) ?? 0;
+    // A parked (never-filled) client is rewritten fee-free on IC approval —
+    // see reconcile-parked-holdings.ts. Match that exactly here so this
+    // preview's numbers back up the "Unfilled" badge's fee-free claim
+    // instead of contradicting it: no brokerage, no fee on repositioning,
+    // only a genuinely new asset (action="add") costs one custody fee.
+    const isParked = parkedUserIds.has(userId);
     const bridge = calculateProceedsBridge({
       grossSellCents: sellCents,
       grossBuyCents: buyCents,
-      sellAssetCount: lines.filter((line) => line.side === "sell").length,
-      buyAssetCount: lines.filter((line) => line.side === "buy").length,
-      brokerageRate,
+      sellAssetCount: isParked ? 0 : lines.filter((line) => line.side === "sell").length,
+      buyAssetCount: isParked
+        ? lines.filter((line) => line.action === "add").length
+        : lines.filter((line) => line.side === "buy").length,
+      brokerageRate: isParked ? 0 : brokerageRate,
       custodyFeeCents,
       reserveCents,
       residualCents,
