@@ -477,7 +477,12 @@ export async function POST(req: Request) {
     retailDb && rebalanceIds.size > 0
       ? await Promise.all(
           [...rebalanceIds].map(async (rid) => {
-            const outcome = await maybeCompleteRebalance(retailDb as SupabaseClient, db, rid);
+            const outcome = await maybeCompleteRebalance(
+              retailDb as SupabaseClient,
+              db,
+              rid,
+              auth.ctx.userId,
+            );
             // Settled clients' cash economics (reserve-funded fees, residual
             // leftover) only make sense once the whole rebalance — every
             // leg, every client — has actually finished, same trigger as the

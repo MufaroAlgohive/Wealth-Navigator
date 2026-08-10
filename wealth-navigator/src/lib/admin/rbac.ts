@@ -7,8 +7,8 @@
  * team row with the RETAIL service-role client (bypasses RLS, server-only —
  * enforced transitively via `next/headers` in the supabase server client).
  */
-import { createSupabaseServerClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 import type { AdminPageKey } from "@/lib/admin/pages";
+import { createRetailServiceRoleClient, createSupabaseServerClient } from "@/lib/supabase/server";
 
 export { canAccessPage, firstAllowedPath, isAdminRole } from "@/lib/admin/pages";
 
@@ -17,6 +17,8 @@ export type ApproverTier = "dev" | "master" | null;
 
 export interface AdminContext {
   email: string;
+  /** Supabase auth user id (= `profiles.id`), for actor attribution on audited writes. */
+  userId: string;
   fullName: string | null;
   role: AdminRole;
   pageAccess: string[];
@@ -66,6 +68,7 @@ export async function getAdminContext(): Promise<AdminResolution> {
     status: "ok",
     ctx: {
       email: user.email,
+      userId: user.id,
       fullName: (data.full_name as string | null) ?? null,
       role,
       pageAccess: Array.isArray(data.page_access) ? (data.page_access as string[]) : [],

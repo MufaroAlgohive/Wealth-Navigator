@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { sealRebalanceBoundary } from "@/lib/returns/seal-rebalance-boundary";
+
 /**
  * Once every order booked for a rebalance (reconcile-parked-holdings.ts /
  * book-settled-rebalance-orders.ts, both tag their orders with
@@ -10,6 +12,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * market has actually confirmed it, matching the same "nothing changes until
  * filled" rule applied to every individual client's holdings. Called from
  * the fill path (admin/orderbook/fills/route.ts) after each fill.
+ *
+ * Flipping the composition and sealing the strategy's return boundary are one
+ * atomic decision, not two steps: `strategies_c.holdings` is what the EOD
+ * return publisher prices, so a flip without a matching boundary makes the
+ * next publication read the composition change as a one-day return and chain
+ * it into YTD permanently. The boundary is therefore sealed FIRST and the
+ * flip only happens if it succeeded — leaving the rebalance visibly
+ * unfinished (and retryable) is recoverable; a corrupted return chain is not.
  */
 
 function bare(sym: string): string {
@@ -29,12 +39,21 @@ interface ProposedLine {
 export interface CompleteRebalanceResult {
   completed: boolean;
   error?: string;
+  /** Return-boundary outcome, when the rebalance reached the flip step. */
+  boundary?: {
+    sealed: boolean;
+    error?: string;
+    ytdPct?: number;
+    continuityCashCents?: number;
+    completeValueCents?: number;
+  };
 }
 
 export async function maybeCompleteRebalance(
   retailDb: SupabaseClient,
   institutionalDb: SupabaseClient,
   rebalanceRequestId: string,
+  actorId?: string,
 ): Promise<CompleteRebalanceResult> {
   const siblingsRes = await institutionalDb
     .from("oems_order_audit")
@@ -89,15 +108,46 @@ export async function maybeCompleteRebalance(
     weight: Math.round((v.valueCents / totalCents) * 10000) / 100,
   }));
 
-  const stratRes = await retailDb.from("strategies_c").select("id").eq("name", strategyName).maybeSingle();
+  const stratRes = await retailDb
+    .from("strategies_c")
+    .select("id, holdings")
+    .eq("name", strategyName)
+    .maybeSingle();
   if (stratRes.error) return { completed: false, error: stratRes.error.message };
   if (!stratRes.data?.id) return { completed: false, error: `strategy "${strategyName}" not found` };
+  const strategyId = stratRes.data.id as string;
+
+  // Seal the return boundary before the composition moves. See this module's
+  // doc comment: the publisher prices whatever `strategies_c.holdings` says,
+  // so a flip that outruns its boundary is an unrecoverable YTD corruption.
+  const boundary = await sealRebalanceBoundary(retailDb, {
+    strategyId,
+    strategyName,
+    holdings: holdings.map((h) => ({ symbol: h.symbol, shares: h.shares })),
+    actorId: actorId ?? "",
+    holdingsBefore: stratRes.data.holdings ?? null,
+  });
+  if (!boundary.sealed) {
+    return {
+      completed: false,
+      error: `return boundary not sealed, composition left unchanged: ${boundary.error ?? "unknown"}`,
+      boundary: { sealed: false, error: boundary.error },
+    };
+  }
 
   const updRes = await retailDb
     .from("strategies_c")
     .update({ holdings, updated_at: new Date().toISOString() })
-    .eq("id", stratRes.data.id as string);
+    .eq("id", strategyId);
   if (updRes.error) return { completed: false, error: updRes.error.message };
 
-  return { completed: true };
+  return {
+    completed: true,
+    boundary: {
+      sealed: true,
+      ytdPct: boundary.ytdPct,
+      continuityCashCents: boundary.continuityCashCents,
+      completeValueCents: boundary.completeValueCents,
+    },
+  };
 }
