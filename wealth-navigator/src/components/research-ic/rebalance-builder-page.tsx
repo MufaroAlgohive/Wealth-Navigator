@@ -3096,6 +3096,7 @@ function ProposalsList({
   onOpenChange: (open: boolean) => void;
 }) {
   const qc = useQueryClient();
+  const [cancellingId, setCancellingId] = React.useState<string | null>(null);
   const q = useQuery<{ requests: RebalanceRequest[]; notice?: string }>({
     queryKey: ["ric-rebalance-requests"],
     refetchInterval: 30_000,
@@ -3125,6 +3126,25 @@ function ProposalsList({
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
     } finally {
       setPushingId(null);
+    }
+  }
+
+  async function cancelProposal(id: string) {
+    if (!window.confirm("Cancel this IC-approved rebalance? No orders will be booked.")) return;
+    setCancellingId(id);
+    try {
+      const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to_status: "cancelled" }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        window.alert(body.error ?? "Failed to cancel.");
+      }
+      await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+    } finally {
+      setCancellingId(null);
     }
   }
 
@@ -3195,14 +3215,24 @@ function ProposalsList({
                     </Link>
                   )}
                   {r.status === "ic_approved" && (
-                    <button
-                      type="button"
-                      onClick={() => bookOrders(r.id)}
-                      disabled={!canPush || pushingId === r.id}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-                    >
-                      <Rocket className="h-3.5 w-3.5" /> {pushingId === r.id ? "Booking…" : "Book Orders"}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => cancelProposal(r.id)}
+                        disabled={cancellingId === r.id || pushingId === r.id}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
+                      >
+                        {cancellingId === r.id ? "Cancelling…" : "Cancel"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => bookOrders(r.id)}
+                        disabled={!canPush || pushingId === r.id || cancellingId === r.id}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                      >
+                        <Rocket className="h-3.5 w-3.5" /> {pushingId === r.id ? "Booking…" : "Book Orders"}
+                      </button>
+                    </>
                   )}
                   {r.status === "executed" && (
                     <span className="text-xs text-muted-foreground">
