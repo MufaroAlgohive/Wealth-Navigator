@@ -11,15 +11,19 @@ import { publishEodReturns } from "@/lib/returns/publish-eod-returns";
  * rebalances as composition events rather than performance (see
  * src/lib/returns/publish-eod-returns.ts).
  *
- * Port of the CRM's returns publisher, which currently runs from
- * MyMintAdmin's `/api/orderbook/cron-daily`. Exactly one of the two may be
- * scheduled: both writing the same (strategy, as_of_date) row disagree on
- * `composition_effective_from` and manufacture spurious boundary bridges.
- * Turn the CRM's off before setting RETURNS_PUBLISH_APPLY=1 here.
+ * This is now the ONLY strategy return publisher. It replaced the CRM's
+ * (MyMintAdmin `/api/orderbook/cron-daily`), whose call site was removed at
+ * cutover: two publishers writing the same (strategy, as_of_date) row
+ * disagree on `composition_effective_from` and manufacture spurious boundary
+ * bridges — see the 5–7 Aug 2026 rows. Never re-enable the CRM's.
  *
- * Writes only when RETURNS_PUBLISH_APPLY === "1" (or `?apply=1` from an admin
- * session), so it can be deployed and observed read-only first. `?asOf=` runs
- * it for a specific date.
+ * Publishes by default. The port was verified byte-identical to the
+ * implementation it replaced before cutover — 8/8 active strategies agreeing
+ * to the cent on securities, continuity cash and complete value, and to 1e-9
+ * on YTD (2026-08-10) — so a blanket opt-in flag would now only risk leaving
+ * the chain silently unpublished, which is its own kind of bad data.
+ * RETURNS_PUBLISH_APPLY=0 is the kill switch; an admin can force a read-only
+ * plan with `?apply=0`. `?asOf=` runs it for a specific date.
  *
  * Auth: Vercel cron `Authorization: Bearer ${CRON_SECRET}`, OR an admin session.
  */
@@ -43,10 +47,11 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const asOfDate = url.searchParams.get("asOf") ?? undefined;
-  // An admin can force a real run to verify the cutover; the cron itself only
-  // writes once the environment explicitly opts in.
-  const apply =
-    process.env.RETURNS_PUBLISH_APPLY === "1" || (viaAdmin && url.searchParams.get("apply") === "1");
+  // Publishes unless explicitly switched off. An admin can still ask for a
+  // read-only plan to inspect the numbers without writing them.
+  const killed = process.env.RETURNS_PUBLISH_APPLY === "0";
+  const planOnly = viaAdmin && url.searchParams.get("apply") === "0";
+  const apply = !killed && !planOnly;
 
   const result = await publishEodReturns({ asOfDate, apply });
   return NextResponse.json(result, { status: result.ok ? 200 : 502 });
