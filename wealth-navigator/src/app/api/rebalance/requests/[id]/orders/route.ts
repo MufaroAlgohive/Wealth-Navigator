@@ -41,6 +41,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     .from("oems_order_audit")
     .select("id, symbol, side, quantity, price_cents, status, source, client_account, created_at")
     .eq("payload->>rebalance_request_id", id)
+    // Grouped by client first so all of one investor's lines sit together —
+    // easier to eyeball the activity than interleaved by symbol.
+    .order("client_account", { ascending: true })
     .order("symbol", { ascending: true });
 
   if (error) {
