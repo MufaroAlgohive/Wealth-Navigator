@@ -84,6 +84,13 @@ const config: Config = {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.5" },
         },
+        shake: {
+          "0%, 100%": { transform: "translateX(0)" },
+          "20%": { transform: "translateX(-6px)" },
+          "40%": { transform: "translateX(5px)" },
+          "60%": { transform: "translateX(-4px)" },
+          "80%": { transform: "translateX(3px)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
@@ -91,6 +98,7 @@ const config: Config = {
         "fade-in": "fade-in 240ms cubic-bezier(0.2, 0.8, 0.2, 1) both",
         flash: "flash 600ms ease-out",
         pulse: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+        shake: "shake 400ms ease-in-out",
       },
     },
   },

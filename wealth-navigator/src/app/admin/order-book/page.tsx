@@ -6,6 +6,7 @@ import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-boo
 import { CancelledOrders } from "@/components/admin/order-book/cancelled-orders";
 import { ClosedBooks } from "@/components/admin/order-book/closed-books";
 import { ExecutionView } from "@/components/admin/order-book/execution-view";
+import { PendingRebalanceSends } from "@/components/admin/order-book/pending-rebalance-sends";
 import { RebalanceBooks } from "@/components/admin/order-book/rebalance-books";
 import { StrateBir } from "@/components/admin/order-book/strate-bir";
 import { UatBanner } from "@/components/admin/order-book/uat-banner";
@@ -89,13 +90,14 @@ export default function OrderBookPage() {
             {/* The archive is shared across order-entry lanes. Older books and
                 releases made through the desk/UAT routes do not carry the
                 MINT_CLIENT_ORDER source, so filtering here can hide the only
-                place from which an admin can close them. */}
+                place from which an admin can close them.
+                Note: PAPER_MODEL_REBALANCE deliberately does NOT appear here —
+                a booked rebalance order stays on the Rebalances tab until an
+                admin explicitly releases it (release-to-orderbook/route.ts),
+                which flips its source to MINT_CLIENT_ORDER so it then shows
+                up here like any other app order. */}
             <ActiveOrderBooks
-              sources={
-                activeEnvironment === "uat"
-                  ? ["UAT_ADHOC_ORDER", "CRM_UAT"]
-                  : ["MINT_CLIENT_ORDER", "CRM_LIVE"]
-              }
+              sources={activeEnvironment === "uat" ? ["UAT_ADHOC_ORDER", "CRM_UAT"] : ["MINT_CLIENT_ORDER", "CRM_LIVE"]}
             />
           </TabsContent>
         ) : tab === "rebalances" ? (
@@ -116,6 +118,7 @@ export default function OrderBookPage() {
                 Environment: {activeEnvironment === "uat" ? "UAT" : "LIVE"}
               </Button>
             </div>
+            <PendingRebalanceSends scope={activeEnvironment} />
             <RebalanceBooks scope={activeEnvironment} />
           </TabsContent>
         ) : tab === "strate-bir" ? (

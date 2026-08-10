@@ -16,6 +16,10 @@
     {
       "path": "/api/cron/position-reconciliation",
       "schedule": "30 15 * * 1-5"
+    },
+    {
+      "path": "/api/cron/returns-publish",
+      "schedule": "0 17 * * 1-5"
     }
   ]
 }

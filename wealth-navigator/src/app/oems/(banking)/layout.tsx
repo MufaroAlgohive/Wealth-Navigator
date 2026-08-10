@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { AdminProvider } from "@/lib/admin/context";
-import { getAdminContext, type AdminContext } from "@/lib/admin/rbac";
+import { type AdminContext, getAdminContext } from "@/lib/admin/rbac";
 
 /**
  * The /oems/(banking) pages (EFT, reconciliation, wallet top-up) use the admin
@@ -22,6 +22,7 @@ export default async function BankingLayout({ children }: { children: ReactNode 
       ? res.ctx
       : {
           email: "preview@local",
+          userId: "",
           fullName: "Design Preview",
           role: "admin",
           pageAccess: [],

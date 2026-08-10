@@ -9,14 +9,25 @@
  */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowDown, ArrowUp, ChevronDown, Info, Plus, Rocket, Send, X } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  Info,
+  Loader2,
+  Plus,
+  Rocket,
+  Send,
+  X,
+} from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
-import { moneyR, rebalanceCodeMap, useQuotes, weightPct, ActionBadge } from "./ui";
+import { ActionBadge, moneyR, rebalanceCodeMap, useQuotes, weightPct } from "./ui";
 
 type Holding = { ticker: string; name: string; shares: number };
 type StrategyOpt = { id: string; name: string; investorEnvironment: "LIVE" | "UAT" };
@@ -57,6 +68,11 @@ type ImpactInvestor = {
   account?: string;
   basketCents: number;
   driftLines: DriftLine[];
+  // Has at least one not-yet-filled BUY into this strategy — gets rewritten
+  // to the new basket fee-free on IC approval instead of a real trade (see
+  // reconcile-parked-holdings.ts). Surfaced so the admin can see up front
+  // who's about to be treated differently.
+  parked: boolean;
   buyCents: number;
   sellCents: number;
   netCashCents: number;
@@ -167,8 +183,7 @@ export function RebalanceBuilderPage({
       setStrategyId(strategies[0].id);
     }
   }, [strategies, strategyId, initialStrategyId]);
-  const strategyName =
-    strategies.find((s) => s.id === strategyId)?.name ?? initialStrategyName ?? strategyId;
+  const strategyName = strategies.find((s) => s.id === strategyId)?.name ?? initialStrategyName ?? strategyId;
   const isTestStrategy =
     strategies.find((strategy) => strategy.id === strategyId)?.investorEnvironment === "UAT";
 
@@ -189,6 +204,7 @@ export function RebalanceBuilderPage({
   const [addOpen, setAddOpen] = React.useState(false);
   const [addTicker, setAddTicker] = React.useState("");
   const [addShares, setAddShares] = React.useState("");
+  const [addSharesShake, setAddSharesShake] = React.useState(false);
   // Per-row rationale (freeform one-liner shown in the IC action table) and a
   // buyer-vs-seller choice when reducing a position. Required by Lonwabo's
   // meeting rule (transcript 2026-07-13): "you can't submit without saying
@@ -200,6 +216,35 @@ export function RebalanceBuilderPage({
   const [submitting, setSubmitting] = React.useState(false);
   const [pushingId, setPushingId] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  // Auto-expanded right after a successful Submit to IC, so the just-raised
+  // proposal is immediately visible instead of hidden behind the list's
+  // default-collapsed state.
+  const [proposalsOpen, setProposalsOpen] = React.useState(false);
+  // Same query key as ProposalsList's own fetch — React Query dedupes/shares
+  // the cache, so this doesn't add a second network call. Used only to show
+  // a "pending for this strategy" banner on the compose screen.
+  const pendingReqQ = useQuery<{ requests: RebalanceRequest[]; notice?: string }>({
+    queryKey: ["ric-rebalance-requests"],
+    refetchInterval: 30_000,
+    queryFn: async () => {
+      const res = await fetch("/api/rebalance/requests", { cache: "no-store" });
+      return (await res.json().catch(() => ({ requests: [] }))) as {
+        requests: RebalanceRequest[];
+        notice?: string;
+      };
+    },
+  });
+  const pendingForThisStrategy = (pendingReqQ.data?.requests ?? []).filter(
+    (r) => r.strategy_id === strategyName && (r.status === "pending" || r.status === "ic_approved"),
+  );
+  // Most recent outstanding proposal for this strategy — while there's
+  // nothing actively being edited, "Proposed basket" shows THIS instead of
+  // an empty/reset draft, so the holdings+weights currently sitting with the
+  // IC are visible instead of looking like nothing was ever submitted.
+  const activePendingProposal =
+    [...pendingForThisStrategy].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    )[0] ?? null;
 
   // Embedded two-stage trade sequence: "compose" is the editable basket (as
   // today); "execute" swaps that out for a per-leg wizard — one sell at a
@@ -213,9 +258,9 @@ export function RebalanceBuilderPage({
   const [currentLegIndex, setCurrentLegIndex] = React.useState(0);
   // Per-leg state, keyed by the SELL symbol that leg is funded by. A leg with
   // no entry here yet is unresolved (wizard can't advance past it).
-  const [legChoiceBySymbol, setLegChoiceBySymbol] = React.useState<
-    Record<string, "reinvest" | "liquidate">
-  >({});
+  const [legChoiceBySymbol, setLegChoiceBySymbol] = React.useState<Record<string, "reinvest" | "liquidate">>(
+    {},
+  );
   const [legBuyBySymbol, setLegBuyBySymbol] = React.useState<
     Record<string, { symbol: string; name: string; priceCents: number; shares: number } | null>
   >({});
@@ -256,7 +301,14 @@ export function RebalanceBuilderPage({
 
   // Buy-instrument universe for the trade-sequence dropdown (mirrors CRM's
   // rebLoadBuySecurities). Read-only; reuses the existing equities board.
-  const equitiesQ = useQuery<{ securities?: Array<{ symbol: string; name: string | null; last_price: number | null; is_active: boolean | null }> }>({
+  const equitiesQ = useQuery<{
+    securities?: Array<{
+      symbol: string;
+      name: string | null;
+      last_price: number | null;
+      is_active: boolean | null;
+    }>;
+  }>({
     queryKey: ["ric-buy-universe"],
     queryFn: async () => (await fetch("/api/equities", { cache: "no-store" })).json(),
   });
@@ -301,9 +353,7 @@ export function RebalanceBuilderPage({
     queryKey: ["ric-notes"],
     queryFn: async () => (await fetch("/api/research/notes", { cache: "no-store" })).json(),
   });
-  const notedSymbols = new Set(
-    (notesQ.data?.notes ?? []).map((nte) => String(nte.symbol).toUpperCase()),
-  );
+  const notedSymbols = new Set((notesQ.data?.notes ?? []).map((nte) => String(nte.symbol).toUpperCase()));
   const missingResearch = changedTickers.filter((t) => !notedSymbols.has(t));
   // On a real (non-test) strategy, don't just block submit on missing research
   // -- don't even offer the instrument as a buy target. Submitting without
@@ -317,10 +367,7 @@ export function RebalanceBuilderPage({
   // most-recently-updated. Used to build the R-<SYM>-<NN> researchRef code that
   // shows up in the IC action table and links through to the note.
   const noteBySymbol = React.useMemo(() => {
-    const m = new Map<
-      string,
-      { id: string; symbol: string; status: string; updated_at?: string }
-    >();
+    const m = new Map<string, { id: string; symbol: string; status: string; updated_at?: string }>();
     for (const n of notesQ.data?.notes ?? []) {
       const k = String(n.symbol).toUpperCase();
       const prev = m.get(k);
@@ -345,13 +392,9 @@ export function RebalanceBuilderPage({
     const k = sym.toUpperCase();
     const note = noteBySymbol.get(k);
     if (!note) return undefined;
-    const sameSymbol = (notesQ.data?.notes ?? []).filter(
-      (n) => String(n.symbol).toUpperCase() === k,
-    );
+    const sameSymbol = (notesQ.data?.notes ?? []).filter((n) => String(n.symbol).toUpperCase() === k);
     // Approved notes count first; otherwise 1 — keeps the code stable across edits.
-    const approvedIdx = sameSymbol
-      .filter((n) => n.status === "approved")
-      .findIndex((n) => n.id === note.id);
+    const approvedIdx = sameSymbol.filter((n) => n.status === "approved").findIndex((n) => n.id === note.id);
     const num = approvedIdx >= 0 ? approvedIdx + 1 : 1;
     return `R-${k}-${String(num).padStart(2, "0")}`;
   };
@@ -361,7 +404,9 @@ export function RebalanceBuilderPage({
       prev.map((h) => (keyOf(h) === t ? { ...h, shares: Math.max(0, h.shares + delta) } : h)),
     );
   const setAbsoluteShares = (t: string, value: number) =>
-    setWorking((prev) => prev.map((h) => (keyOf(h) === t ? { ...h, shares: Math.max(0, Math.floor(value)) } : h)));
+    setWorking((prev) =>
+      prev.map((h) => (keyOf(h) === t ? { ...h, shares: Math.max(0, Math.floor(value)) } : h)),
+    );
   const removeHolding = (t: string) => setWorking((prev) => prev.filter((h) => keyOf(h) !== t));
 
   // Combine every leg's chosen buy into one set of rows, summing shares when
@@ -401,7 +446,12 @@ export function RebalanceBuilderPage({
   const addHolding = () => {
     const t = addTicker.trim().toUpperCase();
     const sh = Number(addShares);
-    if (!t || !Number.isFinite(sh) || sh <= 0) return;
+    if (!t) return;
+    if (!Number.isFinite(sh) || sh <= 0) {
+      setAddSharesShake(true);
+      setTimeout(() => setAddSharesShake(false), 400);
+      return;
+    }
     setWorking((prev) =>
       prev.some((h) => keyOf(h) === t) ? prev : [...prev, { ticker: t, name: t, shares: sh }],
     );
@@ -441,7 +491,16 @@ export function RebalanceBuilderPage({
           ? undefined // Rating is in the note thesis; UI only renders the chip
           : undefined,
         rationale: rationaleBySymbol[h.ticker.toUpperCase()] || undefined,
-        fromWeight: b ? Number(((priceOf(b.ticker) ?? 0) * b.shares / Math.max(working.reduce((s, hh) => s + (priceOf(hh.ticker) ?? 0) * hh.shares, 0), 1)) * 100).toFixed(2) : undefined,
+        fromWeight: b
+          ? Number(
+              (((priceOf(b.ticker) ?? 0) * b.shares) /
+                Math.max(
+                  working.reduce((s, hh) => s + (priceOf(hh.ticker) ?? 0) * hh.shares, 0),
+                  1,
+                )) *
+                100,
+            ).toFixed(2)
+          : undefined,
         toWeight: Number(weightOf(h).toFixed(2)),
       };
     }),
@@ -466,12 +525,8 @@ export function RebalanceBuilderPage({
   //  • every changed row needs a rationale (Lonwabo: "write a buy note")
   //  • basket-level: a SELL action requires at least one BUY action and at least
   //    one ADD/INCREASE with shares>0 — otherwise the cash can't land anywhere
-  const rationalesMissing = changedTickers.filter(
-    (t) => !(rationaleBySymbol[t] ?? "").trim(),
-  );
-  const sellActions = proposedComposition.filter(
-    (p) => p.action === "remove" || p.action === "decrease",
-  );
+  const rationalesMissing = changedTickers.filter((t) => !(rationaleBySymbol[t] ?? "").trim());
+  const sellActions = proposedComposition.filter((p) => p.action === "remove" || p.action === "decrease");
   const buyActions = proposedComposition.filter(
     (p) => (p.action === "add" || p.action === "increase") && (p.shares ?? 0) > 0,
   );
@@ -580,14 +635,22 @@ export function RebalanceBuilderPage({
     [impactQ.data],
   );
 
-  // Every direct compose-level increase with no matching sell — used both as
-  // the (optional) standalone wizard legs when splitIncreaseLegs is on, and
-  // pooled into the combined step's totals when it's off.
+  // Every direct compose-level increase OR brand-new add with no matching
+  // sell — used both as the (optional) standalone wizard legs when
+  // splitIncreaseLegs is on, and pooled into the combined step's totals when
+  // it's off. A new ticker (action "add") is the same shape as an increase
+  // for this purpose — 0 -> N shares — and was previously excluded entirely,
+  // silently dropping it from both the combined view and the trade sequence.
   const standaloneIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>> = working
-    .filter((h) => actionFor(h) === "increase")
+    .filter((h) => actionFor(h) === "increase" || actionFor(h) === "add")
     .map((h) => {
       const symbol = keyOf(h);
-      return { kind: "increase" as const, symbol, name: h.name ?? symbol, breakdown: legBuyBreakdown(symbol) };
+      return {
+        kind: "increase" as const,
+        symbol,
+        name: h.name ?? symbol,
+        breakdown: legBuyBreakdown(symbol),
+      };
     });
   const combinedSellLegs: Array<Extract<Leg, { kind: "sell" }>> = sellActions.map((a) => {
     const symbol = a.ticker.toUpperCase();
@@ -610,7 +673,10 @@ export function RebalanceBuilderPage({
     const netProceeds = legSellBreakdown(sellSymbol).netCents;
     const bufferedPriceCents = priceCents * (applyBuffer ? 1.08 : 1);
     const affordable = bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
-    setLegBuyBySymbol((prev) => ({ ...prev, [sellSymbol]: { symbol, name, priceCents, shares: affordable } }));
+    setLegBuyBySymbol((prev) => ({
+      ...prev,
+      [sellSymbol]: { symbol, name, priceCents, shares: affordable },
+    }));
     setLegChoiceBySymbol((prev) => ({ ...prev, [sellSymbol]: "reinvest" }));
   };
   const setLegBuyShares = (sellSymbol: string, shares: number) =>
@@ -637,7 +703,8 @@ export function RebalanceBuilderPage({
         if (!leg) continue;
         const netProceeds = legSellBreakdown(sellSymbol).netCents;
         const bufferedPriceCents = leg.priceCents * (applyBuffer ? 1.08 : 1);
-        const affordable = bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
+        const affordable =
+          bufferedPriceCents > 0 ? Math.max(0, Math.floor(netProceeds / bufferedPriceCents)) : 0;
         if (affordable !== leg.shares) {
           next[sellSymbol] = { ...leg, shares: affordable };
           changed = true;
@@ -658,9 +725,7 @@ export function RebalanceBuilderPage({
       return;
     }
     if (!isTestStrategy && rationalesMissing.length) {
-      setError(
-        `One-line rationale required for: ${rationalesMissing.join(", ")}. Tell the IC why.`,
-      );
+      setError(`One-line rationale required for: ${rationalesMissing.join(", ")}. Tell the IC why.`);
       return;
     }
     if (impactQ.isFetching || !impactQ.data?.ok) {
@@ -679,9 +744,7 @@ export function RebalanceBuilderPage({
     }
     // Basket-level cash-availability gate: any per-investor shortfall blocks submit.
     if (impactQ.data?.totals && impactQ.data.totals.cashOk === false) {
-      setError(
-        "Insufficient cash across one or more investors. Trim something else or reduce the buy size.",
-      );
+      setError("Insufficient cash across one or more investors. Trim something else or reduce the buy size.");
       return;
     }
     setSubmitting(true);
@@ -716,6 +779,7 @@ export function RebalanceBuilderPage({
         return;
       }
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+      setProposalsOpen(true);
       // Proposal raised — return the page to a clean slate instead of leaving
       // the just-committed edits on screen.
       setWorking(baseline.map((h) => ({ ...h })));
@@ -755,12 +819,12 @@ export function RebalanceBuilderPage({
       : !isTestStrategy && rationalesMissing.length > 0
         ? "Rationale required for one or more changes"
         : impactQ.isFetching
-            ? "Calculating fee-adjusted client impact"
-            : impactQ.data?.ok !== true
-              ? impactQ.data?.error ?? "Client impact is unavailable"
-              : reinvestMissingBuy
-                ? "Pick a replacement BUY instrument before committing"
-                : impactQ.data?.totals?.cashOk === false
+          ? "Calculating fee-adjusted client impact"
+          : impactQ.data?.ok !== true
+            ? (impactQ.data?.error ?? "Client impact is unavailable")
+            : reinvestMissingBuy
+              ? "Pick a replacement BUY instrument before committing"
+              : impactQ.data?.totals?.cashOk === false
                 ? "Insufficient cash for one or more clients"
                 : "Create the controlled trade-sequence proposal for IC review";
 
@@ -794,10 +858,28 @@ export function RebalanceBuilderPage({
         </p>
       )}
 
+      {pendingForThisStrategy.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/35 bg-primary/10 px-3 py-2 text-xs text-primary">
+          <span>
+            {pendingForThisStrategy.length} proposal{pendingForThisStrategy.length === 1 ? "" : "s"} for{" "}
+            {strategyName} already {pendingForThisStrategy.length === 1 ? "sent to" : "with"} the IC —
+            awaiting {pendingForThisStrategy.some((r) => r.status === "pending") ? "a decision" : "execution"}
+            . Any further changes here start a new, separate proposal.
+          </span>
+          <button
+            type="button"
+            onClick={() => setProposalsOpen(true)}
+            className="shrink-0 rounded-md border border-primary/40 px-2 py-0.5 text-[11px] font-medium hover:bg-primary/10"
+          >
+            View below
+          </button>
+        </div>
+      )}
+
       {isTestStrategy && (
         <p className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-          UAT test strategy · research-note and rationale gates are disabled. Cash, fee and proceeds checks remain
-          active.
+          UAT test strategy · research-note and rationale gates are disabled. Cash, fee and proceeds checks
+          remain active.
         </p>
       )}
 
@@ -822,224 +904,331 @@ export function RebalanceBuilderPage({
       )}
 
       {stage === "compose" && (
-      <div className="grid gap-5 lg:grid-cols-2">
-        {/* working / current basket */}
-        <GlassSection
-          title="Current basket — click to trim / grow"
-          dataSource="hybrid"
-          db="retail"
-          right={
-            <button
-              type="button"
-              onClick={() => setAddOpen((v) => !v)}
-              className="inline-flex items-center gap-1 rounded-md border border-[hsl(var(--glass-border))] px-2 py-1 text-[11px] hover:bg-[hsl(var(--foreground)/0.05)]"
-            >
-              <Plus className="h-3 w-3" /> Add stock
-            </button>
-          }
-          noPadding
-        >
-          {addOpen && (
-            <div className="flex items-center gap-2 border-b border-[hsl(var(--glass-border))] px-5 py-3">
-              <input
-                value={addTicker}
-                onChange={(e) => setAddTicker(e.target.value)}
-                placeholder="Ticker"
-                className="w-24 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none"
-              />
-              <input
-                value={addShares}
-                onChange={(e) => setAddShares(e.target.value)}
-                placeholder="Units"
-                inputMode="numeric"
-                className="w-24 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none"
-              />
+        <div className="grid gap-5 lg:grid-cols-2">
+          {/* working / current basket */}
+          <GlassSection
+            title="Current basket — click to trim / grow"
+            dataSource="hybrid"
+            db="retail"
+            right={
               <button
                 type="button"
-                onClick={addHolding}
-                className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground"
+                onClick={() => setAddOpen((v) => !v)}
+                className="inline-flex items-center gap-1 rounded-md border border-[hsl(var(--glass-border))] px-2 py-1 text-[11px] hover:bg-[hsl(var(--foreground)/0.05)]"
               >
-                Add
+                <Plus className="h-3 w-3" /> Add stock
               </button>
-            </div>
-          )}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-5 py-2 font-medium">Ticker</th>
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 text-right font-medium">Units</th>
-                  <th className="px-3 py-2 text-right font-medium">Δ shares</th>
-                  <th className="px-3 py-2 text-right font-medium">Price</th>
-                  <th className="px-3 py-2 text-right font-medium">Weight</th>
-                  <th className="px-3 py-2 font-medium">Action</th>
-                  <th className="px-5 py-2 text-right font-medium">Edit</th>
-                </tr>
-              </thead>
-              <tbody>
-                {working.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className="px-5 py-6 text-center text-caption">
-                      {compQ.isLoading
-                        ? "Loading current basket…"
-                        : "No holdings for this strategy yet. Add stocks to build a proposal."}
-                    </td>
-                  </tr>
-                )}
-                {working.map((h) => {
-                  const b = baseByKey.get(keyOf(h));
-                  const delta = (b?.shares ?? 0) === 0 ? h.shares : h.shares - (b?.shares ?? 0);
-                  const a = actionFor(h);
-                  return (
-                    <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
-                      <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
-                      <td className="px-3 py-2 text-foreground/85">{h.name}</td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
-                      <td
-                        className={cn(
-                          "px-3 py-2 text-right font-mono tabular-nums",
-                          delta === 0
-                            ? "text-muted-foreground"
-                            : delta > 0
-                              ? "text-up"
-                              : "text-down",
-                        )}
-                      >
-                        {delta > 0 ? `+${delta}` : delta}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                        {moneyR(priceOf(h.ticker))}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums">{weightPct(weightOf(h))}</td>
-                      <td className="px-3 py-2">
-                        <ActionBadge action={a} />
-                      </td>
-                      <td className="px-5 py-2">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setShares(keyOf(h), +1)}
-                            className="rounded p-1 text-muted-foreground hover:text-up"
-                            title="+1 share"
-                          >
-                            <ArrowUp className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setShares(keyOf(h), -1)}
-                            className="rounded p-1 text-muted-foreground hover:text-down"
-                            title="-1 share"
-                          >
-                            <ArrowDown className="h-3.5 w-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => removeHolding(keyOf(h))}
-                            className="rounded p-1 text-muted-foreground hover:text-down"
-                            title="Remove from basket"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
+            }
+            noPadding
+          >
+            {addOpen && (
+              <div className="border-b border-[hsl(var(--glass-border))] px-5 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={addTicker}
+                    onChange={(e) => setAddTicker(e.target.value)}
+                    placeholder="Search ticker or name…"
+                    className="w-52 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none"
+                  />
+                  <input
+                    value={addShares}
+                    onChange={(e) => setAddShares(e.target.value)}
+                    placeholder="Units"
+                    inputMode="numeric"
+                    className={cn(
+                      "w-20 rounded-md border bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none",
+                      addSharesShake
+                        ? "animate-shake border-[hsl(var(--down))] focus:border-[hsl(var(--down))]"
+                        : "border-[hsl(var(--glass-border))]",
+                    )}
+                  />
+                  <button
+                    type="button"
+                    onClick={addHolding}
+                    className="rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground"
+                  >
+                    Add
+                  </button>
+                </div>
+                {addTicker.trim()
+                  ? (() => {
+                      const q = addTicker.trim().toUpperCase();
+                      const matches = buyUniverseForStrategy
+                        .filter((u) => u.symbol.toUpperCase().startsWith(q))
+                        .slice(0, 25);
+                      return (
+                        <div className="mt-2 max-h-48 overflow-y-auto rounded-md border border-[hsl(var(--glass-border))]">
+                          {matches.length === 0 ? (
+                            <p className="px-3 py-1.5 text-xs text-muted-foreground">No matches for "{q}".</p>
+                          ) : (
+                            matches.map((u) => (
+                              <button
+                                key={u.symbol}
+                                type="button"
+                                onClick={() => setAddTicker(u.symbol)}
+                                className="flex w-full items-center justify-between border-b border-[hsl(var(--glass-border))] px-3 py-1.5 text-left text-xs last:border-0 hover:bg-[hsl(var(--foreground)/0.05)]"
+                              >
+                                <span>
+                                  <span className="font-semibold">{u.symbol}</span>{" "}
+                                  <span className="text-muted-foreground">{u.name}</span>
+                                </span>
+                                <span className="font-mono text-muted-foreground">
+                                  {u.priceCents > 0 ? centsToR(u.priceCents) : "N/A"}
+                                </span>
+                              </button>
+                            ))
+                          )}
                         </div>
+                      );
+                    })()
+                  : null}
+              </div>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                    <th className="px-5 py-2 font-medium">Ticker</th>
+                    <th className="px-3 py-2 font-medium">Name</th>
+                    <th className="px-3 py-2 text-right font-medium">Units</th>
+                    <th className="px-3 py-2 text-right font-medium">Δ shares</th>
+                    <th className="px-3 py-2 text-right font-medium">Price</th>
+                    <th className="px-3 py-2 text-right font-medium">Weight</th>
+                    <th className="px-3 py-2 font-medium">Action</th>
+                    <th className="px-5 py-2 text-right font-medium">Edit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {working.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="px-5 py-6 text-center text-caption">
+                        {compQ.isLoading
+                          ? "Loading current basket…"
+                          : "No holdings for this strategy yet. Add stocks to build a proposal."}
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center justify-between border-t border-[hsl(var(--glass-border))] px-5 py-2.5 text-xs">
-            <span className="uppercase tracking-wide text-muted-foreground">Basket value</span>
-            <span className="font-mono font-semibold tabular-nums">{moneyR(basketValue)}</span>
-          </div>
-        </GlassSection>
+                  )}
+                  {working.map((h) => {
+                    const b = baseByKey.get(keyOf(h));
+                    const delta = (b?.shares ?? 0) === 0 ? h.shares : h.shares - (b?.shares ?? 0);
+                    const a = actionFor(h);
+                    return (
+                      <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
+                        <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
+                        <td className="px-3 py-2 text-foreground/85">{h.name}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
+                        <td
+                          className={cn(
+                            "px-3 py-2 text-right font-mono tabular-nums",
+                            delta === 0 ? "text-muted-foreground" : delta > 0 ? "text-up" : "text-down",
+                          )}
+                        >
+                          {delta > 0 ? `+${delta}` : delta}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                          {moneyR(priceOf(h.ticker))}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">
+                          {weightPct(weightOf(h))}
+                        </td>
+                        <td className="px-3 py-2">
+                          <ActionBadge action={a} />
+                        </td>
+                        <td className="px-5 py-2">
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setShares(keyOf(h), +1)}
+                              className="rounded p-1 text-muted-foreground hover:text-up"
+                              title="+1 share"
+                            >
+                              <ArrowUp className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setShares(keyOf(h), -1)}
+                              className="rounded p-1 text-muted-foreground hover:text-down"
+                              title="-1 share"
+                            >
+                              <ArrowDown className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeHolding(keyOf(h))}
+                              className="rounded p-1 text-muted-foreground hover:text-down"
+                              title="Remove from basket"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between border-t border-[hsl(var(--glass-border))] px-5 py-2.5 text-xs">
+              <span className="uppercase tracking-wide text-muted-foreground">Basket value</span>
+              <span className="font-mono font-semibold tabular-nums">{moneyR(basketValue)}</span>
+            </div>
+          </GlassSection>
 
-        {/* proposed basket */}
-        <GlassSection
-          title="Proposed basket"
-          dataSource="hybrid"
-          subtitle={`${changes} change${changes === 1 ? "" : "s"} pending`}
-          right={
-            <span className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
-              Review client impact
-            </span>
-          }
-          noPadding
-        >
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-5 py-2 font-medium">Ticker</th>
-                  <th className="px-3 py-2 font-medium">Name</th>
-                  <th className="px-3 py-2 text-right font-medium">Units</th>
-                  <th className="px-3 py-2 font-medium">Action</th>
-                  <th className="px-3 py-2 font-medium">Research</th>
-                  <th className="px-5 py-2 font-medium">Rationale</th>
-                </tr>
-              </thead>
-              <tbody>
-                {working.map((h) => {
-                  const b = baseByKey.get(keyOf(h));
-                  const changed = !b || b.shares !== h.shares;
-                  const a = actionFor(h);
-                  const ref = researchRefFor(h.ticker);
-                  return (
-                    <tr
-                      key={keyOf(h)}
+          {/* proposed basket — while nothing is being actively edited (changes
+              === 0), show the most recent outstanding IC proposal instead of
+              an empty/reset draft, so what's actually sitting with the IC is
+              visible here rather than looking like nothing was submitted. */}
+          {(() => {
+            const showingPending = changes === 0 && !!activePendingProposal;
+            const pendingRows = activePendingProposal?.proposed_composition ?? [];
+            const pendingChangesCount = pendingRows.filter((h) => h.action && h.action !== "hold").length;
+            const pendingBasketValue = pendingRows.reduce(
+              (s, h) => s + (Number(h.shares) || 0) * (Number(h.price) || 0),
+              0,
+            );
+            return (
+              <GlassSection
+                title="Proposed basket"
+                dataSource="hybrid"
+                subtitle={
+                  showingPending
+                    ? `${pendingChangesCount} change${pendingChangesCount === 1 ? "" : "s"} pending · in IC`
+                    : `${changes} change${changes === 1 ? "" : "s"} pending`
+                }
+                right={
+                  showingPending ? (
+                    <span
                       className={cn(
-                        "border-b border-[hsl(var(--glass-border))] last:border-0 align-top",
-                        changed && "bg-primary/5",
+                        "rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                        activePendingProposal?.status === "ic_approved"
+                          ? "border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.12)] text-up"
+                          : "border-primary/25 bg-primary/10 text-primary",
                       )}
                     >
-                      <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
-                      <td className="px-3 py-2 text-foreground/85">{h.name}</td>
-                      <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
-                      <td className="px-3 py-2">
-                        <ActionBadge action={a} />
-                      </td>
-                      <td className="px-3 py-2">
-                        {ref ? (
-                          <Link
-                            href="/oems/research"
-                            className="font-mono text-[11px] font-semibold text-primary hover:underline"
-                            title="Open research note"
-                          >
-                            {ref}
-                          </Link>
-                        ) : (
-                          <span className="text-caption">—</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-2">
-                        {changed ? (
-                          <input
-                            value={rationaleBySymbol[h.ticker.toUpperCase()] ?? ""}
-                            onChange={(e) => setRationale(h.ticker, e.target.value)}
-                            placeholder={
-                              a === "decrease" || a === "remove"
-                                ? "What are the proceeds funding?"
-                                : "Thesis / target / horizon…"
-                            }
-                            className="w-full min-w-[220px] rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none focus:border-primary/50"
-                          />
-                        ) : (
-                          <span className="text-caption">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center justify-between border-t border-[hsl(var(--glass-border))] px-5 py-2.5 text-xs">
-            <span className="uppercase tracking-wide text-muted-foreground">Basket value</span>
-            <span className="font-mono font-semibold tabular-nums">{moneyR(basketValue)}</span>
-          </div>
-        </GlassSection>
-      </div>
+                      {activePendingProposal?.status === "ic_approved" ? "IC approved" : "Pending IC review"}
+                    </span>
+                  ) : (
+                    <span className="rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                      Review client impact
+                    </span>
+                  )
+                }
+                noPadding
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                        <th className="px-5 py-2 font-medium">Ticker</th>
+                        <th className="px-3 py-2 font-medium">Name</th>
+                        <th className="px-3 py-2 text-right font-medium">Units</th>
+                        <th className="px-3 py-2 font-medium">Action</th>
+                        <th className="px-3 py-2 font-medium">Research</th>
+                        <th className="px-5 py-2 font-medium">Rationale</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {showingPending
+                        ? pendingRows.map((h) => (
+                            <tr
+                              key={h.ticker}
+                              className={cn(
+                                "border-b border-[hsl(var(--glass-border))] last:border-0 align-top",
+                                h.action && h.action !== "hold" && "bg-primary/5",
+                              )}
+                            >
+                              <td className="px-5 py-2 font-mono font-semibold text-foreground">
+                                {h.ticker}
+                              </td>
+                              <td className="px-3 py-2 text-foreground/85">{h.name}</td>
+                              <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
+                              <td className="px-3 py-2">
+                                <ActionBadge action={h.action} />
+                              </td>
+                              <td className="px-3 py-2">
+                                {h.researchRef ? (
+                                  <span className="font-mono text-[11px] font-semibold text-primary">
+                                    {h.researchRef}
+                                  </span>
+                                ) : (
+                                  <span className="text-caption">—</span>
+                                )}
+                              </td>
+                              <td className="px-5 py-2">
+                                {h.rationale ? (
+                                  <span className="text-xs text-foreground/85">{h.rationale}</span>
+                                ) : (
+                                  <span className="text-caption">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        : working.map((h) => {
+                            const b = baseByKey.get(keyOf(h));
+                            const changed = !b || b.shares !== h.shares;
+                            const a = actionFor(h);
+                            const ref = researchRefFor(h.ticker);
+                            return (
+                              <tr
+                                key={keyOf(h)}
+                                className={cn(
+                                  "border-b border-[hsl(var(--glass-border))] last:border-0 align-top",
+                                  changed && "bg-primary/5",
+                                )}
+                              >
+                                <td className="px-5 py-2 font-mono font-semibold text-foreground">
+                                  {h.ticker}
+                                </td>
+                                <td className="px-3 py-2 text-foreground/85">{h.name}</td>
+                                <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
+                                <td className="px-3 py-2">
+                                  <ActionBadge action={a} />
+                                </td>
+                                <td className="px-3 py-2">
+                                  {ref ? (
+                                    <Link
+                                      href="/oems/research"
+                                      className="font-mono text-[11px] font-semibold text-primary hover:underline"
+                                      title="Open research note"
+                                    >
+                                      {ref}
+                                    </Link>
+                                  ) : (
+                                    <span className="text-caption">—</span>
+                                  )}
+                                </td>
+                                <td className="px-5 py-2">
+                                  {changed ? (
+                                    <input
+                                      value={rationaleBySymbol[h.ticker.toUpperCase()] ?? ""}
+                                      onChange={(e) => setRationale(h.ticker, e.target.value)}
+                                      placeholder={
+                                        a === "decrease" || a === "remove"
+                                          ? "What are the proceeds funding?"
+                                          : "Thesis / target / horizon…"
+                                      }
+                                      className="w-full min-w-[220px] rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-xs outline-none focus:border-primary/50"
+                                    />
+                                  ) : (
+                                    <span className="text-caption">—</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center justify-between border-t border-[hsl(var(--glass-border))] px-5 py-2.5 text-xs">
+                  <span className="uppercase tracking-wide text-muted-foreground">Basket value</span>
+                  <span className="font-mono font-semibold tabular-nums">
+                    {moneyR(showingPending ? pendingBasketValue : basketValue)}
+                  </span>
+                </div>
+              </GlassSection>
+            );
+          })()}
+        </div>
       )}
 
       <TradeSequencePanel
@@ -1101,7 +1290,13 @@ export function RebalanceBuilderPage({
         onApplyBufferChange={setApplyBuffer}
       />
 
-      <ProposalsList pushingId={pushingId} setPushingId={setPushingId} canPush={perms.pushRebalance} />
+      <ProposalsList
+        pushingId={pushingId}
+        setPushingId={setPushingId}
+        canPush={perms.pushRebalance}
+        open={proposalsOpen}
+        onOpenChange={setProposalsOpen}
+      />
     </ResearchLabCanvas>
   );
 }
@@ -1112,12 +1307,18 @@ function centsToR(c: number | null | undefined): string {
 }
 
 /** A single fee-bridge line: label left, value right, red when it's a deduction. */
-function BridgeRow({ label, value, deduct, bold }: { label: string; value: string; deduct?: boolean; bold?: boolean }) {
+function BridgeRow({
+  label,
+  value,
+  deduct,
+  bold,
+}: { label: string; value: string; deduct?: boolean; bold?: boolean }) {
   return (
     <div className="flex items-center justify-between gap-4 text-xs">
       <span className={cn(bold ? "font-semibold" : "text-muted-foreground")}>{label}</span>
       <span className={cn("font-mono tabular-nums", bold && "font-semibold", deduct && "text-down")}>
-        {deduct ? "−" : ""}{value}
+        {deduct ? "−" : ""}
+        {value}
       </span>
     </div>
   );
@@ -1161,14 +1362,43 @@ function FeeProceedsBreakdown({
 
   const buyLines = investors.flatMap((inv) => inv.lines.filter((l) => l.side === "buy"));
   const showBuyCard = proceedsMode === "reinvest" && buyLines.length > 0;
-  const totalSharesToBuy = buyLines.reduce((s, l) => s + Math.abs(l.deltaQty), 0);
-  const grossCost = buyLines.reduce((s, l) => s + l.valueCents, 0);
   const buyBrokerage = investors.reduce((s, inv) => s + (inv.buyBrokerageCents || 0), 0);
   const buyCustody = investors.reduce((s, inv) => s + (inv.buyCustodyCents || 0), 0);
-  const buyInvestorCount = investors.filter((inv) => inv.lines.some((l) => l.side === "buy")).length;
+  const grossCost = buyLines.reduce((s, l) => s + l.valueCents, 0);
   const totalCost = grossCost + buyBrokerage + buyCustody;
-  const avgBuyPriceCents = totalSharesToBuy > 0 ? grossCost / totalSharesToBuy : 0;
   const buyTickers = [...new Set(buyLines.map((l) => l.symbol))];
+  // Custody is charged per ISIN per client — blending every buy ticker into
+  // one averaged "Execution Price" hid that (an "(x3)" label next to the
+  // combined fee undercounted the real per-instrument charge whenever a
+  // client bought more than one ticker). Break the card down per symbol,
+  // each with its own price/shares/fees, then total underneath.
+  const custodyFeeCentsPerIsin = data.feeConfig?.custodyFeeCents ?? 0;
+  const buyBySymbol = new Map<string, { qty: number; grossCents: number; investorIds: Set<string> }>();
+  for (const inv of investors) {
+    for (const line of inv.lines) {
+      if (line.side !== "buy") continue;
+      const cur = buyBySymbol.get(line.symbol) ?? { qty: 0, grossCents: 0, investorIds: new Set<string>() };
+      cur.qty += Math.abs(line.deltaQty);
+      cur.grossCents += line.valueCents;
+      cur.investorIds.add(inv.user_id);
+      buyBySymbol.set(line.symbol, cur);
+    }
+  }
+  const buySymbolBreakdowns = [...buyBySymbol.entries()].map(([symbol, v]) => {
+    const priceCents = v.qty > 0 ? v.grossCents / v.qty : 0;
+    const brokerageCents = Math.round(v.grossCents * (data.feeConfig?.brokerageRate ?? 0));
+    const custodyCents = v.investorIds.size * custodyFeeCentsPerIsin;
+    return {
+      symbol,
+      qty: v.qty,
+      priceCents,
+      grossCents: v.grossCents,
+      brokerageCents,
+      custodyCents,
+      totalCents: v.grossCents + brokerageCents + custodyCents,
+      investorCount: v.investorIds.size,
+    };
+  });
   const reserveBefore = totals.reserveCents ?? 0;
   const reserveUsed = totals.reserveUsedCents ?? 0;
   const reserveAfter = investors.reduce((s, inv) => s + (inv.reserveAfterCents || 0), 0);
@@ -1187,9 +1417,9 @@ function FeeProceedsBreakdown({
           </p>
           <p className="mt-1 text-foreground/80">
             Sale proceeds don't cover the fees, and the shortfall isn't fully covered by their 8% execution
-            reserve either — the remainder would have to reduce invested portfolio value. This is never charged
-            to the client directly; the sequence simply can't commit until it's resolved (reduce the trade size,
-            or wait for reserve to rebuild).
+            reserve either — the remainder would have to reduce invested portfolio value. This is never
+            charged to the client directly; the sequence simply can't commit until it's resolved (reduce the
+            trade size, or wait for reserve to rebuild).
           </p>
           {shortfallInvestors.length ? (
             <p className="mt-1.5 font-medium text-down">
@@ -1201,9 +1431,7 @@ function FeeProceedsBreakdown({
       <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
         <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
           <Info className="h-3.5 w-3.5 text-primary" /> Sell Execution
-          <span className="font-normal text-muted-foreground">
-            · {sellTickers.join(", ") || "—"}
-          </span>
+          <span className="font-normal text-muted-foreground">· {sellTickers.join(", ") || "—"}</span>
         </div>
         <div className="space-y-2">
           <BridgeRow label="Total Shares to Sell" value={totalSharesToSell.toLocaleString()} />
@@ -1221,24 +1449,43 @@ function FeeProceedsBreakdown({
         <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
           <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
             <Info className="h-3.5 w-3.5 text-primary" /> Buy Execution
-            <span className="font-normal text-muted-foreground">
-              · {buyTickers.join(", ") || "—"}
-            </span>
+            <span className="font-normal text-muted-foreground">· {buyTickers.join(", ") || "—"}</span>
           </div>
-          <div className="space-y-2">
-            <BridgeRow label="Execution Price" value={centsToR(avgBuyPriceCents)} />
-            <BridgeRow label="Total Shares" value={totalSharesToBuy.toLocaleString()} />
-            <BridgeRow label="Gross Cost" value={centsToR(grossCost)} />
-            <BridgeRow label={`Brokerage (${feeRate.toFixed(1)}%)`} value={centsToR(buyBrokerage)} deduct />
-            <BridgeRow label={`Custody Fee (x${buyInvestorCount})`} value={centsToR(buyCustody)} deduct />
+          <div className="space-y-3">
+            {buySymbolBreakdowns.map((b, i) => (
+              <div
+                key={b.symbol}
+                className={cn("space-y-1.5", i > 0 && "border-t border-[hsl(var(--glass-border))] pt-3")}
+              >
+                <p className="text-[11px] font-semibold text-muted-foreground">{b.symbol}</p>
+                <BridgeRow label="Execution Price" value={centsToR(b.priceCents)} />
+                <BridgeRow label="Total Shares" value={b.qty.toLocaleString()} />
+                <BridgeRow label="Gross Cost" value={centsToR(b.grossCents)} />
+                <BridgeRow
+                  label={`Brokerage (${feeRate.toFixed(1)}%)`}
+                  value={centsToR(b.brokerageCents)}
+                  deduct
+                />
+                <BridgeRow
+                  label={`Custody Fee (x${b.investorCount})`}
+                  value={centsToR(b.custodyCents)}
+                  deduct
+                />
+                <BridgeRow label="Total Cost" value={centsToR(b.totalCents)} bold />
+              </div>
+            ))}
             <div className="border-t border-[hsl(var(--glass-border))] pt-2">
-              <BridgeRow label="Total Cost" value={centsToR(totalCost)} bold />
+              <BridgeRow label="Buy Total" value={centsToR(totalCost)} bold />
             </div>
             <div className="border-t border-[hsl(var(--glass-border))] pt-2 mt-1">
               <BridgeRow label="8% Reserve Before" value={centsToR(reserveBefore)} />
               <BridgeRow label="Fees Paid from Reserve" value={centsToR(reserveUsed)} deduct />
               <BridgeRow label="8% Reserve After" value={centsToR(reserveAfter)} />
-              <BridgeRow label="Portfolio-Funded Fee Shortfall" value={centsToR(feeShortfall)} deduct={feeShortfall > 0} />
+              <BridgeRow
+                label="Portfolio-Funded Fee Shortfall"
+                value={centsToR(feeShortfall)}
+                deduct={feeShortfall > 0}
+              />
               <BridgeRow label="Residual Cash" value={centsToR(residualAfter)} bold />
             </div>
           </div>
@@ -1254,7 +1501,8 @@ function FeeProceedsBreakdown({
                   <div key={investor.user_id} className="flex items-center justify-between text-xs">
                     <span>{investor.name}</span>
                     <span className="font-mono text-muted-foreground">
-                      {shares.toLocaleString()} shares · {centsToR(investor.cashAfterCents)} residual
+                      {shares.toLocaleString()} shares · {centsToR(investor.cashAfterCents)} residual ·{" "}
+                      {centsToR(investor.reserveAfterCents)} reserve (8%)
                     </span>
                   </div>
                 );
@@ -1271,9 +1519,22 @@ function FeeProceedsBreakdown({
           </div>
           <div className="max-h-56 overflow-y-auto">
             {data.investors.map((investor) => (
-              <div key={investor.user_id} className="border-b border-[hsl(var(--glass-border))] p-3 last:border-0">
+              <div
+                key={investor.user_id}
+                className="border-b border-[hsl(var(--glass-border))] p-3 last:border-0"
+              >
                 <div className="flex items-center justify-between gap-3 text-xs font-medium">
-                  <span>{investor.name}</span>
+                  <span className="flex items-center gap-1.5">
+                    {investor.name}
+                    {investor.parked ? (
+                      <span
+                        title="Not yet filled — repositioned fee-free; only a genuinely new asset costs one custody fee"
+                        className="rounded-md border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-300"
+                      >
+                        Unfilled
+                      </span>
+                    ) : null}
+                  </span>
                   <span className={cn("font-mono", investor.shortfall ? "text-down" : "text-up")}>
                     {centsToR(investor.cashAfterCents)} cash after
                   </span>
@@ -1281,7 +1542,10 @@ function FeeProceedsBreakdown({
                 <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] text-muted-foreground sm:grid-cols-3">
                   <span>Gross sell {centsToR(investor.grossSellCents)}</span>
                   <span>Net proceeds {centsToR(investor.netProceedsCents)}</span>
-                  <span>Total fees {centsToR(investor.totalFeesCents)}</span>
+                  <span>
+                    Total fees {centsToR(investor.totalFeesCents)}
+                    {investor.parked ? " (new-asset only)" : ""}
+                  </span>
                   <span>Reserve used {centsToR(investor.reserveUsedCents)}</span>
                   <span>Strategy CA after {centsToR(investor.strategyCashAfterCents)}</span>
                   <span>Reserve remaining {centsToR(investor.reserveAfterCents)}</span>
@@ -1453,7 +1717,10 @@ function LegStepView({
           <div className="flex items-baseline justify-between gap-3">
             <div className="text-xs font-semibold">Buy Execution</div>
             <div className="text-[11px] text-muted-foreground">
-              Net capital: <span className="font-mono tabular-nums text-foreground/85">{centsToR(leg.breakdown.netCents)}</span>
+              Net capital:{" "}
+              <span className="font-mono tabular-nums text-foreground/85">
+                {centsToR(leg.breakdown.netCents)}
+              </span>
             </div>
           </div>
           <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3">
@@ -1462,7 +1729,8 @@ function LegStepView({
             </label>
             {buyUniverseResearchGated ? (
               <p className="mt-0.5 text-[10px] text-muted-foreground/70">
-                Only instruments with an existing research note are listed — add one in the Research Library to unlock it here.
+                Only instruments with an existing research note are listed — add one in the Research Library
+                to unlock it here.
               </p>
             ) : null}
             <input
@@ -1597,9 +1865,17 @@ function IncreaseLegStepView({
             className="flex w-full items-center justify-between px-5 py-3 text-left text-xs font-semibold hover:bg-[hsl(var(--foreground)/0.03)]"
           >
             <span>
-              Per-client cash impact <span className="font-normal text-muted-foreground">· {investors.length} client{investors.length === 1 ? "" : "s"}</span>
+              Per-client cash impact{" "}
+              <span className="font-normal text-muted-foreground">
+                · {investors.length} client{investors.length === 1 ? "" : "s"}
+              </span>
             </span>
-            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", clientsOpen && "rotate-180")} />
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 text-muted-foreground transition-transform",
+                clientsOpen && "rotate-180",
+              )}
+            />
           </button>
           {clientsOpen ? (
             <div className="px-5 pb-4">
@@ -1623,10 +1899,18 @@ function IncreaseLegStepView({
                     {investors.map((inv) => (
                       <tr key={inv.user_id} className="border-t border-[hsl(var(--glass-border))]">
                         <td className="px-3 py-1.5 font-medium">{inv.name}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{centsToR(inv.residualCents)}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{centsToR(inv.cashAfterCents)}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{centsToR(inv.reserveCents)}</td>
-                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">{centsToR(inv.reserveAfterCents)}</td>
+                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                          {centsToR(inv.residualCents)}
+                        </td>
+                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                          {centsToR(inv.cashAfterCents)}
+                        </td>
+                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                          {centsToR(inv.reserveCents)}
+                        </td>
+                        <td className="px-3 py-1.5 text-right font-mono tabular-nums">
+                          {centsToR(inv.reserveAfterCents)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1681,7 +1965,9 @@ function IncreaseLegStepView({
           type="button"
           onClick={onNext}
           disabled={!affordable}
-          title={affordable ? undefined : "This increase doesn't fit inside the remaining strategy CA + reserve"}
+          title={
+            affordable ? undefined : "This increase doesn't fit inside the remaining strategy CA + reserve"
+          }
           className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
         >
           {legIndex + 1 < legCount ? "Next leg →" : "Review sequence →"}
@@ -1850,7 +2136,11 @@ function ClientDriftPanel({
                 <td
                   className={cn(
                     "px-3 py-1.5 text-right font-mono font-semibold tabular-nums",
-                    line.currentPnlCents > 0 ? "text-up" : line.currentPnlCents < 0 ? "text-down" : "text-muted-foreground",
+                    line.currentPnlCents > 0
+                      ? "text-up"
+                      : line.currentPnlCents < 0
+                        ? "text-down"
+                        : "text-muted-foreground",
                   )}
                 >
                   {line.currentPnlCents > 0 ? "+" : ""}
@@ -1863,7 +2153,8 @@ function ClientDriftPanel({
       </div>
       <div className="mt-2.5 flex items-center justify-between">
         <p className="text-[10px] text-muted-foreground">
-          Model column compares against {strategyName}'s current persisted composition, not anything staged above.
+          Model column compares against {strategyName}'s current persisted composition, not anything staged
+          above.
         </p>
         <button
           type="button"
@@ -1976,7 +2267,11 @@ function SingleClientRebalancePanel({
   const bridge = previewQ.data?.bridge;
   const changedLines = (previewQ.data?.lines ?? []).filter((l) => l.side !== "none");
   const commitDisabled =
-    submitting || previewQ.isFetching || previewQ.data?.ok !== true || !!bridge?.shortfall || changedLines.length === 0;
+    submitting ||
+    previewQ.isFetching ||
+    previewQ.data?.ok !== true ||
+    !!bridge?.shortfall ||
+    changedLines.length === 0;
 
   async function submit() {
     if (!bridge || !previewQ.data?.lines) return;
@@ -2036,9 +2331,16 @@ function SingleClientRebalancePanel({
     <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.02)] p-3">
       <div className="mb-2 flex items-center justify-between">
         <p className="text-[11px] font-semibold">
-          Rebalance {investor.name} only <span className="font-normal text-muted-foreground">· doesn't affect any other client or the model</span>
+          Rebalance {investor.name} only{" "}
+          <span className="font-normal text-muted-foreground">
+            · doesn't affect any other client or the model
+          </span>
         </p>
-        <button type="button" onClick={onClose} className="text-[11px] text-muted-foreground hover:text-foreground">
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-[11px] text-muted-foreground hover:text-foreground"
+        >
           <X className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -2075,7 +2377,10 @@ function SingleClientRebalancePanel({
                       step={1}
                       value={target}
                       onChange={(e) =>
-                        setTargetQtyBySymbol((prev) => ({ ...prev, [line.symbol]: Math.max(0, Number(e.target.value) || 0) }))
+                        setTargetQtyBySymbol((prev) => ({
+                          ...prev,
+                          [line.symbol]: Math.max(0, Number(e.target.value) || 0),
+                        }))
                       }
                       className="w-20 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-right font-mono text-[11px] tabular-nums outline-none focus:border-primary/50"
                     />
@@ -2092,7 +2397,11 @@ function SingleClientRebalancePanel({
                   <td
                     className={cn(
                       "px-3 py-1.5 text-right font-mono font-semibold tabular-nums",
-                      cashDeltaCents > 0 ? "text-up" : cashDeltaCents < 0 ? "text-down" : "text-muted-foreground",
+                      cashDeltaCents > 0
+                        ? "text-up"
+                        : cashDeltaCents < 0
+                          ? "text-down"
+                          : "text-muted-foreground",
                     )}
                   >
                     {cashDeltaCents > 0 ? "+" : cashDeltaCents < 0 ? "−" : ""}
@@ -2121,13 +2430,11 @@ function SingleClientRebalancePanel({
       ) : null}
       {bridge?.shortfall ? (
         <div className="mt-2 rounded-md bg-[hsl(var(--down)/0.1)] px-2.5 py-1.5 text-[11px] font-medium text-down">
-          Not enough — {investor.name}'s own sell proceeds, CA, and reserve don't cover these buys. Reduce a target
-          quantity or drop an asset to proceed.
+          Not enough — {investor.name}'s own sell proceeds, CA, and reserve don't cover these buys. Reduce a
+          target quantity or drop an asset to proceed.
         </div>
       ) : null}
-      {submitError ? (
-        <p className="mt-2 text-[11px] text-down">{submitError}</p>
-      ) : null}
+      {submitError ? <p className="mt-2 text-[11px] text-down">{submitError}</p> : null}
       <div className="mt-3 flex items-center justify-end gap-2">
         <button
           type="button"
@@ -2303,9 +2610,9 @@ function TradeSequencePanel({
                   ? "Every sell and increase pooled together — no separate legs to decide"
                   : proceedsMode === "liquidate"
                     ? "Sell-only · net proceeds settle into this strategy’s CA"
-                  : proceedsMode === "reinvest"
-                    ? "Sell + buy · each leg funds its own replacement"
-                    : "Increase · funding is checked against strategy CA and reserve"}
+                    : proceedsMode === "reinvest"
+                      ? "Sell + buy · each leg funds its own replacement"
+                      : "Increase · funding is checked against strategy CA and reserve"}
             </div>
           </div>
           <div className="text-right">
@@ -2361,12 +2668,17 @@ function TradeSequencePanel({
                 .filter((l): l is Extract<Leg, { kind: "increase" }> => l.kind === "increase")
                 .reduce((s, l) => s + l.breakdown.totalCostCents, 0),
           )}
-          investors={investors.filter((inv) => inv.lines.some((l) => l.side === "buy" && l.symbol === currentLeg.symbol))}
+          investors={investors.filter((inv) =>
+            inv.lines.some((l) => l.side === "buy" && l.symbol === currentLeg.symbol),
+          )}
           onPrev={onPrevLeg}
           onNext={() => onNextLeg(legs.length)}
         />
       ) : null}
-      {isExecute && wizardStage === "leg" && isCombinedMode && (combinedSellLegs.length > 0 || standaloneIncreaseLegs.length > 0) ? (
+      {isExecute &&
+      wizardStage === "leg" &&
+      isCombinedMode &&
+      (combinedSellLegs.length > 0 || standaloneIncreaseLegs.length > 0) ? (
         <CombinedStepView
           sellLegs={combinedSellLegs}
           increaseLegs={standaloneIncreaseLegs}
@@ -2375,7 +2687,9 @@ function TradeSequencePanel({
       ) : null}
       {isExecute && wizardStage === "review" && splitIncreaseLegs && reviewLegs.length > 0 ? (
         <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-2">
-          <div className="text-xs font-semibold">Sequence — {reviewLegs.length} leg{reviewLegs.length === 1 ? "" : "s"}</div>
+          <div className="text-xs font-semibold">
+            Sequence — {reviewLegs.length} leg{reviewLegs.length === 1 ? "" : "s"}
+          </div>
           <div className="space-y-1.5">
             {reviewLegs.map((leg, i) => {
               if (leg.kind === "increase") {
@@ -2385,13 +2699,17 @@ function TradeSequencePanel({
                     className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-2 text-xs"
                   >
                     <span>
-                      <span className="font-mono text-muted-foreground">{i + 1} of {reviewLegs.length}</span>{" "}
+                      <span className="font-mono text-muted-foreground">
+                        {i + 1} of {reviewLegs.length}
+                      </span>{" "}
                       <span className="font-semibold">{leg.symbol}</span>{" "}
                       <span className="text-muted-foreground">
                         → increased by {leg.breakdown.qty.toLocaleString()}, funded from CA + reserve
                       </span>
                     </span>
-                    <span className="font-mono font-semibold text-down">{centsToR(leg.breakdown.totalCostCents)}</span>
+                    <span className="font-mono font-semibold text-down">
+                      {centsToR(leg.breakdown.totalCostCents)}
+                    </span>
                   </div>
                 );
               }
@@ -2403,7 +2721,9 @@ function TradeSequencePanel({
                   className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-2 text-xs"
                 >
                   <span>
-                    <span className="font-mono text-muted-foreground">{i + 1} of {reviewLegs.length}</span>{" "}
+                    <span className="font-mono text-muted-foreground">
+                      {i + 1} of {reviewLegs.length}
+                    </span>{" "}
                     <span className="font-semibold">{leg.symbol}</span>{" "}
                     {choice === "liquidate" ? (
                       <span className="text-muted-foreground">→ liquidated to cash</span>
@@ -2427,314 +2747,361 @@ function TradeSequencePanel({
       {isExecute && wizardStage === "review" && data ? (
         <FeeProceedsBreakdown data={data} proceedsMode={proceedsMode} />
       ) : null}
-      {(!isExecute || wizardStage === "review") && (!enabled ? (
-        <p className="px-5 py-4 text-caption">Select a strategy to preview client impact.</p>
-      ) : data?.ok === false ? (
-        <div className="mx-5 my-4 flex items-start gap-2 rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.08)] px-3.5 py-3 text-xs text-down">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{data.error ?? "The fee-adjusted impact preview could not be calculated."}</span>
-        </div>
-      ) : loading && investors.length === 0 ? (
-        <p className="px-5 py-4 text-caption">Modelling impact…</p>
-      ) : investors.length === 0 ? (
-        <p className="px-5 py-4 text-caption">
-          {data?.notice ?? "No test-client holdings match this strategy yet."}
-        </p>
-      ) : (
-        <>
-          <div
-            className={cn(
-              "flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 text-xs",
-              cashOk
-                ? "border-[hsl(var(--glass-border))]"
-                : "border-[hsl(var(--down)/0.4)] bg-[hsl(var(--down)/0.06)]",
-            )}
-          >
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-              <span className="text-muted-foreground">
-                {totals?.investorCount ?? investors.length} investor
-                {(totals?.investorCount ?? investors.length) === 1 ? "" : "s"}
-              </span>
-              <span>
-                Buys <span className="font-mono font-semibold text-down">{centsToR(totals?.buyCents)}</span>
-              </span>
-              <span className="inline-flex items-center gap-1">
-                Total cost{" "}
-                <span className="font-mono font-semibold text-down">
-                  {centsToR((totals?.buyCents ?? 0) + (totals?.buyFeesCents ?? 0))}
-                </span>
-              </span>
-              <span>
-                Sells <span className="font-mono font-semibold text-up">{centsToR(totals?.sellCents)}</span>
-              </span>
-              <span className="inline-flex items-center gap-1">
-                Net proceeds{" "}
-                <span className="font-mono font-semibold text-up">{centsToR(totals?.netProceedsCents)}</span>
-              </span>
-              <span className="text-muted-foreground">
-                CA <span className="font-mono">{centsToR(totals?.residualCents)}</span>
-              </span>
-              <span className="text-muted-foreground">
-                Reserve <span className="font-mono">{centsToR(totals?.reserveCents)}</span>
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="rounded-full border border-[hsl(var(--glass-border))] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                {scopeLabel}
-              </span>
-              <span
-                className={cn(
-                  "rounded-full px-2 py-0.5 text-[11px] font-semibold",
-                  cashOk ? "bg-[hsl(var(--up)/0.15)] text-up" : "bg-[hsl(var(--down)/0.15)] text-down",
-                )}
-              >
-                {cashOk ? "Cash available" : "Insufficient cash"}
-              </span>
-            </div>
+      {(!isExecute || wizardStage === "review") &&
+        (!enabled ? (
+          <p className="px-5 py-4 text-caption">Select a strategy to preview client impact.</p>
+        ) : data?.ok === false ? (
+          <div className="mx-5 my-4 flex items-start gap-2 rounded-lg border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.08)] px-3.5 py-3 text-xs text-down">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{data.error ?? "The fee-adjusted impact preview could not be calculated."}</span>
           </div>
-          {!isExecute && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                  <th className="px-5 py-2 font-medium">Client</th>
-                  {residualView ? (
-                    <>
-                      <th className="px-3 py-2 text-right font-medium">Basket</th>
-                      <th className="px-3 py-2 text-right font-medium">CA before</th>
-                      <th className="px-3 py-2 text-right font-medium">Reserve before</th>
-                      <th className="px-3 py-2 text-right font-medium">Strategy CA after</th>
-                      <th className="px-5 py-2 text-right font-medium">Reserve after</th>
-                    </>
-                  ) : (
-                    <>
-                      <th className="px-3 py-2 text-right font-medium">Lots</th>
-                      <th className="px-3 py-2 text-right font-medium">Current</th>
-                      <th className="px-3 py-2 text-right font-medium">New</th>
-                      <th className="px-3 py-2 text-right font-medium">Δ</th>
-                      <th className="px-5 py-2 text-right font-medium">P/L</th>
-                    </>
+        ) : loading && investors.length === 0 ? (
+          <p className="px-5 py-4 text-caption">Modelling impact…</p>
+        ) : investors.length === 0 ? (
+          <p className="px-5 py-4 text-caption">
+            {data?.notice ?? "No test-client holdings match this strategy yet."}
+          </p>
+        ) : (
+          <>
+            <div
+              className={cn(
+                "flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 text-xs",
+                cashOk
+                  ? "border-[hsl(var(--glass-border))]"
+                  : "border-[hsl(var(--down)/0.4)] bg-[hsl(var(--down)/0.06)]",
+              )}
+            >
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <span className="text-muted-foreground">
+                  {totals?.investorCount ?? investors.length} investor
+                  {(totals?.investorCount ?? investors.length) === 1 ? "" : "s"}
+                </span>
+                <span>
+                  Buys <span className="font-mono font-semibold text-down">{centsToR(totals?.buyCents)}</span>
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  Total cost{" "}
+                  <span className="font-mono font-semibold text-down">
+                    {centsToR((totals?.buyCents ?? 0) + (totals?.buyFeesCents ?? 0))}
+                  </span>
+                </span>
+                <span>
+                  Sells <span className="font-mono font-semibold text-up">{centsToR(totals?.sellCents)}</span>
+                </span>
+                <span className="inline-flex items-center gap-1">
+                  Net proceeds{" "}
+                  <span className="font-mono font-semibold text-up">
+                    {centsToR(totals?.netProceedsCents)}
+                  </span>
+                </span>
+                <span className="text-muted-foreground">
+                  CA <span className="font-mono">{centsToR(totals?.residualCents)}</span>
+                </span>
+                <span className="text-muted-foreground">
+                  Reserve <span className="font-mono">{centsToR(totals?.reserveCents)}</span>
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full border border-[hsl(var(--glass-border))] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {scopeLabel}
+                </span>
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                    cashOk ? "bg-[hsl(var(--up)/0.15)] text-up" : "bg-[hsl(var(--down)/0.15)] text-down",
                   )}
-                </tr>
-              </thead>
-              <tbody>
-                {investors.map((inv) => {
-                  const isExpanded = expandedUserId === inv.user_id;
-                  return (
-                  <React.Fragment key={inv.user_id}>
-                    <tr
-                      onClick={() => setExpandedUserId((id) => (id === inv.user_id ? null : inv.user_id))}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setExpandedUserId((id) => (id === inv.user_id ? null : inv.user_id));
-                        }
-                      }}
-                      // biome-ignore lint/a11y/useSemanticElements: a <button> can't be a valid child of <tbody>/<tr>; role+tabIndex+onKeyDown on the row is the standard pattern for a clickable table row.
-                      role="button"
-                      tabIndex={0}
-                      aria-expanded={isExpanded}
-                      className={cn(
-                        "cursor-pointer border-b border-[hsl(var(--glass-border))] transition-colors",
-                        inv.shortfall
-                          ? "bg-[hsl(var(--down)/0.07)]"
-                          : "bg-amber-500/[0.035] hover:bg-amber-500/[0.065]",
-                      )}
-                    >
-                      <td className="px-5 py-3">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <ChevronDown
-                            className={cn(
-                              "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
-                              isExpanded && "rotate-180",
-                            )}
-                          />
-                          <span className="font-medium">{inv.name}</span>
-                          {!residualView && inv.lines.map((line) => (
-                            <span
-                              key={line.symbol}
-                              className={cn(
-                                "rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
-                                line.side === "buy"
-                                  ? "border-[hsl(var(--up)/0.3)] bg-[hsl(var(--up)/0.08)] text-up"
-                                  : line.side === "sell"
-                                    ? "border-[hsl(var(--down)/0.3)] bg-[hsl(var(--down)/0.08)] text-down"
-                                    : "border-[hsl(var(--glass-border))] bg-muted/30 text-muted-foreground",
-                              )}
-                            >
-                              {line.symbol} {line.side === "none" ? "no trade" : line.side}
-                            </span>
-                          ))}
-                        </div>
-                        <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-                          {inv.account || inv.user_id}
-                        </div>
-                      </td>
+                >
+                  {cashOk ? "Cash available" : "Insufficient cash"}
+                </span>
+              </div>
+            </div>
+            {!isExecute && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                      <th className="px-5 py-2 font-medium">Client</th>
                       {residualView ? (
                         <>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-                            {centsToR(inv.basketCents)}
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
-                            {centsToR(inv.residualCents)}
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-violet-400">
-                            {centsToR(inv.reserveCents)}
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-emerald-500">
-                            {centsToR(inv.strategyCashAfterCents)}
-                          </td>
-                          <td
-                            className={cn(
-                              "px-5 py-2 text-right font-mono tabular-nums font-semibold",
-                              inv.shortfall ? "text-down" : "text-foreground",
-                            )}
-                          >
-                            {centsToR(inv.reserveAfterCents)}
-                          </td>
+                          <th className="px-3 py-2 text-right font-medium">Basket</th>
+                          <th className="px-3 py-2 text-right font-medium">CA before</th>
+                          <th className="px-3 py-2 text-right font-medium">Reserve before</th>
+                          <th className="px-3 py-2 text-right font-medium">Strategy CA after</th>
+                          <th className="px-5 py-2 text-right font-medium">Reserve after</th>
                         </>
                       ) : (
                         <>
-                          <td className="px-3 py-2 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-                            <div className="space-y-1">
-                              {inv.lines.map((line) => (
-                                <div key={line.symbol}>
-                                  {line.lots == null
-                                    ? "—"
-                                    : Number.isInteger(line.lots)
-                                      ? line.lots
-                                      : line.lots.toLocaleString("en-ZA", { maximumFractionDigits: 2 })}
-                                </div>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-                            <div className="space-y-1">
-                              {inv.lines.map((line) => <div key={line.symbol}>{line.currentQty}</div>)}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
-                            <div className="space-y-1">
-                              {inv.lines.map((line) => <div key={line.symbol}>{line.targetQty}</div>)}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
-                            <div className="space-y-1">
-                              {inv.lines.map((line) => (
-                                <div key={line.symbol} className={line.deltaQty < 0 ? "text-down" : "text-up"}>
-                                  {line.deltaQty > 0 ? "+" : ""}{line.deltaQty}
-                                </div>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="px-5 py-2 text-right font-mono text-[11px] font-semibold tabular-nums">
-                            <div className="space-y-1">
-                              {inv.lines.map((line) => (
-                                <div
-                                  key={line.symbol}
-                                  className={line.currentPnlCents < 0 ? "text-down" : line.currentPnlCents > 0 ? "text-up" : "text-muted-foreground"}
-                                >
-                                  {line.currentPnlCents > 0 ? "+" : ""}{centsToR(line.currentPnlCents)}
-                                </div>
-                              ))}
-                            </div>
-                          </td>
+                          <th className="px-3 py-2 text-right font-medium">Lots</th>
+                          <th className="px-3 py-2 text-right font-medium">Current</th>
+                          <th className="px-3 py-2 text-right font-medium">New</th>
+                          <th className="px-3 py-2 text-right font-medium">Δ</th>
+                          <th className="px-5 py-2 text-right font-medium">P/L</th>
                         </>
                       )}
                     </tr>
-                    <tr>
-                      <td colSpan={6} className="p-0">
-                        <div
-                          className={cn(
-                            "grid transition-[grid-template-rows] duration-300 ease-out",
-                            isExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
-                          )}
-                        >
-                          <div className="overflow-hidden">
-                            <ClientDriftPanel investor={inv} strategyId={strategyId} strategyName={strategyName} />
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          )}
-          {!isExecute && standaloneIncreaseLegs.length > 0 ? (
-            <div className="flex items-start gap-3 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-3 text-xs">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={splitIncreaseLegs}
-                onClick={() => onSplitIncreaseLegsChange(!splitIncreaseLegs)}
-                className="relative mt-0.5 inline-flex h-5 w-9 shrink-0 appearance-none items-center rounded-full border-0 bg-transparent p-0 outline-none"
-              >
-                <span
-                  className={cn(
-                    "absolute inset-0 rounded-full transition-colors",
-                    splitIncreaseLegs ? "bg-primary" : "bg-[hsl(var(--foreground)/0.15)]",
-                  )}
-                />
-                <span
-                  className={cn(
-                    "relative h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
-                    splitIncreaseLegs ? "translate-x-[18px]" : "translate-x-0.5",
-                  )}
-                />
-              </button>
-              <span>
-                <span className="font-medium">
-                  Split {standaloneIncreaseLegs.map((l) => l.symbol).join(", ")} into{" "}
-                  {standaloneIncreaseLegs.length === 1 ? "its own leg" : "their own legs"}
-                </span>
-                <span className="block text-[10px] text-muted-foreground">
-                  Off (default): stays paired into the combined sequence, funded from strategy CA + reserve, no
-                  separate step. On: each increase gets its own wizard step and its own affordability check. Safe
-                  to flip back off at any point before you commit — it just changes how these legs are grouped.
-                </span>
-              </span>
-            </div>
-          ) : null}
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
-            <div>
-              <div className={cn("text-xs font-semibold", commitDisabled && "text-down")}>
-                {isExecute ? "Ready to commit this trade sequence?" : "Review the sequence before it goes to the IC"}
+                  </thead>
+                  <tbody>
+                    {investors.map((inv) => {
+                      const isExpanded = expandedUserId === inv.user_id;
+                      return (
+                        <React.Fragment key={inv.user_id}>
+                          <tr
+                            onClick={() =>
+                              setExpandedUserId((id) => (id === inv.user_id ? null : inv.user_id))
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setExpandedUserId((id) => (id === inv.user_id ? null : inv.user_id));
+                              }
+                            }}
+                            // biome-ignore lint/a11y/useSemanticElements: a <button> can't be a valid child of <tbody>/<tr>; role+tabIndex+onKeyDown on the row is the standard pattern for a clickable table row.
+                            role="button"
+                            tabIndex={0}
+                            aria-expanded={isExpanded}
+                            className={cn(
+                              "cursor-pointer border-b border-[hsl(var(--glass-border))] transition-colors",
+                              inv.shortfall
+                                ? "bg-[hsl(var(--down)/0.07)]"
+                                : inv.parked
+                                  ? "bg-amber-500/[0.07] hover:bg-amber-500/[0.11]"
+                                  : "bg-[hsl(var(--up)/0.05)] hover:bg-[hsl(var(--up)/0.09)]",
+                            )}
+                          >
+                            <td className="px-5 py-1.5">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <ChevronDown
+                                  className={cn(
+                                    "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                                    isExpanded && "rotate-180",
+                                  )}
+                                />
+                                <span className="font-medium">{inv.name}</span>
+                                {inv.parked ? (
+                                  <span
+                                    title="Not yet filled — will be rewritten to the new basket fee-free on IC approval instead of a real trade"
+                                    className="rounded-md border border-amber-400/40 bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber-300"
+                                  >
+                                    Unfilled
+                                  </span>
+                                ) : null}
+                                {!residualView &&
+                                  inv.lines.map((line) => (
+                                    <span
+                                      key={line.symbol}
+                                      className={cn(
+                                        "rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide",
+                                        line.side === "buy"
+                                          ? "border-[hsl(var(--up)/0.3)] bg-[hsl(var(--up)/0.08)] text-up"
+                                          : line.side === "sell"
+                                            ? "border-[hsl(var(--down)/0.3)] bg-[hsl(var(--down)/0.08)] text-down"
+                                            : "border-[hsl(var(--glass-border))] bg-muted/30 text-muted-foreground",
+                                      )}
+                                    >
+                                      {line.symbol} {line.side === "none" ? "no trade" : line.side}
+                                    </span>
+                                  ))}
+                              </div>
+                              <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
+                                {inv.account || inv.user_id}
+                              </div>
+                            </td>
+                            {residualView ? (
+                              <>
+                                <td className="px-3 py-1 text-right font-mono tabular-nums text-muted-foreground">
+                                  {centsToR(inv.basketCents)}
+                                </td>
+                                <td className="px-3 py-1 text-right font-mono tabular-nums text-emerald-500">
+                                  {centsToR(inv.residualCents)}
+                                </td>
+                                <td className="px-3 py-1 text-right font-mono tabular-nums text-violet-400">
+                                  {centsToR(inv.reserveCents)}
+                                </td>
+                                <td className="px-3 py-1 text-right font-mono tabular-nums text-emerald-500">
+                                  {centsToR(inv.strategyCashAfterCents)}
+                                </td>
+                                <td
+                                  className={cn(
+                                    "px-5 py-1 text-right font-mono tabular-nums font-semibold",
+                                    inv.shortfall ? "text-down" : "text-foreground",
+                                  )}
+                                >
+                                  {centsToR(inv.reserveAfterCents)}
+                                </td>
+                              </>
+                            ) : (
+                              <>
+                                <td className="px-3 py-1 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                                  <div className="space-y-0.5">
+                                    {inv.lines.map((line) => (
+                                      <div key={line.symbol}>
+                                        {line.lots == null
+                                          ? "—"
+                                          : Number.isInteger(line.lots)
+                                            ? line.lots
+                                            : line.lots.toLocaleString("en-ZA", { maximumFractionDigits: 2 })}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-1 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                                  <div className="space-y-0.5">
+                                    {inv.lines.map((line) => (
+                                      <div key={line.symbol}>{line.currentQty}</div>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-1 text-right font-mono text-[11px] font-semibold tabular-nums">
+                                  <div className="space-y-0.5">
+                                    {inv.lines.map((line) => (
+                                      <div key={line.symbol}>{line.targetQty}</div>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-1 text-right font-mono text-[11px] font-semibold tabular-nums">
+                                  <div className="space-y-0.5">
+                                    {inv.lines.map((line) => (
+                                      <div
+                                        key={line.symbol}
+                                        className={line.deltaQty < 0 ? "text-down" : "text-up"}
+                                      >
+                                        {line.deltaQty > 0 ? "+" : ""}
+                                        {line.deltaQty}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="px-5 py-1 text-right font-mono text-[11px] font-semibold tabular-nums">
+                                  <div className="space-y-0.5">
+                                    {inv.lines.map((line) => (
+                                      <div
+                                        key={line.symbol}
+                                        className={
+                                          line.currentPnlCents < 0
+                                            ? "text-down"
+                                            : line.currentPnlCents > 0
+                                              ? "text-up"
+                                              : "text-muted-foreground"
+                                        }
+                                      >
+                                        {line.currentPnlCents > 0 ? "+" : ""}
+                                        {centsToR(line.currentPnlCents)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </td>
+                              </>
+                            )}
+                          </tr>
+                          <tr>
+                            <td colSpan={6} className="p-0">
+                              <div
+                                className={cn(
+                                  "grid transition-[grid-template-rows] duration-300 ease-out",
+                                  isExpanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+                                )}
+                              >
+                                <div className="overflow-hidden">
+                                  <ClientDriftPanel
+                                    investor={inv}
+                                    strategyId={strategyId}
+                                    strategyName={strategyName}
+                                  />
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        </React.Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-              <div className={cn("mt-0.5 text-[10px]", commitDisabled ? "font-medium text-down" : "text-muted-foreground")}>
-                {commitDisabled
-                  ? commitTitle
-                  : isExecute
-                    ? "Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet."
-                    : "Continue to pick each leg's buy instrument and review the full fee bridge before this is sent to the IC."}
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {isExecute ? (
+            )}
+            {!isExecute && standaloneIncreaseLegs.length > 0 ? (
+              <div className="flex items-start gap-3 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-3 text-xs">
                 <button
                   type="button"
-                  onClick={onBackToLegs}
-                  className="rounded-lg border border-[hsl(var(--glass-border))] px-4 py-2 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
+                  role="switch"
+                  aria-checked={splitIncreaseLegs}
+                  onClick={() => onSplitIncreaseLegsChange(!splitIncreaseLegs)}
+                  className="relative mt-0.5 inline-flex h-5 w-9 shrink-0 appearance-none items-center rounded-full border-0 bg-transparent p-0 outline-none"
                 >
-                  ← Edit legs
+                  <span
+                    className={cn(
+                      "absolute inset-0 rounded-full transition-colors",
+                      splitIncreaseLegs ? "bg-primary" : "bg-[hsl(var(--foreground)/0.15)]",
+                    )}
+                  />
+                  <span
+                    className={cn(
+                      "relative h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
+                      splitIncreaseLegs ? "translate-x-[18px]" : "translate-x-0.5",
+                    )}
+                  />
                 </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={isExecute ? onCommit : onProceed}
-                disabled={commitDisabled}
-                title={commitTitle}
-                className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                <Send className="h-3.5 w-3.5" />
-                {isExecute ? (submitting ? "Committing…" : "Commit trade sequence") : "Continue to trade sequence →"}
-              </button>
+                <span>
+                  <span className="font-medium">
+                    Split {standaloneIncreaseLegs.map((l) => l.symbol).join(", ")} into{" "}
+                    {standaloneIncreaseLegs.length === 1 ? "its own leg" : "their own legs"}
+                  </span>
+                  <span className="block text-[10px] text-muted-foreground">
+                    Off (default): stays paired into the combined sequence, funded from strategy CA + reserve,
+                    no separate step. On: each increase gets its own wizard step and its own affordability
+                    check. Safe to flip back off at any point before you commit — it just changes how these
+                    legs are grouped.
+                  </span>
+                </span>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
+              <div>
+                <div className={cn("text-xs font-semibold", commitDisabled && "text-down")}>
+                  {isExecute
+                    ? "Ready to commit this trade sequence?"
+                    : "Review the sequence before it goes to the IC"}
+                </div>
+                <div
+                  className={cn(
+                    "mt-0.5 text-[10px]",
+                    commitDisabled ? "font-medium text-down" : "text-muted-foreground",
+                  )}
+                >
+                  {commitDisabled
+                    ? commitTitle
+                    : isExecute
+                      ? "Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet."
+                      : "Continue to pick each leg's buy instrument and review the full fee bridge before this is sent to the IC."}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {isExecute ? (
+                  <button
+                    type="button"
+                    onClick={onBackToLegs}
+                    className="rounded-lg border border-[hsl(var(--glass-border))] px-4 py-2 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
+                  >
+                    ← Edit legs
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={isExecute ? onCommit : onProceed}
+                  disabled={commitDisabled}
+                  title={commitTitle}
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground shadow-[0_8px_24px_hsl(var(--primary)/0.18)] transition hover:-translate-y-0.5 disabled:translate-y-0 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  {isExecute
+                    ? submitting
+                      ? "Committing…"
+                      : "Commit trade sequence"
+                    : "Continue to trade sequence →"}
+                </button>
+              </div>
             </div>
-          </div>
-        </>
-      ))}
+          </>
+        ))}
     </GlassSection>
   );
 }
@@ -2743,12 +3110,17 @@ function ProposalsList({
   pushingId,
   setPushingId,
   canPush,
+  open,
+  onOpenChange,
 }: {
   pushingId: string | null;
   setPushingId: (id: string | null) => void;
   canPush: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const qc = useQueryClient();
+  const [cancellingId, setCancellingId] = React.useState<string | null>(null);
   const q = useQuery<{ requests: RebalanceRequest[]; notice?: string }>({
     queryKey: ["ric-rebalance-requests"],
     refetchInterval: 30_000,
@@ -2762,15 +3134,41 @@ function ProposalsList({
   });
   const requests = q.data?.requests ?? []; // show all; the status chip differentiates
   const codes = rebalanceCodeMap(requests);
-  const [open, setOpen] = React.useState(false);
 
-  async function push(id: string) {
+  async function bookOrders(id: string) {
     setPushingId(id);
     try {
-      await fetch(`/api/rebalance/requests/${id}/push`, { method: "POST" });
+      const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to_status: "executed" }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        window.alert(body.error ?? "Failed to book orders.");
+      }
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
     } finally {
       setPushingId(null);
+    }
+  }
+
+  async function cancelProposal(id: string) {
+    if (!window.confirm("Cancel this IC-approved rebalance? No orders will be booked.")) return;
+    setCancellingId(id);
+    try {
+      const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ to_status: "cancelled" }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        window.alert(body.error ?? "Failed to cancel.");
+      }
+      await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+    } finally {
+      setCancellingId(null);
     }
   }
 
@@ -2792,7 +3190,7 @@ function ProposalsList({
       right={
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => onOpenChange(!open)}
           className="inline-flex items-center gap-1.5 rounded-md border border-[hsl(var(--glass-border))] px-2.5 py-1 text-[11px] font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
         >
           {open ? "Collapse" : "Expand"}
@@ -2800,9 +3198,7 @@ function ProposalsList({
         </button>
       }
     >
-      {open ? (
-        q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p>
-      ) : null}
+      {open ? q.data?.notice && <p className="mb-3 text-xs text-amber-500">{q.data.notice}</p> : null}
       {!open ? null : requests.length === 0 && !q.isLoading ? (
         <p className="text-caption">No proposals yet. Build one above and submit it to the IC.</p>
       ) : (
@@ -2833,27 +3229,54 @@ function ProposalsList({
                     </p>
                   </div>
                 </div>
-                <div className="shrink-0">
+                <div className="flex shrink-0 items-center gap-2">
                   {r.status === "pending" && (
                     <Link
                       href="/oems/committee"
-                      className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)]"
+                      className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90"
                     >
-                      At IC
+                      Review in IC
                     </Link>
                   )}
                   {r.status === "ic_approved" && (
-                    <button
-                      type="button"
-                      onClick={() => push(r.id)}
-                      disabled={!canPush || pushingId === r.id}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-                    >
-                      <Rocket className="h-3.5 w-3.5" />{" "}
-                      {pushingId === r.id ? "Sending…" : "Send to Order Book"}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => cancelProposal(r.id)}
+                        disabled={cancellingId === r.id || pushingId === r.id}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
+                      >
+                        {cancellingId === r.id ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Cancelling…
+                          </>
+                        ) : (
+                          "Cancel"
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => bookOrders(r.id)}
+                        disabled={!canPush || pushingId === r.id || cancellingId === r.id}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+                      >
+                        {pushingId === r.id ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Releasing…
+                          </>
+                        ) : (
+                          <>
+                            <Rocket className="h-3.5 w-3.5" /> Release to Rebalance Tab
+                          </>
+                        )}
+                      </button>
+                    </>
                   )}
-                  {r.status === "executed" && <span className="text-xs text-muted-foreground">Executed</span>}
+                  {r.status === "executed" && (
+                    <span className="text-xs text-muted-foreground">
+                      Released to Rebalance tab — send to order book from there
+                    </span>
+                  )}
                 </div>
               </div>
             );

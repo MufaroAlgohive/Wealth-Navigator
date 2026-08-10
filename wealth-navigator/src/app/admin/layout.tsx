@@ -1,9 +1,9 @@
-import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
+import type { ReactNode } from "react";
 
-import { getAdminContext, type AdminContext } from "@/lib/admin/rbac";
-import { AdminProvider } from "@/lib/admin/context";
 import { PlatformShell } from "@/components/platform/platform-shell";
+import { AdminProvider } from "@/lib/admin/context";
+import { type AdminContext, getAdminContext } from "@/lib/admin/rbac";
 
 export const dynamic = "force-dynamic";
 
@@ -34,8 +34,8 @@ export default async function AdminLayout({ children }: { children: ReactNode })
           <div className="glass-panel rounded-2xl p-8 text-center">
             <h1 className="text-section text-base">Admin access required</h1>
             <p className="text-caption mt-2 leading-relaxed">
-              {res.email} is signed in but is not a member of the admin team. Ask an
-              administrator to add your account, then reload this page.
+              {res.email} is signed in but is not a member of the admin team. Ask an administrator to add your
+              account, then reload this page.
             </p>
           </div>
         </div>
@@ -56,6 +56,7 @@ export default async function AdminLayout({ children }: { children: ReactNode })
         : "Design-preview mode (ADMIN_PREVIEW): not authenticated; all sections shown, no live data.";
     ctx = {
       email: "preview@local",
+      userId: "",
       fullName: "Design Preview",
       role: "admin",
       pageAccess: [],

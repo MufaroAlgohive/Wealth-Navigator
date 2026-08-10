@@ -78,6 +78,18 @@ export interface ObservedFill {
    * position. The client holds 40 shares nobody bought.
    */
   orderedQty: number;
+  /**
+   * This fill's cash leg is settled elsewhere, not by moving `wallets.balance`
+   * directly — e.g. a rebalance swap, where a sell's proceeds fund the
+   * paired buys and only the net leftover (after fees drawn from the 8%
+   * execution reserve) becomes residual cash inside the strategy, never a
+   * raw wallet credit/debit. Lot mechanics (open, close, FIFO split, cost
+   * basis) are completely unaffected — this only skips the wallet UPDATE and
+   * keeps the settlement ledger's cash total at what it already was, so nothing
+   * about quantity idempotency changes either. Defaults to false: every
+   * existing caller (real IRESS fills) is completely unaffected.
+   */
+  skipCashMovement?: boolean;
 }
 
 /** What a settlement would do, or did. Amounts in the units named. */
@@ -416,17 +428,36 @@ export async function planSettlement(
      Every order the app or the desk book raises carries payload.holding_id
      (send-to-market route.ts:739, client-order route.ts). Derive the scope from
      that lot's own family_member_id, so a sell can only ever consume lots
-     belonging to whoever the order was raised for. */
+     belonging to whoever the order was raised for.
+
+     SAME ARGUMENT, ONE MORE AXIS: a client CAN hold the same security under
+     two unrelated strategies (live data: user b215eb9a holds STX500 both as
+     a lone 2-share lot under one strategy and as 10 shares under another,
+     "Test Strategy") — a bare (user, security) FIFO can't tell them apart
+     either, and would close the wrong strategy's shares, or the older lot
+     first regardless of which basket the sell actually came from. Scope to
+     the source lot's OWN strategy_id when it has one — same reasoning as
+     family_member_id, same source of truth. Deliberately NOT symmetric with
+     family_member_id's null-branch: when the source lot's strategy_id is
+     null, that's just "not strategy-scoped", not a real Q the way a missing
+     family_member_id answers "whose shares are these" — adding a hard
+     `.is("strategy_id", null)` constraint here would risk excluding a
+     legitimately strategy-tagged lot for a client whose OTHER lot on this
+     security happens to lack the column, which is worse than the bug this
+     fixes. Only narrows when there's a positive strategy to narrow to. */
   let ownerFamilyId: string | null = null;
+  let ownerStrategyId: string | null = null;
   if (fill.holdingId) {
     const { data: srcLot, error: srcErr } = await deps.retail
       .from("stock_holdings_c")
-      .select("family_member_id")
+      .select("family_member_id, strategy_id")
       .eq("id", fill.holdingId)
       .maybeSingle();
     if (srcErr) return { ...plan, blocked: `source lot read failed: ${srcErr.message}` };
     if (!srcLot) return { ...plan, blocked: `sell names holding ${fill.holdingId}, which does not exist` };
-    ownerFamilyId = (srcLot as { family_member_id: string | null }).family_member_id ?? null;
+    const src = srcLot as { family_member_id: string | null; strategy_id: string | null };
+    ownerFamilyId = src.family_member_id ?? null;
+    ownerStrategyId = src.strategy_id ?? null;
   }
 
   /* `trade_side` DESC puts pending sells first. request-sell.js models a pending
@@ -448,6 +479,7 @@ export async function planSettlement(
   lotQuery = ownerFamilyId
     ? lotQuery.eq("family_member_id", ownerFamilyId)
     : lotQuery.is("family_member_id", null);
+  if (ownerStrategyId) lotQuery = lotQuery.eq("strategy_id", ownerStrategyId);
   const { data: lots, error: lotErr } = await lotQuery
     .order("trade_side", { ascending: false })
     .order("created_at", { ascending: true })
@@ -841,27 +873,31 @@ export async function settleFill(deps: SettlementDeps, fill: ObservedFill): Prom
     return { plan, applied: true, dryRun: false, error: null };
   }
 
-  const { data: moved, error: walletErr } = await deps.retail
-    .from("wallets")
-    .update({ balance: plan.walletAfter, updated_at: nowIso })
-    // Primary key, not user_id — a user can have two wallet rows.
-    .eq("id", plan.walletId)
-    // Optimistic concurrency: refuse if anything moved the balance since we planned.
-    .eq("balance", plan.walletBefore)
-    .select("id");
-  if (walletErr) return abort(`wallet update failed: ${walletErr.message}`);
-  if (!moved || moved.length === 0) {
-    return abort("wallet balance changed between plan and apply — retrying next cycle");
+  if (!fill.skipCashMovement) {
+    const { data: moved, error: walletErr } = await deps.retail
+      .from("wallets")
+      .update({ balance: plan.walletAfter, updated_at: nowIso })
+      // Primary key, not user_id — a user can have two wallet rows.
+      .eq("id", plan.walletId)
+      // Optimistic concurrency: refuse if anything moved the balance since we planned.
+      .eq("balance", plan.walletBefore)
+      .select("id");
+    if (walletErr) return abort(`wallet update failed: ${walletErr.message}`);
+    if (!moved || moved.length === 0) {
+      return abort("wallet balance changed between plan and apply — retrying next cycle");
+    }
   }
 
   // ---- CONFIRM. -----------------------------------------------------------
+  // skipCashMovement: the cash total stays at whatever it already was — the
+  // wallet was never touched, so nothing here should claim it was.
   await deps.institutional
     .from("oems_fill_settlement_c")
     .update({
       last_error: null,
       holding_ids: touchedHoldingIds,
       settled_qty: plan.alreadySettledQty + appliedQty,
-      settled_cash_rands: plan.settledCashAfter,
+      settled_cash_rands: fill.skipCashMovement ? plan.alreadySettledCash : plan.settledCashAfter,
       last_settled_at: nowIso,
     })
     .eq("order_id", plan.orderId);
@@ -875,9 +911,10 @@ export async function settleFill(deps: SettlementDeps, fill: ObservedFill): Prom
       symbol: plan.symbol,
       qty: plan.deltaQty,
       avgFillRands: plan.avgFillCents / 100,
-      cashDeltaRands: plan.cashDeltaRands,
-      walletBefore: plan.walletBefore,
-      walletAfter: plan.walletAfter,
+      cashSettledElsewhere: fill.skipCashMovement === true,
+      cashDeltaRands: fill.skipCashMovement ? 0 : plan.cashDeltaRands,
+      walletBefore: fill.skipCashMovement ? null : plan.walletBefore,
+      walletAfter: fill.skipCashMovement ? null : plan.walletAfter,
       holdings: touchedHoldingIds,
     }),
   );
