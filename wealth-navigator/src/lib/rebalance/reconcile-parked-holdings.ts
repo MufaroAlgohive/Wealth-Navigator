@@ -65,7 +65,8 @@ export async function reconcileParkedHoldings(
 ): Promise<ReconcileParkedResult> {
   const result: ReconcileParkedResult = { reconciledUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
-  const BROKER = isUatEnv()
+  const IS_UAT = isUatEnv();
+  const BROKER = IS_UAT
     ? process.env.IRESS_UAT_DESTINATION?.trim() || "LONGMARK CARE"
     : process.env.IRESS_DESTINATION?.trim() || "LONGMARK CARE";
 
@@ -306,14 +307,14 @@ export async function reconcileParkedHoldings(
                 sent_by: clientEmail,
                 sent_at: now,
                 trader: clientEmail,
-                uat_test: true,
+                uat_test: IS_UAT,
                 broker_account_code: ACCOUNT_CODE,
               },
               result_payload: {
                 tif: "DAY",
                 venue: "JSE",
                 broker: BROKER,
-                uat_test: true,
+                uat_test: IS_UAT,
                 preflight: {
                   ok: true,
                   code: "pass",
