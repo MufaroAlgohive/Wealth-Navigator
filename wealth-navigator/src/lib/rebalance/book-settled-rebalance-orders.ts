@@ -59,6 +59,13 @@ export async function bookSettledRebalanceOrders(
   proposedComposition: ProposedLine[],
   rebalanceRequestId?: string,
   isUatStrategy?: boolean,
+  /**
+   * Single-client rebalance: confine every read and write below to this one
+   * account. Without it a `single_user` request would fan its target
+   * quantities out across the whole strategy — the composition it carries is
+   * one client's personal holdings, not a model template.
+   */
+  restrictToUserId?: string,
 ): Promise<BookSettledResult> {
   const result: BookSettledResult = { bookedUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
@@ -109,7 +116,7 @@ export async function bookSettledRebalanceOrders(
     result.errors.push(settledRes.error.message);
     return result;
   }
-  const settledRows = (settledRes.data ?? []) as Array<{
+  const allSettledRows = (settledRes.data ?? []) as Array<{
     id: string;
     user_id: string;
     security_id: string;
@@ -117,6 +124,12 @@ export async function bookSettledRebalanceOrders(
     transaction_id: string | null;
     Fill_date: string | null;
   }>;
+  // Narrowing here rather than in the query keeps the fallback lookup above
+  // (strategy_id, then strategy_name_snapshot) in one place, and the row set
+  // is a single strategy's holdings either way.
+  const settledRows = restrictToUserId
+    ? allSettledRows.filter((r) => r.user_id === restrictToUserId)
+    : allSettledRows;
   if (settledRows.length === 0) return result;
 
   const byUser = new Map<string, typeof settledRows>();

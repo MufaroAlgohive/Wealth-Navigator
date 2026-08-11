@@ -71,7 +71,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const { data: request, error: reqErr } = await db
     .from("rebalance_request_c")
-    .select("id, status, requested_by, strategy_id, current_composition, proposed_composition")
+    .select(
+      "id, status, requested_by, strategy_id, current_composition, proposed_composition, affected_investors",
+    )
     .eq("id", id)
     .maybeSingle();
 
@@ -163,6 +165,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ? request.proposed_composition
       : [];
 
+    // A "single_user" request carries ONE client's own target quantities, not
+    // a model template. Both booking passes below normally fan the proposed
+    // composition out across every investor in the strategy, which for this
+    // scope would rewrite everyone else's orders to one account's numbers — so
+    // they get confined to that account. Completion is likewise scoped: see
+    // maybeCompleteRebalance, which skips the model flip and return boundary
+    // entirely for this scope, because the strategy itself does not change.
+    const affected = request.affected_investors as { scope?: unknown; user_id?: unknown } | null;
+    const isSingleUser = affected?.scope === "single_user";
+    const singleUserId = typeof affected?.user_id === "string" ? affected.user_id : "";
+    if (isSingleUser && !singleUserId) {
+      return NextResponse.json(
+        { ok: false, error: "single_user rebalance is missing affected_investors.user_id" },
+        { status: 422 },
+      );
+    }
+    const restrictToUserId = isSingleUser ? singleUserId : undefined;
+
     try {
       parked = await reconcileParkedHoldings(
         retailDb,
@@ -173,6 +193,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         proposedComposition,
         id,
         isUatStrategy,
+        restrictToUserId,
       );
     } catch (err) {
       parked = { reconciledUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
@@ -192,6 +213,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         proposedComposition,
         id,
         isUatStrategy,
+        restrictToUserId,
       );
     } catch (err) {
       booked = { bookedUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };

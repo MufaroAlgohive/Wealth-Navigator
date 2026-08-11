@@ -39,6 +39,8 @@ interface ProposedLine {
 export interface CompleteRebalanceResult {
   completed: boolean;
   error?: string;
+  /** "single_user" rebalances finish without touching anything strategy-level. */
+  scope?: "strategy" | "single_user";
   /** Return-boundary outcome, when the rebalance reached the flip step. */
   boundary?: {
     sealed: boolean;
@@ -67,11 +69,32 @@ export async function maybeCompleteRebalance(
 
   const reqRes = await institutionalDb
     .from("rebalance_request_c")
-    .select("strategy_id, proposed_composition")
+    .select("strategy_id, proposed_composition, affected_investors")
     .eq("id", rebalanceRequestId)
     .maybeSingle();
   if (reqRes.error) return { completed: false, error: reqRes.error.message };
   if (!reqRes.data) return { completed: false };
+
+  // A single-client rebalance moves ONE account's own holdings. The strategy
+  // itself — its composition, its weights, its published return chain — is not
+  // being changed and must not be touched. `proposed_composition` on these
+  // requests is that one client's personal share quantities, NOT a model
+  // template (SingleClientRebalancePanel builds it from their own targets), so
+  // writing it to `strategies_c.holdings` would redefine the strategy for every
+  // other investor, and sealing a return boundary off it would rebase the
+  // strategy's published value on one account's trade.
+  //
+  // Everything client-level still runs: the fills already moved their holdings
+  // with cost basis intact, and settleRebalanceCashForClients (the caller's
+  // next step, gated on `completed`) still applies their reserve-funded fees
+  // and residual. Their PUBLISHED per-client YTD lives in
+  // `client_strategy_returns_c`, whose publisher has not been ported off the
+  // CRM yet — until it is, this path preserves their money but not their
+  // published return series.
+  const affected = reqRes.data.affected_investors as { scope?: unknown } | null;
+  if (typeof affected?.scope === "string" && affected.scope === "single_user") {
+    return { completed: true, scope: "single_user" };
+  }
 
   const strategyName = reqRes.data.strategy_id as string;
   const proposed = (
@@ -143,6 +166,7 @@ export async function maybeCompleteRebalance(
 
   return {
     completed: true,
+    scope: "strategy",
     boundary: {
       sealed: true,
       ytdPct: boundary.ytdPct,

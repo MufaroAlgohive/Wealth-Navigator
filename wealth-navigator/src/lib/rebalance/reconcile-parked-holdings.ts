@@ -76,6 +76,13 @@ export async function reconcileParkedHoldings(
   proposedComposition: ProposedLine[],
   rebalanceRequestId?: string,
   isUatStrategy?: boolean,
+  /**
+   * Single-client rebalance: confine every read and write below to this one
+   * account. Without it a `single_user` request would fan its target
+   * quantities out across the whole strategy — the composition it carries is
+   * one client's personal holdings, not a model template.
+   */
+  restrictToUserId?: string,
 ): Promise<ReconcileParkedResult> {
   const result: ReconcileParkedResult = { reconciledUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
@@ -139,7 +146,7 @@ export async function reconcileParkedHoldings(
     result.errors.push(parkedRes.error.message);
     return result;
   }
-  const parkedRows = (parkedRes.data ?? []) as Array<{
+  const allParkedRows = (parkedRes.data ?? []) as Array<{
     id: string;
     user_id: string;
     security_id: string;
@@ -148,6 +155,12 @@ export async function reconcileParkedHoldings(
     avg_fill: number | null;
     Expected_fill: number | null;
   }>;
+  // Narrowing here rather than in the query keeps the fallback lookup above
+  // (strategy_id, then strategy_name_snapshot) in one place, and the row set
+  // is a single strategy's holdings either way.
+  const parkedRows = restrictToUserId
+    ? allParkedRows.filter((r) => r.user_id === restrictToUserId)
+    : allParkedRows;
   if (parkedRows.length === 0) return result;
 
   const byUser = new Map<string, typeof parkedRows>();
