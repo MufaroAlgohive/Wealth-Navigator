@@ -164,6 +164,19 @@ export async function settleRebalanceCashForClients(
         residualCents,
       });
 
+      // Draw the rebalance's fees from the execution reserve. This adds to the
+      // transaction's consumed total rather than assigning one, because the
+      // reserve has a second consumer: buy-fill slippage reconciliation
+      // (reconcileBufferDrawdowns). That function recomputes its own slippage
+      // figure on every fill, and used to assign it outright — which erased
+      // this draw whenever a buy fill landed afterwards. It now replaces only
+      // its own contribution and carries the rest through, so adding here is
+      // safe in either order.
+      //
+      // These fees get no `buffer_drawdowns_c` row of their own: that table's
+      // `event_type` CHECK is a closed set (slippage_drawdown / shortfall), so
+      // giving rebalance fees a ledger entry needs a migration. Until then the
+      // column itself is the only record of this draw.
       if (transactionId && bridge.reserveUsedCents > 0) {
         const { data: txn } = await retailDb
           .from("transactions")

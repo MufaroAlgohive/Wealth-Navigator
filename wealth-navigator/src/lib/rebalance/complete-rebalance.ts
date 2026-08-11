@@ -176,7 +176,16 @@ export async function maybeCompleteRebalance(
   const lines = proposed.filter(
     (p) => (p.action ?? "hold") !== "sell" && Math.round(Number(p.shares) || 0) > 0,
   );
-  if (lines.length === 0) return { completed: false, error: "proposed composition has no positive lines" };
+  // "Nothing proposed at all" and "everything proposed is a sell to zero" are
+  // different things. The second is a full liquidation — a legitimate target
+  // composition of nothing — and treating it as malformed used to abandon the
+  // rebalance after its orders had already filled: the model never flipped, no
+  // boundary of either kind was recorded, and every affected owner's return
+  // series then jammed on an unexplained composition change.
+  const isLiquidation = proposed.length > 0 && lines.length === 0;
+  if (proposed.length === 0) {
+    return { completed: false, error: "proposed composition is empty" };
+  }
 
   const symbols = lines.map((p) => bare(p.ticker));
   const symbolCandidates = symbols.flatMap((s) => [s, `${s}.JO`]);
@@ -223,6 +232,10 @@ export async function maybeCompleteRebalance(
     actorId: actorId ?? "",
     owners: affectedOwners,
     holdingsBefore: stratRes.data.holdings ?? null,
+    // A liquidation values its securities at zero and moves the whole prior
+    // complete value into continuity cash, which is exactly right: the
+    // strategy still holds what it held, just as cash rather than stock.
+    allowEmptyHoldings: isLiquidation,
   });
   if (!boundary.sealed) {
     return {

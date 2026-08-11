@@ -172,6 +172,14 @@ export async function sealRebalanceBoundary(
     actorId: string;
     /** Owners this settlement moved — recorded for the client-side boundary. */
     owners: BoundaryOwner[];
+    /**
+     * Set only for a deliberate full liquidation, where an empty target
+     * composition is the intended result rather than a malformed input. The
+     * securities value is then zero and the whole prior complete value moves
+     * into continuity cash. Left false, an empty basket is refused, because
+     * silently sealing one would tell the publisher the strategy holds nothing.
+     */
+    allowEmptyHoldings?: boolean;
     holdingsBefore?: unknown;
     effectiveAt?: Date;
   },
@@ -182,7 +190,9 @@ export async function sealRebalanceBoundary(
   const holdings = params.holdings
     .map((h) => ({ symbol: bare(h.symbol), shares: Math.max(0, Math.round(Number(h.shares) || 0)) }))
     .filter((h) => h.symbol && h.shares > 0);
-  if (holdings.length === 0) return { sealed: false, error: "no positive holdings to value" };
+  if (holdings.length === 0 && !params.allowEmptyHoldings) {
+    return { sealed: false, error: "no positive holdings to value" };
+  }
   if (!actorId) return { sealed: false, error: "no actor to attribute the settlement to" };
 
   const { priceCents, freshestAt } = await latestPrices(
@@ -194,7 +204,8 @@ export async function sealRebalanceBoundary(
   // understates securities value, which the RPC would then absorb into
   // continuity cash — silently and permanently misstating what the strategy
   // holds. Refusing to seal keeps the rebalance visibly unfinished instead,
-  // which is recoverable; a bad seal is not.
+  // which is recoverable; a bad seal is not. A liquidation has nothing to
+  // price, so there is nothing to be missing.
   const missing = holdings.filter((h) => !priceCents.has(h.symbol)).map((h) => h.symbol);
   if (missing.length > 0) {
     return {

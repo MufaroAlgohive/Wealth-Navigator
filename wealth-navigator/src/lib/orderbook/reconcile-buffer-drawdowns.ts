@@ -20,15 +20,22 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * Port of the CRM's `reconcileBufferDrawdowns` in api/orderbook/update-price.js,
  * which the OEM previously reached over HTTP for every UAT buy self-fill.
  *
- * KNOWN INTERACTION — this writes `buffer_consumed_cents` ABSOLUTELY (it is
- * the total slippage drawn, recomputed from scratch), while
- * settleRebalanceCashForClients ADDS the rebalance's own reserve-funded fees
- * to the same column. They are two consumers of one pool with different write
- * models. Today the ordering saves us: every buy fill in a rebalance runs this
- * first, and the rebalance's fee settlement runs once at completion, after.
- * But a later, unrelated buy fill on the same transaction would recompute from
- * slippage alone and wipe the rebalance's recorded fee consumption. Worth
- * unifying (a single ledger-derived total) before this pattern spreads.
+ * SHARED POOL — the reserve has a second consumer. Rebalance fees are drawn
+ * from the same `buffer_consumed_cents` by settleRebalanceCashForClients,
+ * which adds its total rather than recomputing one. This function used to
+ * assign the slippage total outright, so whichever ran last won: an ordinary
+ * buy fill landing after a rebalance would recompute from slippage alone and
+ * silently erase the rebalance's fees.
+ *
+ * It now only ever replaces its OWN contribution. The portion of the column
+ * that this function's previous slippage rows don't account for is treated as
+ * somebody else's draw and carried through untouched. That keeps the two
+ * consumers independent in either order, and needs no schema change — the
+ * `buffer_drawdowns_c.event_type` CHECK is a closed set, so rebalance fees
+ * cannot be given a ledger row of their own without a migration. It also means
+ * consumption recorded before the ledger existed (six transactions, R689.09,
+ * written straight to the column) survives rather than being zeroed on the
+ * first recompute.
  *
  * Never throws: a reconciliation hiccup must not fail a real fill.
  */
@@ -37,6 +44,9 @@ export interface BufferReconcileResult {
   transactionsTouched: number;
   errors: string[];
 }
+
+/** Slippage rows this function owns and rewrites on every recompute. */
+const SLIPPAGE_EVENT_TYPES = ["slippage_drawdown", "shortfall"] as const;
 
 interface HoldingRow {
   id: string;
@@ -108,14 +118,34 @@ export async function reconcileBufferDrawdowns(
         }
         const buys = ((holdingsRes.data ?? []) as HoldingRow[]).filter(isBuy);
 
+        // What this function contributed last time. Only `slippage_drawdown`
+        // counts — a `shortfall` row records slippage the reserve could NOT
+        // cover, so it never consumed anything. Whatever the column holds
+        // beyond this belongs to the other consumer (rebalance fees, or a
+        // pre-ledger direct write) and must survive the recompute below.
+        const priorRes = await retailDb
+          .from("buffer_drawdowns_c")
+          .select("delta_cents")
+          .eq("transaction_id", txId)
+          .eq("event_type", "slippage_drawdown");
+        if (priorRes.error) {
+          result.errors.push(`tx ${txId}: ${priorRes.error.message}`);
+          continue;
+        }
+        const priorSlippage = ((priorRes.data ?? []) as Array<{ delta_cents: number | null }>).reduce(
+          (sum, r) => sum + Math.max(0, Math.round(Number(r.delta_cents) || 0)),
+          0,
+        );
+        const otherConsumers = Math.max(0, Math.round(Number(tx.buffer_consumed_cents) || 0) - priorSlippage);
+
         await retailDb
           .from("buffer_drawdowns_c")
           .delete()
           .eq("transaction_id", txId)
-          .in("event_type", ["slippage_drawdown", "shortfall"]);
+          .in("event_type", SLIPPAGE_EVENT_TYPES as unknown as string[]);
 
         let remaining = bufferPool;
-        let totalConsumed = 0;
+        let slippageConsumed = 0;
         const rows: Array<Record<string, unknown>> = [];
         for (const h of buys) {
           const qty = Math.abs(Number(h.quantity) || 0);
@@ -149,7 +179,7 @@ export async function reconcileBufferDrawdowns(
               notes: "Fill price above quote — absorbed by execution reserve",
             });
             remaining -= drawn;
-            totalConsumed += drawn;
+            slippageConsumed += drawn;
           }
           const short = need - drawn;
           if (short > 0) {
@@ -166,10 +196,13 @@ export async function reconcileBufferDrawdowns(
           const insertRes = await retailDb.from("buffer_drawdowns_c").insert(rows);
           if (insertRes.error) result.errors.push(`tx ${txId}: ${insertRes.error.message}`);
         }
-        if (Math.round(Number(tx.buffer_consumed_cents) || 0) !== totalConsumed) {
+        // Replace only this function's own contribution; anything else the
+        // column was carrying stays.
+        const consumed = otherConsumers + slippageConsumed;
+        if (Math.round(Number(tx.buffer_consumed_cents) || 0) !== consumed) {
           const updRes = await retailDb
             .from("transactions")
-            .update({ buffer_consumed_cents: totalConsumed })
+            .update({ buffer_consumed_cents: consumed })
             .eq("id", txId);
           if (updRes.error) result.errors.push(`tx ${txId}: ${updRes.error.message}`);
         }
