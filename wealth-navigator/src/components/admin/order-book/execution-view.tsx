@@ -37,16 +37,16 @@ import { ChevronRight, Loader2, Pencil, Radio, SendHorizontal } from "lucide-rea
 import * as React from "react";
 import { toast } from "sonner";
 
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
-import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 import { allowsMarketRelease, allowsUatSelfFill } from "@/lib/oems/orderbook-lane-actions";
+import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 import { isAmendable, isAwaitingBrokerAck, isCancellable } from "./format";
-import { InvestorFilterTable, type InvestorAgg } from "./investor-filter-table";
+import { type InvestorAgg, InvestorFilterTable } from "./investor-filter-table";
 
 export interface ExecutionRow {
   id: string;
@@ -562,7 +562,10 @@ export function buildOrderBookDisplayItems(
  * audit-row-only orders, so it mirrors `client` (the audit row's own
  * `client_account`).
  */
-function buildInvestorAgg(groups: GroupedRow[], lookupLast: (symbol: string) => number | null): InvestorAgg[] {
+function buildInvestorAgg(
+  groups: GroupedRow[],
+  lookupLast: (symbol: string) => number | null,
+): InvestorAgg[] {
   const m = new Map<string, InvestorAgg>();
   for (const g of groups) {
     const r = g.parent;
@@ -572,7 +575,10 @@ function buildInvestorAgg(groups: GroupedRow[], lookupLast: (symbol: string) => 
     // deliberately stalled since 2026-07-25 and leaves stale zero-value rows
     // instead of no row at all, so treat 0 the same as "no live price" and
     // fall back to the actual fill/limit price rather than zeroing it out.
-    const px = typeof last === "number" && Number.isFinite(last) && last > 0 ? last : (r.avg_fill_price ?? r.limit_price ?? 0);
+    const px =
+      typeof last === "number" && Number.isFinite(last) && last > 0
+        ? last
+        : (r.avg_fill_price ?? r.limit_price ?? 0);
     const marketValue = px * r.qty;
     const existing = m.get(key);
     if (existing) {
@@ -599,7 +605,9 @@ interface OrderActions {
   amendOpen: Record<string, boolean>;
   amendForm: Record<string, { priceRands: string; volume: string; tif: "DAY" | "GTC" | "IOC" | "FOK" }>;
   setAmendForm: React.Dispatch<
-    React.SetStateAction<Record<string, { priceRands: string; volume: string; tif: "DAY" | "GTC" | "IOC" | "FOK" }>>
+    React.SetStateAction<
+      Record<string, { priceRands: string; volume: string; tif: "DAY" | "GTC" | "IOC" | "FOK" }>
+    >
   >;
   amendInFlight: Record<string, boolean>;
   amendError: Record<string, string>;
@@ -633,13 +641,15 @@ function GroupRow({
   // deliberately stalled since 2026-07-25 and leaves stale zero-value rows
   // instead of no row at all. Treat 0 as "no live price" everywhere it's
   // used here, or it silently corrupts the fill-based slip/P&L math below.
-  const liveLast = typeof liveLastRaw === "number" && Number.isFinite(liveLastRaw) && liveLastRaw > 0 ? liveLastRaw : null;
+  const liveLast =
+    typeof liveLastRaw === "number" && Number.isFinite(liveLastRaw) && liveLastRaw > 0 ? liveLastRaw : null;
   const effectiveLast = liveLast ?? r.avg_fill_price;
   const liveSlipCents =
     r.limit_price != null && typeof effectiveLast === "number" && Number.isFinite(effectiveLast)
       ? Math.round((r.limit_price - effectiveLast) * 100)
       : r.slippage_cents;
-  const slipDisplay = liveSlipCents == null ? "—" : `${liveSlipCents > 0 ? "+" : ""}${(liveSlipCents / 100).toFixed(2)}`;
+  const slipDisplay =
+    liveSlipCents == null ? "—" : `${liveSlipCents > 0 ? "+" : ""}${(liveSlipCents / 100).toFixed(2)}`;
   const groupKey = (r.order_id || r.id || "").trim();
   const isExpanded = !!expanded[groupKey];
   const toggle = () => toggleExpanded(groupKey);
@@ -704,7 +714,9 @@ function GroupRow({
           <Badge variant={r.side === "SELL" ? "destructive" : "success"}>{r.side}</Badge>
         </td>
         <td className="px-2 py-1 text-[12px] font-semibold text-foreground whitespace-nowrap">{r.symbol}</td>
-        <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">{r.client_account || "—"}</td>
+        <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">
+          {r.client_account || "—"}
+        </td>
         <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtQty(r.qty)}</td>
         <td className="px-2 py-1 text-[12px] font-medium text-foreground whitespace-nowrap">
           {(() => {
@@ -712,7 +724,9 @@ function GroupRow({
             // last price — so MARKET orders (no limit, unfilled)
             // still show an estimated notional instead of "—".
             const px =
-              r.limit_price ?? (r.filled > 0 ? r.avg_fill_price : null) ?? (typeof liveLast === "number" ? liveLast : null);
+              r.limit_price ??
+              (r.filled > 0 ? r.avg_fill_price : null) ??
+              (typeof liveLast === "number" ? liveLast : null);
             return px != null && Number.isFinite(px) ? fmtMoney(px * r.qty) : "—";
           })()}
         </td>
@@ -760,7 +774,9 @@ function GroupRow({
               <span
                 className={cn(
                   "inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wider",
-                  r.broker_state === "ACTIVE" ? "bg-success/15 text-success" : "bg-muted text-muted-foreground",
+                  r.broker_state === "ACTIVE"
+                    ? "bg-success/15 text-success"
+                    : "bg-muted text-muted-foreground",
                 )}
                 title={`Hermes OrderState: ${r.broker_state}`}
               >
@@ -870,7 +886,10 @@ function GroupRow({
             ) : null}
           </div>
           {fillError[r.id] || cancelError[r.id] ? (
-            <span className="text-[9px] text-destructive" title={fillError[r.id] || cancelError[r.id] || undefined}>
+            <span
+              className="text-[9px] text-destructive"
+              title={fillError[r.id] || cancelError[r.id] || undefined}
+            >
               {fillError[r.id] || cancelError[r.id]}
             </span>
           ) : null}
@@ -885,7 +904,8 @@ function GroupRow({
                   Lifecycle timeline — {r.order_id}
                 </span>
                 <span className="text-[10px] text-muted-foreground">
-                  {childCount} event{childCount === 1 ? "" : "s"} after the parent ({r.action_status ?? r.last_action ?? "open"})
+                  {childCount} event{childCount === 1 ? "" : "s"} after the parent (
+                  {r.action_status ?? r.last_action ?? "open"})
                 </span>
               </div>
               <table className="w-full border-collapse">
@@ -909,7 +929,8 @@ function GroupRow({
                   {g.children.map((c) => {
                     const cFilled = c.filled ?? 0;
                     const cOrdVol = c.qty ?? 0;
-                    const cPct = cOrdVol > 0 ? `${((cFilled / cOrdVol) * 100).toFixed(cFilled > 0 ? 1 : 0)}%` : "—";
+                    const cPct =
+                      cOrdVol > 0 ? `${((cFilled / cOrdVol) * 100).toFixed(cFilled > 0 ? 1 : 0)}%` : "—";
                     return (
                       <tr key={c.id} className="border-t border-border/30 hover:bg-accent/10">
                         <td className="px-2 py-1 font-mono text-[10px] text-muted-foreground whitespace-nowrap">
@@ -917,7 +938,10 @@ function GroupRow({
                         </td>
                         <td className="px-2 py-1 text-[10px] whitespace-nowrap">{c.strategy ?? "—"}</td>
                         <td className="px-2 py-1 whitespace-nowrap">
-                          <Badge variant={c.side === "SELL" ? "destructive" : "success"} className="text-[9px]">
+                          <Badge
+                            variant={c.side === "SELL" ? "destructive" : "success"}
+                            className="text-[9px]"
+                          >
                             {c.side}
                           </Badge>
                         </td>
@@ -941,8 +965,12 @@ function GroupRow({
                         >
                           {c.action_status ?? c.last_action ?? "—"}
                         </td>
-                        <td className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap">{c.sent_by ?? "—"}</td>
-                        <td className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap">{c.source ?? "—"}</td>
+                        <td className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap">
+                          {c.sent_by ?? "—"}
+                        </td>
+                        <td className="px-2 py-1 text-[10px] text-muted-foreground whitespace-nowrap">
+                          {c.source ?? "—"}
+                        </td>
                       </tr>
                     );
                   })}
@@ -967,7 +995,10 @@ function GroupRow({
                     step="0.01"
                     min="0"
                     disabled={r.order_type === "market"}
-                    className={cn("h-7 w-24 text-[11px]", r.order_type === "market" && "cursor-not-allowed opacity-60")}
+                    className={cn(
+                      "h-7 w-24 text-[11px]",
+                      r.order_type === "market" && "cursor-not-allowed opacity-60",
+                    )}
                     value={amendForm[r.id]?.priceRands ?? ""}
                     onChange={(e) =>
                       setAmendForm((p) => ({
@@ -980,7 +1011,11 @@ function GroupRow({
                       }))
                     }
                     placeholder={
-                      r.order_type === "market" ? "MKT — not amendable" : r.limit_price != null ? String(r.limit_price) : "—"
+                      r.order_type === "market"
+                        ? "MKT — not amendable"
+                        : r.limit_price != null
+                          ? String(r.limit_price)
+                          : "—"
                     }
                     title={
                       r.order_type === "market"
@@ -1066,14 +1101,15 @@ function GroupRow({
                   className="text-[10px] text-warning"
                   title="IRESS OrderAmend2 cannot change PricingInstructions. Sending a `price` on a MARKET order returns 422 from /api/admin/orderbook/amend — cancel + re-create to switch. Volume / TIF amendments still apply."
                 >
-                  MARKET order — price amendments are blocked at the broker. Volume / TIF will amend; for a limit price,
-                  cancel and re-create. State flips to AMEND_PENDING on submit, then back to WORKING/PARTIAL on broker ack —
-                  partial fills preserved.
+                  MARKET order — price amendments are blocked at the broker. Volume / TIF will amend; for a
+                  limit price, cancel and re-create. State flips to AMEND_PENDING on submit, then back to
+                  WORKING/PARTIAL on broker ack — partial fills preserved.
                 </span>
               ) : (
                 <span className="text-[10px] text-muted-foreground">
-                  Only changed fields are sent to the broker (OrderAmend2 is partial). State flips to AMEND_PENDING on
-                  submit, then back to WORKING/PARTIAL on broker ack — partial fills preserved.
+                  Only changed fields are sent to the broker (OrderAmend2 is partial). State flips to
+                  AMEND_PENDING on submit, then back to WORKING/PARTIAL on broker ack — partial fills
+                  preserved.
                 </span>
               )}
             </div>
@@ -1139,80 +1175,80 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     };
   }, []);
 
-  const applyDelta = React.useCallback(
-    (d: UatDelta) => {
-      // 2026-07-23: no book_id filter here anymore — this is the ONE panel
-      // showing every UAT-relevant book/strategy now (see the `sources`
-      // fetch above), so there's no sibling instance for a delta to "leak"
-      // into. Every delta the SSE stream publishes is relevant here.
-      setLastEventAt(new Date().toISOString());
-      if (!d.order_audit_id) return;
-      overrideAppliedAtRef.current[d.order_audit_id] = Date.now();
-      setLiveOverrides((prev) => {
-        const existing = prev[d.order_audit_id as string];
-        const qty = d.qty > 0 ? d.qty : (existing?.qty ?? 0);
-        const filled = d.filled;
-        const filledPct = qty > 0 ? Math.min(100, (filled / qty) * 100) : 0;
-        const avgFill = d.avg_fill_price_cents != null ? d.avg_fill_price_cents / 100 : (existing?.avg_fill_price ?? null);
-        const rawDelta = d as unknown as {
-          brokerState?: string | null;
-          actionStatus?: string | null;
-          internalOrderStatus?: string | null;
-          stateDescription?: string | null;
-          remainingVolume?: number | null;
-          remainingValueCents?: number | null;
-          orderValueCents?: number | null;
-        };
-        const auditId = d.order_audit_id as string;
-        const newRow: ExecutionRow = {
-          id: auditId,
-          order_book_seq: existing?.order_book_seq ?? null,
-          order_id: d.iress_order_number || existing?.order_id || auditId,
-          client_account: existing?.client_account ?? "",
-          broker_account: existing?.broker_account ?? null,
-          ts: d.timestamp,
-          updated_at: d.timestamp,
-          strategy: existing?.strategy ?? d.book_id ?? null,
-          side: (d.side ?? existing?.side ?? "BUY").toUpperCase(),
-          symbol: d.symbol || existing?.symbol || "—",
-          isin: existing?.isin ?? null,
-          qty,
-          filled,
-          filled_pct: Number(filledPct.toFixed(1)),
-          limit_price: existing?.limit_price ?? null,
-          avg_fill_price: avgFill,
-          vwap: avgFill ?? existing?.vwap ?? null,
-          slippage_cents:
-            existing?.limit_price != null && avgFill != null ? Math.round((existing.limit_price - avgFill) * 100) : null,
-          day1_pnl_cents:
-            existing?.limit_price != null && avgFill != null
-              ? Math.round((existing.limit_price - avgFill) * 100) * filled
-              : null,
-          venue: existing?.venue ?? "JSE",
-          tif: existing?.tif ?? "DAY",
-          sent_by: existing?.sent_by ?? null,
-          state: stateUppercaseToDb(d.state),
-          broker: existing?.broker ?? "JSE",
-          broker_state:
-            rawDelta.brokerState === "ACTIVE" || rawDelta.brokerState === "INACTIVE"
-              ? (rawDelta.brokerState as "ACTIVE" | "INACTIVE")
-              : existing?.broker_state ?? null,
-          action_status: rawDelta.actionStatus ?? existing?.action_status ?? null,
-          internal_order_status: rawDelta.internalOrderStatus ?? existing?.internal_order_status ?? null,
-          state_description: rawDelta.stateDescription ?? existing?.state_description ?? null,
-          remaining_volume: rawDelta.remainingVolume ?? existing?.remaining_volume ?? null,
-          remaining_value_cents: rawDelta.remainingValueCents ?? existing?.remaining_value_cents ?? null,
-          order_value_cents: rawDelta.orderValueCents ?? existing?.order_value_cents ?? null,
-          iress_error_number: existing?.iress_error_number ?? null,
-          iress_error_description: existing?.iress_error_description ?? null,
-          last_action: d.last_action ?? existing?.last_action ?? null,
-          last_action_at: d.last_action_at ?? existing?.last_action_at ?? null,
-        };
-        return { ...prev, [d.order_audit_id as string]: newRow };
-      });
-    },
-    [],
-  );
+  const applyDelta = React.useCallback((d: UatDelta) => {
+    // 2026-07-23: no book_id filter here anymore — this is the ONE panel
+    // showing every UAT-relevant book/strategy now (see the `sources`
+    // fetch above), so there's no sibling instance for a delta to "leak"
+    // into. Every delta the SSE stream publishes is relevant here.
+    setLastEventAt(new Date().toISOString());
+    if (!d.order_audit_id) return;
+    overrideAppliedAtRef.current[d.order_audit_id] = Date.now();
+    setLiveOverrides((prev) => {
+      const existing = prev[d.order_audit_id as string];
+      const qty = d.qty > 0 ? d.qty : (existing?.qty ?? 0);
+      const filled = d.filled;
+      const filledPct = qty > 0 ? Math.min(100, (filled / qty) * 100) : 0;
+      const avgFill =
+        d.avg_fill_price_cents != null ? d.avg_fill_price_cents / 100 : (existing?.avg_fill_price ?? null);
+      const rawDelta = d as unknown as {
+        brokerState?: string | null;
+        actionStatus?: string | null;
+        internalOrderStatus?: string | null;
+        stateDescription?: string | null;
+        remainingVolume?: number | null;
+        remainingValueCents?: number | null;
+        orderValueCents?: number | null;
+      };
+      const auditId = d.order_audit_id as string;
+      const newRow: ExecutionRow = {
+        id: auditId,
+        order_book_seq: existing?.order_book_seq ?? null,
+        order_id: d.iress_order_number || existing?.order_id || auditId,
+        client_account: existing?.client_account ?? "",
+        broker_account: existing?.broker_account ?? null,
+        ts: d.timestamp,
+        updated_at: d.timestamp,
+        strategy: existing?.strategy ?? d.book_id ?? null,
+        side: (d.side ?? existing?.side ?? "BUY").toUpperCase(),
+        symbol: d.symbol || existing?.symbol || "—",
+        isin: existing?.isin ?? null,
+        qty,
+        filled,
+        filled_pct: Number(filledPct.toFixed(1)),
+        limit_price: existing?.limit_price ?? null,
+        avg_fill_price: avgFill,
+        vwap: avgFill ?? existing?.vwap ?? null,
+        slippage_cents:
+          existing?.limit_price != null && avgFill != null
+            ? Math.round((existing.limit_price - avgFill) * 100)
+            : null,
+        day1_pnl_cents:
+          existing?.limit_price != null && avgFill != null
+            ? Math.round((existing.limit_price - avgFill) * 100) * filled
+            : null,
+        venue: existing?.venue ?? "JSE",
+        tif: existing?.tif ?? "DAY",
+        sent_by: existing?.sent_by ?? null,
+        state: stateUppercaseToDb(d.state),
+        broker: existing?.broker ?? "JSE",
+        broker_state:
+          rawDelta.brokerState === "ACTIVE" || rawDelta.brokerState === "INACTIVE"
+            ? (rawDelta.brokerState as "ACTIVE" | "INACTIVE")
+            : (existing?.broker_state ?? null),
+        action_status: rawDelta.actionStatus ?? existing?.action_status ?? null,
+        internal_order_status: rawDelta.internalOrderStatus ?? existing?.internal_order_status ?? null,
+        state_description: rawDelta.stateDescription ?? existing?.state_description ?? null,
+        remaining_volume: rawDelta.remainingVolume ?? existing?.remaining_volume ?? null,
+        remaining_value_cents: rawDelta.remainingValueCents ?? existing?.remaining_value_cents ?? null,
+        order_value_cents: rawDelta.orderValueCents ?? existing?.order_value_cents ?? null,
+        iress_error_number: existing?.iress_error_number ?? null,
+        iress_error_description: existing?.iress_error_description ?? null,
+        last_action: d.last_action ?? existing?.last_action ?? null,
+        last_action_at: d.last_action_at ?? existing?.last_action_at ?? null,
+      };
+      return { ...prev, [d.order_audit_id as string]: newRow };
+    });
+  }, []);
 
   /* Subscribe unconditionally. This used to be `useUatStream(uatEnabled, …)`,
      so on production — where the real orders are — the browser never opened
@@ -1309,7 +1345,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
   // Live tick: poll `/api/quotes` for the symbols on screen every 2s. We
   // intentionally fire this ONLY when there's at least one symbol so a
   // closed book doesn't hit the BFF for nothing.
-  const quotesUrl = symbols.length ? `/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}&exchange=JSE` : null;
+  const quotesUrl = symbols.length
+    ? `/api/quotes?symbols=${encodeURIComponent(symbols.join(","))}&exchange=JSE`
+    : null;
   const quotes = usePolling<QuotesPayload>(quotesUrl ?? "about:blank", {
     interval: 2_000,
     deps: [symbols.join(",")],
@@ -1369,7 +1407,10 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
   // a pure view over the already-reconciled groupedRows. Never re-runs
   // SSE/poll reconciliation per group; strategy grouping happens strictly
   // AFTER groupedRows is computed above.
-  const liveGroupedRows = React.useMemo(() => filterOutPromotedBooks(groupedRows, books), [groupedRows, books]);
+  const liveGroupedRows = React.useMemo(
+    () => filterOutPromotedBooks(groupedRows, books),
+    [groupedRows, books],
+  );
   const strategyBlocks = React.useMemo(() => groupOrdersByStrategy(liveGroupedRows), [liveGroupedRows]);
   const liveBookSequence = React.useMemo(() => computeLiveBookSequence(books), [books]);
   const displayItems = React.useMemo(
@@ -1378,7 +1419,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
   );
 
   const [expandedStrategy, setExpandedStrategy] = React.useState<Record<string, boolean>>({});
-  const [selectedInvestorByStrategy, setSelectedInvestorByStrategy] = React.useState<Record<string, string | null>>({});
+  const [selectedInvestorByStrategy, setSelectedInvestorByStrategy] = React.useState<
+    Record<string, string | null>
+  >({});
 
   const toggleStrategy = (key: string) => setExpandedStrategy((p) => ({ ...p, [key]: !p[key] }));
 
@@ -1439,7 +1482,10 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     // else ask. Market UAT orders (no limit) prompt for a self-fill price.
     let priceRands = row.limit_price ?? row.avg_fill_price ?? null;
     if (priceRands == null || !(priceRands > 0)) {
-      const entered = typeof window !== "undefined" ? window.prompt(`Self-fill price in Rands for ${row.symbol} (UAT)?`) : null;
+      const entered =
+        typeof window !== "undefined"
+          ? window.prompt(`Self-fill price in Rands for ${row.symbol} (UAT)?`)
+          : null;
       const n = entered == null ? Number.NaN : Number(entered);
       if (!Number.isFinite(n) || n <= 0) return;
       priceRands = n;
@@ -1452,7 +1498,14 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           order_id: orderId,
-          fills: [{ symbol: row.symbol, qty: row.qty, avg_fill_price_cents: Math.round(priceRands * 100), timestamp: new Date().toISOString() }],
+          fills: [
+            {
+              symbol: row.symbol,
+              qty: row.qty,
+              avg_fill_price_cents: Math.round(priceRands * 100),
+              timestamp: new Date().toISOString(),
+            },
+          ],
         }),
       });
       const body = (await res.json().catch(() => ({}))) as {
@@ -1516,7 +1569,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
 
     const accountGuess =
       (typeof row.broker_account === "string" && row.broker_account.length > 0 ? row.broker_account : null) ??
-      (typeof row.client_account === "string" && row.client_account.length > 0 ? row.client_account : "56378");
+      (typeof row.client_account === "string" && row.client_account.length > 0
+        ? row.client_account
+        : "56378");
     const iressOrderNumber = row.order_id;
     if (!iressOrderNumber) return;
     setCancelInFlight((p) => ({ ...p, [auditId]: true }));
@@ -1535,7 +1590,11 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
       if (!res.ok && res.status >= 500) {
         setCancelError((p) => ({ ...p, [auditId]: `Cancel endpoint returned ${res.status}` }));
       } else {
-        const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; message?: string };
+        const body = (await res.json().catch(() => ({}))) as {
+          ok?: boolean;
+          error?: string;
+          message?: string;
+        };
         if (body && body.ok === false) {
           setCancelError((p) => ({ ...p, [auditId]: body.message ?? body.error ?? "Cancel failed" }));
         }
@@ -1563,7 +1622,8 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
       [auditId]: {
         priceRands: row.limit_price != null ? String(row.limit_price) : "",
         volume: String(row.qty || ""),
-        tif: row.tif === "DAY" || row.tif === "GTC" || row.tif === "IOC" || row.tif === "FOK" ? row.tif : "DAY",
+        tif:
+          row.tif === "DAY" || row.tif === "GTC" || row.tif === "IOC" || row.tif === "FOK" ? row.tif : "DAY",
       },
     }));
     setAmendError((p) => ({ ...p, [auditId]: "" }));
@@ -1580,14 +1640,22 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
       const form = amendForm[auditId];
       if (!form) return;
       const accountGuess =
-        (typeof row.broker_account === "string" && row.broker_account.length > 0 ? row.broker_account : null) ??
-        (typeof row.client_account === "string" && row.client_account.length > 0 ? row.client_account : "56378");
+        (typeof row.broker_account === "string" && row.broker_account.length > 0
+          ? row.broker_account
+          : null) ??
+        (typeof row.client_account === "string" && row.client_account.length > 0
+          ? row.client_account
+          : "56378");
       const iressOrderNumber = row.order_id;
       if (!iressOrderNumber) return;
       const px = form.priceRands.trim() === "" ? null : Number(form.priceRands);
       const vol = form.volume.trim() === "" ? null : Number(form.volume);
       const body: Record<string, unknown> = { account: accountGuess, order_number: iressOrderNumber };
-      if (px != null && Number.isFinite(px) && (row.limit_price == null || Math.abs(px - row.limit_price) > 0.0001)) {
+      if (
+        px != null &&
+        Number.isFinite(px) &&
+        (row.limit_price == null || Math.abs(px - row.limit_price) > 0.0001)
+      ) {
         body.price = px;
       }
       if (vol != null && Number.isFinite(vol) && vol > 0 && vol !== row.qty) {
@@ -1633,7 +1701,11 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
         if (!res.ok && res.status >= 500) {
           setAmendError((p) => ({ ...p, [auditId]: `Amend endpoint returned ${res.status}` }));
         } else {
-          const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string; message?: string };
+          const data = (await res.json().catch(() => ({}))) as {
+            ok?: boolean;
+            error?: string;
+            message?: string;
+          };
           if (data && data.ok === false) {
             setAmendError((p) => ({ ...p, [auditId]: data.message ?? data.error ?? "Amend failed" }));
           } else {
@@ -1680,9 +1752,24 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
       toast.error(SEND_TO_MARKET_LOCKED_MESSAGE);
       return;
     }
+    // Step-up re-authentication. Releasing to the broker is irreversible from
+    // here, so the operator re-enters their own password; the server accepts it
+    // only from a Master ★ account (see lib/admin/step-up.ts). Prompting via
+    // window.prompt keeps the credential out of component state and out of any
+    // re-render — it exists only for the duration of this one request.
+    const adminPassword = window.prompt(
+      `Send ${parkedCount} parked order${parkedCount !== 1 ? "s" : ""} to market.\n\n` +
+        "This is irreversible. Re-enter your own password to confirm — only Master ★ accounts can release.",
+    );
+    if (adminPassword == null || adminPassword === "") return;
+
     setReleasing(true);
     try {
-      const res = await fetch("/api/admin/orderbook/release-to-market", { method: "POST" });
+      const res = await fetch("/api/admin/orderbook/release-to-market", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ admin_password: adminPassword }),
+      });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         toast.error(body?.error ?? "Send to Market failed.");
@@ -1691,7 +1778,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
       if (body.released > 0 && body.failed === 0) {
         toast.success(`Sent ${body.released} order${body.released !== 1 ? "s" : ""} to market.`);
       } else if (body.released > 0 && body.failed > 0) {
-        toast.message(`Sent ${body.released}, ${body.failed} still parked (blocked by guard — will retry next click).`);
+        toast.message(
+          `Sent ${body.released}, ${body.failed} still parked (blocked by guard — will retry next click).`,
+        );
       } else if (body.failed > 0) {
         toast.error(`${body.failed} order${body.failed !== 1 ? "s" : ""} blocked — still parked.`);
       } else {
@@ -1740,7 +1829,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
             {liveGroupedRows.length}
           </Badge>
           {totalEvents !== liveGroupedRows.length ? (
-            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">({totalEvents} events)</span>
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+              ({totalEvents} events)
+            </span>
           ) : null}
           <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
             source{sources.length > 1 ? "s" : ""} {sources.join(", ")}
@@ -1777,10 +1868,18 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
               size="sm"
               disabled={SEND_TO_MARKET_LOCKED || parkedCount === 0 || releasing}
               onClick={() => void handleRelease()}
-              title={SEND_TO_MARKET_LOCKED ? SEND_TO_MARKET_LOCKED_MESSAGE : "Release every parked mint client-order to the worker/IRESS."}
+              title={
+                SEND_TO_MARKET_LOCKED
+                  ? SEND_TO_MARKET_LOCKED_MESSAGE
+                  : "Release every parked mint client-order to the worker/IRESS."
+              }
             >
               <SendHorizontal className="h-3.5 w-3.5" />
-              {releasing ? "Sending..." : SEND_TO_MARKET_LOCKED ? "Send to Market (locked)" : `Send to Market (${parkedCount})`}
+              {releasing
+                ? "Sending..."
+                : SEND_TO_MARKET_LOCKED
+                  ? "Send to Market (locked)"
+                  : `Send to Market (${parkedCount})`}
             </Button>
           ) : null}
           <Button variant="ghost" size="sm" onClick={refreshAll}>
@@ -1863,7 +1962,10 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                   const px = g.parent.limit_price ?? g.parent.avg_fill_price ?? 0;
                   return s + px * g.parent.qty;
                 }, 0);
-                const latestTs = block.groups.reduce((max, g) => Math.max(max, Date.parse(g.parent.ts || "") || 0), 0);
+                const latestTs = block.groups.reduce(
+                  (max, g) => Math.max(max, Date.parse(g.parent.ts || "") || 0),
+                  0,
+                );
                 // One disclosure level, same as a gift order: Strategy -> orders
                 // directly (no per-security sub-group). The Investors toggle below
                 // still lets you filter that flat list down to one client's orders.
@@ -1894,7 +1996,10 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                           )}
                         />
                       </td>
-                      <td className="px-2 py-1 text-[12px] font-semibold text-foreground whitespace-nowrap" colSpan={3}>
+                      <td
+                        className="px-2 py-1 text-[12px] font-semibold text-foreground whitespace-nowrap"
+                        colSpan={3}
+                      >
                         <span className="inline-flex items-center gap-1.5">
                           <span className={cn(isGiftOrder && "font-mono")}>{strategyKey}</span>
                           {isGiftOrder ? (
@@ -1904,7 +2009,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                           ) : null}
                           <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
                             {isGiftOrder ? (
-                              <>{totalOrders} asset{totalOrders !== 1 ? "s" : ""}</>
+                              <>
+                                {totalOrders} asset{totalOrders !== 1 ? "s" : ""}
+                              </>
                             ) : (
                               <>
                                 {totalOrders} order{totalOrders !== 1 ? "s" : ""} · {investors.length} client
@@ -1918,7 +2025,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                         {latestTs ? fmtTs(new Date(latestTs).toISOString()) : "—"}
                       </td>
                       <td className="px-2 py-1" />
-                      <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtQty(totalQty)}</td>
+                      <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
+                        {fmtQty(totalQty)}
+                      </td>
                       <td className="px-2 py-1 text-[12px] font-medium text-foreground whitespace-nowrap">
                         {fmtMoney(totalValue)}
                       </td>

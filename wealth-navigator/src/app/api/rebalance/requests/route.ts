@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 
-import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
+import { canResearchIc, canSeeUatSurfaces, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
-import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
+import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * /api/rebalance/requests — strategy rebalance queue.
@@ -82,7 +82,29 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
 
-  const rows = (data ?? []) as RebalanceRow[];
+  let rows = (data ?? []) as RebalanceRow[];
+
+  // A UAT strategy's rebalances are test artefacts and must not appear to
+  // anyone doing real work — not on the IC agenda, not on the Rebalances tab,
+  // not in recent activity. Filtered here rather than in the UI so the rows are
+  // never sent at all. `strategy_id` on this table holds the strategy NAME (see
+  // the convention noted in transition/route.ts), so match on name.
+  if (!canSeeUatSurfaces(auth.ctx)) {
+    try {
+      const retail = createRetailServiceRoleClient();
+      const { data: strats } = await retail.from("strategies_c").select("name, investor_environment");
+      const uatNames = new Set(
+        ((strats ?? []) as Array<{ name: string | null; investor_environment: string | null }>)
+          .filter((s) => String(s.investor_environment ?? "LIVE").toUpperCase() === "UAT")
+          .map((s) => String(s.name ?? "")),
+      );
+      rows = rows.filter((r) => !uatNames.has(String(r.strategy_id ?? "")));
+    } catch {
+      // Retail unreachable — we cannot tell which are UAT. Fail CLOSED and
+      // show nothing rather than risk surfacing test rebalances as real ones.
+      rows = [];
+    }
+  }
 
   // Enrich each proposal with its IC votes + tally in one batched query, so the
   // committee UI can render the 60% gate without an N+1 fetch. Best-effort: if

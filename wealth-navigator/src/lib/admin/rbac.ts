@@ -107,6 +107,25 @@ export function can(
  * to proceed here (the approval-queue distinction is handled by the callers
  * that care about it).
  */
+/**
+ * May this viewer see UAT/test surfaces at all?
+ *
+ * UAT strategies, their rebalances, their orders and their money are test
+ * artefacts. They must not appear to anyone doing real work — not in AUM, not
+ * in the strategy catalogue or its performance chart, not as a rebalance
+ * awaiting approval, and not on the order book or blotter.
+ *
+ * `approver_tier: "dev"` is the existing convention for "runs the tests" — it
+ * is what `/api/strategies` has always used to decide UAT visibility, so this
+ * keeps one definition rather than inventing a second.
+ *
+ * Callers that need this for a REQUEST (rather than a viewer) should still
+ * filter server-side: hiding a row in the UI is not the same as not sending it.
+ */
+export function canSeeUatSurfaces(ctx: Pick<AdminContext, "approverTier">): boolean {
+  return ctx.approverTier === "dev";
+}
+
 export function canResearchIc(
   ctx: Pick<AdminContext, "permissions" | "approverTier" | "role">,
   section: "rebalance" | "research-lab",
