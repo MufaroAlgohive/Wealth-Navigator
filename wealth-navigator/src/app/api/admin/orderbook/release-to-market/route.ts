@@ -34,6 +34,7 @@
 import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
+import { requireMasterPassword } from "@/lib/admin/step-up";
 import { openSupabaseClients, releaseOrder } from "@/lib/orders";
 import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 
@@ -54,6 +55,17 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+
+  // Step-up re-authentication — the last gate before real client orders leave
+  // for the broker, and the one action here that cannot be undone from this
+  // system. Being signed in is not enough: the caller re-enters their OWN
+  // password and must hold the master approver tier. See lib/admin/step-up.ts
+  // for why it is their own password rather than a shared master one.
+  const stepUp = await requireMasterPassword(body.admin_password);
+  if (!stepUp.ok) {
+    return NextResponse.json({ ok: false, error: stepUp.error }, { status: stepUp.status });
+  }
+
   const bookId = typeof body.book_id === "string" && body.book_id.trim() ? body.book_id.trim() : null;
 
   let supabase;
@@ -74,10 +86,19 @@ export async function POST(req: Request) {
 
   const { data: parkedRows, error: queryErr } = await query;
   if (queryErr) {
-    return NextResponse.json({ ok: false, error: `Failed to load parked orders: ${queryErr.message}` }, { status: 500 });
+    return NextResponse.json(
+      { ok: false, error: `Failed to load parked orders: ${queryErr.message}` },
+      { status: 500 },
+    );
   }
   if (!parkedRows || parkedRows.length === 0) {
-    return NextResponse.json({ ok: true, released: 0, failed: 0, results: [], notice: "No parked orders to release." });
+    return NextResponse.json({
+      ok: true,
+      released: 0,
+      failed: 0,
+      results: [],
+      notice: "No parked orders to release.",
+    });
   }
 
   // Sequential, not Promise.all — mirrors send-to-market's own bulk-dispatch
@@ -147,7 +168,8 @@ export async function POST(req: Request) {
 
     orderBookSeq = await assignSequence();
     if (orderBookSeq == null) {
-      bookWarning = "Orders were released successfully, but this batch could not be numbered as an order book this round.";
+      bookWarning =
+        "Orders were released successfully, but this batch could not be numbered as an order book this round.";
     } else {
       for (const row of releasedRows) {
         const prevPayload = (row as { payload?: Record<string, unknown> | null }).payload ?? {};

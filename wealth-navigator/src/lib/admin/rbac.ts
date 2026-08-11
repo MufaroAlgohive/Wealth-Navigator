@@ -90,4 +90,50 @@ export function can(
   return Boolean(v);
 }
 
+/**
+ * Research & IC action check — `can()` plus the implicit admin grant.
+ *
+ * Admins and superadmins hold every Research & IC action without needing the
+ * granular `permissions.rebalance.*` / `permissions.research-lab.*` rows set on
+ * their `admin_team` record; staff still need the explicit grant. That rule was
+ * already stated and implemented on the UI side (research-ic/server.ts) and in
+ * one API route (research/notes POST), but the remaining rebalance/research
+ * routes checked bare `can()` — so every non-`dev` admin saw the buttons
+ * enabled and got a 403 on click. That was 10 of 14 active admins, including
+ * both of Lonwabo's accounts; only `approver_tier: "dev"` holders worked,
+ * because `can()` short-circuits to true for them.
+ *
+ * Returns a plain boolean: "pending"/"direct" both mean the action is allowed
+ * to proceed here (the approval-queue distinction is handled by the callers
+ * that care about it).
+ */
+/**
+ * May this viewer see UAT/test surfaces at all?
+ *
+ * UAT strategies, their rebalances, their orders and their money are test
+ * artefacts. They must not appear to anyone doing real work — not in AUM, not
+ * in the strategy catalogue or its performance chart, not as a rebalance
+ * awaiting approval, and not on the order book or blotter.
+ *
+ * `approver_tier: "dev"` is the existing convention for "runs the tests" — it
+ * is what `/api/strategies` has always used to decide UAT visibility, so this
+ * keeps one definition rather than inventing a second.
+ *
+ * Callers that need this for a REQUEST (rather than a viewer) should still
+ * filter server-side: hiding a row in the UI is not the same as not sending it.
+ */
+export function canSeeUatSurfaces(ctx: Pick<AdminContext, "approverTier">): boolean {
+  return ctx.approverTier === "dev";
+}
+
+export function canResearchIc(
+  ctx: Pick<AdminContext, "permissions" | "approverTier" | "role">,
+  section: "rebalance" | "research-lab",
+  field: string,
+): boolean {
+  if (ctx.role === "admin" || ctx.role === "superadmin") return true;
+  const v = can(ctx, section, field);
+  return v === true || v === "direct";
+}
+
 export type { AdminPageKey };

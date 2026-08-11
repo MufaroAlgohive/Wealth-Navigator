@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * 2026-07-23: CRM-style order-book numbering for release-to-market —
@@ -27,6 +27,13 @@ vi.mock("@/lib/admin/rbac", () => ({
 vi.mock("@/lib/orders/send-to-market-lock", () => ({
   SEND_TO_MARKET_LOCKED: false,
   SEND_TO_MARKET_LOCKED_MESSAGE: "locked (mocked off for this test)",
+}));
+
+// Same reasoning for the master-password step-up (lib/admin/step-up.ts): it's
+// its own gate with its own concerns, and these tests are about numbering.
+// Pass it here so the route reaches the logic under test.
+vi.mock("@/lib/admin/step-up", () => ({
+  requireMasterPassword: async () => ({ ok: true, email: "desk@mint.test" }),
 }));
 
 interface MockRow {
@@ -143,7 +150,10 @@ describe("POST /api/admin/orderbook/release-to-market — order-book numbering",
     const mock = makeMockSupabase({ parkedRows: [], existingMaxSequence: null });
     vi.doMock("@/lib/orders", () => ({
       openSupabaseClients: async () => mock.supabase,
-      releaseOrder: async () => ({ ok: false, preflight: { ok: false, verdict: "blocked_unverifiable", code: "pass", message: "" } }),
+      releaseOrder: async () => ({
+        ok: false,
+        preflight: { ok: false, verdict: "blocked_unverifiable", code: "pass", message: "" },
+      }),
     }));
 
     const { POST } = await import("@/app/api/admin/orderbook/release-to-market/route");
@@ -175,7 +185,11 @@ describe("POST /api/admin/orderbook/release-to-market — order-book numbering",
 
     const { POST } = await import("@/app/api/admin/orderbook/release-to-market/route");
     const res = await POST(new Request("http://x/release-to-market", { method: "POST" }));
-    const body = (await res.json()) as { order_book_seq: number | null; released: number; book_warning?: string };
+    const body = (await res.json()) as {
+      order_book_seq: number | null;
+      released: number;
+      book_warning?: string;
+    };
 
     expect(body.released).toBe(1); // the underlying release succeeded regardless of the numbering race
     expect(body.order_book_seq).toBe(5); // both reads saw max=4 -> both attempts computed nextSeq=5

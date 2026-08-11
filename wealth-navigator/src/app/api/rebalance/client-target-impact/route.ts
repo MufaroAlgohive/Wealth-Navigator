@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { can, getAdminContext } from "@/lib/admin/rbac";
+import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { calculateProceedsBridge } from "@/lib/rebalance/proceeds";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
@@ -38,7 +38,7 @@ export async function POST(req: Request) {
   if (auth.status === "no-session")
     return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
   if (auth.status !== "ok") return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
-  if (!can(auth.ctx, "rebalance", "raise_rebalance")) {
+  if (!canResearchIc(auth.ctx, "rebalance", "raise_rebalance")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 

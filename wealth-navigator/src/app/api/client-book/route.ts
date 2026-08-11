@@ -5,6 +5,9 @@
  * customers. Powers the Cockpit's "Platform AUM / Day P&L" tiles while the
  * IRESS institutional portfolio (IPS) feed is blocked.
  *
+ * Only LIVE money counts: UAT strategies and test accounts are excluded on both
+ * axes (a test account can hold a LIVE strategy, and vice versa).
+ *
  * Reads the RETAIL prod DB:
  *   - `client_strategy_returns_c`: one row per (user/family-member/strategy) per
  *     `as_of_date`. We snapshot the LATEST date and sum the book.
@@ -14,8 +17,8 @@
  * the user's portion in Rands). `source: "retail-supabase"` lets the UI badge
  * the tiles honestly while IPS is unavailable.
  */
-import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 import type { BffUnavailableReason } from "@/lib/bff-reasons";
+import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +29,7 @@ interface ClientStrategyReturnRow {
   as_of_date: string;
   basket_value: number | null;
   "1d_pnl": number | null;
-  "ytd_pnl": number | null;
+  ytd_pnl: number | null;
 }
 
 interface ClientBookResponse {
@@ -44,8 +47,7 @@ interface ClientBookResponse {
 // NOTE: the retail column is `family_member` (not `..._id`) and we don't use it,
 // so it's omitted — selecting a non-existent column fails the whole query and
 // blanks the AUM tile. basket_value / 1d_pnl / ytd_pnl are integer CENTS.
-const RETURNS_SELECT =
-  'user_id,strategy_id,as_of_date,basket_value,"1d_pnl","ytd_pnl"';
+const RETURNS_SELECT = 'user_id,strategy_id,as_of_date,basket_value,"1d_pnl","ytd_pnl"';
 
 function num(value: number | null | undefined): number {
   const n = Number(value);
@@ -64,8 +66,7 @@ export async function GET() {
         holdings: 0,
         asOf: null,
         reason: "supabase_not_configured",
-        error:
-          "Retail Supabase not configured (RETAIL_SUPABASE_URL / RETAIL_SUPABASE_SERVICE_ROLE_KEY)",
+        error: "Retail Supabase not configured (RETAIL_SUPABASE_URL / RETAIL_SUPABASE_SERVICE_ROLE_KEY)",
       } satisfies ClientBookResponse,
       { status: 503 },
     );
@@ -114,11 +115,20 @@ export async function GET() {
     );
   }
 
-  // 2. All rows for the latest date.
-  const { data: rows, error: rowsError } = await supabase
-    .from("client_strategy_returns_c")
-    .select(RETURNS_SELECT)
-    .eq("as_of_date", asOf);
+  // 2. All rows for the latest date, plus the two exclusion sets below.
+  //
+  // AUM is a real-money figure. UAT strategies and test accounts are neither,
+  // and left unfiltered they dominated it: on 2026-08-11 the tile read
+  // R56,261.61 when the genuine live book was R16,793.52 — 70% of it was
+  // test data. Excluded on BOTH axes, because they don't fully overlap: a
+  // test account can hold a LIVE strategy (a tester buying MyGrowthFund) and
+  // a real client can appear against a UAT strategy.
+  const [{ data: rows, error: rowsError }, stratRes, testProfileRes, testWalletRes] = await Promise.all([
+    supabase.from("client_strategy_returns_c").select(RETURNS_SELECT).eq("as_of_date", asOf),
+    supabase.from("strategies_c").select("id, investor_environment"),
+    supabase.from("profiles").select("id").eq("is_test", true),
+    supabase.from("wallets").select("user_id").eq("status", "test"),
+  ]);
 
   if (rowsError) {
     return Response.json(
@@ -137,7 +147,41 @@ export async function GET() {
     );
   }
 
-  const returns = (rows ?? []) as ClientStrategyReturnRow[];
+  // Fail CLOSED on the exclusion sets: if we can't tell which strategies are
+  // UAT or which accounts are test, publishing an unfiltered total would
+  // overstate real AUM. Better to show the tile unavailable than a wrong number.
+  if (stratRes.error || testProfileRes.error || testWalletRes.error) {
+    return Response.json(
+      {
+        source: "unavailable",
+        aum: 0,
+        dayPnl: 0,
+        ytdPnl: 0,
+        investors: 0,
+        holdings: 0,
+        asOf,
+        reason: "supabase_query_failed",
+        error: `LIVE/test classification unavailable: ${
+          stratRes.error?.message ?? testProfileRes.error?.message ?? testWalletRes.error?.message
+        }`,
+      } satisfies ClientBookResponse,
+      { status: 200 },
+    );
+  }
+
+  const uatStrategyIds = new Set(
+    ((stratRes.data ?? []) as Array<{ id: string; investor_environment: string | null }>)
+      .filter((s) => String(s.investor_environment ?? "LIVE").toUpperCase() === "UAT")
+      .map((s) => s.id),
+  );
+  const testUserIds = new Set<string>([
+    ...((testProfileRes.data ?? []) as Array<{ id: string }>).map((r) => String(r.id)),
+    ...((testWalletRes.data ?? []) as Array<{ user_id: string }>).map((r) => String(r.user_id)),
+  ]);
+
+  const returns = ((rows ?? []) as ClientStrategyReturnRow[]).filter(
+    (r) => !uatStrategyIds.has(r.strategy_id) && !testUserIds.has(r.user_id),
+  );
   if (returns.length === 0) {
     return Response.json(
       {
@@ -162,18 +206,27 @@ export async function GET() {
   for (const r of returns) {
     aum += num(r.basket_value);
     dayPnl += num(r["1d_pnl"]);
-    ytdPnl += num(r["ytd_pnl"]);
+    ytdPnl += num(r.ytd_pnl);
     if (r.user_id) investorSet.add(r.user_id);
   }
 
-  // Active holdings — counted separately from `stock_holdings_c`. A count
-  // failure must not blank the AUM tile, so degrade holdings to 0.
+  // Active holdings — counted separately from `stock_holdings_c`, and filtered
+  // on the same two axes as the money above so the count describes the same
+  // book the AUM figure does. Selects the two id columns rather than using a
+  // head-only `count`, because the exclusion can't be expressed as a server
+  // -side filter without inlining both id sets into the URL. A failure here
+  // must not blank the AUM tile, so holdings degrades to 0.
   let holdings = 0;
-  const { count, error: holdingsError } = await supabase
+  const { data: holdingRows, error: holdingsError } = await supabase
     .from("stock_holdings_c")
-    .select("*", { count: "exact", head: true })
+    .select("user_id, strategy_id")
     .eq("is_active", true);
-  if (!holdingsError) holdings = count ?? 0;
+  if (!holdingsError) {
+    holdings = ((holdingRows ?? []) as Array<{ user_id: string | null; strategy_id: string | null }>).filter(
+      (h) =>
+        !(h.strategy_id && uatStrategyIds.has(h.strategy_id)) && !(h.user_id && testUserIds.has(h.user_id)),
+    ).length;
+  }
 
   // basket_value / 1d_pnl / ytd_pnl are integer CENTS in retail (they match the
   // holdings_snapshot prices), despite the legacy docs saying Rands — convert.

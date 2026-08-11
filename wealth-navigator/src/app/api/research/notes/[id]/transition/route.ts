@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { can, getAdminContext } from "@/lib/admin/rbac";
+import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
@@ -103,7 +103,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const needsApprovalPerm = toStatus === "approved" || toStatus === "rejected";
   const fromStatusNeedsReview = from === "draft" || from === "in_review";
 
-  if (needsApprovalPerm && !can(auth.ctx, "research-lab", "approve_note")) {
+  if (needsApprovalPerm && !canResearchIc(auth.ctx, "research-lab", "approve_note")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   if (fromStatusNeedsReview && !isAuthor && !isDev) {
