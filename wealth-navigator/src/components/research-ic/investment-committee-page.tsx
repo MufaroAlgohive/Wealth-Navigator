@@ -58,7 +58,16 @@ import {
   linkedRebalanceForNote,
 } from "./ic-agenda";
 import type { ProposedHolding, RebalanceRequest, ResearchNote, ResearchPerms } from "./types";
-import { ActionBadge, RatingBadge, moneyR, rebalanceCodeMap, signedPct, useQuotes, weightPct } from "./ui";
+import {
+  ActionBadge,
+  RatingBadge,
+  moneyR,
+  rebalanceCodeMap,
+  rebalanceDisplayLabel,
+  signedPct,
+  useQuotes,
+  weightPct,
+} from "./ui";
 
 const CHARTER = [
   [
@@ -195,7 +204,7 @@ export function InvestmentCommitteePage({
       .map((r) => ({
         id: r.id,
         when: r.executed_at ?? r.updated_at,
-        label: `${r.strategy_id} rebalance`,
+        label: `${rebalanceDisplayLabel(r)} rebalance`,
         status: "executed",
       })),
   ]
@@ -977,7 +986,7 @@ function RebalanceAgendaItem({
             Rebalance
           </span>
           <span className="font-mono text-xs text-muted-foreground">{code}</span>
-          <span className="text-sm font-medium">{req.strategy_id}</span>
+          <span className="text-sm font-medium">{rebalanceDisplayLabel(req)}</span>
           <span className="rounded border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[10px] text-muted-foreground">
             {changes} chg
           </span>
@@ -1133,7 +1142,7 @@ function ApprovedItem({
             Approved
           </span>
           <span className="font-mono text-xs text-muted-foreground">{code}</span>
-          <span className="text-sm font-medium">{req.strategy_id}</span>
+          <span className="text-sm font-medium">{rebalanceDisplayLabel(req)}</span>
         </div>
         <button
           type="button"

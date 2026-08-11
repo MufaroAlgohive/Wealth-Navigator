@@ -34,6 +34,22 @@ export function weightPct(v: number | null | undefined, dp = 1): string {
   if (v == null || !Number.isFinite(v)) return "—";
   return `${v.toFixed(dp)}%`;
 }
+/**
+ * "Test Strategy rebalance" alone doesn't say who a single-client rebalance
+ * actually touches — the strategy label is the same whether it's the whole
+ * book or one account. Appends the client's name for a single_user request
+ * so it reads as "Test Strategy — Mufaro Ncube" instead of leaving the reader
+ * to open the row to find out. Shared by the Rebalance Builder and the IC
+ * agenda, same as rebalanceCodeMap below.
+ */
+export function rebalanceDisplayLabel(req: { strategy_id: string; affected_investors: unknown }): string {
+  const affected = req.affected_investors as { scope?: unknown; name?: unknown } | null;
+  if (affected?.scope === "single_user" && typeof affected.name === "string" && affected.name) {
+    return `${req.strategy_id} — ${affected.name}`;
+  }
+  return req.strategy_id;
+}
+
 /** Stable REB-YYYY-NNN codes for a set of rebalance requests (sequential by created_at).
  *  Shared so the Rebalance Builder and the IC agenda show the same code per request. */
 export function rebalanceCodeMap(reqs: { id: string; created_at: string }[]): Map<string, string> {
@@ -139,7 +155,9 @@ export function RatingTag({ rating }: { rating?: Rating | null }) {
       : rating === "SELL"
         ? "text-down"
         : "text-muted-foreground";
-  return <span className={cn("shrink-0 text-[9px] font-semibold uppercase tracking-wide", tone)}>{rating}</span>;
+  return (
+    <span className={cn("shrink-0 text-[9px] font-semibold uppercase tracking-wide", tone)}>{rating}</span>
+  );
 }
 
 const STATUS_DOT: Record<NoteStatus, string> = {
@@ -232,10 +250,9 @@ export function usePriceHistorySeries(symbol: string | null) {
     staleTime: 5 * 60_000,
     queryFn: async () => {
       const bare = (symbol ?? "").replace(/\.(JO|JSE)$/i, "").toUpperCase();
-      const res = await fetch(
-        `/api/company-analysis/${encodeURIComponent(bare)}.JO/chart?range=3M`,
-        { cache: "no-store" },
-      );
+      const res = await fetch(`/api/company-analysis/${encodeURIComponent(bare)}.JO/chart?range=3M`, {
+        cache: "no-store",
+      });
       const json = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         points?: Array<{ t: number; c?: number; v?: number }>;
@@ -307,8 +324,7 @@ export function PriceTriggerChart({
 
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
-  const xAt = (i: number) =>
-    padL + (points.length > 1 ? (i / (points.length - 1)) * innerW : 0);
+  const xAt = (i: number) => padL + (points.length > 1 ? (i / (points.length - 1)) * innerW : 0);
   const yAt = (v: number) => padT + (1 - (v - min) / range) * innerH;
 
   const path = points
@@ -404,12 +420,7 @@ export function PriceTriggerChart({
 
       {/* trigger levels — in-range dashed lines; far-off levels as edge annotations */}
       {triggers.map((t) => {
-        const cls =
-          t.tone === "buy"
-            ? "text-up"
-            : t.tone === "sell"
-              ? "text-down"
-              : "text-muted-foreground";
+        const cls = t.tone === "buy" ? "text-up" : t.tone === "sell" ? "text-down" : "text-muted-foreground";
         const off = offScaleSet.has(t.price);
         if (off) {
           const slot = offScaleSlots.get(t.label);
@@ -557,7 +568,7 @@ export function medianOf(xs: Array<number | undefined | null>): number | null {
   const sorted = [...ys].sort((a, b) => a - b);
   const m = sorted.length / 2;
   return sorted.length % 2 === 1
-    ? sorted[Math.floor(m)] ?? null
+    ? (sorted[Math.floor(m)] ?? null)
     : ((sorted[m - 1] ?? 0) + (sorted[m] ?? 0)) / 2;
 }
 
@@ -573,7 +584,13 @@ export function peerTone(
   median: number | null | undefined,
   kind: "lowerIsBetter" | "higherIsBetter",
 ): "up" | "amber" | "down" | "muted" {
-  if (subject == null || !Number.isFinite(subject) || median == null || !Number.isFinite(median) || median === 0)
+  if (
+    subject == null ||
+    !Number.isFinite(subject) ||
+    median == null ||
+    !Number.isFinite(median) ||
+    median === 0
+  )
     return "muted";
   const ratio = subject / median;
   const inside = kind === "lowerIsBetter" ? ratio <= 1 && ratio >= 0.9 : ratio >= 1 && ratio <= 1.1;
@@ -613,9 +630,7 @@ export function PeerScorecard({
   const usable = metrics.filter((m) => m.subject != null && Number.isFinite(m.subject));
   if (usable.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-caption">
-        No peer comparison data.
-      </div>
+      <div className="flex h-full items-center justify-center text-caption">No peer comparison data.</div>
     );
   }
   return (

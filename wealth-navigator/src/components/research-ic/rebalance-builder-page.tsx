@@ -27,7 +27,7 @@ import * as React from "react";
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
-import { ActionBadge, moneyR, rebalanceCodeMap, useQuotes, weightPct } from "./ui";
+import { ActionBadge, moneyR, rebalanceCodeMap, rebalanceDisplayLabel, useQuotes, weightPct } from "./ui";
 
 type Holding = { ticker: string; name: string; shares: number };
 type StrategyOpt = { id: string; name: string; investorEnvironment: "LIVE" | "UAT" };
@@ -2295,7 +2295,15 @@ function SingleClientRebalancePanel({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          strategy_id: strategyId,
+          // rebalance_request_c.strategy_id stores the strategy's display
+          // NAME, not its real id — see the identical convention at
+          // submitToIc() above and the matching comment in
+          // transition/route.ts. Posting strategyId (the real UUID) here
+          // silently broke every downstream name lookup: the transition
+          // route's own strategy resolution, the IC page's UAT/vote-skip
+          // detection, and maybeCompleteRebalance's strategy lookup at
+          // completion — all three match on name.
+          strategy_id: strategyName,
           current_composition,
           proposed_composition,
           affected_investors: {
@@ -3223,7 +3231,7 @@ function ProposalsList({
                   </span>
                   <span className="font-mono text-xs text-muted-foreground">{codes.get(r.id) ?? "REB"}</span>
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{r.strategy_id}</p>
+                    <p className="truncate text-sm font-medium">{rebalanceDisplayLabel(r)}</p>
                     <p className="text-caption">
                       {changes} change{changes === 1 ? "" : "s"} · raised by {r.requested_by}
                     </p>
