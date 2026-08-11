@@ -2278,6 +2278,12 @@ function SingleClientRebalancePanel({
     setSubmitting(true);
     setSubmitError(null);
     try {
+      // Value-weighted % of this client's own basket — same convention the
+      // strategy-wide flow uses (weightOf() above), just against this one
+      // account's target lines instead of the model's. Without it the IC
+      // drill-down table's Weight column has nothing to show and falls
+      // through to "—" for every row.
+      const proposedTotalCents = previewQ.data.lines.reduce((sum, l) => sum + l.targetQty * l.priceCents, 0);
       const current_composition = previewQ.data.lines.map((l) => ({
         ticker: l.symbol,
         name: l.symbol,
@@ -2290,6 +2296,10 @@ function SingleClientRebalancePanel({
         shares: l.targetQty,
         price: l.priceCents,
         action: l.side === "buy" ? "increase" : l.side === "sell" ? "decrease" : "hold",
+        weight:
+          proposedTotalCents > 0
+            ? Number((((l.targetQty * l.priceCents) / proposedTotalCents) * 100).toFixed(2))
+            : 0,
       }));
       const res = await fetch("/api/rebalance/requests", {
         method: "POST",
