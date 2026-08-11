@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { sealRebalanceBoundary } from "@/lib/returns/seal-rebalance-boundary";
+import { recordRebalanceSettlement, sealRebalanceBoundary } from "@/lib/returns/seal-rebalance-boundary";
 
 /**
  * Once every order booked for a rebalance (reconcile-parked-holdings.ts /
@@ -20,6 +20,13 @@ import { sealRebalanceBoundary } from "@/lib/returns/seal-rebalance-boundary";
  * it into YTD permanently. The boundary is therefore sealed FIRST and the
  * flip only happens if it succeeded — leaving the rebalance visibly
  * unfinished (and retryable) is recoverable; a corrupted return chain is not.
+ *
+ * There are two boundaries, and they are not the same thing. The STRATEGY
+ * boundary (above) belongs only to a strategy-wide rebalance. The CLIENT
+ * boundary — a SETTLED `rebalance_batch` naming the owners whose holdings
+ * moved — is required by EVERY rebalance including a single-client one,
+ * because the per-owner return publisher refuses to publish an owner whose
+ * composition changed with nothing to explain it.
  */
 
 function bare(sym: string): string {
@@ -41,6 +48,8 @@ export interface CompleteRebalanceResult {
   error?: string;
   /** "single_user" rebalances finish without touching anything strategy-level. */
   scope?: "strategy" | "single_user";
+  /** The SETTLED rebalance_batch recorded so affected owners' return series can chain across. */
+  settlementBatchId?: string;
   /** Return-boundary outcome, when the rebalance reached the flip step. */
   boundary?: {
     sealed: boolean;
@@ -59,13 +68,54 @@ export async function maybeCompleteRebalance(
 ): Promise<CompleteRebalanceResult> {
   const siblingsRes = await institutionalDb
     .from("oems_order_audit")
-    .select("status")
+    .select("status, payload")
     .eq("payload->>rebalance_request_id", rebalanceRequestId);
   if (siblingsRes.error) return { completed: false, error: siblingsRes.error.message };
-  const siblings = siblingsRes.data ?? [];
+  const siblings = (siblingsRes.data ?? []) as Array<{
+    status: string;
+    payload: Record<string, unknown> | null;
+  }>;
   if (siblings.length === 0) return { completed: false };
-  const allDone = siblings.every((r) => ["filled", "cancelled", "rejected"].includes(r.status as string));
+  const allDone = siblings.every((r) => ["filled", "cancelled", "rejected"].includes(r.status));
   if (!allDone) return { completed: false };
+
+  // Owners whose own holdings this rebalance moved. Derived from the holdings
+  // the orders reference rather than the order payload, because the payload
+  // hardcodes family_member_id to null while the holding carries the real one
+  // — and the per-owner return publisher keys on (user, family member,
+  // strategy), so a wrong family id would leave that owner's boundary
+  // unmatched and jam their return series.
+  const touchedHoldingIds = [
+    ...new Set(
+      siblings
+        .map((r) => r.payload?.holding_id)
+        .filter((v): v is string => typeof v === "string" && v.length > 0),
+    ),
+  ];
+  const owners = new Map<string, { userId: string; familyMemberId: string | null }>();
+  if (touchedHoldingIds.length > 0) {
+    const ownerRes = await retailDb
+      .from("stock_holdings_c")
+      .select("user_id, family_member_id")
+      .in("id", touchedHoldingIds);
+    for (const row of (ownerRes.data ?? []) as Array<{ user_id: string; family_member_id: string | null }>) {
+      if (!row.user_id) continue;
+      owners.set(`${row.user_id}|${row.family_member_id ?? ""}`, {
+        userId: row.user_id,
+        familyMemberId: row.family_member_id ?? null,
+      });
+    }
+  }
+  // Fall back to the payload's user_id for any order whose holding row could
+  // not be read, so an owner is never silently dropped from the boundary.
+  for (const r of siblings) {
+    const uid = r.payload?.user_id;
+    if (typeof uid !== "string" || !uid) continue;
+    if (![...owners.values()].some((o) => o.userId === uid)) {
+      owners.set(`${uid}|`, { userId: uid, familyMemberId: null });
+    }
+  }
+  const affectedOwners = [...owners.values()];
 
   const reqRes = await institutionalDb
     .from("rebalance_request_c")
@@ -85,18 +135,41 @@ export async function maybeCompleteRebalance(
   // strategy's published value on one account's trade.
   //
   // Everything client-level still runs: the fills already moved their holdings
-  // with cost basis intact, and settleRebalanceCashForClients (the caller's
-  // next step, gated on `completed`) still applies their reserve-funded fees
-  // and residual. Their PUBLISHED per-client YTD lives in
-  // `client_strategy_returns_c`, whose publisher has not been ported off the
-  // CRM yet — until it is, this path preserves their money but not their
-  // published return series.
+  // with cost basis intact, settleRebalanceCashForClients (the caller's next
+  // step, gated on `completed`) applies their reserve-funded fees and
+  // residual, and the settlement batch recorded below lets their own return
+  // series (publish-client-eod-returns.ts) chain across the composition change
+  // instead of jamming on it.
   const affected = reqRes.data.affected_investors as { scope?: unknown } | null;
-  if (typeof affected?.scope === "string" && affected.scope === "single_user") {
-    return { completed: true, scope: "single_user" };
-  }
-
   const strategyName = reqRes.data.strategy_id as string;
+
+  if (typeof affected?.scope === "string" && affected.scope === "single_user") {
+    // Still record the settlement itself. The strategy's return chain is
+    // untouched, but the CLIENT's composition did change, and their own return
+    // publisher refuses to publish an unexplained composition change — without
+    // a settled batch naming them, their series jams and their YTD goes stale,
+    // which is the opposite of preserving it.
+    const stratRow = await retailDb.from("strategies_c").select("id").eq("name", strategyName).maybeSingle();
+    const singleStrategyId = stratRow.data?.id as string | undefined;
+    if (!singleStrategyId) {
+      return { completed: false, error: `strategy "${strategyName}" not found` };
+    }
+    const recorded = await recordRebalanceSettlement(retailDb, {
+      strategyId: singleStrategyId,
+      strategyName,
+      holdings: [],
+      actorId: actorId ?? "",
+      owners: affectedOwners,
+    });
+    if (recorded.error) {
+      return {
+        completed: false,
+        error: `client rebalance boundary not recorded: ${recorded.error}`,
+        scope: "single_user",
+      };
+    }
+    return { completed: true, scope: "single_user", settlementBatchId: recorded.batchId };
+  }
   const proposed = (
     Array.isArray(reqRes.data.proposed_composition) ? reqRes.data.proposed_composition : []
   ) as ProposedLine[];
@@ -148,6 +221,7 @@ export async function maybeCompleteRebalance(
     strategyName,
     holdings: holdings.map((h) => ({ symbol: h.symbol, shares: h.shares })),
     actorId: actorId ?? "",
+    owners: affectedOwners,
     holdingsBefore: stratRes.data.holdings ?? null,
   });
   if (!boundary.sealed) {

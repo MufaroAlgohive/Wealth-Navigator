@@ -20,6 +20,10 @@
     {
       "path": "/api/cron/returns-publish",
       "schedule": "0 17 * * 1-5"
+    },
+    {
+      "path": "/api/cron/client-returns-publish",
+      "schedule": "20 17 * * 1-5"
     }
   ]
 }
