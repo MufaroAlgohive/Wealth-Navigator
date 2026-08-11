@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { reconcileBufferDrawdowns } from "@/lib/orderbook/reconcile-buffer-drawdowns";
 import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
 import { settleRebalanceCashForClients } from "@/lib/rebalance/settle-rebalance-cash";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
@@ -23,16 +24,18 @@ import { observedFillFromAudit, settleFill } from "@workers/iress-ingest/src/set
  *     the Send Confirmation button.
  *   - when a row lands on 'filled' AND its payload is tagged uat_test=true
  *     (see client-order/route.ts), best-effort auto-settles it. Never
- *     touches a live order — the uat_test tag gates it, AND (for the sell
- *     path specifically, see settleUatSellFill) an independent check that
- *     every targeted holding actually belongs to a verified test account.
- *   - a BUY fill (settleUatFill) still calls MyMintAdmin's update-price
- *     endpoint for avg_fill/Fill_date, and separately writes the order's own
- *     `quantity` directly onto the referenced `stock_holdings_c` row (RETAIL,
- *     same repo — no CRM round-trip needed for this one field).
+ *     touches a live order — the uat_test tag gates it, AND both settlement
+ *     paths independently check that every targeted holding actually belongs
+ *     to a verified test account.
+ *   - a BUY fill (settleUatFill) settles entirely in this repo: it stamps
+ *     avg_fill/Fill_date (with server-side attribution), writes the order's
+ *     own `quantity` onto the referenced `stock_holdings_c` row, and
+ *     reconciles the 8% execution-reserve ledger. This used to POST to
+ *     MyMintAdmin's update-price endpoint — the OEM's last runtime dependency
+ *     on the CRM, removed so buy fills survive the CRM's retirement.
  *   - a SELL fill (settleUatSellFill) goes through the SAME settlement
  *     engine used for real IRESS fills (workers/iress-ingest/src/settlement.ts
- *     `settleFill`), not CRM's update-price endpoint. CRM's sell-settlement
+ *     `settleFill`). CRM's sell-settlement
  *     always fully closes whatever holding_id the order names — for an
  *     ordinary sell that's correct, but a rebalance-driven PARTIAL sell (sell
  *     5 of 10) references the client's ORIGINAL, still-larger lot, and a full
@@ -88,16 +91,26 @@ interface UatSettlementResult {
 }
 
 /**
- * Best-effort call to MyMintAdmin's real settlement engine
- * (api/orderbook/update-price.js) for a UAT BUY self-fill — see this file's
- * doc comment. SELL fills do NOT go through here — see settleUatSellFill.
- * Never throws: a settlement-call failure must not fail the fill itself, but
- * IS surfaced in the response (never silently swallowed).
+ * Settle a UAT BUY self-fill: stamp the fill price on the holding, reconcile
+ * the execution-reserve ledger, and make the order's quantity real.
+ *
+ * This used to POST to MyMintAdmin's `api/orderbook/update-price`, which was
+ * the OEM's last runtime dependency on the CRM — with the CRM being retired,
+ * a buy fill would simply have stopped working. The three things that
+ * endpoint did for this path now happen here: the test-account ownership
+ * guard, the fill-price write (with server-side `fill_set_by`/`fill_set_at`
+ * attribution), and reconcileBufferDrawdowns.
+ *
+ * SELL fills do NOT go through here — see settleUatSellFill.
+ *
+ * Never throws: a settlement failure must not fail the fill itself, but IS
+ * surfaced in the response (never silently swallowed).
  */
 async function settleUatFill(
   row: AuditRow,
   fillPriceCents: number,
   retailDb: SupabaseClient,
+  actorEmail: string,
 ): Promise<UatSettlementResult> {
   const payload = row.payload ?? {};
   const uatTest = payload.uat_test === true;
@@ -105,42 +118,73 @@ async function settleUatFill(
   if (!uatTest || !holdingId) {
     return { audit_id: row.id, attempted: false, ok: false };
   }
-  const baseUrl = process.env.MYMINTADMIN_API_URL;
-  const secret = process.env.OEM_UAT_SETTLEMENT_SECRET;
-  if (!baseUrl || !secret) {
-    return {
-      audit_id: row.id,
-      attempted: true,
-      ok: false,
-      error: "MYMINTADMIN_API_URL or OEM_UAT_SETTLEMENT_SECRET not configured",
-    };
-  }
-  const updatePayload = { avg_fill: fillPriceCents, Fill_date: new Date().toISOString().slice(0, 10) };
+
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/api/orderbook/update-price`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${secret}` },
-      body: JSON.stringify({ ids: [holdingId], payload: updatePayload }),
-    });
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    if (!res.ok || body.error) {
-      return { audit_id: row.id, attempted: true, ok: false, error: body.error || `HTTP ${res.status}` };
-    }
-    // The order's own quantity is what actually becomes real at fill time —
-    // see the file docstring. Best-effort: this must not fail the fill
-    // itself (the CRM settlement call above already succeeded), so a failure
-    // here is swallowed rather than turning a real fill into an error.
-    await retailDb
+    // The guard that actually protected live data when this ran server-to-server
+    // against the CRM: refuse outright unless the holding belongs to a verified
+    // test account. Kept here now that there is no remote endpoint to enforce it.
+    const ownerRes = await retailDb
       .from("stock_holdings_c")
-      .update({ quantity: row.quantity, is_active: true })
-      .eq("id", holdingId);
+      .select("user_id")
+      .eq("id", holdingId)
+      .maybeSingle();
+    const userId = (ownerRes.data?.user_id as string | undefined) ?? "";
+    if (!userId) {
+      return { audit_id: row.id, attempted: true, ok: false, error: "holding not found" };
+    }
+    const [{ data: profile }, { data: testWallets }] = await Promise.all([
+      retailDb.from("profiles").select("is_test").eq("id", userId).maybeSingle(),
+      retailDb.from("wallets").select("user_id").eq("user_id", userId).eq("status", "test").limit(1),
+    ]);
+    const isVerifiedTestAccount = profile?.is_test === true || (testWallets ?? []).length > 0;
+    if (!isVerifiedTestAccount) {
+      return {
+        audit_id: row.id,
+        attempted: true,
+        ok: false,
+        error: "refusing to self-settle: holding does not belong to a verified test account",
+      };
+    }
+
+    const updRes = await retailDb
+      .from("stock_holdings_c")
+      .update({
+        avg_fill: fillPriceCents,
+        Fill_date: new Date().toISOString().slice(0, 10),
+        fill_set_by: actorEmail,
+        fill_set_at: new Date().toISOString(),
+        // The order's own quantity is what actually becomes real at fill
+        // time — see the file docstring.
+        quantity: row.quantity,
+        is_active: true,
+      })
+      .eq("id", holdingId)
+      .select("id");
+    if (updRes.error) {
+      return { audit_id: row.id, attempted: true, ok: false, error: updRes.error.message };
+    }
+    if ((updRes.data ?? []).length === 0) {
+      return { audit_id: row.id, attempted: true, ok: false, error: "no rows were updated" };
+    }
+
+    // Slippage above the quoted price is absorbed by the 8% execution reserve.
+    // Reported rather than swallowed, but never fatal: the fill itself landed.
+    const buffer = await reconcileBufferDrawdowns(retailDb, [holdingId]);
+    if (buffer.errors.length > 0) {
+      return {
+        audit_id: row.id,
+        attempted: true,
+        ok: true,
+        error: `filled, but buffer reconcile reported: ${buffer.errors.join("; ")}`,
+      };
+    }
     return { audit_id: row.id, attempted: true, ok: true };
   } catch (e) {
     return {
       audit_id: row.id,
       attempted: true,
       ok: false,
-      error: e instanceof Error ? e.message : "settlement request failed",
+      error: e instanceof Error ? e.message : "settlement failed",
     };
   }
 }
@@ -452,7 +496,7 @@ export async function POST(req: Request) {
         toSettle.map(({ row, fillPriceCents, updatedPayload }) =>
           String(row.side || "buy").toLowerCase() === "sell"
             ? settleUatSellFill(row, retailDb, db, updatedPayload)
-            : settleUatFill(row, fillPriceCents, retailDb),
+            : settleUatFill(row, fillPriceCents, retailDb, auth.ctx.email),
         ),
       )
     : toSettle.map(({ row }) => ({

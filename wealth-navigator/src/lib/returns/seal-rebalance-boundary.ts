@@ -38,6 +38,77 @@ export interface BoundaryHolding {
   shares: number;
 }
 
+/** One (client, family member) pair whose own holdings this settlement moved. */
+export interface BoundaryOwner {
+  userId: string;
+  familyMemberId: string | null;
+}
+
+export interface RecordSettlementResult {
+  batchId?: string;
+  error?: string;
+}
+
+/**
+ * Record the settlement itself: one SETTLED `rebalance_batch` naming the
+ * owners it moved.
+ *
+ * This is the CLIENT-side boundary, and it is required for every rebalance,
+ * including a single-client one. The per-owner return publisher refuses to
+ * publish an owner whose holdings composition changed unless it can find a
+ * settled batch linked to that owner in the gap — without one their return
+ * series jams on "composition changed without a settled rebalance boundary".
+ * The linkage goes in `pending_swap_snapshot` as `{userId, familyMemberId}`,
+ * which is one of the two shapes that publisher already reads.
+ *
+ * Deliberately separate from sealing the STRATEGY return boundary: a
+ * single-client rebalance needs this and must NOT have that, because the
+ * strategy's own composition and published value have not changed.
+ */
+export async function recordRebalanceSettlement(
+  retailDb: SupabaseClient,
+  params: {
+    strategyId: string;
+    strategyName: string;
+    holdings: BoundaryHolding[];
+    actorId: string;
+    owners: BoundaryOwner[];
+    holdingsBefore?: unknown;
+    effectiveAt?: Date;
+  },
+): Promise<RecordSettlementResult> {
+  const effectiveAt = params.effectiveAt ?? new Date();
+  if (!params.actorId) return { error: "no actor to attribute the settlement to" };
+
+  const swaps = params.owners
+    .filter((o) => o.userId)
+    .map((o) => ({ userId: o.userId, familyMemberId: o.familyMemberId ?? null }));
+
+  const res = await retailDb
+    .from("rebalance_batch")
+    .insert({
+      strategy_id: params.strategyId,
+      strategy_name_snapshot: params.strategyName,
+      status: "SETTLED",
+      settlement_state: "COMPLETE",
+      effective_date: effectiveAt.toISOString().slice(0, 10),
+      settlement_effective_at: effectiveAt.toISOString(),
+      holdings_snapshot_before: params.holdingsBefore ?? null,
+      holdings_snapshot_planned: params.holdings,
+      pending_swap_snapshot: swaps,
+      created_by: params.actorId,
+      settled_by: params.actorId,
+      settled_at: effectiveAt.toISOString(),
+      is_reversed: false,
+    })
+    .select("id")
+    .maybeSingle();
+  if (res.error) return { error: `rebalance_batch insert failed: ${res.error.message}` };
+  const batchId = res.data?.id as string | undefined;
+  if (!batchId) return { error: "rebalance_batch insert returned no id" };
+  return { batchId };
+}
+
 export interface SealBoundaryResult {
   sealed: boolean;
   /** Set when sealing was refused or failed; the caller must not treat the rebalance as settled. */
@@ -99,6 +170,16 @@ export async function sealRebalanceBoundary(
     /** The composition the strategy is moving TO. */
     holdings: BoundaryHolding[];
     actorId: string;
+    /** Owners this settlement moved — recorded for the client-side boundary. */
+    owners: BoundaryOwner[];
+    /**
+     * Set only for a deliberate full liquidation, where an empty target
+     * composition is the intended result rather than a malformed input. The
+     * securities value is then zero and the whole prior complete value moves
+     * into continuity cash. Left false, an empty basket is refused, because
+     * silently sealing one would tell the publisher the strategy holds nothing.
+     */
+    allowEmptyHoldings?: boolean;
     holdingsBefore?: unknown;
     effectiveAt?: Date;
   },
@@ -109,7 +190,9 @@ export async function sealRebalanceBoundary(
   const holdings = params.holdings
     .map((h) => ({ symbol: bare(h.symbol), shares: Math.max(0, Math.round(Number(h.shares) || 0)) }))
     .filter((h) => h.symbol && h.shares > 0);
-  if (holdings.length === 0) return { sealed: false, error: "no positive holdings to value" };
+  if (holdings.length === 0 && !params.allowEmptyHoldings) {
+    return { sealed: false, error: "no positive holdings to value" };
+  }
   if (!actorId) return { sealed: false, error: "no actor to attribute the settlement to" };
 
   const { priceCents, freshestAt } = await latestPrices(
@@ -121,7 +204,8 @@ export async function sealRebalanceBoundary(
   // understates securities value, which the RPC would then absorb into
   // continuity cash — silently and permanently misstating what the strategy
   // holds. Refusing to seal keeps the rebalance visibly unfinished instead,
-  // which is recoverable; a bad seal is not.
+  // which is recoverable; a bad seal is not. A liquidation has nothing to
+  // price, so there is nothing to be missing.
   const missing = holdings.filter((h) => !priceCents.has(h.symbol)).map((h) => h.symbol);
   if (missing.length > 0) {
     return {
@@ -135,27 +219,20 @@ export async function sealRebalanceBoundary(
   );
 
   // The RPC resolves the strategy from its batch, so the settlement needs one.
-  const batchRes = await retailDb
-    .from("rebalance_batch")
-    .insert({
-      strategy_id: strategyId,
-      strategy_name_snapshot: strategyName,
-      status: "SETTLED",
-      settlement_state: "COMPLETE",
-      effective_date: effectiveAt.toISOString().slice(0, 10),
-      holdings_snapshot_before: params.holdingsBefore ?? null,
-      holdings_snapshot_planned: holdings,
-      created_by: actorId,
-      settled_by: actorId,
-      settled_at: effectiveAt.toISOString(),
-      is_reversed: false,
-    })
-    .select("id")
-    .maybeSingle();
-  if (batchRes.error)
-    return { sealed: false, error: `rebalance_batch insert failed: ${batchRes.error.message}` };
-  const batchId = batchRes.data?.id as string | undefined;
-  if (!batchId) return { sealed: false, error: "rebalance_batch insert returned no id" };
+  // The same batch doubles as the client-side boundary for the owners it moved.
+  const recorded = await recordRebalanceSettlement(retailDb, {
+    strategyId,
+    strategyName,
+    holdings,
+    actorId,
+    owners: params.owners,
+    holdingsBefore: params.holdingsBefore,
+    effectiveAt,
+  });
+  if (recorded.error || !recorded.batchId) {
+    return { sealed: false, error: recorded.error ?? "settlement batch not recorded" };
+  }
+  const batchId = recorded.batchId;
 
   const rpcRes = await retailDb.rpc("finalize_rebalance_return_boundary", {
     p_batch_id: batchId,

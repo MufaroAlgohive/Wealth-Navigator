@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { tallyVotes, type RebalanceVote } from "@/lib/rebalance/ic-vote";
+import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -111,6 +111,31 @@ export async function GET(req: Request) {
   return NextResponse.json({ ok: true, requests });
 }
 
+/**
+ * Report the first declared cash shortfall in a submitted `affected_investors`
+ * payload, or null if there is none. Handles both shapes the compose surfaces
+ * send: a strategy-wide `{ investors: [{ shortfall, ... }] }` and a
+ * single-client `{ scope: "single_user", bridge: { shortfall } }`.
+ */
+function findDeclaredShortfall(affectedInvestors: unknown): string | null {
+  if (!affectedInvestors || typeof affectedInvestors !== "object") return null;
+  const a = affectedInvestors as { investors?: unknown; bridge?: unknown };
+
+  if (a.bridge && typeof a.bridge === "object" && (a.bridge as { shortfall?: unknown }).shortfall === true) {
+    return "This client's sale proceeds and execution reserve don't cover the fees. Reduce the buy size or trim something else.";
+  }
+
+  if (Array.isArray(a.investors)) {
+    const short = a.investors.filter(
+      (inv) => inv && typeof inv === "object" && (inv as { shortfall?: unknown }).shortfall === true,
+    );
+    if (short.length > 0) {
+      return `Insufficient cash for ${short.length} investor${short.length === 1 ? "" : "s"} — fees exceed sale proceeds plus their execution reserve. Reduce the buy size or trim something else.`;
+    }
+  }
+  return null;
+}
+
 export async function POST(req: Request) {
   const auth = await getAdminContext();
   if (auth.status === "no-session") {
@@ -135,6 +160,25 @@ export async function POST(req: Request) {
       { ok: false, error: "current_composition and proposed_composition must be arrays" },
       { status: 400 },
     );
+  }
+
+  // Cash-availability guard. A proposal whose fees can't be covered by sale
+  // proceeds plus the 8% execution reserve leaves the client short, and the
+  // proceeds bridge floors their strategy cash at zero rather than going
+  // negative — so the shortfall silently becomes destroyed value at
+  // settlement. Both compose surfaces already block submit on this flag; this
+  // is the same invariant stated at the API boundary, so a regression in
+  // either UI gate can't quietly write an unfundable proposal.
+  //
+  // Scope: this trusts the shortfall the caller computed (via
+  // /api/rebalance/impact or /api/rebalance/client-target-impact, both
+  // server-side and authoritative). It is not a recomputation — a caller that
+  // omits affected_investors, or forges it, is not caught here. Closing that
+  // properly means extracting the impact engine out of its route handler so
+  // this one can re-derive the numbers itself.
+  const shortfallError = findDeclaredShortfall(body.affected_investors);
+  if (shortfallError) {
+    return NextResponse.json({ ok: false, error: shortfallError }, { status: 422 });
   }
 
   const db = await openDb();
