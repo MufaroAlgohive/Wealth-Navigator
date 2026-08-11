@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { can, getAdminContext } from "@/lib/admin/rbac";
+import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
@@ -31,7 +31,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!can(auth.ctx, "rebalance", "approve_rebalance")) {
+  if (!canResearchIc(auth.ctx, "rebalance", "approve_rebalance")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 

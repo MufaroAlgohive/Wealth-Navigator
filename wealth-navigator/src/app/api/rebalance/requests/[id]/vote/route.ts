@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { can, getAdminContext } from "@/lib/admin/rbac";
+import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { tallyVotes, type RebalanceVote } from "@/lib/rebalance/ic-vote";
 import { committeeGate } from "@/lib/research-ic/committee-gate";
@@ -52,7 +52,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!can(auth.ctx, "rebalance", "approve_rebalance")) {
+  if (!canResearchIc(auth.ctx, "rebalance", "approve_rebalance")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   const gate = await committeeGate(auth.ctx.email);

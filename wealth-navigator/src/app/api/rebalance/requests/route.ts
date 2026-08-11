@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { can, getAdminContext } from "@/lib/admin/rbac";
+import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
@@ -144,7 +144,7 @@ export async function POST(req: Request) {
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!can(auth.ctx, "rebalance", "raise_rebalance")) {
+  if (!canResearchIc(auth.ctx, "rebalance", "raise_rebalance")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 

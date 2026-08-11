@@ -47,7 +47,12 @@ async function fetchJ203Daily(fromMs: number, toMs: number): Promise<Pt[]> {
     );
     if (!r.ok) return [];
     const j = (await r.json()) as {
-      chart?: { result?: Array<{ timestamp?: number[]; indicators?: { quote?: Array<{ close?: Array<number | null> }> } }> };
+      chart?: {
+        result?: Array<{
+          timestamp?: number[];
+          indicators?: { quote?: Array<{ close?: Array<number | null> }> };
+        }>;
+      };
     };
     const res = j.chart?.result?.[0];
     const ts = res?.timestamp ?? [];
@@ -75,23 +80,40 @@ export async function GET() {
       .select("strategy_id, as_of_date, basket_value_cents")
       .order("as_of_date", { ascending: true })
       .limit(6000),
-    db.from("strategies_c").select("id, name"),
+    db.from("strategies_c").select("id, name, investor_environment"),
   ]);
   if (returnsRes.error) {
     return Response.json(
-      { source: "unavailable", error: returnsRes.error.message, range: null, benchmark: null, strategies: [] },
+      {
+        source: "unavailable",
+        error: returnsRes.error.message,
+        range: null,
+        benchmark: null,
+        strategies: [],
+      },
       { status: 200 },
     );
   }
 
+  // UAT/test strategies never appear on this chart. `/api/strategies` already
+  // hides them from the catalogue for non-dev viewers, but this performance
+  // series is a separate read and was plotting every strategy — so a test
+  // basket (and its deliberately unrealistic return line) showed up on the
+  // cockpit's Strategies view. A strategy left out of `nameById` is skipped
+  // below, so omitting it here is enough.
   const nameById = new Map<string, string>();
-  for (const s of (stratRes.data ?? []) as Array<{ id: string; name: string | null }>) {
+  for (const s of (stratRes.data ?? []) as Array<{
+    id: string;
+    name: string | null;
+    investor_environment: string | null;
+  }>) {
+    if (String(s.investor_environment ?? "LIVE").toUpperCase() === "UAT") continue;
     if (s.name) nameById.set(s.id, s.name);
   }
 
   const bySid = new Map<string, Pt[]>();
-  let minT = Infinity;
-  let maxT = -Infinity;
+  let minT = Number.POSITIVE_INFINITY;
+  let maxT = Number.NEGATIVE_INFINITY;
   for (const r of (returnsRes.data ?? []) as Array<{
     strategy_id: string;
     as_of_date: string | null;
@@ -123,7 +145,10 @@ export async function GET() {
   let range: { from: string; to: string } | null = null;
   if (strategies.length > 0 && Number.isFinite(minT) && Number.isFinite(maxT)) {
     benchmark = { code: "J203", name: "JSE All Share", points: await fetchJ203Daily(minT, maxT) };
-    range = { from: new Date(minT).toISOString().slice(0, 10), to: new Date(maxT + DAY_MS).toISOString().slice(0, 10) };
+    range = {
+      from: new Date(minT).toISOString().slice(0, 10),
+      to: new Date(maxT + DAY_MS).toISOString().slice(0, 10),
+    };
   }
 
   return Response.json({ source: "retail-supabase", range, benchmark, strategies });

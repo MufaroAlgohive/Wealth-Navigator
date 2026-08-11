@@ -90,4 +90,31 @@ export function can(
   return Boolean(v);
 }
 
+/**
+ * Research & IC action check — `can()` plus the implicit admin grant.
+ *
+ * Admins and superadmins hold every Research & IC action without needing the
+ * granular `permissions.rebalance.*` / `permissions.research-lab.*` rows set on
+ * their `admin_team` record; staff still need the explicit grant. That rule was
+ * already stated and implemented on the UI side (research-ic/server.ts) and in
+ * one API route (research/notes POST), but the remaining rebalance/research
+ * routes checked bare `can()` — so every non-`dev` admin saw the buttons
+ * enabled and got a 403 on click. That was 10 of 14 active admins, including
+ * both of Lonwabo's accounts; only `approver_tier: "dev"` holders worked,
+ * because `can()` short-circuits to true for them.
+ *
+ * Returns a plain boolean: "pending"/"direct" both mean the action is allowed
+ * to proceed here (the approval-queue distinction is handled by the callers
+ * that care about it).
+ */
+export function canResearchIc(
+  ctx: Pick<AdminContext, "permissions" | "approverTier" | "role">,
+  section: "rebalance" | "research-lab",
+  field: string,
+): boolean {
+  if (ctx.role === "admin" || ctx.role === "superadmin") return true;
+  const v = can(ctx, section, field);
+  return v === true || v === "direct";
+}
+
 export type { AdminPageKey };

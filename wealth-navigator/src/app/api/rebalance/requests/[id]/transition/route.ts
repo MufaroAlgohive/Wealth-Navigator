@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { can, getAdminContext } from "@/lib/admin/rbac";
+import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { bookSettledRebalanceOrders } from "@/lib/rebalance/book-settled-rebalance-orders";
 import { reconcileParkedHoldings } from "@/lib/rebalance/reconcile-parked-holdings";
@@ -109,7 +109,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // the order book is a desk decision, not just the original requester's.
   const isRequester = auth.ctx.email.toLowerCase() === String(request.requested_by ?? "").toLowerCase();
   const isDev = auth.ctx.approverTier === "dev";
-  const canApprove = can(auth.ctx, "rebalance", "approve_rebalance");
+  const canApprove = canResearchIc(auth.ctx, "rebalance", "approve_rebalance");
   if ((toStatus === "ic_approved" || toStatus === "executed" || toStatus === "rejected") && !canApprove) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
