@@ -16,7 +16,6 @@ import {
   Library,
   LineChart,
   type LucideIcon,
-  Mail,
   MonitorSmartphone,
   Newspaper,
   Scale,
@@ -25,7 +24,6 @@ import {
   Shield,
   ShieldCheck,
   SlidersHorizontal,
-  Sunrise,
   TrendingUp,
   Users,
   Vote,
@@ -118,6 +116,7 @@ export const PLATFORM_NAV: NavSection[] = [
     items: [
       { label: "Clients", href: "/admin/clients", icon: Users, roles: [WM, OPS] },
       { label: "Investors", href: "/admin/investors", icon: TrendingUp, roles: [WM, BIZ] },
+      { label: "Dividends", href: "/admin/investors/dividends", icon: Banknote, roles: [WM, OPS, BIZ] },
       { label: "Client View Studio", href: "/admin/studio", icon: MonitorSmartphone, roles: [WM] },
     ],
   },
@@ -137,8 +136,6 @@ export const PLATFORM_NAV: NavSection[] = [
     title: "Intelligence & Comms",
     items: [
       { label: "News & SENS", href: "/oems/news", icon: Newspaper },
-      { label: "Mint Mornings", href: "/admin/mint-mornings", icon: Sunrise, roles: [BIZ] },
-      { label: "Emailers & Triggers", href: "/admin/emailers", icon: Mail, roles: [BIZ] },
     ],
   },
   {

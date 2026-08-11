@@ -60,6 +60,7 @@
     "lucide-react": "^0.469.0",
     "next": "^16.2.7",
     "next-themes": "^0.4.4",
+    "office-crypto": "^0.1.0",
     "react": "^19.0.0",
     "react-day-picker": "^9.4.4",
     "react-dom": "^19.0.0",
