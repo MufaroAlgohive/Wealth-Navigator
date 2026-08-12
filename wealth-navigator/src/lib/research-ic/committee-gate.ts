@@ -15,6 +15,7 @@ import {
   COMMITTEE_ROSTER,
   type CommitteeMember,
   type CommitteeRole,
+  KNOWN_COMMITTEE_EMAILS,
 } from "./committee";
 
 interface MemberRow {
@@ -31,8 +32,9 @@ export type CommitteeGate =
 
 const slugForEmail = (email: string): string | null => {
   const e = email.toLowerCase();
-  const match = COMMITTEE_ROSTER.find((m) => m.displayName.toLowerCase() === e);
-  if (match) return match.slug;
+  for (const [slug, emails] of Object.entries(KNOWN_COMMITTEE_EMAILS)) {
+    if (emails.includes(e)) return slug;
+  }
   return null;
 };
 

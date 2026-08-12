@@ -45,6 +45,29 @@ export const COMMITTEE_ROSTER: ReadonlyArray<Omit<CommitteeMember, "email">> = [
   { slug: "lethabo", displayName: "Lethabo", initials: "LT", role: "voting" },
 ];
 
+/**
+ * Known real emails per committee slug — the single source of truth both
+ * `committee-gate.ts` (the authoritative vote-cast gate) and
+ * `/api/research/committee` (the UI's own identity resolution) fall back to
+ * when `admin_team`/`committee_member_c` lookups miss.
+ *
+ * Needed because BOTH of those lookups can miss for a real, valid member: an
+ * exact `full_name === "Lonwabo"` match fails against the real name "Lonwabo
+ * Damane", and an email-prefix match on `"lethabo@"` fails against the real
+ * address "lethabo.maloma@mymint.co.za". `committee_member_c` itself shipped
+ * with literal `@CHANGE-ME` placeholders and was never finished — this map is
+ * what actually let anyone vote for the first time.
+ *
+ * Lonwabo holds two active admin accounts (a work address and a personal
+ * gmail for the same identity); both are listed so either session can vote
+ * as chair.
+ */
+export const KNOWN_COMMITTEE_EMAILS: Readonly<Record<string, readonly string[]>> = {
+  lonwabo: ["lonwabo@mymint.co.za", "lonwabodamane@gmail.com"],
+  juan: ["juan@autonama.co.za", "juan.vanwyk@mymint.co.za"],
+  lethabo: ["lethabo.maloma@mymint.co.za"],
+};
+
 /** Committee size — fixed at 3 by charter. */
 export const IC_COMMITTEE_SIZE = COMMITTEE_ROSTER.length;
 
@@ -78,16 +101,18 @@ export async function resolveCommitteeMembers(
   /** Candidate emails to match against (e.g. from admin_team.full_name lower-cased). */
   emailsByName: Record<string, string>,
 ): Promise<CommitteeMember[]> {
-  const emails = COMMITTEE_ROSTER
-    .map((m) => emailsByName[m.displayName.toLowerCase()]?.toLowerCase())
-    .filter((e): e is string => Boolean(e));
+  const emails = COMMITTEE_ROSTER.map((m) => emailsByName[m.displayName.toLowerCase()]?.toLowerCase()).filter(
+    (e): e is string => Boolean(e),
+  );
   if (emails.length === 0) {
     return COMMITTEE_ROSTER.map((m) => ({ ...m, email: "" }));
   }
   let resolved: Array<{ email: string; full_name: string | null }> = [];
   try {
-    const r: { data: Array<{ email: string; full_name: string | null }> | null; error: { message: string } | null } =
-      await supabase.from("admin_team").select("email, full_name").in("email", emails);
+    const r: {
+      data: Array<{ email: string; full_name: string | null }> | null;
+      error: { message: string } | null;
+    } = await supabase.from("admin_team").select("email, full_name").in("email", emails);
     if (r.data) resolved = r.data;
   } catch {
     resolved = [];
