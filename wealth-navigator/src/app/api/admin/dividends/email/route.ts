@@ -279,8 +279,8 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
   <!-- CLOSE -->
   <div class="close">
     <p>${isFuture
-      ? `Every cent will be automatically credited to ${profile.is_child ? `${profile.first_name}'s` : 'your'} myMINT account on the payment date. No forms, no waiting, no admin. That is what ownership looks like: money working quietly in the background while you get on with life.<br><br>And this is just the beginning. The more ${profile.is_child ? profile.first_name : 'you'} own${profile.is_child ? 's' : ''}, the larger the share of any future distributions these holdings pay out.`
-      : `Every cent has been credited to ${profile.is_child ? `${profile.first_name}'s` : 'your'} myMINT account, automatically. No forms, no waiting, no admin. That is what ownership looks like: money working quietly in the background while you get on with life.<br><br>And this is just the beginning. The more ${profile.is_child ? profile.first_name : 'you'} own${profile.is_child ? 's' : ''}, the larger the share of any future distributions these holdings pay out.`
+      ? `Every cent will be automatically credited to ${profile.is_child ? `${profile.first_name}'s` : 'your'} bank account on the payment date. No forms, no waiting, no admin. That is what ownership looks like: money working quietly in the background while you get on with life.<br><br>And this is just the beginning. The more ${profile.is_child ? profile.first_name : 'you'} own${profile.is_child ? 's' : ''}, the larger the share of any future distributions these holdings pay out.`
+      : `Every cent has been credited to ${profile.is_child ? `${profile.first_name}'s` : 'your'} bank account, automatically. No forms, no waiting, no admin. That is what ownership looks like: money working quietly in the background while you get on with life.<br><br>And this is just the beginning. The more ${profile.is_child ? profile.first_name : 'you'} own${profile.is_child ? 's' : ''}, the larger the share of any future distributions these holdings pay out.`
     }</p>
     <a href="https://app.mymint.co.za">Grow my portfolio &rarr;</a>
   </div>
