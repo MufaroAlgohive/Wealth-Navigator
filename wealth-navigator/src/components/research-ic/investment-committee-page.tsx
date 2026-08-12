@@ -153,22 +153,25 @@ export function InvestmentCommitteePage({
   }, []);
   const pills = React.useMemo(() => buildCommitteePills(committee, viewerEmail), [committee, viewerEmail]);
 
+  type SectionId = "agenda" | "approved" | "recent" | "uat" | "governance";
+  const [active, setActive] = React.useState<SectionId>("agenda");
+  const activeScope = active === "uat" ? "uat" : "live";
   const notesQ = useQuery<{ notes: ResearchNote[] }>({
-    queryKey: ["ric-notes-all"],
+    queryKey: ["ric-notes-all", activeScope],
     refetchInterval: 30_000,
     queryFn: async () =>
       (await (
-        await fetch("/api/research/notes", { cache: "no-store" })
+        await fetch(`/api/research/notes?scope=${activeScope}`, { cache: "no-store" })
       )
         .json()
         .catch(() => ({ notes: [] }))) as { notes: ResearchNote[] },
   });
   const reqQ = useQuery<{ requests: RebalanceRequest[] }>({
-    queryKey: ["ric-rebalance-requests"],
+    queryKey: ["ric-rebalance-requests", activeScope],
     refetchInterval: 30_000,
     queryFn: async () =>
       (await (
-        await fetch("/api/rebalance/requests", { cache: "no-store" })
+        await fetch(`/api/rebalance/requests?scope=${activeScope}`, { cache: "no-store" })
       )
         .json()
         .catch(() => ({ requests: [] }))) as { requests: RebalanceRequest[] },
@@ -217,7 +220,6 @@ export function InvestmentCommitteePage({
   const toggleSection = (k: string) => setOpenSections((prev) => ({ ...prev, [k]: !prev[k] }));
 
   // ── Sticky tab bar + scroll-spy ──────────────────────────────────────────
-  type SectionId = "agenda" | "approved" | "recent" | "governance";
   const sections: Array<{
     id: SectionId;
     label: string;
@@ -227,9 +229,9 @@ export function InvestmentCommitteePage({
     { id: "agenda", label: "Agenda", count: agendaCount, icon: ScrollText },
     { id: "approved", label: "Approved", count: approvedReqs.length, icon: Rocket },
     { id: "recent", label: "Recent", count: recent.length, icon: Calendar },
+    ...(canSeeUat ? [{ id: "uat" as const, label: "UAT", count: 0, icon: Rocket }] : []),
     { id: "governance", label: "Settings", icon: Users },
   ];
-  const [active, setActive] = React.useState<SectionId>("agenda");
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["ric-notes-all"] });
@@ -386,12 +388,6 @@ export function InvestmentCommitteePage({
                   </div>
                 )}
               </CollapsibleCard>
-              <CommitteeContextPanel
-                pills={pills}
-                viewerEmail={viewerEmail}
-                checks={checks}
-                onCheckChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
-              />
             </section>
           )}
 
@@ -473,6 +469,15 @@ export function InvestmentCommitteePage({
             </section>
           )}
 
+          {active === "uat" && canSeeUat && (
+            <section>
+              <CollapsibleCard title={`UAT strategy work · ${agendaCount} pending`} dataSource="supabase" db="institutional" open onToggle={() => undefined}>
+                <p className="mb-3 text-caption">UAT research, votes and rebalance proposals are isolated from LIVE.</p>
+                {agendaCount === 0 && approvedReqs.length === 0 && recent.length === 0 ? <p className="text-caption">No UAT research or strategy proposals yet.</p> : <div className="space-y-4">{visibleReqs.map((r) => <RebalanceAgendaItem key={r.id} req={r} code={rebCodes.get(r.id) ?? "REB"} linkedNote={linkedNoteForRebalance(r, agendaNotes)} canApprove={perms.approveRebalance} canApproveNote={perms.approveNote} canVote={perms.approveRebalance} viewerEmail={viewerEmail} pills={pills} onChanged={refresh} />)}{visibleNotes.map((n) => <ResearchAgendaItem key={n.id} note={n} linkedRebalance={linkedRebalanceForNote(n, pendingReqs)} perms={perms} viewerEmail={viewerEmail} pills={pills} onChanged={refresh} />)}</div>}
+              </CollapsibleCard>
+            </section>
+          )}
+
           {/* ── Members (also surfaced in right rail) ─────────────────────── */}
           {false && (
             <section>
@@ -521,7 +526,7 @@ export function InvestmentCommitteePage({
         </div>
 
         {/* right rail — standing config (desktop) */}
-        <div className="space-y-3 xl:sticky xl:top-20 xl:self-start">
+        {(active === "agenda" || active === "approved") && <div className="space-y-3 xl:sticky xl:top-20 xl:self-start">
           <CommitteeRightRail scope="live" canSeeUat={canSeeUat} compact />
           <GlassSection title="Committee members" dataSource="supabase" db="institutional">
             <MembersList pills={pills} viewerEmail={viewerEmail} />
@@ -537,7 +542,7 @@ export function InvestmentCommitteePage({
               onChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
             />
           </GlassSection>
-        </div>
+        </div>}
       </div>
 
       {/* ── Floating back-to-top button (only after first section) ─────── */}
