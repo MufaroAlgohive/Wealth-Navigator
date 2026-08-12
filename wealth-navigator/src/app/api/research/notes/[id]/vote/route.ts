@@ -107,22 +107,25 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: false, error: `You are not a research voter for ${scope.toUpperCase()} IC.` }, { status: 403 });
   }
 
+  // One ballot per member per research decision. The table's unique key on
+  // (note_id, voter_email) is the final race-safe enforcement; do not upsert
+  // because that would silently let a voter revise their decision.
   const { data, error } = await db
     .from("research_vote_c")
-    .upsert(
-      {
-        note_id: id,
-        voter_email: auth.ctx.email,
-        vote,
-        rationale,
-        voted_at: new Date().toISOString(),
-      },
-      { onConflict: "note_id,voter_email" },
-    )
+    .insert({
+      note_id: id,
+      voter_email: auth.ctx.email,
+      vote,
+      rationale,
+      voted_at: new Date().toISOString(),
+    })
     .select()
     .maybeSingle();
 
   if (error) {
+    if ((error as { code?: string }).code === "23505") {
+      return NextResponse.json({ ok: false, error: "You have already cast your vote for this research item." }, { status: 409 });
+    }
     if (isSupabaseSchemaMissing(error)) {
       return NextResponse.json(
         {

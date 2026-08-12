@@ -1225,6 +1225,7 @@ function ResearchAgendaItem({
   const viewerVote = sumQ.data?.votes.find(
     (vote) => vote.voter_email.toLowerCase() === viewerEmail?.toLowerCase(),
   )?.vote;
+  const voteLocked = Boolean(viewerVote);
   const policy = governanceQ.data?.scopes?.[scope]?.policy;
   const researchVoters = governanceQ.data?.scopes?.[scope]?.members.filter(
     (member) => member.role !== "observer" && member.vote_scope.includes("research"),
@@ -1299,13 +1300,15 @@ function ResearchAgendaItem({
         <p className="mt-1.5 text-[10px] text-muted-foreground">{tally.yes} yes · {tally.no} no · {tally.abstain} abstain · {Math.max(0, researchVoters - tally.total)} not yet voted</p>
       </div>
       {voteError && <p className="mt-2 text-xs text-down">{voteError}</p>}
+      {viewerVote && <p className="mt-2 text-xs text-up">Your {viewerVote.toUpperCase()} vote has been recorded and is locked.</p>}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--glass-border))] pt-3">
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-muted-foreground">Vote:</span>
           <button
             type="button"
-            disabled={!perms.castVote || voting != null}
+            disabled={!perms.castVote || voting != null || voteLocked}
+            title={voteLocked ? "Your recorded vote is locked" : "Vote yes"}
             onClick={() => vote("yes")}
             className={cn("rounded-md border p-1.5 disabled:opacity-50", viewerVote === "yes" ? "border-up/60 bg-up/15 text-up" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-up")}
           >
@@ -1313,7 +1316,8 @@ function ResearchAgendaItem({
           </button>
           <button
             type="button"
-            disabled={!perms.castVote || voting != null}
+            disabled={!perms.castVote || voting != null || voteLocked}
+            title={voteLocked ? "Your recorded vote is locked" : "Abstain"}
             onClick={() => vote("abstain")}
             className={cn("rounded-md border p-1.5 disabled:opacity-50", viewerVote === "abstain" ? "border-muted-foreground/60 bg-muted-foreground/15 text-foreground" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground")}
           >
@@ -1321,7 +1325,8 @@ function ResearchAgendaItem({
           </button>
           <button
             type="button"
-            disabled={!perms.castVote || voting != null}
+            disabled={!perms.castVote || voting != null || voteLocked}
+            title={voteLocked ? "Your recorded vote is locked" : "Vote no"}
             onClick={() => vote("no")}
             className={cn("rounded-md border p-1.5 disabled:opacity-50", viewerVote === "no" ? "border-down/60 bg-down/15 text-down" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-down")}
           >
