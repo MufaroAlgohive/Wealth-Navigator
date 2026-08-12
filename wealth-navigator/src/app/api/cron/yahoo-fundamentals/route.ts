@@ -83,7 +83,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
   }
 
-  const { data: securities, error } = await db.from("securities_c").select("id, symbol, updated_at").eq("is_active", true).limit(500);
+  const { data: securities, error } = await db.from("securities_c").select("id, symbol, updated_at").eq("is_active", true).limit(360);
   if (error) return NextResponse.json({ ok: false, error: error.message });
 
   // Symbols cut over to IRESS (approved + backend-validated): Yahoo must NOT
