@@ -1137,7 +1137,7 @@ export function NoteEditor({
               />
               <PrefillRow
                 label="Price source"
-                value={analysis.price.priceSource === "iress" ? "IRESS (live)" : "Stored"}
+                value={analysis.price.priceSource === "iress" ? "IRESS (live)" : "Yahoo cached"}
                 mono
               />
             </PrefillCard>
