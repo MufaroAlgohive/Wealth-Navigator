@@ -1400,10 +1400,11 @@ export function RebalanceBuilderPage({
                         </Link>
                       ) : (
                         <Link
-                          href="/oems/research"
-                          className="mt-2 block rounded-md border border-amber-500/35 bg-amber-500/[0.07] px-3 py-2 text-xs text-amber-600 hover:bg-amber-500/[0.12] dark:text-amber-400"
+                          href={`/oems/research?new=1&symbol=${encodeURIComponent(holding.ticker)}`}
+                          className="mt-2 flex items-center justify-between rounded-md border border-primary/25 bg-primary/[0.05] px-3 py-2 text-xs text-primary hover:bg-primary/[0.1]"
                         >
-                          Attach research first — open Research Library
+                          <span className="font-semibold">Write BUY note for {holding.ticker}</span>
+                          <span className="text-[10px] text-muted-foreground">Opens research draft →</span>
                         </Link>
                       )}
                     </div>

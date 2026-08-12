@@ -82,7 +82,12 @@ function Field({
 }
 
 // ── wizard steps ────────────────────────────────────────────────────────────
-const STEPS: { id: number; title: string; subtitle: string; icon: React.ComponentType<{ className?: string }> }[] = [
+const STEPS: {
+  id: number;
+  title: string;
+  subtitle: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
   { id: 1, title: "Identify", subtitle: "Pick a ticker or company", icon: Search },
   { id: 2, title: "Auto-fetch", subtitle: "Pull market data", icon: Sparkles },
   { id: 3, title: "Thesis", subtitle: "Bull, bear, catalysts, risks", icon: Sparkles },
@@ -172,7 +177,11 @@ function metricOf(
   if (!m || m.value == null || !Number.isFinite(m.value)) return null;
   return m;
 }
-function metricValue(groups: CompanyAnalysis["groups"] | undefined, group: string, key: string): number | null {
+function metricValue(
+  groups: CompanyAnalysis["groups"] | undefined,
+  group: string,
+  key: string,
+): number | null {
   return metricOf(groups, group, key)?.value ?? null;
 }
 /** Convert a Yahoo metric to display percent (e.g. 7.2 for 7.2%). Handles
@@ -386,11 +395,7 @@ function TickerTypeahead({
           ) : (
             <ul role="listbox">
               {results.map((hit, i) => (
-                <li
-                  key={`${hit.source}-${hit.symbol}`}
-                  role="option"
-                  aria-selected={i === highlight}
-                >
+                <li key={`${hit.source}-${hit.symbol}`} role="option" aria-selected={i === highlight}>
                   <button
                     type="button"
                     onMouseEnter={() => setHighlight(i)}
@@ -424,8 +429,7 @@ function Stepper({ step }: { step: number }) {
     <nav className="flex items-center gap-1.5">
       {STEPS.map((s) => {
         const Icon = s.icon;
-        const state =
-          step === s.id ? "current" : step > s.id ? "done" : "todo";
+        const state = step === s.id ? "current" : step > s.id ? "done" : "todo";
         return (
           <React.Fragment key={s.id}>
             <div
@@ -470,10 +474,13 @@ function Stepper({ step }: { step: number }) {
 // ── main component ─────────────────────────────────────────────────────────
 export function NoteEditor({
   note,
+  initialSymbol,
   onSaved,
   onCancel,
 }: {
   note?: ResearchNote | null;
+  /** Optional rebalance hand-off; only pre-fills the draft's identifier. */
+  initialSymbol?: string;
   onSaved: (noteId: string) => void;
   onCancel: () => void;
 }) {
@@ -486,7 +493,7 @@ export function NoteEditor({
   const [step, setStep] = React.useState<number>(1);
 
   // form state (the union of what the wizard collects)
-  const [symbol, setSymbol] = React.useState<string>(note?.symbol ?? "");
+  const [symbol, setSymbol] = React.useState<string>(note?.symbol ?? initialSymbol ?? "");
   const [companyName, setCompanyName] = React.useState<string>(th.companyName ?? "");
   const [sector, setSector] = React.useState<string>(th.sector ?? "");
   const [isin, setIsin] = React.useState<string>(th.isin ?? "");
@@ -498,9 +505,7 @@ export function NoteEditor({
   const [targetPrice, setTargetPrice] = React.useState<string>(
     th.targetPrice != null ? String(th.targetPrice) : "",
   );
-  const [linkedStrategies, setLinkedStrategies] = React.useState<string[]>(
-    th.linkedStrategies ?? [],
-  );
+  const [linkedStrategies, setLinkedStrategies] = React.useState<string[]>(th.linkedStrategies ?? []);
   const [linkedStrategiesLoading, setLinkedStrategiesLoading] = React.useState(false);
   const [bull, setBull] = React.useState<string>(th.bull ?? "");
   const [bear, setBear] = React.useState<string>(th.bear ?? "");
@@ -513,9 +518,7 @@ export function NoteEditor({
   const [peMultiple, setPeMultiple] = React.useState<string>(
     val.pe_multiple != null ? String(val.pe_multiple) : "",
   );
-  const [evEbitda, setEvEbitda] = React.useState<string>(
-    val.ev_ebitda != null ? String(val.ev_ebitda) : "",
-  );
+  const [evEbitda, setEvEbitda] = React.useState<string>(val.ev_ebitda != null ? String(val.ev_ebitda) : "");
   const [roePct, setRoePct] = React.useState<string>(val.roe_pct != null ? String(val.roe_pct) : "");
   const [divYieldPct, setDivYieldPct] = React.useState<string>(
     val.div_yield_pct != null ? String(val.div_yield_pct) : "",
@@ -625,7 +628,6 @@ export function NoteEditor({
     void applyIdentifyMeta(symbol, { overwriteIdentity: false });
   }, [symbol, applyIdentifyMeta]);
 
-
   // step 1 (and beyond): live price badge next to the Target Price input.
   // Reuses the same /api/company-analysis endpoint that step 2 uses (which overlays
   // a fresh IRESS quote on cached Yahoo fundamentals) — so the price the analyst
@@ -635,10 +637,9 @@ export function NoteEditor({
     queryKey: ["wizard-live-price", fetchSymbol],
     enabled: fetchSymbol.length > 0,
     queryFn: async () => {
-      const r = await fetch(
-        `/api/company-analysis/${encodeURIComponent(fetchSymbol)}.JO`,
-        { cache: "no-store" },
-      );
+      const r = await fetch(`/api/company-analysis/${encodeURIComponent(fetchSymbol)}.JO`, {
+        cache: "no-store",
+      });
       if (!r.ok) return null;
       const json = (await r.json()) as CompanyAnalysis;
       return json?.ok ? json : null;
@@ -664,9 +665,9 @@ export function NoteEditor({
         fetch(`/api/company-analysis/${encodeURIComponent(fetchSymbol)}.JO`, { cache: "no-store" }).then(
           (r) => (r.ok ? r.json() : null),
         ),
-        fetch(`/api/company-analysis/${encodeURIComponent(fetchSymbol)}.JO/peers`, { cache: "no-store" }).then(
-          (r) => (r.ok ? r.json() : null),
-        ),
+        fetch(`/api/company-analysis/${encodeURIComponent(fetchSymbol)}.JO/peers`, {
+          cache: "no-store",
+        }).then((r) => (r.ok ? r.json() : null)),
       ]);
       return {
         analysis: (a as CompanyAnalysis | null) ?? null,
@@ -976,7 +977,12 @@ export function NoteEditor({
           />
         </Field>
         <Field label="Time horizon">
-          <input className={INPUT} value={horizon} onChange={(e) => setHorizon(e.target.value)} placeholder="12M" />
+          <input
+            className={INPUT}
+            value={horizon}
+            onChange={(e) => setHorizon(e.target.value)}
+            placeholder="12M"
+          />
         </Field>
         <Field label="Rating">
           <select className={INPUT} value={rating} onChange={(e) => setRating(e.target.value as Rating)}>
@@ -988,7 +994,12 @@ export function NoteEditor({
           </select>
         </Field>
         <Field label="Conviction">
-          <input className={INPUT} value={conviction} onChange={(e) => setConviction(e.target.value)} placeholder="HIGH CONVICTION" />
+          <input
+            className={INPUT}
+            value={conviction}
+            onChange={(e) => setConviction(e.target.value)}
+            placeholder="HIGH CONVICTION"
+          />
         </Field>
         <Field label="ESG">
           <select className={INPUT} value={esg} onChange={(e) => setEsg(e.target.value as Esg | "")}>
@@ -1000,7 +1011,12 @@ export function NoteEditor({
           </select>
         </Field>
         <Field label="Style tag">
-          <input className={INPUT} value={style} onChange={(e) => setStyle(e.target.value)} placeholder="BUY & HOLD" />
+          <input
+            className={INPUT}
+            value={style}
+            onChange={(e) => setStyle(e.target.value)}
+            placeholder="BUY & HOLD"
+          />
         </Field>
         <Field
           label="Target price (R)"
@@ -1030,8 +1046,8 @@ export function NoteEditor({
                     : "Live mark"
                 }
               >
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" aria-hidden />
-                R{livePrice.toFixed(2)}
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" aria-hidden />R
+                {livePrice.toFixed(2)}
                 {upsidePct != null && (
                   <span className="ml-0.5 border-l border-current/30 pl-1">
                     {upsidePct >= 0 ? "+" : ""}
@@ -1046,11 +1062,7 @@ export function NoteEditor({
             ) : null}
           </div>
         </Field>
-        <Field
-          label="Linked strategies"
-          hint="auto from holdings · read-only"
-          className="sm:col-span-3"
-        >
+        <Field label="Linked strategies" hint="auto from holdings · read-only" className="sm:col-span-3">
           <div
             className={cn(
               INPUT,
@@ -1092,8 +1104,8 @@ export function NoteEditor({
                 {fetchSymbol || "—"} · Auto-fetch from the market data feed
               </p>
               <p className="text-[10px] text-muted-foreground">
-                Pulls company overview, 3y CAGRs, margins, returns, valuation, financial
-                health, dividends and a peer list. You'll review what to keep.
+                Pulls company overview, 3y CAGRs, margins, returns, valuation, financial health, dividends and
+                a peer list. You'll review what to keep.
               </p>
             </div>
             {autoFetch.isFetching ? (
@@ -1112,10 +1124,17 @@ export function NoteEditor({
           <div className="grid gap-3 md:grid-cols-3">
             <PrefillCard title="Overview">
               <PrefillRow label="Company" value={analysis.overview.name ?? "—"} />
-              <PrefillRow label="Sector" value={analysis.overview.sector ?? analysis.overview.industry ?? "—"} />
+              <PrefillRow
+                label="Sector"
+                value={analysis.overview.sector ?? analysis.overview.industry ?? "—"}
+              />
               <PrefillRow label="Country" value={analysis.overview.country ?? "—"} />
               <PrefillRow label="Employees" value={analysis.overview.employees?.toLocaleString() ?? "—"} />
-              <PrefillRow label="Live price" value={analysis.price.last != null ? `R${analysis.price.last.toFixed(2)}` : "—"} mono />
+              <PrefillRow
+                label="Live price"
+                value={analysis.price.last != null ? `R${analysis.price.last.toFixed(2)}` : "—"}
+                mono
+              />
               <PrefillRow
                 label="Price source"
                 value={analysis.price.priceSource === "iress" ? "IRESS (live)" : "Stored"}
@@ -1124,13 +1143,21 @@ export function NoteEditor({
             </PrefillCard>
 
             <PrefillCard title="Valuation (TTM)">
-              <PrefillRow label="P/E" value={fmtX(metricValue(analysis.groups, "Valuation (TTM)", "P/E"))} mono />
+              <PrefillRow
+                label="P/E"
+                value={fmtX(metricValue(analysis.groups, "Valuation (TTM)", "P/E"))}
+                mono
+              />
               <PrefillRow
                 label="EV/EBITDA"
                 value={fmtX(metricValue(analysis.groups, "Valuation (TTM)", "EV/EBITDA"))}
                 mono
               />
-              <PrefillRow label="P/FCF" value={fmtX(metricValue(analysis.groups, "Valuation (TTM)", "P/FCF"))} mono />
+              <PrefillRow
+                label="P/FCF"
+                value={fmtX(metricValue(analysis.groups, "Valuation (TTM)", "P/FCF"))}
+                mono
+              />
               <PrefillRow
                 label="Target price"
                 value={
@@ -1145,11 +1172,7 @@ export function NoteEditor({
                 value={fmtX(deriveNetDebtToEbitda(analysis.groups))}
                 mono
               />
-              <PrefillRow
-                label="EV / Cashflow"
-                value={fmtX(deriveEvToCashflow(analysis.groups))}
-                mono
-              />
+              <PrefillRow label="EV / Cashflow" value={fmtX(deriveEvToCashflow(analysis.groups))} mono />
             </PrefillCard>
 
             <PrefillCard title="Returns + Growth">
@@ -1192,7 +1215,8 @@ export function NoteEditor({
             <p className={cn(LABEL, "mb-1.5")}>
               Peer comp · analyst recommendations
               <span className="ml-1 text-[9px] font-normal text-muted-foreground/70">
-                ({peerSymbols.length} ticker{peerSymbols.length === 1 ? "" : "s"} — first 6 will be pre-filled in step 4)
+                ({peerSymbols.length} ticker{peerSymbols.length === 1 ? "" : "s"} — first 6 will be pre-filled
+                in step 4)
               </span>
             </p>
             <div className="flex flex-wrap gap-1">
@@ -1210,8 +1234,7 @@ export function NoteEditor({
 
         {!autoFetch.isFetching && !analysisOk && (
           <div className="rounded-md border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-[11px] text-amber-500">
-            Could not pull auto-fetch data for {fetchSymbol}. You can continue manually
-            in the next steps.
+            Could not pull auto-fetch data for {fetchSymbol}. You can continue manually in the next steps.
           </div>
         )}
       </div>
@@ -1509,7 +1532,10 @@ export function NoteEditor({
                     )
                   }
                   onBlur={() => {
-                    const bare = p.name.replace(/\.(JO|JSE)$/i, "").trim().toUpperCase();
+                    const bare = p.name
+                      .replace(/\.(JO|JSE)$/i, "")
+                      .trim()
+                      .toUpperCase();
                     if (!bare) return;
                     void (async () => {
                       const hydrated = await fetchPeerMetrics(bare);
@@ -1782,11 +1808,17 @@ export function NoteEditor({
       {step === 6 && renderStep6()}
 
       <div className="mt-4 flex items-center justify-between border-t border-[hsl(var(--glass-border))] pt-3 text-[10px] text-muted-foreground">
-        <span>Step {step} of {STEPS.length} · {STEPS[step - 1]?.title}</span>
         <span>
-          <kbd className="rounded border border-[hsl(var(--glass-border))] px-1 font-mono text-[9px]">Back</kbd>
+          Step {step} of {STEPS.length} · {STEPS[step - 1]?.title}
+        </span>
+        <span>
+          <kbd className="rounded border border-[hsl(var(--glass-border))] px-1 font-mono text-[9px]">
+            Back
+          </kbd>
           {" / "}
-          <kbd className="rounded border border-[hsl(var(--glass-border))] px-1 font-mono text-[9px]">Next</kbd>
+          <kbd className="rounded border border-[hsl(var(--glass-border))] px-1 font-mono text-[9px]">
+            Next
+          </kbd>
           {" to advance"}
         </span>
       </div>
