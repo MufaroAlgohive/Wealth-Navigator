@@ -158,6 +158,50 @@ function findDeclaredShortfall(affectedInvestors: unknown): string | null {
   return null;
 }
 
+function bareSymbol(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/\.(JO|JSE)$/i, "");
+}
+
+function changedSymbols(current: unknown[], proposed: unknown[]): string[] {
+  const sharesOf = (row: unknown): number | null => {
+    if (!row || typeof row !== "object") return null;
+    const value = Number((row as { shares?: unknown }).shares);
+    return Number.isFinite(value) ? value : null;
+  };
+  const symbolOf = (row: unknown): string =>
+    row && typeof row === "object" ? bareSymbol((row as { ticker?: unknown }).ticker) : "";
+  const toSymbolMap = (rows: unknown[]) => {
+    const map = new Map<string, number | null>();
+    for (const row of rows) {
+      const symbol = symbolOf(row);
+      if (symbol) map.set(symbol, sharesOf(row));
+    }
+    return map;
+  };
+  const currentBySymbol = toSymbolMap(current);
+  const proposedBySymbol = toSymbolMap(proposed);
+  const changed = new Set<string>();
+  for (const [symbol, shares] of proposedBySymbol) {
+    if (!currentBySymbol.has(symbol) || currentBySymbol.get(symbol) !== shares) changed.add(symbol);
+  }
+  for (const symbol of currentBySymbol.keys()) {
+    if (!proposedBySymbol.has(symbol)) changed.add(symbol);
+  }
+  return [...changed];
+}
+
+async function missingResearchNotes(db: NonNullable<Awaited<ReturnType<typeof openDb>>>, current: unknown[], proposed: unknown[]) {
+  const required = changedSymbols(current, proposed);
+  if (!required.length) return [];
+  const { data, error } = await db.from("research_note_c").select("symbol");
+  if (error) throw new Error(error.message);
+  const covered = new Set((data ?? []).map((note) => bareSymbol(note.symbol)));
+  return required.filter((symbol) => !covered.has(symbol));
+}
+
 export async function POST(req: Request) {
   const auth = await getAdminContext();
   if (auth.status === "no-session") {
@@ -206,6 +250,25 @@ export async function POST(req: Request) {
   const db = await openDb();
   if (!db)
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
+
+  // A note for AME must never satisfy an HYP change. Enforce the exact
+  // changed-symbol research requirement at the write boundary for LIVE and
+  // UAT alike, so a direct API request cannot bypass the builder's disabled
+  // Commit button.
+  try {
+    const missing = await missingResearchNotes(db, currentComposition, proposedComposition);
+    if (missing.length) {
+      return NextResponse.json(
+        { ok: false, error: `Research required before creating this rebalance: ${missing.join(", ")}.` },
+        { status: 422 },
+      );
+    }
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "Could not verify research coverage. Rebalance creation is blocked until coverage can be checked." },
+      { status: 503 },
+    );
+  }
 
   // Snapshot the strategy environment when the proposal is raised. This is the
   // boundary that keeps UAT votes and policies from ever being counted for a
