@@ -13,9 +13,8 @@
  * a 1-1 tie; the gate is strict majority (≥ 2 of 3).
  *
  * UX:
- *   - Sticky section tab bar (Agenda / Approved / Recent / Charter) with
- *     scroll-spy + jump-to-section. Solves the "static, can't navigate"
- *     pain when the page grows with multiple proposals + decisions.
+ *   - Compact tabs for actionable queues. Standing committee context remains
+ *     alongside the agenda instead of being hidden in separate tabs.
  *   - Each major section is collapsible (header click toggles). Sections
  *     default to expanded when they contain items, collapsed when empty.
  *   - "Back to top" floating button appears once the user scrolls past the
@@ -210,15 +209,12 @@ export function InvestmentCommitteePage({
     agenda: true,
     approved: true,
     recent: true,
-    members: true,
-    charter: true,
-    checklist: true,
     governance: true,
   }));
   const toggleSection = (k: string) => setOpenSections((prev) => ({ ...prev, [k]: !prev[k] }));
 
   // ── Sticky tab bar + scroll-spy ──────────────────────────────────────────
-  type SectionId = "agenda" | "approved" | "recent" | "members" | "charter" | "checklist" | "governance";
+  type SectionId = "agenda" | "approved" | "recent" | "governance";
   const sections: Array<{
     id: SectionId;
     label: string;
@@ -228,9 +224,6 @@ export function InvestmentCommitteePage({
     { id: "agenda", label: "Agenda", count: agendaCount, icon: ScrollText },
     { id: "approved", label: "Approved", count: approvedReqs.length, icon: Rocket },
     { id: "recent", label: "Recent", count: recent.length, icon: Calendar },
-    { id: "members", label: "Members", count: pills.length, icon: Users },
-    { id: "charter", label: "Charter", icon: ScrollText },
-    { id: "checklist", label: "Prep", icon: Check },
     { id: "governance", label: "Settings", icon: Users },
   ];
   const [active, setActive] = React.useState<SectionId>("agenda");
@@ -390,6 +383,12 @@ export function InvestmentCommitteePage({
                   </div>
                 )}
               </CollapsibleCard>
+              <CommitteeContextPanel
+                pills={pills}
+                viewerEmail={viewerEmail}
+                checks={checks}
+                onCheckChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
+              />
             </section>
           )}
 
@@ -472,7 +471,7 @@ export function InvestmentCommitteePage({
           )}
 
           {/* ── Members (also surfaced in right rail) ─────────────────────── */}
-          {active === "members" && (
+          {false && (
             <section>
               <CollapsibleCard
                 title="Committee members"
@@ -487,7 +486,7 @@ export function InvestmentCommitteePage({
           )}
 
           {/* ── Charter (also surfaced in right rail) ─────────────────────── */}
-          {active === "charter" && (
+          {false && (
             <section>
               <CollapsibleCard
                 title="Charter · quorum & voting"
@@ -501,7 +500,7 @@ export function InvestmentCommitteePage({
           )}
 
           {/* ── Prep checklist (also surfaced in right rail) ──────────────── */}
-          {active === "checklist" && (
+          {false && (
             <section>
               <CollapsibleCard
                 title="Session prep checklist"
@@ -543,6 +542,48 @@ export function InvestmentCommitteePage({
 }
 
 // ── right-rail components ───────────────────────────────────────────────────
+function CommitteeContextPanel({
+  pills,
+  viewerEmail,
+  checks,
+  onCheckChange,
+}: {
+  pills: MemberPill[];
+  viewerEmail: string | null;
+  checks: boolean[];
+  onCheckChange: (i: number, value: boolean) => void;
+}) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="rounded-xl border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] p-3.5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xs font-semibold">Committee members</h2>
+          <span className="rounded-md border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+            IC
+          </span>
+        </div>
+        <MembersList pills={pills} viewerEmail={viewerEmail} />
+      </div>
+      <div className="rounded-xl border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] p-3.5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xs font-semibold">Charter · quorum & voting</h2>
+          <ScrollText className="h-3.5 w-3.5 text-primary" />
+        </div>
+        <CharterList />
+      </div>
+      <div className="rounded-xl border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] p-3.5 md:col-span-2 xl:col-span-1">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xs font-semibold">Session prep checklist</h2>
+          <span className="font-mono text-[10px] text-muted-foreground">
+            {checks.filter(Boolean).length}/{CHECKLIST.length}
+          </span>
+        </div>
+        <ChecklistList checks={checks} onChange={onCheckChange} />
+      </div>
+    </div>
+  );
+}
+
 function MembersList({ pills, viewerEmail }: { pills: MemberPill[]; viewerEmail: string | null }) {
   void viewerEmail;
   if (pills.length === 0) {
