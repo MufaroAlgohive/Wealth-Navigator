@@ -817,7 +817,11 @@ export function RebalanceBuilderPage({
     wizardNotReady ||
     !perms.raiseRebalance;
   const commitTitle =
-    missingResearch.length > 0
+    changes === 0
+      ? "Change at least one holding before continuing"
+      : !perms.raiseRebalance
+        ? "Your role does not have permission to raise a rebalance"
+        : missingResearch.length > 0
       ? "Research missing for one or more changes"
       : rationalesMissing.length > 0
         ? "Rationale required for one or more changes"

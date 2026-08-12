@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { committeeGate } from "@/lib/research-ic/committee-gate";
+import { governanceFor, requiredYes } from "@/lib/research-ic/governance";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -49,11 +49,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!canResearchIc(auth.ctx, "research-lab", "cast_vote")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  const gate = await committeeGate(auth.ctx.email);
-  if (!gate.ok) {
-    return NextResponse.json({ ok: false, error: gate.error }, { status: gate.status });
-  }
-
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
   const vote = body.vote;
   if (typeof vote !== "string" || !VALID_VOTES.includes(vote as VoteValue)) {
@@ -71,7 +66,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Confirm the note exists before we accept the vote. If the notes table
   // hasn't been migrated yet, surface the same migration hint that the
   // votes table would also need.
-  const noteCheck = await db.from("research_note_c").select("id").eq("id", id).maybeSingle();
+  const noteCheck = await db
+    .from("research_note_c")
+    .select("id, status, environment_scope, thesis")
+    .eq("id", id)
+    .maybeSingle();
   if (noteCheck.error) {
     if (isSupabaseSchemaMissing(noteCheck.error)) {
       return NextResponse.json(
@@ -87,6 +86,22 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   if (!noteCheck.data) {
     return NextResponse.json({ ok: false, error: "research note not found" }, { status: 404 });
+  }
+  if (noteCheck.data.status !== "ic_pending") {
+    return NextResponse.json({ ok: false, error: "only IC-pending research can be voted on" }, { status: 409 });
+  }
+  const scope = noteCheck.data.environment_scope === "uat" ? "uat" : "live";
+  let governance;
+  try {
+    governance = await governanceFor(scope);
+  } catch {
+    return NextResponse.json({ ok: false, error: "IC governance is unavailable for this environment" }, { status: 503 });
+  }
+  const voter = governance.members.find(
+    (member) => member.voter_email.toLowerCase() === auth.ctx.email.toLowerCase() && member.vote_scope.includes("research"),
+  );
+  if (!voter || voter.role === "observer") {
+    return NextResponse.json({ ok: false, error: `You are not a research voter for ${scope.toUpperCase()} IC.` }, { status: 403 });
   }
 
   const { data, error } = await db
@@ -118,5 +133,28 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, vote: data }, { status: 201 });
+  const votesRes = await db.from("research_vote_c").select("vote").eq("note_id", id);
+  if (votesRes.error) return NextResponse.json({ ok: false, error: votesRes.error.message }, { status: 500 });
+  const votes = votesRes.data ?? [];
+  const yes = votes.filter((row) => row.vote === "yes").length;
+  const no = votes.filter((row) => row.vote === "no").length;
+  const eligible = governance.members.filter((member) => member.vote_scope.includes("research") && member.role !== "observer");
+  const threshold = requiredYes(governance.policy, eligible.length);
+  const decision = governance.policy.auto_decide_research
+    ? yes >= threshold ? "approved" : no >= threshold ? "rejected" : null
+    : null;
+  if (decision) {
+    const now = new Date().toISOString();
+    const thesis = noteCheck.data.thesis && typeof noteCheck.data.thesis === "object" && !Array.isArray(noteCheck.data.thesis)
+      ? noteCheck.data.thesis as Record<string, unknown> : {};
+    const priorLog = Array.isArray(thesis.ic_log) ? thesis.ic_log : [];
+    const update = await db.from("research_note_c").update({
+      status: decision,
+      updated_at: now,
+      ...(decision === "approved" ? { approved_at: now } : {}),
+      thesis: { ...thesis, _resolution: { status: decision, reason: `Automatic ${scope.toUpperCase()} vote threshold met.`, by: "IC vote gate", at: now }, ic_log: [{ actor: "IC vote gate", action: decision.toUpperCase(), at: now }, ...priorLog] },
+    }).eq("id", id).eq("status", "ic_pending");
+    if (update.error) return NextResponse.json({ ok: false, error: update.error.message }, { status: 500 });
+  }
+  return NextResponse.json({ ok: true, vote: data, tally: { yes, no, threshold }, decision }, { status: 201 });
 }

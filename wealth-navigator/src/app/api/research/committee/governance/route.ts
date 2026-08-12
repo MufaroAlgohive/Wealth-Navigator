@@ -115,6 +115,8 @@ export async function PUT(req: Request) {
       approval_mode: policy.approval_mode,
       required_yes_count: Math.max(1, Math.floor(Number(policy.required_yes_count) || 1)),
       required_yes_percent: Math.min(100, Math.max(1, Number(policy.required_yes_percent) || 1)),
+      auto_decide_research: policy.auto_decide_research !== false,
+      manual_research_decision_enabled: policy.manual_research_decision_enabled === true,
       updated_at: new Date().toISOString(),
     });
     if (policyUpsert.error) throw policyUpsert.error;
