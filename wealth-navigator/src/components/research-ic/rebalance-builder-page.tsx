@@ -465,6 +465,7 @@ export function RebalanceBuilderPage({
     const b = baseByKey.get(keyOf(h));
     if (!b) return "add";
     if (h.shares > b.shares) return "increase";
+    if (h.shares === 0 && b.shares > 0) return "remove";
     if (h.shares < b.shares) return "decrease";
     return "hold";
   }
@@ -655,14 +656,23 @@ export function RebalanceBuilderPage({
     });
   const combinedSellLegs: Array<Extract<Leg, { kind: "sell" }>> = sellActions.map((a) => {
     const symbol = a.ticker.toUpperCase();
-    return { kind: "sell" as const, symbol, name: a.name ?? symbol, breakdown: legSellBreakdown(symbol) };
+    return {
+      kind: "sell" as const,
+      symbol,
+      name: a.name ?? symbol,
+      breakdown: legSellBreakdown(symbol),
+      fullLiquidation: a.action === "remove",
+    };
   });
   // Interactive per-leg stepping (LegStepView / IncreaseLegStepView, each
   // with its own Liquidate/Reinvest choice) only applies when the user has
   // explicitly asked to split — otherwise every sell and every increase,
   // no matter how many of each, are pooled into ONE combined step (see
   // CombinedStepView) and there's nothing per-leg to decide.
-  const wizardLegs: Leg[] = splitIncreaseLegs ? [...combinedSellLegs, ...standaloneIncreaseLegs] : [];
+  // A full exit must always be stepped independently so its proceeds cannot be
+  // silently pooled into a replacement buy. It is a liquidation leg.
+  const hasFullLiquidation = combinedSellLegs.some((leg) => leg.fullLiquidation);
+  const wizardLegs: Leg[] = splitIncreaseLegs || hasFullLiquidation ? [...combinedSellLegs, ...standaloneIncreaseLegs] : [];
   // Always the full set, used to render the Review screen's sequence list
   // regardless of split state — a pooled increase is still a real leg that
   // happened, just not one the user stepped through individually.
@@ -1323,10 +1333,10 @@ export function RebalanceBuilderPage({
             const covered = impactQ.data?.totals?.cashOk !== false;
             return (
               <GlassSection
-                title={`Editing · ${holding.ticker} · ${deltaUnits >= 0 ? "increase" : "decrease"}`}
+                title={`Editing · ${holding.ticker} · ${deltaUnits >= 0 ? "increase" : holding.shares === 0 ? "full sell" : "decrease"}`}
                 dataSource="hybrid"
                 db="retail"
-                subtitle="Draft only · this remains subject to research, affordability and IC approval"
+                subtitle={holding.shares === 0 ? "Full sell · proceeds will liquidate to strategy cash after IC approval" : "Draft only · this remains subject to research, affordability and IC approval"}
                 right={
                   <button
                     type="button"
@@ -1469,6 +1479,7 @@ export function RebalanceBuilderPage({
         combinedSellLegs={combinedSellLegs}
         standaloneIncreaseLegs={standaloneIncreaseLegs}
         splitIncreaseLegs={splitIncreaseLegs}
+        forceSplitForLiquidation={hasFullLiquidation}
         onSplitIncreaseLegsChange={setSplitIncreaseLegs}
         wizardStage={wizardStage}
         currentLegIndex={currentLegIndex}
@@ -1480,6 +1491,14 @@ export function RebalanceBuilderPage({
         commitTitle={commitTitle}
         onProceed={() => {
           if (commitDisabled) return;
+          setLegChoiceBySymbol((previous) => ({
+            ...previous,
+            ...Object.fromEntries(
+              combinedSellLegs
+                .filter((leg) => leg.fullLiquidation)
+                .map((leg) => [leg.symbol, "liquidate" as const]),
+            ),
+          }));
           setWizardStage("leg");
           setCurrentLegIndex(0);
           setStage("execute");
@@ -1805,7 +1824,7 @@ type LegBuyBreakdown = {
   investorCount: number;
 };
 type Leg =
-  | { kind: "sell"; symbol: string; name: string; breakdown: LegSellBreakdown }
+  | { kind: "sell"; symbol: string; name: string; breakdown: LegSellBreakdown; fullLiquidation: boolean }
   | { kind: "increase"; symbol: string; name: string; breakdown: LegBuyBreakdown };
 
 /**
@@ -1910,9 +1929,9 @@ function LegStepView({
 
       <div className="flex flex-wrap items-center gap-2 border-b border-[hsl(var(--glass-border))] px-5 py-3">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-          This leg's proceeds:
+          {leg.fullLiquidation ? "Full sell:" : "This leg's proceeds:"}
         </span>
-        <button
+        {!leg.fullLiquidation && <button
           type="button"
           onClick={() => onChooseMode("reinvest")}
           className={cn(
@@ -1923,7 +1942,7 @@ function LegStepView({
           )}
         >
           Reinvest · buy replacement
-        </button>
+        </button>}
         <button
           type="button"
           onClick={() => onChooseMode("liquidate")}
@@ -1934,7 +1953,7 @@ function LegStepView({
               : "border-[hsl(var(--glass-border))] text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)]",
           )}
         >
-          Liquidate to Cash
+          {leg.fullLiquidation ? "Liquidate to Strategy Cash" : "Liquidate to Cash"}
         </button>
       </div>
 
@@ -2713,6 +2732,7 @@ function TradeSequencePanel({
   combinedSellLegs,
   standaloneIncreaseLegs,
   splitIncreaseLegs,
+  forceSplitForLiquidation,
   onSplitIncreaseLegsChange,
   wizardStage,
   currentLegIndex,
@@ -2759,6 +2779,7 @@ function TradeSequencePanel({
   // and label so the control doesn't vanish once switched on.
   standaloneIncreaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
   splitIncreaseLegs: boolean;
+  forceSplitForLiquidation: boolean;
   onSplitIncreaseLegsChange: (value: boolean) => void;
   wizardStage: "leg" | "review";
   currentLegIndex: number;
@@ -2795,7 +2816,7 @@ function TradeSequencePanel({
   const sellSymbols = reviewLegs.map((l) => l.symbol);
   const impactLabel = sellSymbols.length ? sellSymbols.join(" + ") : strategyName;
   const isExecute = mode === "execute";
-  const isCombinedMode = !splitIncreaseLegs;
+  const isCombinedMode = !splitIncreaseLegs && !forceSplitForLiquidation;
   const currentLeg: Leg | undefined = legs[currentLegIndex];
 
   return (
@@ -2929,7 +2950,7 @@ function TradeSequencePanel({
           onNext={() => onNextLeg(0)}
         />
       ) : null}
-      {isExecute && wizardStage === "review" && splitIncreaseLegs && reviewLegs.length > 0 ? (
+      {isExecute && wizardStage === "review" && !isCombinedMode && reviewLegs.length > 0 ? (
         <div className="border-b border-[hsl(var(--glass-border))] px-5 py-4 space-y-2">
           <div className="text-xs font-semibold">
             Sequence — {reviewLegs.length} leg{reviewLegs.length === 1 ? "" : "s"}
