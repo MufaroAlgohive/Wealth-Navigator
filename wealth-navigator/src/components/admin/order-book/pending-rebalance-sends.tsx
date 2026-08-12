@@ -139,9 +139,19 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   }
 
   async function releaseToOrderBook(id: string) {
+    const adminPassword = window.prompt(
+      "Send this rebalance from the protected Rebalances queue to the Active Order Book.\n\n" +
+        "Re-enter your own password to confirm — only Master ★ accounts can release orders.",
+    );
+    if (adminPassword == null || adminPassword === "") return;
+
     setReleasingId(id);
     try {
-      const res = await fetch(`/api/rebalance/requests/${id}/release-to-orderbook`, { method: "POST" });
+      const res = await fetch(`/api/rebalance/requests/${id}/release-to-orderbook`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ admin_password: adminPassword }),
+      });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !body.ok) {
         window.alert(body.error ?? "Failed to send to order book.");
@@ -304,8 +314,12 @@ function BookedRebalanceRow({
 
   return (
     <div>
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-        <button type="button" className="flex min-w-0 items-center gap-2 text-left text-xs font-medium" onClick={onToggle}>
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
+          <button
+            type="button"
+            className="flex min-w-0 items-center gap-2 text-left text-xs font-medium"
+            onClick={onToggle}
+          >
           <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-90")} />
           <span className="truncate">Rebalance · {r.strategy_id}</span>
         </button>

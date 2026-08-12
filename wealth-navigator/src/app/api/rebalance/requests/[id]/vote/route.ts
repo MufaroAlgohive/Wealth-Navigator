@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 
 import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { tallyVotes, type RebalanceVote } from "@/lib/rebalance/ic-vote";
-import { committeeGate } from "@/lib/research-ic/committee-gate";
+import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
+import { type CommitteeEnvironment, governanceFor, requiredYes } from "@/lib/research-ic/governance";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -31,8 +31,7 @@ export const dynamic = "force-dynamic";
 const VALID_VOTES = ["yes", "no", "abstain"] as const;
 type VoteValue = (typeof VALID_VOTES)[number];
 
-const MIGRATION_HINT =
-  "rebalance_vote_c table not migrated yet — apply 20260713000001_rebalance_vote_c.sql.";
+const MIGRATION_HINT = "rebalance_vote_c table not migrated yet — apply 20260713000001_rebalance_vote_c.sql.";
 
 async function openDb() {
   try {
@@ -55,10 +54,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!canResearchIc(auth.ctx, "rebalance", "approve_rebalance")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  const gate = await committeeGate(auth.ctx.email);
-  if (!gate.ok) {
-    return NextResponse.json({ ok: false, error: gate.error }, { status: gate.status });
-  }
 
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
   const vote = body.vote;
@@ -72,16 +67,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const db = await openDb();
   if (!db)
-    return NextResponse.json(
-      { ok: false, error: "INSTITUTIONAL database not configured" },
-      { status: 503 },
-    );
+    return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
 
   // The proposal must exist, and we need its current status to decide whether a
   // passing vote should promote it.
   const reqCheck = await db
     .from("rebalance_request_c")
-    .select("id, status")
+    .select("id, status, environment_scope")
     .eq("id", id)
     .maybeSingle();
   if (reqCheck.error) {
@@ -89,8 +81,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       return NextResponse.json(
         {
           ok: false,
-          error:
-            "rebalance_request_c table not migrated yet — apply 20260710000004_rebalance_request_c.sql.",
+          error: "rebalance_request_c table not migrated yet — apply 20260710000004_rebalance_request_c.sql.",
           migration: "supabase/migrations/20260710000004_rebalance_request_c.sql",
         },
         { status: 409 },
@@ -102,6 +93,29 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: false, error: "rebalance request not found" }, { status: 404 });
   }
   const currentStatus = String(reqCheck.data.status ?? "");
+  const scope = (
+    String(reqCheck.data.environment_scope ?? "live").toLowerCase() === "uat" ? "uat" : "live"
+  ) as CommitteeEnvironment;
+  let governance: Awaited<ReturnType<typeof governanceFor>>;
+  try {
+    governance = await governanceFor(scope);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `IC governance is not configured: ${error instanceof Error ? error.message : String(error)}`,
+      },
+      { status: 503 },
+    );
+  }
+  const voter = governance.members.find(
+    (m) => m.voter_email.toLowerCase() === auth.ctx.email.toLowerCase() && m.vote_scope.includes("rebalance"),
+  );
+  if (!voter)
+    return NextResponse.json(
+      { ok: false, error: `You are not an active ${scope.toUpperCase()} rebalance voter.` },
+      { status: 403 },
+    );
 
   const upsert = await db
     .from("rebalance_vote_c")
@@ -120,7 +134,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (upsert.error) {
     if (isSupabaseSchemaMissing(upsert.error)) {
       return NextResponse.json(
-        { ok: false, error: MIGRATION_HINT, migration: "supabase/migrations/20260713000001_rebalance_vote_c.sql" },
+        {
+          ok: false,
+          error: MIGRATION_HINT,
+          migration: "supabase/migrations/20260713000001_rebalance_vote_c.sql",
+        },
         { status: 409 },
       );
     }
@@ -136,7 +154,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: false, error: allVotes.error.message }, { status: 500 });
   }
   const votes = (allVotes.data ?? []) as RebalanceVote[];
-  const tally = tallyVotes(votes);
+  const eligible = governance.members.filter((m) => m.vote_scope.includes("rebalance"));
+  const eligibleEmails = new Set(eligible.map((m) => m.voter_email.toLowerCase()));
+  const tally = tallyVotes(
+    votes.filter((v) => eligibleEmails.has(v.voter_email.toLowerCase())),
+    eligible.length,
+    requiredYes(governance.policy, eligible.length) / Math.max(1, eligible.length),
+  );
 
   let promoted = false;
   let status = currentStatus;
@@ -157,7 +181,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   return NextResponse.json(
-    { ok: true, vote: upsert.data, votes, tally, promoted, status },
+    { ok: true, vote: upsert.data, votes, tally, promoted, status, environment_scope: scope },
     { status: 201 },
   );
 }

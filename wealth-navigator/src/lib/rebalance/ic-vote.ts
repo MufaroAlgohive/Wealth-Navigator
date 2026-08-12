@@ -65,9 +65,9 @@ export const IC_APPROVE_THRESHOLD = (() => {
 /** Minimum YES votes to pass: floor(N/2)+1 (strict majority). */
 export function requiredYesVotes(
   quorum: number = IC_QUORUM,
-  _threshold: number = IC_APPROVE_THRESHOLD,
+  threshold: number = IC_APPROVE_THRESHOLD,
 ): number {
-  return Math.max(1, Math.floor(quorum / 2) + 1);
+  return Math.max(1, Math.ceil(quorum * threshold));
 }
 
 /** Count votes and decide whether the proposal has passed the IC gate. */
