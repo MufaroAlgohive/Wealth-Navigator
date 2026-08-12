@@ -44,6 +44,7 @@ import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
+import { CommitteeGovernance } from "./committee-governance";
 import {
   type CommitteeMember,
   IC_COMMITTEE_SIZE,
@@ -213,11 +214,12 @@ export function InvestmentCommitteePage({
     members: false,
     charter: false,
     checklist: false,
+    governance: false,
   }));
   const toggleSection = (k: string) => setOpenSections((prev) => ({ ...prev, [k]: !prev[k] }));
 
   // ── Sticky tab bar + scroll-spy ──────────────────────────────────────────
-  type SectionId = "agenda" | "approved" | "recent" | "members" | "charter" | "checklist";
+  type SectionId = "agenda" | "approved" | "recent" | "members" | "charter" | "checklist" | "governance";
   const sections: Array<{
     id: SectionId;
     label: string;
@@ -230,6 +232,7 @@ export function InvestmentCommitteePage({
     { id: "members", label: "Members", count: pills.length, icon: Users },
     { id: "charter", label: "Charter", icon: ScrollText },
     { id: "checklist", label: "Prep", icon: Check },
+    { id: "governance", label: "Settings", icon: Users },
   ];
   const [active, setActive] = React.useState<SectionId>("agenda");
   const sectionRefs = React.useRef<Record<SectionId, HTMLElement | null>>({
@@ -239,6 +242,7 @@ export function InvestmentCommitteePage({
     members: null,
     charter: null,
     checklist: null,
+    governance: null,
   });
   React.useEffect(() => {
     const onScroll = () => {
@@ -427,6 +431,24 @@ export function InvestmentCommitteePage({
                   ))}
                 </div>
               )}
+            </CollapsibleCard>
+          </section>
+
+          <section
+            id="sec-governance"
+            ref={(el) => {
+              sectionRefs.current.governance = el;
+            }}
+            className="scroll-mt-32"
+          >
+            <CollapsibleCard
+              title="IC voting settings"
+              dataSource="supabase"
+              db="institutional"
+              open={!!openSections.governance}
+              onToggle={() => toggleSection("governance")}
+            >
+              <CommitteeGovernance />
             </CollapsibleCard>
           </section>
 

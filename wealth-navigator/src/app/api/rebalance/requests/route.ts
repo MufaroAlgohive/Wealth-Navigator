@@ -207,6 +207,32 @@ export async function POST(req: Request) {
   if (!db)
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
 
+  // Snapshot the strategy environment when the proposal is raised. This is the
+  // boundary that keeps UAT votes and policies from ever being counted for a
+  // LIVE proposal (or vice versa), even if a strategy is renamed later.
+  let environmentScope: "live" | "uat";
+  try {
+    const retail = createRetailServiceRoleClient();
+    const strategy = await retail
+      .from("strategies_c")
+      .select("investor_environment")
+      .eq("name", strategyId)
+      .maybeSingle();
+    if (strategy.error || !strategy.data) {
+      return NextResponse.json(
+        { ok: false, error: "Could not determine the strategy environment for IC voting." },
+        { status: 409 },
+      );
+    }
+    environmentScope =
+      String(strategy.data.investor_environment ?? "LIVE").toUpperCase() === "UAT" ? "uat" : "live";
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "Could not determine the strategy environment for IC voting." },
+      { status: 503 },
+    );
+  }
+
   const insert: Record<string, unknown> = {
     strategy_id: strategyId,
     requested_by: auth.ctx.email,
@@ -214,6 +240,7 @@ export async function POST(req: Request) {
     proposed_composition: proposedComposition,
     affected_investors: body.affected_investors ?? null,
     status: "pending",
+    environment_scope: environmentScope,
     research_note_id:
       typeof body.research_note_id === "string" && body.research_note_id.length > 0
         ? body.research_note_id

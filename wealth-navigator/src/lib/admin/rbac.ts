@@ -136,4 +136,9 @@ export function canResearchIc(
   return v === true || v === "direct";
 }
 
+/** Governance changes are restricted to the master owner, devs and superadmins. */
+export function canManageCommittee(ctx: Pick<AdminContext, "approverTier" | "role">): boolean {
+  return ctx.approverTier === "master" || ctx.approverTier === "dev" || ctx.role === "superadmin";
+}
+
 export type { AdminPageKey };

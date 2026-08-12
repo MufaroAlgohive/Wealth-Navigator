@@ -5,6 +5,7 @@ import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { bookSettledRebalanceOrders } from "@/lib/rebalance/book-settled-rebalance-orders";
 import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
 import { reconcileParkedHoldings } from "@/lib/rebalance/reconcile-parked-holdings";
+import { type CommitteeEnvironment, governanceFor, requiredYes } from "@/lib/research-ic/governance";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -73,7 +74,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const { data: request, error: reqErr } = await db
     .from("rebalance_request_c")
     .select(
-      "id, status, requested_by, strategy_id, current_composition, proposed_composition, affected_investors",
+      "id, status, requested_by, strategy_id, current_composition, proposed_composition, affected_investors, environment_scope",
     )
     .eq("id", id)
     .maybeSingle();
@@ -133,7 +134,28 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     if (votesRes.error) {
       return NextResponse.json({ ok: false, error: votesRes.error.message }, { status: 500 });
     }
-    const tally = tallyVotes((votesRes.data ?? []) as RebalanceVote[]);
+    const scope = (
+      String(request.environment_scope ?? "live").toLowerCase() === "uat" ? "uat" : "live"
+    ) as CommitteeEnvironment;
+    let governance: Awaited<ReturnType<typeof governanceFor>>;
+    try {
+      governance = await governanceFor(scope);
+    } catch (error) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `IC governance is not configured: ${error instanceof Error ? error.message : String(error)}`,
+        },
+        { status: 503 },
+      );
+    }
+    const eligible = governance.members.filter((m) => m.vote_scope.includes("rebalance"));
+    const emails = new Set(eligible.map((m) => m.voter_email.toLowerCase()));
+    const tally = tallyVotes(
+      ((votesRes.data ?? []) as RebalanceVote[]).filter((v) => emails.has(v.voter_email.toLowerCase())),
+      eligible.length,
+      requiredYes(governance.policy, eligible.length) / Math.max(1, eligible.length),
+    );
     if (!tally.passed) {
       return NextResponse.json(
         {
