@@ -111,7 +111,7 @@ function getDividendMeta(paymentDateStr: any) {
 }
 
 function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymentDate: string | null) {
-  const name = profile.is_child ? `${profile.parent_name || 'Valued Client'} (for ${profile.first_name}'s portfolio)` : (profile.first_name || 'Valued Client');
+  const name = profile.is_child ? (profile.parent_name || 'Valued Client') : (profile.first_name || 'Valued Client');
   const effectiveDate = findPaymentDate(payouts, paymentDate);
   const { isFuture, formattedDate, subject } = getDividendMeta(effectiveDate);
   let rowsHtml = '';
@@ -241,20 +241,19 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
       ? `We have processed upcoming dividend payouts for your portfolio, scheduled for ${formattedDate || 'soon'}.`
       : 'We have successfully processed dividend payouts for your portfolio.'
     }</p>
-    <div class="header-meta">myMINT BASKETS &middot; INVESTOR STATEMENT &middot; ${new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' }).toUpperCase()}</div>
+    <div class="header-meta">myMINT BASKETS &middot; INVESTOR STATEMENT &middot; ${new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' }).toUpperCase()}${profile.is_child ? ' <span style="background: #DDC357; color: #31005E; padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: 700;">CHILD ACCOUNT</span>' : ''}</div>
   </div>
 
   <!-- BODY -->
   <div class="body">
 
     <p class="lead">Hi ${name},<br><br>${profile.is_child
-      ? "When you invested in your child's future with myMINT, you became a shareholder in real companies. And shareholders get paid."
-      : "When you invested with myMINT, you became a shareholder in real companies. And shareholders get paid."
-} <br><br>${
-  isFuture
-    ? `The companies in your basket have declared upcoming dividends. Here is what you will be earning${formattedDate ? ` on <strong>${formattedDate}</strong>` : ''}:`
-    : 'Since you started investing, the companies in your basket have shared their profits with you:'
-} </p>
+      ? `When you started investing in ${profile.first_name}'s future with myMINT, you became a part-owner of real assets. And owners get paid.`
+      : "When you started investing with myMINT, you became a part-owner of real assets. And owners get paid."
+    }<br><br>${isFuture
+      ? `The companies in your basket have declared upcoming dividends. Here is what you will be earning${formattedDate ? ` on <strong>${formattedDate}</strong>` : ''}:`
+      : "Since you started investing, here is what has been earned:"
+    }</p>
 
     <!-- TABLE -->
     <div class="section">
@@ -279,10 +278,9 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
 
   <!-- CLOSE -->
   <div class="close">
-    <p>${
-      isFuture
-        ? 'Every cent will be automatically credited to your bank account on the payment date. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
-        : 'Every cent has been credited to your bank account. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
+    <p>${isFuture
+      ? `Every cent will be automatically credited to ${profile.is_child ? `${profile.first_name}'s` : 'your'} myMINT account on the payment date. No forms, no waiting, no admin. That is what ownership looks like: money working quietly in the background while you get on with life.<br><br>And this is just the beginning. The more ${profile.is_child ? profile.first_name : 'you'} own${profile.is_child ? 's' : ''}, the larger the share of any future distributions these holdings pay out.`
+      : `Every cent has been credited to ${profile.is_child ? `${profile.first_name}'s` : 'your'} myMINT account, automatically. No forms, no waiting, no admin. That is what ownership looks like: money working quietly in the background while you get on with life.<br><br>And this is just the beginning. The more ${profile.is_child ? profile.first_name : 'you'} own${profile.is_child ? 's' : ''}, the larger the share of any future distributions these holdings pay out.`
     }</p>
     <a href="https://app.mymint.co.za">Grow my portfolio &rarr;</a>
   </div>
@@ -294,7 +292,8 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
     <div class="footer-line">3 Gwen Lane, Sandown, Sandton, Johannesburg</div>
     <div class="footer-line">support@mymint.co.za &nbsp;|&nbsp; www.mymint.co.za</div>
     <div class="disclaimer">
-      This communication is an automated notification and does not constitute investment advice.
+      <p>myMINT is a product of MINT Platforms (Pty) Ltd, an authorised financial services provider (FSP 55118). Distributions depend on the performance of the underlying holdings and are not guaranteed, and the value of investments can go down as well as up.</p>
+      <p>This communication is an automated notification and does not constitute investment advice.</p>
     </div>
   </div>
 
