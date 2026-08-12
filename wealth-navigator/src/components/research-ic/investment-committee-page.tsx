@@ -1169,12 +1169,12 @@ function ResearchAgendaItem({
   pills: MemberPill[];
   onChanged: () => void;
 }) {
-  void viewerEmail;
   void pills;
   const qc = useQueryClient();
   const { busy, go } = useTransition("note");
   const rebalanceTransition = useTransition("rebalance");
   const [voting, setVoting] = React.useState<string | null>(null);
+  const [voteError, setVoteError] = React.useState<string | null>(null);
   const kind = agendaKindForNote(note, linkedRebalance ? [linkedRebalance] : []);
   const approveLabel = icResearchApproveLabel(kind);
   const canCombinedApprove =
@@ -1205,7 +1205,10 @@ function ResearchAgendaItem({
   const upside =
     current != null && target != null && current > 0 ? ((target - current) / current) * 100 : null;
 
-  const sumQ = useQuery<{ tally: { yes: number; no: number; abstain: number; total: number } }>({
+  const sumQ = useQuery<{
+    tally: { yes: number; no: number; abstain: number; total: number };
+    votes: Array<{ voter_email: string; vote: "yes" | "no" | "abstain" }>;
+  }>({
     queryKey: ["ric-ic-summary", note.id],
     refetchInterval: 20_000,
     queryFn: async () =>
@@ -1213,11 +1216,16 @@ function ResearchAgendaItem({
         await fetch(`/api/research/notes/${note.id}/ic-summary`, { cache: "no-store" })
       )
         .json()
-        .catch(() => ({ tally: { yes: 0, no: 0, abstain: 0, total: 0 } }))) as {
+        .catch(() => ({ tally: { yes: 0, no: 0, abstain: 0, total: 0 }, votes: [] }))) as {
         tally: { yes: number; no: number; abstain: number; total: number };
+        votes: Array<{ voter_email: string; vote: "yes" | "no" | "abstain" }>;
       },
   });
   const tally = sumQ.data?.tally ?? { yes: 0, no: 0, abstain: 0, total: 0 };
+  const viewerVote = sumQ.data?.votes.find(
+    (vote) => vote.voter_email.toLowerCase() === viewerEmail?.toLowerCase(),
+  )?.vote;
+  const voteLocked = Boolean(viewerVote);
   const policy = governanceQ.data?.scopes?.[scope]?.policy;
   const researchVoters = governanceQ.data?.scopes?.[scope]?.members.filter(
     (member) => member.role !== "observer" && member.vote_scope.includes("research"),
@@ -1231,6 +1239,7 @@ function ResearchAgendaItem({
 
   async function vote(v: "yes" | "no" | "abstain") {
     setVoting(v);
+    setVoteError(null);
     try {
       const r = await fetch(`/api/research/notes/${note.id}/vote`, {
         method: "POST",
@@ -1239,8 +1248,8 @@ function ResearchAgendaItem({
       });
       if (!r.ok) {
         const body = (await r.json().catch(() => ({}))) as { error?: string };
-        // Surface the error inline (no toast pipeline on this page yet)
-        console.warn("vote rejected", body.error ?? r.status);
+        setVoteError(body.error ?? `Vote was rejected (${r.status}).`);
+        return;
       }
       await qc.invalidateQueries({ queryKey: ["ric-ic-summary", note.id] });
       await qc.invalidateQueries({ queryKey: ["ric-notes-all"] });
@@ -1278,30 +1287,48 @@ function ResearchAgendaItem({
       </div>
       {th.bull && <p className="mt-2 text-xs leading-relaxed text-foreground/80">{th.bull}</p>}
 
+      <div className="mt-3 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] p-2.5">
+        <div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <span>{scope.toUpperCase()} voting progress</span>
+          <span>{tally.yes}/{voteThreshold} yes required</span>
+        </div>
+        <div className="flex h-2 overflow-hidden rounded-full bg-[hsl(var(--foreground)/0.08)]">
+          {tally.yes > 0 && <span className="bg-up" style={{ width: `${(tally.yes / Math.max(1, researchVoters)) * 100}%` }} />}
+          {tally.no > 0 && <span className="bg-down" style={{ width: `${(tally.no / Math.max(1, researchVoters)) * 100}%` }} />}
+          {tally.abstain > 0 && <span className="bg-muted-foreground/60" style={{ width: `${(tally.abstain / Math.max(1, researchVoters)) * 100}%` }} />}
+        </div>
+        <p className="mt-1.5 text-[10px] text-muted-foreground">{tally.yes} yes · {tally.no} no · {tally.abstain} abstain · {Math.max(0, researchVoters - tally.total)} not yet voted</p>
+      </div>
+      {voteError && <p className="mt-2 text-xs text-down">{voteError}</p>}
+      {viewerVote && <p className="mt-2 text-xs text-up">Your {viewerVote.toUpperCase()} vote has been recorded and is locked.</p>}
+
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--glass-border))] pt-3">
         <div className="flex items-center gap-2">
           <span className="text-[11px] text-muted-foreground">Vote:</span>
           <button
             type="button"
-            disabled={!perms.castVote || voting != null}
+            disabled={!perms.castVote || voting != null || voteLocked}
+            title={voteLocked ? "Your recorded vote is locked" : "Vote yes"}
             onClick={() => vote("yes")}
-            className="rounded-md border border-[hsl(var(--glass-border))] p-1.5 text-muted-foreground hover:text-up disabled:opacity-50"
+            className={cn("rounded-md border p-1.5 disabled:opacity-50", viewerVote === "yes" ? "border-up/60 bg-up/15 text-up" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-up")}
           >
             <ThumbsUp className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
-            disabled={!perms.castVote || voting != null}
+            disabled={!perms.castVote || voting != null || voteLocked}
+            title={voteLocked ? "Your recorded vote is locked" : "Abstain"}
             onClick={() => vote("abstain")}
-            className="rounded-md border border-[hsl(var(--glass-border))] p-1.5 text-muted-foreground hover:text-foreground disabled:opacity-50"
+            className={cn("rounded-md border p-1.5 disabled:opacity-50", viewerVote === "abstain" ? "border-muted-foreground/60 bg-muted-foreground/15 text-foreground" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground")}
           >
             <MinusCircle className="h-3.5 w-3.5" />
           </button>
           <button
             type="button"
-            disabled={!perms.castVote || voting != null}
+            disabled={!perms.castVote || voting != null || voteLocked}
+            title={voteLocked ? "Your recorded vote is locked" : "Vote no"}
             onClick={() => vote("no")}
-            className="rounded-md border border-[hsl(var(--glass-border))] p-1.5 text-muted-foreground hover:text-down disabled:opacity-50"
+            className={cn("rounded-md border p-1.5 disabled:opacity-50", viewerVote === "no" ? "border-down/60 bg-down/15 text-down" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-down")}
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
