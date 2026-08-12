@@ -172,19 +172,6 @@ export function InvestmentCommitteePage({
         .catch(() => ({ requests: [] }))) as { requests: RebalanceRequest[] },
   });
 
-  // rebalance_request_c.strategy_id actually stores the strategy's display
-  // NAME (see rebalance-builder-page.tsx::submitToIc), not its id — matches
-  // strategies by name here to know which agenda rows are UAT/test.
-  const strategiesQ = useQuery<{
-    strategies?: Array<{ id: string; name: string; investorEnvironment?: "LIVE" | "UAT" }>;
-  }>({
-    queryKey: ["ric-strategies"],
-    queryFn: async () => (await fetch("/api/strategies", { cache: "no-store" })).json(),
-  });
-  const testStrategyNames = new Set(
-    (strategiesQ.data?.strategies ?? []).filter((s) => s.investorEnvironment === "UAT").map((s) => s.name),
-  );
-
   const notes = notesQ.data?.notes ?? [];
   const requests = reqQ.data?.requests ?? [];
   const agendaNotes = notes.filter((n) => n.status === "ic_pending");
@@ -425,7 +412,6 @@ export function InvestmentCommitteePage({
                       viewerEmail={viewerEmail}
                       pills={pills}
                       onChanged={refresh}
-                      isTestStrategy={testStrategyNames.has(r.strategy_id)}
                     />
                   ))}
                   {visibleNotes.map((n) => (
@@ -861,7 +847,6 @@ function RebalanceAgendaItem({
   viewerEmail,
   pills,
   onChanged,
-  isTestStrategy,
 }: {
   req: RebalanceRequest;
   code: string;
@@ -872,9 +857,6 @@ function RebalanceAgendaItem({
   viewerEmail: string | null;
   pills: MemberPill[];
   onChanged: () => void;
-  // UAT/test strategies skip the committee vote requirement entirely — same
-  // relaxation as the research-note/rationale gates elsewhere in rebalance.
-  isTestStrategy: boolean;
 }) {
   const { busy, go } = useTransition("rebalance");
   const noteTransition = useTransition("note");
@@ -903,24 +885,28 @@ function RebalanceAgendaItem({
   const busyAny = busy != null || vote.busy != null || noteTransition.busy != null;
 
   // Standalone rebalance approval (no linked research note — the "both" path
-  // above has its own combined-approve gate). UAT/test strategies skip the
-  // vote requirement entirely, same relaxation as research-note/rationale
-  // gates elsewhere. For a LIVE strategy: Approve only appears once yes
-  // votes outnumber no votes; with zero votes cast it's disabled rather than
-  // hidden (nothing to disagree with yet); once no votes outnumber yes,
-  // Approve is hidden entirely — only Reject remains available.
+  // above has its own combined-approve gate). The committee majority is
+  // required for every strategy, UAT included — a rebalance on a test
+  // strategy is a real rehearsal of this gate, not a reason to skip it (the
+  // server enforces the same rule now: transition/route.ts rejects
+  // pending -> ic_approved without it, so this button matches what the API
+  // will actually allow rather than offering a click that 403s).
+  //
+  // Gated on the real majority (tally.passed = yes >= requiredYes), not
+  // merely "yes outnumbers no" — with only 1 of 3 votes in, yes=1/no=0
+  // "leads" but is not yet a majority. Approve stays visible-but-disabled
+  // while votes are pending (nothing to disagree with yet); it hides
+  // entirely once no votes outnumber yes, since no further yes votes can
+  // change the outcome and only Reject remains meaningful.
   const hasVotes = tally.yes > 0 || tally.no > 0;
   const noAhead = tally.no > tally.yes;
-  const yesAhead = tally.yes > tally.no;
-  const showStandaloneApprove = kind !== "both" && (isTestStrategy || !noAhead);
-  const standaloneApproveDisabled = !canApprove || busyAny || (!isTestStrategy && (!hasVotes || !yesAhead));
-  const standaloneApproveTitle = isTestStrategy
-    ? "UAT test strategy — no committee vote required"
-    : !hasVotes
-      ? "Awaiting votes — no votes cast yet"
-      : !yesAhead
-        ? "Awaiting votes — yes does not yet outnumber no"
-        : "Approve — majority yes";
+  const showStandaloneApprove = kind !== "both" && !noAhead;
+  const standaloneApproveDisabled = !canApprove || busyAny || !tally.passed;
+  const standaloneApproveTitle = !hasVotes
+    ? "Awaiting votes — no votes cast yet"
+    : !tally.passed
+      ? `Awaiting votes — ${tally.yes} of ${tally.requiredYes} required yes votes`
+      : "Approve — committee majority reached";
 
   async function approveBoth() {
     if (!linkedNote) return;
@@ -929,12 +915,7 @@ function RebalanceAgendaItem({
   }
 
   async function approveStandalone() {
-    await go(
-      req.id,
-      "ic_approved",
-      onChanged,
-      isTestStrategy ? "IC approved (UAT — no committee vote required)" : "IC approved by majority vote",
-    );
+    await go(req.id, "ic_approved", onChanged, "IC approved by majority vote");
   }
 
   // Per-member vote state for the committee-member pills. Only the viewer's
@@ -1010,8 +991,19 @@ function RebalanceAgendaItem({
           {kind === "both" ? (
             <button
               type="button"
-              disabled={!canCombinedApprove || busyAny}
+              // canCombinedApprove only checked the two approve PERMISSIONS
+              // (note + rebalance), never whether the committee had actually
+              // voted — the rebalance side of this button called the same
+              // transition endpoint as the standalone one, with no vote gate
+              // at all. Same tally.passed rule as standalone now, since the
+              // server enforces it identically either way.
+              disabled={!canCombinedApprove || busyAny || !tally.passed}
               onClick={approveBoth}
+              title={
+                !tally.passed
+                  ? `Awaiting votes — ${tally.yes} of ${tally.requiredYes} required yes votes`
+                  : undefined
+              }
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
               <Check className="h-3.5 w-3.5" /> {actionLabel}
@@ -1024,7 +1016,7 @@ function RebalanceAgendaItem({
               title={standaloneApproveTitle}
               className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
             >
-              <Check className="h-3.5 w-3.5" /> {isTestStrategy ? "Approve (UAT)" : "Approve"}
+              <Check className="h-3.5 w-3.5" /> Approve
             </button>
           ) : null}
           <button

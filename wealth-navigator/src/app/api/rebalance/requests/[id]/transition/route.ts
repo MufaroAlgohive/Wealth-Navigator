@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { bookSettledRebalanceOrders } from "@/lib/rebalance/book-settled-rebalance-orders";
+import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
 import { reconcileParkedHoldings } from "@/lib/rebalance/reconcile-parked-holdings";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
@@ -112,6 +113,36 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const canApprove = canResearchIc(auth.ctx, "rebalance", "approve_rebalance");
   if ((toStatus === "ic_approved" || toStatus === "executed" || toStatus === "rejected") && !canApprove) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+
+  // The committee majority is the actual gate on pending -> ic_approved, not
+  // just the permission to click Approve. Until this check existed, having
+  // `approve_rebalance` was enough on its own: /vote applies the same
+  // tallyVotes() rule when a vote is cast, but this route — which every
+  // "Approve" button in the UI ultimately calls, standalone or combined with
+  // a research note — never consulted rebalance_vote_c at all. A single
+  // approver could promote a proposal with zero votes cast, on any strategy,
+  // by calling this endpoint directly; the UI's disabled state was cosmetic,
+  // not enforcement. No UAT exception: a rebalance on a test strategy is a
+  // real rehearsal of this exact gate, not a reason to skip it.
+  if (from === "pending" && toStatus === "ic_approved") {
+    const votesRes = await db
+      .from("rebalance_vote_c")
+      .select("voter_email, vote, voted_at")
+      .eq("request_id", id);
+    if (votesRes.error) {
+      return NextResponse.json({ ok: false, error: votesRes.error.message }, { status: 500 });
+    }
+    const tally = tallyVotes((votesRes.data ?? []) as RebalanceVote[]);
+    if (!tally.passed) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Committee majority not reached: ${tally.yes} of ${tally.requiredYes} required yes votes.`,
+        },
+        { status: 409 },
+      );
+    }
   }
   if (toStatus === "cancelled" && !isRequester && !isDev && !(from === "ic_approved" && canApprove)) {
     return NextResponse.json(
