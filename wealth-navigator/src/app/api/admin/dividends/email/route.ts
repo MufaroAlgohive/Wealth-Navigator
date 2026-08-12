@@ -256,51 +256,51 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
     : 'Since you started investing, the companies in your basket have shared their profits with you:'
 } </p>
 
-  < !--TABLE -->
-    <div class="section" >
-      <h2>${ isFuture ? 'UPCOMING DIVIDENDS' : 'COMPANY DIVIDENDS EARNED' } </h2>
-        < table class="snap" >
-          <thead>
+    <!-- TABLE -->
+    <div class="section">
+      <h2>${isFuture ? 'UPCOMING DIVIDENDS' : 'COMPANY DIVIDENDS EARNED'}</h2>
+      <table class="snap">
+        <thead>
           <tr>
-          <th>COMPANY </th>
-          < th class="r" > Amount </th>
-            </tr>
-            </thead>
-            <tbody>
-          ${ rowsHtml }
-<tr>
-  <td class="label" style = "padding-top:20px; font-weight:700;" > ${ isFuture ? 'Total upcoming payout' : 'Total earned since investing' } </td>
-    < td class="num r pos" style = "padding-top:20px; font-size: 16px; font-weight:800; color:#31005E;" > ${ formatMoney(totalCash) } </td>
-      </tr>
-      </tbody>
+            <th>COMPANY</th>
+            <th class="r">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+          <tr>
+            <td class="label" style="padding-top:20px; font-weight:700;">${isFuture ? 'Total upcoming payout' : 'Total earned since investing'}</td>
+            <td class="num r pos" style="padding-top:20px; font-size: 16px; font-weight:800; color:#31005E;">${formatMoney(totalCash)}</td>
+          </tr>
+        </tbody>
       </table>
-      </div>
-      </div>
-
-      < !--CLOSE -->
-        <div class="close" >
-          <p>${
-            isFuture
-              ? 'Every cent will be automatically credited to your bank account on the payment date. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
-              : 'Every cent has been credited to your bank account. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
-} </p>
-  < a href = "https://app.mymint.co.za" > Grow my portfolio & rarr; </a>
     </div>
+  </div>
 
-    < !--FOOTER -->
-      <div class="footer" >
-        <div class="footer-brand" > MINT PLATFORMS </div>
-          < div class="footer-line" > FSP 55118 & nbsp;|& nbsp; NCRCP22892 & nbsp;|& nbsp; Reg. 2024 / 644796 /07 </div>
-            < div class="footer-line" > 3 Gwen Lane, Sandown, Sandton, Johannesburg </div>
-              < div class="footer-line" > support@mymint.co.za & nbsp;|& nbsp; www.mymint.co.za </div>
-                < div class="disclaimer" >
-                  This communication is an automated notification and does not constitute investment advice.
+  <!-- CLOSE -->
+  <div class="close">
+    <p>${
+      isFuture
+        ? 'Every cent will be automatically credited to your bank account on the payment date. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
+        : 'Every cent has been credited to your bank account. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
+    }</p>
+    <a href="https://app.mymint.co.za">Grow my portfolio &rarr;</a>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <div class="footer-brand">MINT PLATFORMS</div>
+    <div class="footer-line">FSP 55118 &nbsp;|&nbsp; NCRCP22892 &nbsp;|&nbsp; Reg. 2024/644796/07</div>
+    <div class="footer-line">3 Gwen Lane, Sandown, Sandton, Johannesburg</div>
+    <div class="footer-line">support@mymint.co.za &nbsp;|&nbsp; www.mymint.co.za</div>
+    <div class="disclaimer">
+      This communication is an automated notification and does not constitute investment advice.
     </div>
-                    </div>
+  </div>
 
-                    </div>
-                    </body>
-                    </html>`;
+</div>
+</body>
+</html>`;
 }
 
 export async function GET(req: Request) {
