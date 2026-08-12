@@ -24,7 +24,6 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowUp,
   Calendar,
   Check,
   ChevronDown,
@@ -44,12 +43,12 @@ import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
-import { CommitteeGovernance } from "./committee-governance";
 import {
   type CommitteeMember,
   IC_COMMITTEE_SIZE,
   IC_MAJORITY_REQUIRED_YES,
 } from "@/lib/research-ic/committee";
+import { CommitteeGovernance } from "./committee-governance";
 import {
   agendaKindForNote,
   agendaKindForRebalance,
@@ -235,42 +234,6 @@ export function InvestmentCommitteePage({
     { id: "governance", label: "Settings", icon: Users },
   ];
   const [active, setActive] = React.useState<SectionId>("agenda");
-  const sectionRefs = React.useRef<Record<SectionId, HTMLElement | null>>({
-    agenda: null,
-    approved: null,
-    recent: null,
-    members: null,
-    charter: null,
-    checklist: null,
-    governance: null,
-  });
-  React.useEffect(() => {
-    const onScroll = () => {
-      // Pick the section whose top is just above the sticky bar (64px header +
-      // 56px tab bar = 120px scroll offset).
-      const offset = 140;
-      let bestId: SectionId = active;
-      let bestTop = Number.POSITIVE_INFINITY;
-      (Object.entries(sectionRefs.current) as [SectionId, HTMLElement | null][]).forEach(([id, el]) => {
-        if (!el) return;
-        const top = el.getBoundingClientRect().top - offset;
-        if (top <= 0 && Math.abs(top) < bestTop) {
-          bestTop = Math.abs(top);
-          bestId = id;
-        }
-      });
-      setActive(bestId);
-      setShowBackToTop(window.scrollY > 400);
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [active]);
-
-  const [showBackToTop, setShowBackToTop] = React.useState(false);
-  const scrollTo = (id: SectionId) => {
-    sectionRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
 
   const refresh = () => {
     qc.invalidateQueries({ queryKey: ["ric-notes-all"] });
@@ -304,7 +267,7 @@ export function InvestmentCommitteePage({
             <button
               key={s.id}
               type="button"
-              onClick={() => scrollTo(s.id)}
+              onClick={() => setActive(s.id)}
               className={cn(
                 "inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors",
                 isActive
@@ -332,259 +295,231 @@ export function InvestmentCommitteePage({
         })}
       </nav>
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_320px]">
+      <div className="mt-5">
         <div className="space-y-5">
           {/* ── Agenda ──────────────────────────────────────────────────── */}
-          <section
-            id="sec-agenda"
-            ref={(el) => {
-              sectionRefs.current.agenda = el;
-            }}
-            className="scroll-mt-32"
-          >
-            <CollapsibleCard
-              title={`Agenda · ${agendaCount} item${agendaCount === 1 ? "" : "s"}`}
-              dataSource="supabase"
-              db="institutional"
-              open={!!openSections.agenda}
-              onToggle={() => toggleSection("agenda")}
-              badge={
-                agendaCount > 0
-                  ? {
-                      tone: "warn",
-                      label: `${pendingReqs.length} rebalance · ${agendaNotes.length} research`,
-                    }
-                  : null
-              }
-            >
-              {agendaCount > 0 ? (
-                <div className="mb-3 inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--background)/0.6)] p-1">
-                  {(
-                    [
-                      { id: "all", label: "All", count: agendaCount },
-                      { id: "research", label: "Research", count: agendaNotes.length },
-                      { id: "rebalance", label: "Rebalance", count: pendingReqs.length },
-                    ] as const
-                  ).map((f) => {
-                    const isActive = agendaFilter === f.id;
-                    return (
-                      <button
-                        key={f.id}
-                        type="button"
-                        onClick={() => setAgendaFilter(f.id)}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
-                          isActive
-                            ? "bg-primary/15 text-primary"
-                            : "text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] hover:text-foreground",
-                        )}
-                        aria-pressed={isActive}
-                      >
-                        {f.label}
-                        <span
+          {active === "agenda" && (
+            <section>
+              <CollapsibleCard
+                title={`Agenda · ${agendaCount} item${agendaCount === 1 ? "" : "s"}`}
+                dataSource="supabase"
+                db="institutional"
+                open={!!openSections.agenda}
+                onToggle={() => toggleSection("agenda")}
+                badge={
+                  agendaCount > 0
+                    ? {
+                        tone: "warn",
+                        label: `${pendingReqs.length} rebalance · ${agendaNotes.length} research`,
+                      }
+                    : null
+                }
+              >
+                {agendaCount > 0 ? (
+                  <div className="mb-3 inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--background)/0.6)] p-1">
+                    {(
+                      [
+                        { id: "all", label: "All", count: agendaCount },
+                        { id: "research", label: "Research", count: agendaNotes.length },
+                        { id: "rebalance", label: "Rebalance", count: pendingReqs.length },
+                      ] as const
+                    ).map((f) => {
+                      const isActive = agendaFilter === f.id;
+                      return (
+                        <button
+                          key={f.id}
+                          type="button"
+                          onClick={() => setAgendaFilter(f.id)}
                           className={cn(
-                            "rounded-full px-1.5 py-0.5 text-[9px] font-semibold tabular-nums",
+                            "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
                             isActive
-                              ? "bg-primary/25 text-primary"
-                              : "bg-[hsl(var(--foreground)/0.08)] text-muted-foreground",
+                              ? "bg-primary/15 text-primary"
+                              : "text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] hover:text-foreground",
                           )}
+                          aria-pressed={isActive}
                         >
-                          {f.count}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
-              {agendaCount === 0 ? (
-                <p className="text-caption">
-                  Nothing on the agenda. Submitted proposals and notes appear here.
-                </p>
-              ) : visibleReqs.length === 0 && visibleNotes.length === 0 ? (
-                <p className="text-caption">Nothing matches this filter.</p>
-              ) : (
-                <div className="space-y-4">
-                  {visibleReqs.map((r) => (
-                    <RebalanceAgendaItem
-                      key={r.id}
-                      req={r}
-                      code={rebCodes.get(r.id) ?? "REB"}
-                      linkedNote={linkedNoteForRebalance(r, agendaNotes)}
-                      canApprove={perms.approveRebalance}
-                      canApproveNote={perms.approveNote}
-                      canVote={perms.approveRebalance}
-                      viewerEmail={viewerEmail}
-                      pills={pills}
-                      onChanged={refresh}
-                    />
-                  ))}
-                  {visibleNotes.map((n) => (
-                    <ResearchAgendaItem
-                      key={n.id}
-                      note={n}
-                      linkedRebalance={linkedRebalanceForNote(n, pendingReqs)}
-                      perms={perms}
-                      viewerEmail={viewerEmail}
-                      pills={pills}
-                      onChanged={refresh}
-                    />
-                  ))}
-                </div>
-              )}
-            </CollapsibleCard>
-          </section>
+                          {f.label}
+                          <span
+                            className={cn(
+                              "rounded-full px-1.5 py-0.5 text-[9px] font-semibold tabular-nums",
+                              isActive
+                                ? "bg-primary/25 text-primary"
+                                : "bg-[hsl(var(--foreground)/0.08)] text-muted-foreground",
+                            )}
+                          >
+                            {f.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {agendaCount === 0 ? (
+                  <p className="text-caption">
+                    Nothing on the agenda. Submitted proposals and notes appear here.
+                  </p>
+                ) : visibleReqs.length === 0 && visibleNotes.length === 0 ? (
+                  <p className="text-caption">Nothing matches this filter.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {visibleReqs.map((r) => (
+                      <RebalanceAgendaItem
+                        key={r.id}
+                        req={r}
+                        code={rebCodes.get(r.id) ?? "REB"}
+                        linkedNote={linkedNoteForRebalance(r, agendaNotes)}
+                        canApprove={perms.approveRebalance}
+                        canApproveNote={perms.approveNote}
+                        canVote={perms.approveRebalance}
+                        viewerEmail={viewerEmail}
+                        pills={pills}
+                        onChanged={refresh}
+                      />
+                    ))}
+                    {visibleNotes.map((n) => (
+                      <ResearchAgendaItem
+                        key={n.id}
+                        note={n}
+                        linkedRebalance={linkedRebalanceForNote(n, pendingReqs)}
+                        perms={perms}
+                        viewerEmail={viewerEmail}
+                        pills={pills}
+                        onChanged={refresh}
+                      />
+                    ))}
+                  </div>
+                )}
+              </CollapsibleCard>
+            </section>
+          )}
 
-          <section
-            id="sec-governance"
-            ref={(el) => {
-              sectionRefs.current.governance = el;
-            }}
-            className="scroll-mt-32"
-          >
-            <CollapsibleCard
-              title="IC voting settings"
-              dataSource="supabase"
-              db="institutional"
-              open={!!openSections.governance}
-              onToggle={() => toggleSection("governance")}
-            >
-              <CommitteeGovernance />
-            </CollapsibleCard>
-          </section>
+          {active === "governance" && (
+            <section>
+              <CollapsibleCard
+                title="IC voting settings"
+                dataSource="supabase"
+                db="institutional"
+                open={!!openSections.governance}
+                onToggle={() => toggleSection("governance")}
+              >
+                <CommitteeGovernance />
+              </CollapsibleCard>
+            </section>
+          )}
 
           {/* ── Approved ─────────────────────────────────────────────────── */}
-          <section
-            id="sec-approved"
-            ref={(el) => {
-              sectionRefs.current.approved = el;
-            }}
-            className="scroll-mt-32"
-          >
-            <CollapsibleCard
-              title={`Approved — ready for Rebalance tab · ${approvedReqs.length}`}
-              dataSource="supabase"
-              db="institutional"
-              open={!!openSections.approved}
-              onToggle={() => toggleSection("approved")}
-            >
-              {approvedReqs.length === 0 ? (
-                <p className="text-caption">No approved proposals waiting.</p>
-              ) : (
-                <div className="space-y-4">
-                  {approvedReqs.map((r) => (
-                    <ApprovedItem
-                      key={r.id}
-                      req={r}
-                      code={rebCodes.get(r.id) ?? "REB"}
-                      canPush={perms.pushRebalance}
-                      onChanged={refresh}
-                    />
-                  ))}
-                </div>
-              )}
-            </CollapsibleCard>
-          </section>
+          {active === "approved" && (
+            <section>
+              <CollapsibleCard
+                title={`Approved — ready for Rebalance tab · ${approvedReqs.length}`}
+                dataSource="supabase"
+                db="institutional"
+                open={!!openSections.approved}
+                onToggle={() => toggleSection("approved")}
+              >
+                {approvedReqs.length === 0 ? (
+                  <p className="text-caption">No approved proposals waiting.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {approvedReqs.map((r) => (
+                      <ApprovedItem
+                        key={r.id}
+                        req={r}
+                        code={rebCodes.get(r.id) ?? "REB"}
+                        canPush={perms.pushRebalance}
+                        onChanged={refresh}
+                      />
+                    ))}
+                  </div>
+                )}
+              </CollapsibleCard>
+            </section>
+          )}
 
           {/* ── Recent decisions ─────────────────────────────────────────── */}
-          <section
-            id="sec-recent"
-            ref={(el) => {
-              sectionRefs.current.recent = el;
-            }}
-            className="scroll-mt-32"
-          >
-            <CollapsibleCard
-              title="Recent decisions"
-              dataSource="supabase"
-              db="institutional"
-              open={!!openSections.recent}
-              onToggle={() => toggleSection("recent")}
-            >
-              {recent.length === 0 ? (
-                <p className="text-caption">No decisions logged yet.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {recent.map((d) => (
-                    <li key={d.id} className="flex items-center justify-between gap-3 text-sm">
-                      <span className="truncate text-foreground/85">{d.label}</span>
-                      <span
-                        className={cn(
-                          "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
-                          d.status === "rejected"
-                            ? "border-[hsl(var(--down)/0.35)] text-down"
-                            : "border-[hsl(var(--up)/0.35)] text-up",
-                        )}
-                      >
-                        {d.status}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CollapsibleCard>
-          </section>
+          {active === "recent" && (
+            <section>
+              <CollapsibleCard
+                title="Recent decisions"
+                dataSource="supabase"
+                db="institutional"
+                open={!!openSections.recent}
+                onToggle={() => toggleSection("recent")}
+              >
+                {recent.length === 0 ? (
+                  <p className="text-caption">No decisions logged yet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {recent.map((d) => (
+                      <li key={d.id} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="truncate text-foreground/85">{d.label}</span>
+                        <span
+                          className={cn(
+                            "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
+                            d.status === "rejected"
+                              ? "border-[hsl(var(--down)/0.35)] text-down"
+                              : "border-[hsl(var(--up)/0.35)] text-up",
+                          )}
+                        >
+                          {d.status}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CollapsibleCard>
+            </section>
+          )}
 
           {/* ── Members (also surfaced in right rail) ─────────────────────── */}
-          <section
-            id="sec-members"
-            ref={(el) => {
-              sectionRefs.current.members = el;
-            }}
-            className="scroll-mt-32 lg:hidden"
-          >
-            <CollapsibleCard
-              title="Committee members"
-              dataSource="supabase"
-              db="institutional"
-              open={!!openSections.members}
-              onToggle={() => toggleSection("members")}
-            >
-              <MembersList pills={pills} viewerEmail={viewerEmail} />
-            </CollapsibleCard>
-          </section>
+          {active === "members" && (
+            <section>
+              <CollapsibleCard
+                title="Committee members"
+                dataSource="supabase"
+                db="institutional"
+                open={!!openSections.members}
+                onToggle={() => toggleSection("members")}
+              >
+                <MembersList pills={pills} viewerEmail={viewerEmail} />
+              </CollapsibleCard>
+            </section>
+          )}
 
           {/* ── Charter (also surfaced in right rail) ─────────────────────── */}
-          <section
-            id="sec-charter"
-            ref={(el) => {
-              sectionRefs.current.charter = el;
-            }}
-            className="scroll-mt-32 lg:hidden"
-          >
-            <CollapsibleCard
-              title="Charter · quorum & voting"
-              dataSource="seed"
-              open={!!openSections.charter}
-              onToggle={() => toggleSection("charter")}
-            >
-              <CharterList />
-            </CollapsibleCard>
-          </section>
+          {active === "charter" && (
+            <section>
+              <CollapsibleCard
+                title="Charter · quorum & voting"
+                dataSource="seed"
+                open={!!openSections.charter}
+                onToggle={() => toggleSection("charter")}
+              >
+                <CharterList />
+              </CollapsibleCard>
+            </section>
+          )}
 
           {/* ── Prep checklist (also surfaced in right rail) ──────────────── */}
-          <section
-            id="sec-checklist"
-            ref={(el) => {
-              sectionRefs.current.checklist = el;
-            }}
-            className="scroll-mt-32 lg:hidden"
-          >
-            <CollapsibleCard
-              title="Session prep checklist"
-              dataSource="seed"
-              open={!!openSections.checklist}
-              onToggle={() => toggleSection("checklist")}
-            >
-              <ChecklistList
-                checks={checks}
-                onChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
-              />
-            </CollapsibleCard>
-          </section>
+          {active === "checklist" && (
+            <section>
+              <CollapsibleCard
+                title="Session prep checklist"
+                dataSource="seed"
+                open={!!openSections.checklist}
+                onToggle={() => toggleSection("checklist")}
+              >
+                <ChecklistList
+                  checks={checks}
+                  onChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
+                />
+              </CollapsibleCard>
+            </section>
+          )}
         </div>
 
         {/* right rail — standing config (desktop) */}
-        <div className="space-y-5">
+        <div className="hidden">
           <GlassSection title="Committee members" dataSource="supabase" db="institutional">
             <MembersList pills={pills} viewerEmail={viewerEmail} />
           </GlassSection>
@@ -603,19 +538,6 @@ export function InvestmentCommitteePage({
       </div>
 
       {/* ── Floating back-to-top button (only after first section) ─────── */}
-      <button
-        type="button"
-        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-        aria-label="Back to top"
-        className={cn(
-          "fixed bottom-6 right-6 z-40 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[hsl(var(--glass-border))] bg-[hsl(var(--background)/0.85)] text-muted-foreground shadow-xl backdrop-blur transition-all hover:text-foreground",
-          showBackToTop
-            ? "pointer-events-auto translate-y-0 opacity-100"
-            : "pointer-events-none translate-y-3 opacity-0",
-        )}
-      >
-        <ArrowUp className="h-4 w-4" />
-      </button>
     </ResearchLabCanvas>
   );
 }

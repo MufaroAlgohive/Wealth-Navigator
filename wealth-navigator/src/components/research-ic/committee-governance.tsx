@@ -68,7 +68,13 @@ export function CommitteeGovernance() {
   if (!current)
     return (
       <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4 text-sm text-muted-foreground">
-        {message || "Loading IC governance…"}
+        <p>{message || "Loading IC governance…"}</p>
+        {message.includes("migration") ? (
+          <p className="mt-2 text-xs">
+            Apply <code>supabase/migrations/20260812000001_ic_governance.sql</code> to the institutional
+            Supabase project, then refresh this tab.
+          </p>
+        ) : null}
       </div>
     );
   return (
