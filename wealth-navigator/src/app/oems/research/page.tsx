@@ -8,7 +8,7 @@ export default async function Page() {
   const s = await resolveResearchSession();
   return (
     <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading research library…</div>}>
-      <ResearchLibraryPage perms={s.perms} viewerEmail={s.viewerEmail} viewerName={s.viewerName} />
+      <ResearchLibraryPage perms={s.perms} viewerEmail={s.viewerEmail} viewerName={s.viewerName} canSeeUat={s.canSeeUat} />
     </Suspense>
   );
 }

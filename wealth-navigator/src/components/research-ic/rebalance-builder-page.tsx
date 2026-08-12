@@ -354,8 +354,9 @@ export function RebalanceBuilderPage({
   const notesQ = useQuery<{
     notes?: Array<{ id: string; symbol: string; status: string; updated_at?: string }>;
   }>({
-    queryKey: ["ric-notes"],
-    queryFn: async () => (await fetch("/api/research/notes", { cache: "no-store" })).json(),
+    queryKey: ["ric-notes", isTestStrategy ? "uat" : "live"],
+    queryFn: async () =>
+      (await fetch(`/api/research/notes?scope=${isTestStrategy ? "uat" : "live"}`, { cache: "no-store" })).json(),
   });
   const notedSymbols = new Set((notesQ.data?.notes ?? []).map((nte) => String(nte.symbol).toUpperCase()));
   const missingResearch = changedTickers.filter((t) => !notedSymbols.has(t));
@@ -364,9 +365,7 @@ export function RebalanceBuilderPage({
   // research was previously only caught at the very end (submitToIc), which
   // meant an admin could build out a whole buy leg, fee bridge and all,
   // before discovering it can't go to the IC.
-  const buyUniverseForStrategy = isTestStrategy
-    ? buyUniverse
-    : buyUniverse.filter((u) => notedSymbols.has(u.symbol.toUpperCase()));
+  const buyUniverseForStrategy = buyUniverse.filter((u) => notedSymbols.has(u.symbol.toUpperCase()));
   // Pick the "best" research note per symbol: prefer approved, fall back to the
   // most-recently-updated. Used to build the R-<SYM>-<NN> researchRef code that
   // shows up in the IC action table and links through to the note.
@@ -722,13 +721,13 @@ export function RebalanceBuilderPage({
   async function submitToIc() {
     setError(null);
     // Gates — short-circuit before opening the network tab.
-    if (!isTestStrategy && missingResearch.length) {
+    if (missingResearch.length) {
       setError(
         `Research required before submitting: ${missingResearch.join(", ")}. Add a note in the Research Library.`,
       );
       return;
     }
-    if (!isTestStrategy && rationalesMissing.length) {
+    if (rationalesMissing.length) {
       setError(`One-line rationale required for: ${rationalesMissing.join(", ")}. Tell the IC why.`);
       return;
     }
@@ -809,8 +808,8 @@ export function RebalanceBuilderPage({
   const commitDisabled =
     submitting ||
     changes === 0 ||
-    (!isTestStrategy && missingResearch.length > 0) ||
-    (!isTestStrategy && rationalesMissing.length > 0) ||
+    missingResearch.length > 0 ||
+    rationalesMissing.length > 0 ||
     impactQ.isFetching ||
     impactQ.data?.ok !== true ||
     impactQ.data?.totals?.cashOk === false ||
@@ -818,9 +817,9 @@ export function RebalanceBuilderPage({
     wizardNotReady ||
     !perms.raiseRebalance;
   const commitTitle =
-    !isTestStrategy && missingResearch.length > 0
+    missingResearch.length > 0
       ? "Research missing for one or more changes"
-      : !isTestStrategy && rationalesMissing.length > 0
+      : rationalesMissing.length > 0
         ? "Rationale required for one or more changes"
         : impactQ.isFetching
           ? "Calculating fee-adjusted client impact"
@@ -882,12 +881,12 @@ export function RebalanceBuilderPage({
 
       {isTestStrategy && (
         <p className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-          UAT test strategy · research-note and rationale gates are disabled. Cash, fee and proceeds checks
-          remain active.
+          UAT test strategy · UAT voting is separate from LIVE, but research-note, rationale, cash, fee and
+          proceeds gates remain active.
         </p>
       )}
 
-      {!isTestStrategy && missingResearch.length > 0 && changes > 0 && (
+      {missingResearch.length > 0 && changes > 0 && (
         <p className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
           Research required for {missingResearch.join(", ")} before this can go to the IC.{" "}
           <Link href="/oems/research" className="underline">
@@ -896,7 +895,7 @@ export function RebalanceBuilderPage({
           .
         </p>
       )}
-      {!isTestStrategy && rationalesMissing.length > 0 && changes > 0 && missingResearch.length === 0 && (
+      {rationalesMissing.length > 0 && changes > 0 && missingResearch.length === 0 && (
         <p className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
           One-line rationale required for {rationalesMissing.join(", ")} before this can go to the IC.
         </p>
@@ -1494,7 +1493,7 @@ export function RebalanceBuilderPage({
         proceedsMode={effectiveProceedsMode}
         buyUniverse={buyUniverseForStrategy}
         buyUniverseLoading={equitiesQ.isLoading}
-        buyUniverseResearchGated={!isTestStrategy}
+        buyUniverseResearchGated
         applyBuffer={applyBuffer}
         onApplyBufferChange={setApplyBuffer}
       />

@@ -128,6 +128,7 @@ export interface NoteValuation {
 export interface ResearchNote {
   id: string;
   symbol: string;
+  environment_scope?: "live" | "uat";
   author_email: string;
   status: NoteStatus;
   thesis: NoteThesis;

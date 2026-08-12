@@ -475,12 +475,14 @@ function Stepper({ step }: { step: number }) {
 export function NoteEditor({
   note,
   initialSymbol,
+  environmentScope = "live",
   onSaved,
   onCancel,
 }: {
   note?: ResearchNote | null;
   /** Optional rebalance hand-off; only pre-fills the draft's identifier. */
   initialSymbol?: string;
+  environmentScope?: "live" | "uat";
   onSaved: (noteId: string) => void;
   onCancel: () => void;
 }) {
@@ -879,7 +881,7 @@ export function NoteEditor({
       const res = await fetch(note ? `/api/research/notes/${note.id}` : "/api/research/notes", {
         method: editing ? "PATCH" : "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ symbol: sym, thesis, triggers: trg, valuation }),
+        body: JSON.stringify({ symbol: sym, thesis, triggers: trg, valuation, environment_scope: environmentScope }),
       });
       const json = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -1137,7 +1139,7 @@ export function NoteEditor({
               />
               <PrefillRow
                 label="Price source"
-                value={analysis.price.priceSource === "iress" ? "IRESS (live)" : "Stored"}
+                value={analysis.price.priceSource === "iress" ? "IRESS (live)" : "Yahoo cached"}
                 mono
               />
             </PrefillCard>
@@ -1371,8 +1373,8 @@ export function NoteEditor({
             };
             const derived = deriveTrend(f);
             return (
-              <div key={i} className="flex items-center gap-1.5">
-                <div className="grid min-w-0 flex-1 grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr_88px] gap-1.5">
+              <div key={i} className="flex items-start gap-1.5">
+                <div className="grid min-w-0 flex-1 grid-cols-2 gap-1.5 xl:grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr_88px]">
                   <input
                     className={INPUT}
                     value={String(f.metric)}
@@ -1511,7 +1513,7 @@ export function NoteEditor({
           </div>
         </div>
         <div className="mt-2 space-y-1.5">
-          <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_28px] gap-1.5 px-0.5">
+          <div className="hidden grid-cols-[1.4fr_1fr_1fr_1fr_1fr_28px] gap-1.5 px-0.5 xl:grid">
             <span className="text-[9px] uppercase tracking-wide text-muted-foreground">Ticker</span>
             <span className="text-[9px] uppercase tracking-wide text-muted-foreground">P/E</span>
             <span className="text-[9px] uppercase tracking-wide text-muted-foreground">EV/EBITDA</span>
@@ -1520,8 +1522,8 @@ export function NoteEditor({
             <span />
           </div>
           {peers.map((p, i) => (
-            <div key={i} className="flex items-center gap-1.5">
-              <div className="grid min-w-0 flex-1 grid-cols-[1.4fr_1fr_1fr_1fr_1fr] gap-1.5">
+            <div key={i} className="flex items-start gap-1.5">
+              <div className="grid min-w-0 flex-1 grid-cols-2 gap-1.5 xl:grid-cols-[1.4fr_1fr_1fr_1fr_1fr]">
                 <input
                   className={INPUT}
                   value={p.name}
@@ -1742,11 +1744,12 @@ export function NoteEditor({
   // ── chrome ─────────────────────────────────────────────────────────────
   return (
     <GlassSection
+      className="min-w-0 overflow-x-hidden"
       title={editing ? `Edit note · ${note?.symbol}` : "New research note"}
       dataSource="hybrid"
       subtitle="Structured workflow · auto-pulls fundamentals & newsflow from the IRESS/repo data layer"
       right={
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
           <button
             type="button"
             onClick={onCancel}
@@ -1790,9 +1793,10 @@ export function NoteEditor({
         </div>
       }
     >
-      <div className="mb-3">
-        <Stepper step={step} />
-      </div>
+      <div className="min-w-0 overflow-x-hidden">
+        <div className="mb-3">
+          <Stepper step={step} />
+        </div>
 
       {error && (
         <p className="mb-2.5 rounded-md border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-2.5 py-1.5 text-[11px] text-down">
@@ -1805,9 +1809,10 @@ export function NoteEditor({
       {step === 3 && renderStep3()}
       {step === 4 && renderStep4()}
       {step === 5 && renderStep5()}
-      {step === 6 && renderStep6()}
+        {step === 6 && renderStep6()}
+      </div>
 
-      <div className="mt-4 flex items-center justify-between border-t border-[hsl(var(--glass-border))] pt-3 text-[10px] text-muted-foreground">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[hsl(var(--glass-border))] pt-3 text-[10px] text-muted-foreground">
         <span>
           Step {step} of {STEPS.length} · {STEPS[step - 1]?.title}
         </span>
