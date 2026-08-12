@@ -526,8 +526,9 @@ export function InvestmentCommitteePage({
         </div>
 
         {/* right rail — standing config (desktop) */}
-        {(active === "agenda" || active === "approved") && <div className="space-y-3 xl:sticky xl:top-20 xl:self-start">
-          <CommitteeRightRail scope="live" canSeeUat={canSeeUat} compact />
+        {(active === "agenda" || active === "approved" || (active === "uat" && canSeeUat)) && <div className="space-y-3 xl:sticky xl:top-20 xl:self-start">
+          <CommitteeRightRail scope={active === "uat" ? "uat" : "live"} canSeeUat={canSeeUat} compact />
+          {active !== "uat" && <>
           <GlassSection title="Committee members" dataSource="supabase" db="institutional">
             <MembersList pills={pills} viewerEmail={viewerEmail} />
           </GlassSection>
@@ -542,6 +543,7 @@ export function InvestmentCommitteePage({
               onChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
             />
           </GlassSection>
+          </>}
         </div>}
       </div>
 
