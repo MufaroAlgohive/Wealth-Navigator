@@ -33,7 +33,7 @@ export function PlatformShell({ children, banner }: { children: ReactNode; banne
           <main
             id="main-content"
             tabIndex={-1}
-            className="mint-ambient relative flex-1 min-w-0 overflow-y-auto p-4 scrollbar-thin focus:outline-none md:p-5"
+            className="mint-ambient isolate relative flex-1 min-w-0 overflow-y-auto p-4 scrollbar-thin focus:outline-none md:p-5"
           >
             <div className="relative mx-auto max-w-[1800px] animate-fade-in">{children}</div>
           </main>
