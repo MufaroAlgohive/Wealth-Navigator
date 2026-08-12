@@ -128,7 +128,7 @@ type ImpactResponse = {
   proceedsMode?: "reinvest" | "liquidate" | null;
 };
 
-function keyOf(h: Holding) {
+function keyOf(h: Pick<Holding, "ticker">) {
   // Must match on the bare symbol, not the raw ticker: baseline holdings
   // (from the strategy's stored composition) carry the ".JO"/".JSE" suffix,
   // but the buy-instrument dropdown's universe is bare-symbol only (see
@@ -984,10 +984,10 @@ export function RebalanceBuilderPage({
                   : null}
               </div>
             )}
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+            <div className="overflow-x-auto [&_td]:!px-2 [&_td]:!py-1.5 [&_th]:!px-2 [&_th]:!py-1.5">
+              <table className="w-full text-[11px]">
                 <thead>
-                  <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.025)] text-left text-[9px] uppercase tracking-wider text-muted-foreground">
                     <th className="px-5 py-2 font-medium">Ticker</th>
                     <th className="px-3 py-2 font-medium">Name</th>
                     <th className="px-3 py-2 text-right font-medium">Units</th>
@@ -1013,7 +1013,10 @@ export function RebalanceBuilderPage({
                     const delta = (b?.shares ?? 0) === 0 ? h.shares : h.shares - (b?.shares ?? 0);
                     const a = actionFor(h);
                     return (
-                      <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
+                      <tr
+                        key={keyOf(h)}
+                        className="border-b border-[hsl(var(--glass-border))] last:border-0 hover:bg-[hsl(var(--foreground)/0.025)]"
+                      >
                         <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                         <td className="px-3 py-2 text-foreground/85">{h.name}</td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
@@ -1121,10 +1124,10 @@ export function RebalanceBuilderPage({
                 }
                 noPadding
               >
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="overflow-x-auto [&_td]:!px-2 [&_td]:!py-1.5 [&_th]:!px-2 [&_th]:!py-1.5">
+                  <table className="w-full text-[11px]">
                     <thead>
-                      <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                      <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.025)] text-left text-[9px] uppercase tracking-wider text-muted-foreground">
                         <th className="px-5 py-2 font-medium">Ticker</th>
                         <th className="px-3 py-2 font-medium">Name</th>
                         <th className="px-3 py-2 text-right font-medium">Current</th>
