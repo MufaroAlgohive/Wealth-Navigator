@@ -410,8 +410,6 @@ export function RebalanceBuilderPage({
     setWorking((prev) =>
       prev.map((h) => (keyOf(h) === t ? { ...h, shares: Math.max(0, Math.floor(value)) } : h)),
     );
-  const removeHolding = (t: string) => setWorking((prev) => prev.filter((h) => keyOf(h) !== t));
-
   // Combine every leg's chosen buy into one set of rows, summing shares when
   // two different legs happen to pick the same instrument (rather than one
   // leg's pick silently overwriting another's).
@@ -1019,10 +1017,19 @@ export function RebalanceBuilderPage({
                     const b = baseByKey.get(keyOf(h));
                     const delta = (b?.shares ?? 0) === 0 ? h.shares : h.shares - (b?.shares ?? 0);
                     const a = actionFor(h);
+                    const isChanged = a !== "hold";
+                    const isEditing = editingSymbol === keyOf(h);
                     return (
                       <tr
                         key={keyOf(h)}
-                        className="border-b border-[hsl(var(--glass-border))] last:border-0 hover:bg-[hsl(var(--foreground)/0.025)]"
+                        onClick={() => isChanged && setEditingSymbol(keyOf(h))}
+                        className={cn(
+                          "border-b border-[hsl(var(--glass-border))] last:border-0",
+                          isChanged && "cursor-pointer hover:bg-primary/[0.07]",
+                          isEditing && "bg-primary/[0.12] shadow-[inset_3px_0_0_hsl(var(--primary))]",
+                          !isChanged && "hover:bg-[hsl(var(--foreground)/0.025)]",
+                        )}
+                        title={isChanged ? `Edit ${h.ticker} ${a}` : "Adjust units first to edit this holding"}
                       >
                         <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                         <td className="px-3 py-2 text-foreground/85">{h.name}</td>
@@ -1059,7 +1066,10 @@ export function RebalanceBuilderPage({
                             </button>
                             <button
                               type="button"
-                              onClick={() => setShares(keyOf(h), -1)}
+                              onClick={() => {
+                                setShares(keyOf(h), -1);
+                                setEditingSymbol(keyOf(h));
+                              }}
                               className="rounded p-1 text-muted-foreground hover:text-down"
                               title="-1 share"
                             >
@@ -1067,7 +1077,10 @@ export function RebalanceBuilderPage({
                             </button>
                             <button
                               type="button"
-                              onClick={() => removeHolding(keyOf(h))}
+                              onClick={() => {
+                                setAbsoluteShares(keyOf(h), 0);
+                                setEditingSymbol(keyOf(h));
+                              }}
                               className="rounded p-1 text-muted-foreground hover:text-down"
                               title="Remove from basket"
                             >
@@ -1303,6 +1316,7 @@ export function RebalanceBuilderPage({
             const baselineHolding = baseByKey.get(editingSymbol);
             const baseUnits = baselineHolding?.shares ?? 0;
             const deltaUnits = holding.shares - baseUnits;
+            if (deltaUnits === 0) return null;
             const priceCents = priceOf(holding.ticker) ?? 0;
             const aggregate = legBuyBreakdown(editingSymbol);
             const researchRef = researchRefFor(holding.ticker);
@@ -1406,7 +1420,7 @@ export function RebalanceBuilderPage({
                           href={`/oems/research?new=1&symbol=${encodeURIComponent(holding.ticker)}`}
                           className="mt-2 flex items-center justify-between rounded-md border border-primary/25 bg-primary/[0.05] px-3 py-2 text-xs text-primary hover:bg-primary/[0.1]"
                         >
-                          <span className="font-semibold">Write BUY note for {holding.ticker}</span>
+                          <span className="font-semibold">Write {deltaUnits < 0 ? "SELL" : "BUY"} note for {holding.ticker}</span>
                           <span className="text-[10px] text-muted-foreground">Opens research draft →</span>
                         </Link>
                       )}
