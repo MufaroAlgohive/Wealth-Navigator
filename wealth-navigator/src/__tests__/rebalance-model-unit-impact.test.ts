@@ -21,6 +21,15 @@ describe("rebalance model-unit client impact", () => {
     })).toEqual({ lots: 2, targetQty: 9, deltaQty: 1 });
   });
 
+  it("adds one share for a two-lot client when the model is increased by one", () => {
+    expect(calculateModelUnitImpact({
+      action: "increase",
+      currentQty: 18,
+      currentModelUnits: 8,
+      targetModelUnits: 9,
+    })).toEqual({ lots: 2, targetQty: 19, deltaQty: 1 });
+  });
+
   it("applies the literal model-unit difference rather than multiplying by lots", () => {
     expect(calculateModelUnitImpact({
       action: "increase",

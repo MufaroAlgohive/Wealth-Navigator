@@ -128,7 +128,7 @@ type ImpactResponse = {
   proceedsMode?: "reinvest" | "liquidate" | null;
 };
 
-function keyOf(h: Holding) {
+function keyOf(h: Pick<Holding, "ticker">) {
   // Must match on the bare symbol, not the raw ticker: baseline holdings
   // (from the strategy's stored composition) carry the ".JO"/".JSE" suffix,
   // but the buy-instrument dropdown's universe is bare-symbol only (see
@@ -984,10 +984,10 @@ export function RebalanceBuilderPage({
                   : null}
               </div>
             )}
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+            <div className="overflow-x-auto [&_td]:!px-2 [&_td]:!py-1.5 [&_th]:!px-2 [&_th]:!py-1.5">
+              <table className="w-full text-[11px]">
                 <thead>
-                  <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.025)] text-left text-[9px] uppercase tracking-wider text-muted-foreground">
                     <th className="px-5 py-2 font-medium">Ticker</th>
                     <th className="px-3 py-2 font-medium">Name</th>
                     <th className="px-3 py-2 text-right font-medium">Units</th>
@@ -1013,7 +1013,10 @@ export function RebalanceBuilderPage({
                     const delta = (b?.shares ?? 0) === 0 ? h.shares : h.shares - (b?.shares ?? 0);
                     const a = actionFor(h);
                     return (
-                      <tr key={keyOf(h)} className="border-b border-[hsl(var(--glass-border))] last:border-0">
+                      <tr
+                        key={keyOf(h)}
+                        className="border-b border-[hsl(var(--glass-border))] last:border-0 hover:bg-[hsl(var(--foreground)/0.025)]"
+                      >
                         <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                         <td className="px-3 py-2 text-foreground/85">{h.name}</td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
@@ -1081,6 +1084,12 @@ export function RebalanceBuilderPage({
           {(() => {
             const showingPending = changes === 0 && !!activePendingProposal;
             const pendingRows = activePendingProposal?.proposed_composition ?? [];
+            const pendingCurrentBySymbol = new Map(
+              (activePendingProposal?.current_composition ?? []).map((holding) => [
+                bare(holding.ticker),
+                Number(holding.shares) || 0,
+              ]),
+            );
             const pendingChangesCount = pendingRows.filter((h) => h.action && h.action !== "hold").length;
             const pendingBasketValue = pendingRows.reduce(
               (s, h) => s + (Number(h.shares) || 0) * (Number(h.price) || 0),
@@ -1115,13 +1124,15 @@ export function RebalanceBuilderPage({
                 }
                 noPadding
               >
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                <div className="overflow-x-auto [&_td]:!px-2 [&_td]:!py-1.5 [&_th]:!px-2 [&_th]:!py-1.5">
+                  <table className="w-full text-[11px]">
                     <thead>
-                      <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                      <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.025)] text-left text-[9px] uppercase tracking-wider text-muted-foreground">
                         <th className="px-5 py-2 font-medium">Ticker</th>
                         <th className="px-3 py-2 font-medium">Name</th>
-                        <th className="px-3 py-2 text-right font-medium">Units</th>
+                        <th className="px-3 py-2 text-right font-medium">Current</th>
+                        <th className="px-3 py-2 text-right font-medium">Proposed</th>
+                        <th className="px-3 py-2 text-right font-medium">Δ units</th>
                         <th className="px-3 py-2 font-medium">Action</th>
                         <th className="px-3 py-2 font-medium">Research</th>
                         <th className="px-5 py-2 font-medium">Rationale</th>
@@ -1141,7 +1152,31 @@ export function RebalanceBuilderPage({
                                 {h.ticker}
                               </td>
                               <td className="px-3 py-2 text-foreground/85">{h.name}</td>
-                              <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
+                              <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                                {pendingCurrentBySymbol.get(bare(h.ticker)) ?? 0}
+                              </td>
+                              <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">
+                                {h.shares ?? 0}
+                              </td>
+                              <td
+                                className={cn(
+                                  "px-3 py-2 text-right font-mono tabular-nums",
+                                  (Number(h.shares) || 0) ===
+                                    (pendingCurrentBySymbol.get(bare(h.ticker)) ?? 0)
+                                    ? "text-muted-foreground"
+                                    : (Number(h.shares) || 0) >
+                                        (pendingCurrentBySymbol.get(bare(h.ticker)) ?? 0)
+                                      ? "text-up"
+                                      : "text-down",
+                                )}
+                              >
+                                {(() => {
+                                  const delta =
+                                    (Number(h.shares) || 0) -
+                                    (pendingCurrentBySymbol.get(bare(h.ticker)) ?? 0);
+                                  return delta > 0 ? `+${delta}` : delta;
+                                })()}
+                              </td>
                               <td className="px-3 py-2">
                                 <ActionBadge action={h.action} />
                               </td>
@@ -1163,11 +1198,14 @@ export function RebalanceBuilderPage({
                               </td>
                             </tr>
                           ))
-                        : working.map((h) => {
-                            const b = baseByKey.get(keyOf(h));
-                            const changed = !b || b.shares !== h.shares;
-                            const a = actionFor(h);
-                            const ref = researchRefFor(h.ticker);
+                        : proposedComposition.map((h) => {
+                            const b = baseByKey.get(bare(h.ticker));
+                            const currentUnits = b?.shares ?? 0;
+                            const proposedUnits = Number(h.shares) || 0;
+                            const delta = proposedUnits - currentUnits;
+                            const changed = delta !== 0;
+                            const a = h.action ?? "hold";
+                            const ref = h.researchRef ?? researchRefFor(h.ticker);
                             return (
                               <tr
                                 key={keyOf(h)}
@@ -1180,7 +1218,24 @@ export function RebalanceBuilderPage({
                                   {h.ticker}
                                 </td>
                                 <td className="px-3 py-2 text-foreground/85">{h.name}</td>
-                                <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
+                                <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                                  {currentUnits}
+                                </td>
+                                <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold">
+                                  {proposedUnits}
+                                </td>
+                                <td
+                                  className={cn(
+                                    "px-3 py-2 text-right font-mono tabular-nums",
+                                    delta === 0
+                                      ? "text-muted-foreground"
+                                      : delta > 0
+                                        ? "text-up"
+                                        : "text-down",
+                                  )}
+                                >
+                                  {delta > 0 ? `+${delta}` : delta}
+                                </td>
                                 <td className="px-3 py-2">
                                   <ActionBadge action={a} />
                                 </td>
