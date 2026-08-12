@@ -46,7 +46,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!canResearchIc(auth.ctx, "research-lab", "cast_vote")) {
+  // Devs may participate in UAT/LIVE IC voting when on that environment's
+  // roster. Keep this narrowly scoped to ballots; it does not grant them
+  // approval, rebalance, or governance powers through the general RBAC helper.
+  if (!canResearchIc(auth.ctx, "research-lab", "cast_vote") && auth.ctx.approverTier !== "dev") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
