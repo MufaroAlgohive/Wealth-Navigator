@@ -8,7 +8,7 @@
  * (Yahoo fallback only when IRESS is empty/unanchored) and overlays triggers.
  */
 
-import { Pencil, Send } from "lucide-react";
+import { ArrowRightLeft, Pencil, Send } from "lucide-react";
 import * as React from "react";
 
 import { GlassSection } from "@/components/oems/primitives/glass";
@@ -92,12 +92,16 @@ export function NoteDetail({
   perms,
   onEdit,
   onSubmitToIc,
+  onMoveScope,
+  canMoveScope = false,
   busy,
 }: {
   note: ResearchNote;
   perms: ResearchPerms;
   onEdit: () => void;
   onSubmitToIc: () => void;
+  onMoveScope?: () => void;
+  canMoveScope?: boolean;
   busy?: boolean;
 }) {
   const th = note.thesis ?? {};
@@ -180,6 +184,18 @@ export function NoteDetail({
                 className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
               >
                 <Pencil className="h-3.5 w-3.5" /> Edit
+              </button>
+            )}
+            {canMoveScope && onMoveScope && (note.status === "draft" || note.status === "in_review") && (
+              <button
+                type="button"
+                onClick={onMoveScope}
+                disabled={busy}
+                title={`Move this draft research note to ${note.environment_scope === "uat" ? "LIVE" : "UAT"}`}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-primary/40 px-3 py-1.5 text-xs font-medium text-primary hover:bg-primary/10 disabled:opacity-50"
+              >
+                <ArrowRightLeft className="h-3.5 w-3.5" />
+                Move to {note.environment_scope === "uat" ? "LIVE" : "UAT"}
               </button>
             )}
             {canSubmit && (

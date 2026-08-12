@@ -198,10 +198,18 @@ function changedSymbols(current: unknown[], proposed: unknown[]): string[] {
   return [...changed];
 }
 
-async function missingResearchNotes(db: NonNullable<Awaited<ReturnType<typeof openDb>>>, current: unknown[], proposed: unknown[]) {
+async function missingResearchNotes(
+  db: NonNullable<Awaited<ReturnType<typeof openDb>>>,
+  current: unknown[],
+  proposed: unknown[],
+  environmentScope: "live" | "uat",
+) {
   const required = changedSymbols(current, proposed);
   if (!required.length) return [];
-  const { data, error } = await db.from("research_note_c").select("symbol");
+  const { data, error } = await db
+    .from("research_note_c")
+    .select("symbol")
+    .eq("environment_scope", environmentScope);
   if (error) throw new Error(error.message);
   const covered = new Set((data ?? []).map((note) => bareSymbol(note.symbol)));
   return required.filter((symbol) => !covered.has(symbol));
@@ -256,25 +264,6 @@ export async function POST(req: Request) {
   if (!db)
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
 
-  // A note for AME must never satisfy an HYP change. Enforce the exact
-  // changed-symbol research requirement at the write boundary for LIVE and
-  // UAT alike, so a direct API request cannot bypass the builder's disabled
-  // Commit button.
-  try {
-    const missing = await missingResearchNotes(db, currentComposition, proposedComposition);
-    if (missing.length) {
-      return NextResponse.json(
-        { ok: false, error: `Research required before creating this rebalance: ${missing.join(", ")}.` },
-        { status: 422 },
-      );
-    }
-  } catch {
-    return NextResponse.json(
-      { ok: false, error: "Could not verify research coverage. Rebalance creation is blocked until coverage can be checked." },
-      { status: 503 },
-    );
-  }
-
   // Snapshot the strategy environment when the proposal is raised. This is the
   // boundary that keeps UAT votes and policies from ever being counted for a
   // LIVE proposal (or vice versa), even if a strategy is renamed later.
@@ -297,6 +286,24 @@ export async function POST(req: Request) {
   } catch {
     return NextResponse.json(
       { ok: false, error: "Could not determine the strategy environment for IC voting." },
+      { status: 503 },
+    );
+  }
+
+  // A note for AME must never satisfy an HYP change, and a LIVE note must
+  // never satisfy a UAT proposal (or vice versa). Enforce this at the write
+  // boundary so a direct API request cannot bypass the builder's gate.
+  try {
+    const missing = await missingResearchNotes(db, currentComposition, proposedComposition, environmentScope);
+    if (missing.length) {
+      return NextResponse.json(
+        { ok: false, error: `Research required before creating this rebalance: ${missing.join(", ")}.` },
+        { status: 422 },
+      );
+    }
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "Could not verify research coverage. Rebalance creation is blocked until coverage can be checked." },
       { status: 503 },
     );
   }

@@ -143,6 +143,24 @@ export function ResearchLibraryPage({
     }
   }
 
+  async function moveNoteScope(note: ResearchNote) {
+    const nextScope = note.environment_scope === "uat" ? "live" : "uat";
+    setSubmitting(true);
+    try {
+      const response = await fetch(`/api/research/notes/${note.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ environment_scope: nextScope }),
+      });
+      if (!response.ok) return;
+      await qc.invalidateQueries({ queryKey: ["ric-notes"] });
+      setScope(nextScope);
+      setSelectedId(note.id);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   function upsideFor(n: ResearchNote): number | null {
     const cur = quotes.data?.[n.symbol.toUpperCase()]?.last ?? null;
     const tgt = n.thesis?.targetPrice ?? null;
@@ -350,6 +368,8 @@ export function ResearchLibraryPage({
                 busy={submitting}
                 onEdit={() => setMode({ kind: "edit", note: selected })}
                 onSubmitToIc={() => submitToIc(selected)}
+                canMoveScope={canSeeUat}
+                onMoveScope={() => moveNoteScope(selected)}
               />
             ) : (
               <GlassSection title="Research note">

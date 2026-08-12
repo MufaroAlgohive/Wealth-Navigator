@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getAdminContext } from "@/lib/admin/rbac";
+import { canSeeUatSurfaces, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
@@ -22,6 +22,7 @@ type NoteStatus = "draft" | "in_review" | "ic_pending" | "approved" | "rejected"
 interface ResearchNoteRow {
   id: string;
   symbol: string;
+  environment_scope: "live" | "uat";
   author_email: string;
   status: NoteStatus;
   thesis: unknown;
@@ -51,7 +52,7 @@ async function loadNote(
   const { data, error } = await db
     .from("research_note_c")
     .select(
-      "id, symbol, author_email, status, thesis, triggers, valuation, ic_session_id, created_at, updated_at, submitted_at, approved_at",
+      "id, symbol, environment_scope, author_email, status, thesis, triggers, valuation, ic_session_id, created_at, updated_at, submitted_at, approved_at",
     )
     .eq("id", id)
     .maybeSingle();
@@ -128,6 +129,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (body.thesis !== undefined) patch.thesis = body.thesis;
   if (body.triggers !== undefined) patch.triggers = body.triggers;
   if (body.valuation !== undefined) patch.valuation = body.valuation;
+  if (body.environment_scope !== undefined) {
+    if (body.environment_scope !== "live" && body.environment_scope !== "uat") {
+      return NextResponse.json({ ok: false, error: "environment_scope must be live or uat" }, { status: 400 });
+    }
+    if (!canSeeUatSurfaces(auth.ctx)) {
+      return NextResponse.json({ ok: false, error: "only a developer can move research between LIVE and UAT" }, { status: 403 });
+    }
+    patch.environment_scope = body.environment_scope;
+  }
 
   const { data, error } = await db.from("research_note_c").update(patch).eq("id", id).select().maybeSingle();
 
