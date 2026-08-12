@@ -29,6 +29,17 @@ INSERT INTO committee_governance_policy_c (environment_scope, approval_mode, req
 VALUES ('live', 'count', 2, 66.67), ('uat', 'count', 2, 66.67)
 ON CONFLICT (environment_scope) DO NOTHING;
 
+-- Preserve the current LIVE rule on first deployment: the existing standing
+-- committee remains three voters and two YES votes are required. UAT starts
+-- intentionally empty and must be configured independently by a master/dev.
+INSERT INTO committee_governance_member_c
+  (environment_scope, voter_email, display_name, initials, role, vote_scope, is_active)
+VALUES
+  ('live', 'lonwabo@mymint.co.za', 'Lonwabo', 'LN', 'chair', ARRAY['rebalance', 'research'], TRUE),
+  ('live', 'juan@autonama.co.za', 'Juan', 'JN', 'voting', ARRAY['rebalance', 'research'], TRUE),
+  ('live', 'lethabo.maloma@mymint.co.za', 'Lethabo', 'LT', 'voting', ARRAY['rebalance', 'research'], TRUE)
+ON CONFLICT (environment_scope, voter_email) DO NOTHING;
+
 ALTER TABLE committee_governance_member_c ENABLE ROW LEVEL SECURITY;
 ALTER TABLE committee_governance_policy_c ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS committee_governance_member_service_role ON committee_governance_member_c;
