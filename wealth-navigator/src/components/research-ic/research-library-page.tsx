@@ -26,16 +26,9 @@ import { cn } from "@/lib/cn";
 import { NoteDetail } from "./note-detail";
 import { NoteEditor } from "./note-editor";
 import type { NoteStatus, ResearchNote, ResearchPerms } from "./types";
-import {
-  ConvictionDot,
-  RatingTag,
-  STATUS_FILTERS,
-  StatusDot,
-  signedPct,
-  useQuotes,
-} from "./ui";
+import { ConvictionDot, RatingTag, STATUS_FILTERS, StatusDot, signedPct, useQuotes } from "./ui";
 
-type Mode = { kind: "view" } | { kind: "edit"; note: ResearchNote } | { kind: "new" };
+type Mode = { kind: "view" } | { kind: "edit"; note: ResearchNote } | { kind: "new"; symbol?: string };
 
 export function ResearchLibraryPage({
   perms,
@@ -49,6 +42,7 @@ export function ResearchLibraryPage({
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const noteFromUrl = searchParams.get("note");
+  const newNoteSymbol = searchParams.get("new") === "1" ? searchParams.get("symbol")?.toUpperCase() : null;
   const notesQuery = useQuery<{ notes: ResearchNote[]; notice?: string }>({
     queryKey: ["ric-notes"],
     refetchInterval: 30_000,
@@ -64,6 +58,7 @@ export function ResearchLibraryPage({
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [mode, setMode] = React.useState<Mode>({ kind: "view" });
   const [submitting, setSubmitting] = React.useState(false);
+  const handledNewDraft = React.useRef<string | null>(null);
 
   const quotes = useQuotes(notes.map((n) => n.symbol));
 
@@ -89,6 +84,21 @@ export function ResearchLibraryPage({
     if (selectedId && notes.some((n) => n.id === selectedId)) return;
     setSelectedId(filtered[0]?.id ?? notes[0]?.id ?? null);
   }, [notes, filtered, selectedId, mode.kind, noteFromUrl]);
+
+  // The Rebalance Builder can deliberately hand an analyst into the one
+  // canonical research-note wizard. This only opens a draft; it does not
+  // attach, approve, or submit a note automatically.
+  React.useEffect(() => {
+    if (
+      newNoteSymbol &&
+      handledNewDraft.current !== newNoteSymbol &&
+      mode.kind === "view" &&
+      perms.createNote
+    ) {
+      handledNewDraft.current = newNoteSymbol;
+      setMode({ kind: "new", symbol: newNoteSymbol });
+    }
+  }, [newNoteSymbol, mode.kind, perms.createNote]);
 
   const selected = notes.find((n) => n.id === selectedId) ?? null;
   const approvedCount = notes.filter((n) => n.status === "approved").length;
@@ -264,7 +274,9 @@ export function ResearchLibraryPage({
                     {/* line 1 — ticker (+ conviction / in-strategy markers) · upside */}
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="font-mono text-[12px] font-semibold text-foreground">{n.symbol}</span>
+                        <span className="font-mono text-[12px] font-semibold text-foreground">
+                          {n.symbol}
+                        </span>
                         {n.thesis?.conviction && <ConvictionDot conviction={n.thesis.conviction} />}
                         {linked.length > 0 && (
                           <span
@@ -303,6 +315,7 @@ export function ResearchLibraryPage({
         <div>
           {mode.kind === "new" && (
             <NoteEditor
+              initialSymbol={mode.symbol}
               onSaved={async (id) => {
                 await qc.invalidateQueries({ queryKey: ["ric-notes"] });
                 setSelectedId(id);
