@@ -19,16 +19,18 @@ type Policy = {
   required_yes_percent: number;
 };
 type Settings = { members: Member[]; policy: Policy };
+type TeamMember = { email: string; full_name: string | null };
 
 export function CommitteeGovernance() {
   const [scope, setScope] = React.useState<Scope>("live");
   const [data, setData] = React.useState<Partial<Record<Scope, Settings>>>({});
   const [message, setMessage] = React.useState("");
+  const [team, setTeam] = React.useState<TeamMember[]>([]);
   React.useEffect(() => {
     fetch("/api/research/committee/governance", { cache: "no-store" })
       .then((r) => r.json())
       .then((j) => {
-        if (j.ok) setData(j.scopes);
+        if (j.ok) { setData(j.scopes); setTeam(j.team ?? []); }
         else setMessage(j.error ?? "Unable to load governance.");
       })
       .catch(() => setMessage("Unable to load governance."));
@@ -147,28 +149,8 @@ export function CommitteeGovernance() {
             key={`${m.voter_email}-${i}`}
             className="grid gap-2 rounded-lg border border-[hsl(var(--glass-border))] p-3 md:grid-cols-[1fr_1fr_auto_auto_auto]"
           >
-            <input
-              value={m.display_name}
-              onChange={(e) =>
-                change((s) => ({
-                  ...s,
-                  members: s.members.map((x, n) => (n === i ? { ...x, display_name: e.target.value } : x)),
-                }))
-              }
-              placeholder="Name"
-              className="rounded border bg-transparent px-2 py-1 text-sm"
-            />
-            <input
-              value={m.voter_email}
-              onChange={(e) =>
-                change((s) => ({
-                  ...s,
-                  members: s.members.map((x, n) => (n === i ? { ...x, voter_email: e.target.value } : x)),
-                }))
-              }
-              placeholder="email@company.com"
-              className="rounded border bg-transparent px-2 py-1 text-sm"
-            />
+            <select value={m.voter_email} onChange={(e) => { const picked = team.find((person) => person.email === e.target.value); if (!picked) return; change((s) => ({ ...s, members: s.members.map((x, n) => n === i ? { ...x, voter_email: picked.email, display_name: picked.full_name || picked.email, initials: (picked.full_name || picked.email).split(/\s|@/).filter(Boolean).map((part) => part[0]).join("").slice(0,2).toUpperCase() } : x) })); }} className="rounded border bg-transparent px-2 py-1 text-sm"><option value="">Select existing team member…</option>{team.filter((person) => person.email === m.voter_email || !current.members.some((other, n) => n !== i && other.voter_email === person.email)).map((person) => <option key={person.email} value={person.email}>{person.full_name || person.email} · {person.email}</option>)}</select>
+            <select value={m.role} onChange={(e) => change((s) => ({ ...s, members: s.members.map((x, n) => n === i ? { ...x, role: e.target.value as Member["role"] } : x) }))} className="rounded border bg-transparent px-2 py-1 text-sm"><option value="chair">Chair</option><option value="voting">Voting</option><option value="observer">Observer</option></select>
             <label className="flex items-center gap-1 text-xs">
               <input
                 type="checkbox"
