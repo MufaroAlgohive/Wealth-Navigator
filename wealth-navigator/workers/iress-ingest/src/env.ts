@@ -101,23 +101,26 @@ export interface WorkerEnv {
    * `news_item_c` writes, with the rest of the worker (quotes / orders /
    * IPS / retail) staying dry-run exactly as `AGENTS.md` requires.
    *
-   * The base URL for the NEWS loop reuses the existing
-   * `IRESS_MARKET_DATA_PROD=1` + `IRESS_MARKETDATA_BASE_URL` switch
-   * (`market-data.ts::marketDataBaseUrl()`), so flipping the prod worker
-   * onto `webservices.iress.co.za` is the same knob that flips the
-   * existing prod market-data session — no new endpoint plumbing.
+   * Single-seat (2026-08-07): the news loop uses the SAME coordinator
+   * session as orders and market data. The base URL the news loop
+   * targets is `IRESS_MARKETDATA_BASE_URL` (defaulting to the prod
+   * endpoint) — set this on the prod worker so `NewsHeadlineGet` and
+   * `NewsVendorGet` hit `webservices.iress.co.za/v4`. There is no
+   * longer a separate `IRESS_MARKET_DATA_PROD` switch; the prod
+   * worker is the prod endpoint by default.
    */
   newsDryRun: boolean;
   /** Per-loop opt-in for writes to `news_item_c`. Default `false`. */
   newsAllowWrites: boolean;
   /**
-   * Vendor code passed to `NewsHeadlineGet`. Defaults to `"SENS"`
-   * (real-time) which is what the prod catalog carries in
-   * `NewsVendorGet` per Andre's WSDL browser capture (2026-07-22). The
-   * loop auto-falls-back to `"SENSD"` (delayed) on 25010 / 25018 with
-   * `payload.scope.vendor_fallback=true`. Override per deployment with
-   * `IRESS_NEWS_VENDOR` if a non-SENS vendor is the target (e.g.
-   * `IRDN`, `JSEN`).
+   * Vendor code passed to `NewsHeadlineGet`. Defaults to `"SENSD"`
+   * (delayed) — the prod seat is entitled to `SENSD` only;
+   * `SENS` real-time is not on the prod entitlement. The CT/UAT
+   * worker still defaults to `SENS` for the same shape it has
+   * always used. The loop auto-falls-back to `SENSD` on 25010 /
+   * 25018 with `payload.scope.vendor_fallback=true`. Override per
+   * deployment with `IRESS_NEWS_VENDOR` if a non-SENS vendor is
+   * the target (e.g. `IRDN`, `JSEN`).
    */
   newsVendorCode: string;
   /**

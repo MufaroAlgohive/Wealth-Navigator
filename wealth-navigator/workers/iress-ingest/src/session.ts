@@ -24,6 +24,28 @@ export { LICENSE_RELEASE_DELAY_MS };
 const EXPIRY_BUFFER_MS = 30_000;
 /** Back off after 25008 instead of hammering IRESSSessionStart. */
 const LICENSE_EXHAUSTED_BACKOFF_MS = 60_000;
+/**
+ * Emergency ceiling: after the seat has been held for this long across
+ * consecutive attempts, escalate to a much longer backoff so the worker
+ * stops hammering IRESS and emits a single `license_seat_emergency`
+ * structured event for the operator to correlate with IRESS admin's
+ * active-session list. Picked at 10 minutes (the IRESS idle window per
+ * the docs is 2 hours, so this is well inside the operator's reaction
+ * time but well above the 60s round-trip noise).
+ */
+const LICENSE_EXHAUSTED_CEILING_MS = 10 * 60_000;
+/** Long backoff window used once the ceiling is hit. */
+const LICENSE_EXHAUSTED_LONG_BACKOFF_MS = 30 * 60_000;
+/**
+ * `IRESS_FORCE_ORPHAN_CLEAR=1` — operator override. On the next bring-up,
+ * wait up to this long for the IRESS server to release a held seat
+ * before retrying. Default is 60s (the previous code aborted on the
+ * first 25014 instead of retrying, which is why the orphan from the
+ * 2026-07-29 dual-session cutover was never cleared). Set the env, deploy
+ * once, then unset.
+ */
+const FORCE_ORPHAN_CLEAR_TIMEOUT_MS = 60_000;
+const FORCE_ORPHAN_CLEAR_POLL_MS = 3_000;
 
 export interface WorkerMintSession {
   iressSessionKey: string;
@@ -272,6 +294,29 @@ export class WorkerSessionManager {
    * recent failure".
    */
   private lastSessionError: { code: number | null; message: string; ts: string } | null = null;
+  /**
+   * Latched after the first 25008 in this process. The auto-kick on
+   * `IRESSSessionStart` is a one-time recovery move, not a per-cycle
+   * tool — re-running it on every subsequent kick loop evicts the
+   * operator's other IRESS clients (Chrome, Terminal, test sessions) and
+   * makes the thrash worse. Set in `startSession` when we see 25008
+   * with the first-boot-or-orphan shape; cleared when a session
+   * successfully comes up.
+   */
+  private autoKickAttempted = false;
+  /**
+   * When the first 25008 was observed in this process. Used to escalate
+   * the backoff from the per-attempt 60s to a 30-minute ceiling once
+   * the seat has been held for >`LICENSE_EXHAUSTED_CEILING_MS`.
+   */
+  private firstLicenseExhaustedAt = 0;
+  /**
+   * Latched once the long-backoff ceiling has fired in this process.
+   * Prevents the `license_seat_emergency` event from being emitted every
+   * cycle after the ceiling is hit — the operator only needs to see it
+   * once so they can correlate with IRESS admin's session list.
+   */
+  private licenseEmergencyEmitted = false;
 
   constructor(private readonly deps: WorkerSessionDeps) {}
 
@@ -388,14 +433,24 @@ export class WorkerSessionManager {
     const firstBootOrOrphan = persistedSessionIsStale(persisted);
     const applicationId = await this.resolveApplicationId();
     await persistStickyApplicationId(this.deps, applicationId);
+    // The auto-kick on `IRESSSessionStart` is a one-time recovery move
+    // (per the 2026-08-07 plan: do not re-attempt with `SessionNumberToKick=-1`
+    // on every cycle, that just evicts the operator's other live IRESS
+    // clients and makes the thrash worse). Latch on process start so
+    // `firstBootOrOrphan` flips back to false the moment we attempt a
+    // kick for the first time, even if the persisted row was sticky.
+    const shouldAutoKick = firstBootOrOrphan && !this.autoKickAttempted;
     try {
       const { iressSession, serviceKeys } = await bringUpMintSessionFromEnv({
         applicationId,
         applicationLabel: this.deps.applicationLabel,
         node: this.deps.node,
-        forceKickOn25008: firstBootOrOrphan,
+        forceKickOn25008: shouldAutoKick,
       });
+      if (shouldAutoKick) this.autoKickAttempted = true;
       this.licenseBackoffUntil = 0;
+      this.firstLicenseExhaustedAt = 0;
+      this.licenseEmergencyEmitted = false;
       this.clearSessionError();
       const session = this.buildSession(iressSession, serviceKeys, applicationId);
       const svc = Object.keys(serviceKeys).join(",") || "none";
@@ -427,26 +482,195 @@ export class WorkerSessionManager {
     } catch (err) {
       this.recordSessionError(err);
       if (err instanceof IressError && err.code === 25008) {
-        this.licenseBackoffUntil = Date.now() + LICENSE_EXHAUSTED_BACKOFF_MS;
-        const hint = firstBootOrOrphan
-          ? "First-boot auto-kick already attempted; seat may be held by another live client."
-          : "Run `bun run iress:logout` from wealth-navigator/ or stop the other IRESS client.";
-        console.error(
-          `[iress-ingest] 25008 license seat occupied — backing off ${LICENSE_EXHAUSTED_BACKOFF_MS}ms. ${hint}`,
-        );
-        recordWorkerEvent({
-          level: "error",
-          event: "license_seat_occupied",
-          msg: `25008 license seat occupied — backing off ${LICENSE_EXHAUSTED_BACKOFF_MS}ms. ${hint}`,
-          data: {
-            code: 25008,
-            backoffMs: LICENSE_EXHAUSTED_BACKOFF_MS,
-            firstBootOrOrphan,
-          },
-        });
+        // One-time auto-kick latch (per the 2026-08-07 plan).
+        if (shouldAutoKick) this.autoKickAttempted = true;
+        // `IRESS_FORCE_ORPHAN_CLEAR=1` — wait for the IRESS server to
+        // release the held seat before bailing. The previous code aborted
+        // on the first 25014 which is why the orphan from the 2026-07-29
+        // dual-session cutover was never cleared. Polls every 3s up to a
+        // 60s window. Optimised for the 2h idle timeout in the IRESS docs
+        // being a soft upper bound — the orphan usually releases within a
+        // few seconds once the server notices the previous wire is gone.
+        if (
+          process.env.IRESS_FORCE_ORPHAN_CLEAR === "1" &&
+          !this.licenseEmergencyEmitted
+        ) {
+          const cleared = await this.waitForOrphanClear();
+          if (cleared) {
+            // Retry the bring-up exactly once, now that the seat is
+            // free. We do not loop — the caller (loops / HTTP routes) is
+            // already on a retry path.
+            try {
+              const retried = await bringUpMintSessionFromEnv({
+                applicationId,
+                applicationLabel: this.deps.applicationLabel,
+                node: this.deps.node,
+                forceKickOn25008: false,
+              });
+              const session = this.buildSession(
+                retried.iressSession,
+                retried.serviceKeys,
+                applicationId,
+              );
+              this.licenseBackoffUntil = 0;
+              this.firstLicenseExhaustedAt = 0;
+              this.licenseEmergencyEmitted = false;
+              this.clearSessionError();
+              this.lastPersistedApplicationId = applicationId;
+              await persistApplicationId(this.deps, {
+                applicationId,
+                iressSessionKey: session.iressSessionKey,
+                expiresAt: session.expiresAt,
+                metadata: {
+                  applicationLabel: this.deps.applicationLabel,
+                  node: this.deps.node,
+                  shutdown: false,
+                },
+              });
+              recordWorkerEvent({
+                level: "info",
+                event: "iress_session_ready_after_orphan_clear",
+                msg: `IRESSSessionStart OK after IRESS_FORCE_ORPHAN_CLEAR — applicationId=${applicationId}`,
+                data: { applicationId },
+              });
+              return session;
+            } catch (retryErr) {
+              // The retry itself got 25008 — the orphan did not release
+              // in time. Fall through to the regular backoff path.
+              this.recordSessionError(retryErr);
+            }
+          }
+        }
+        // Backoff escalation (per the 2026-08-07 plan): after the seat
+        // has been held for >`LICENSE_EXHAUSTED_CEILING_MS` across
+        // consecutive attempts, escalate to a 30-minute window and emit
+        // a single `license_seat_emergency` event for the operator to
+        // correlate with IRESS admin's active-session list.
+        if (this.firstLicenseExhaustedAt === 0) {
+          this.firstLicenseExhaustedAt = Date.now();
+        }
+        const heldForMs = Date.now() - this.firstLicenseExhaustedAt;
+        const ceilingReached = heldForMs > LICENSE_EXHAUSTED_CEILING_MS;
+        const backoffMs = ceilingReached ? LICENSE_EXHAUSTED_LONG_BACKOFF_MS : LICENSE_EXHAUSTED_BACKOFF_MS;
+        this.licenseBackoffUntil = Date.now() + backoffMs;
+        if (ceilingReached && !this.licenseEmergencyEmitted) {
+          this.licenseEmergencyEmitted = true;
+          const msg = `IRESS license seat held for >${LICENSE_EXHAUSTED_CEILING_MS / 60_000}min — backoff escalated to ${LICENSE_EXHAUSTED_LONG_BACKOFF_MS / 60_000}min. Check IRESS admin's active-session list for ${this.deps.workerId} (hostname=${this.deps.node}, applicationId=${applicationId}) and stop any session that is not THIS worker. If the seat is held by an orphan, set IRESS_FORCE_ORPHAN_CLEAR=1 and redeploy once.`;
+          console.error(`[iress-ingest] LICENSE SEAT EMERGENCY: ${msg}`);
+          recordWorkerEvent({
+            level: "error",
+            event: "license_seat_emergency",
+            msg,
+            data: {
+              code: 25008,
+              heldForMs,
+              backoffMs,
+              workerId: this.deps.workerId,
+              node: this.deps.node,
+              applicationId,
+              hint: "check IRESS admin active-session list; set IRESS_FORCE_ORPHAN_CLEAR=1 to auto-recover",
+            },
+          });
+        } else {
+          const hint = this.autoKickAttempted
+            ? "Auto-kick already attempted for this process; another live IRESS client is holding the seat. Check IRESS admin's active-session list or wait for the 2h idle timeout."
+            : "Run `bun run iress:logout` from wealth-navigator/ or stop the other IRESS client.";
+          console.error(
+            `[iress-ingest] 25008 license seat occupied — backing off ${backoffMs}ms. ${hint}`,
+          );
+          recordWorkerEvent({
+            level: "error",
+            event: "license_seat_occupied",
+            msg: `25008 license seat occupied — backing off ${backoffMs}ms. ${hint}`,
+            data: {
+              code: 25008,
+              backoffMs,
+              firstBootOrOrphan,
+              autoKickAttempted: this.autoKickAttempted,
+              heldForMs,
+              ceilingReached,
+            },
+          });
+        }
       }
       throw err;
     }
+  }
+
+  /**
+   * Poll the IRESS server for up to `FORCE_ORPHAN_CLEAR_TIMEOUT_MS`, looking
+   * for the seat to be released. We probe by issuing a no-op
+   * `IRESSSessionStart` (no `SessionNumberToKick`) — when the server returns
+   * 25008 / 25013 the seat is still held; when it returns a new key, the
+   * orphan is gone and we hand the key back to the caller.
+   *
+   * Returns `true` when the seat was cleared in the window, `false` otherwise.
+   */
+  private async waitForOrphanClear(): Promise<boolean> {
+    const deadline = Date.now() + FORCE_ORPHAN_CLEAR_TIMEOUT_MS;
+    let attempt = 0;
+    console.warn(
+      `[iress-ingest] IRESS_FORCE_ORPHAN_CLEAR=1 — waiting up to ${FORCE_ORPHAN_CLEAR_TIMEOUT_MS / 1000}s for IRESS to release the held seat`,
+    );
+    recordWorkerEvent({
+      level: "warn",
+      event: "license_seat_orphan_clear_started",
+      msg: `IRESS_FORCE_ORPHAN_CLEAR=1 — polling IRESS for seat release every ${FORCE_ORPHAN_CLEAR_POLL_MS / 1000}s`,
+      data: {
+        timeoutMs: FORCE_ORPHAN_CLEAR_TIMEOUT_MS,
+        pollMs: FORCE_ORPHAN_CLEAR_POLL_MS,
+      },
+    });
+    while (Date.now() < deadline) {
+      attempt += 1;
+      try {
+        // No kick — we want a clean probe. If the orphan is still alive,
+        // the server returns 25008 / 25013 and we sleep + retry.
+        const { iressSession, serviceKeys } = await bringUpMintSessionFromEnv({
+          applicationId: this.lastPersistedApplicationId ?? this.deps.workerId,
+          applicationLabel: this.deps.applicationLabel,
+          node: this.deps.node,
+          forceKickOn25008: false,
+        });
+        const session = this.buildSession(
+          iressSession,
+          serviceKeys,
+          this.lastPersistedApplicationId ?? this.deps.workerId,
+        );
+        console.info(
+          `[iress-ingest] IRESS_FORCE_ORPHAN_CLEAR: seat released after ${attempt} probe(s) (${Date.now() - (deadline - FORCE_ORPHAN_CLEAR_TIMEOUT_MS)}ms)`,
+        );
+        recordWorkerEvent({
+          level: "info",
+          event: "license_seat_orphan_cleared",
+          msg: `IRESS seat released after ${attempt} probe(s) — IRESSSessionStart OK`,
+          data: { attempts: attempt },
+        });
+        // Stash the session so the caller's retry path picks it up.
+        this.cache = session;
+        return true;
+      } catch (err) {
+        if (err instanceof IressError && err.code === 25008) {
+          // Still held — keep polling.
+          await new Promise<void>((r) => setTimeout(r, FORCE_ORPHAN_CLEAR_POLL_MS));
+          continue;
+        }
+        // Any other error (25013, 25014, network) — keep polling too,
+        // the orphan is independent of transient faults.
+        await new Promise<void>((r) => setTimeout(r, FORCE_ORPHAN_CLEAR_POLL_MS));
+        continue;
+      }
+    }
+    console.warn(
+      `[iress-ingest] IRESS_FORCE_ORPHAN_CLEAR: seat NOT released after ${FORCE_ORPHAN_CLEAR_TIMEOUT_MS / 1000}s and ${attempt} probe(s)`,
+    );
+    recordWorkerEvent({
+      level: "warn",
+      event: "license_seat_orphan_keep_held",
+      msg: `IRESS seat still held after ${FORCE_ORPHAN_CLEAR_TIMEOUT_MS / 1000}s / ${attempt} probe(s)`,
+      data: { attempts: attempt, timeoutMs: FORCE_ORPHAN_CLEAR_TIMEOUT_MS },
+    });
+    return false;
   }
 
   invalidate(): void {

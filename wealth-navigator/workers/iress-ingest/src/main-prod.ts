@@ -1,5 +1,5 @@
 /**
- * Railway IRESS **PROD** worker — owns the IRESS production license seat.
+ * Railway IRESS **PROD** worker — owns the single IRESS production license seat.
  *
  * Distinct from `main.ts` (the UAT worker). This entrypoint runs ONLY the
  * loops that need the prod seat:
@@ -20,21 +20,23 @@
  * IPS, alerts — those stay on `main.ts` (UAT/CT). Seat isolation per
  * `AGENTS.md`.
  *
+ * SINGLE-SEAT (2026-08-07 cutover). The previous design opened a SECOND
+ * `IRESSSession` for prod market data (the `IRESS_MARKET_DATA_PROD=1`
+ * split) which immediately got 25008 "No more licenses available" and
+ * orphaned the orders seat. The split is removed — there is now ONE
+ * `IRESSSession` per replica, owned by `WorkerSessionManager`. Orders,
+ * market data, and news all share it; the loops serialize through
+ * `sessions.withSession()` so they never race.
+ *
  * Activation:
  *
- *   1. Set `IRESS_MARKET_DATA_PROD=1` so `market-data.ts::getMarketDataSession()`
- *      opens a SECOND IRESSSession against the prod endpoint (default
- *      `https://webservices.iress.co.za/v4`, overridable via
- *      `IRESS_MARKETDATA_BASE_URL`). The main session is unused on
- *      this entrypoint — news reads the prod market-data session
- *      directly.
- *   2. Set `WORKER_ID=iress-ingest-prod-1` so heartbeats don't collide
+ *   1. Set `WORKER_ID=iress-ingest-prod-1` so heartbeats don't collide
  *      with the UAT replica (`iress-ingest-1`).
- *   3. Set `IRESS_USERNAME` / `IRESS_PASSWORD` / `IRESS_COMPANY_NAME`
+ *   2. Set `IRESS_USERNAME` / `IRESS_PASSWORD` / `IRESS_COMPANY_NAME`
  *      for the prod credential (Charles-confirmed prod entitlement,
  *      distinct from the CT `DFM@Mint` credential).
- *   4. `IRESS_NEWS_INGEST=1` to enable the news loop (dormant otherwise).
- *   5. Pilot-write gate:
+ *   3. `IRESS_NEWS_INGEST=1` to enable the news loop (dormant otherwise).
+ *   4. Pilot-write gate:
  *      - `IRESS_NEWS_DRY_RUN=1` + `IRESS_NEWS_ALLOW_WRITES=0` (default) →
  *        news loop runs in shadow (records structured events only)
  *      - `IRESS_NEWS_DRY_RUN=0` + `IRESS_NEWS_ALLOW_WRITES=1` (opt-in) →
@@ -52,9 +54,8 @@
  *
  * The HTTP API (`/debug/news-vendor-probe`, `/health`, etc.) is bound
  * so the Vercel BFF `/api/iress/news` can reverse-proxy — same shape
- * as `main.ts`. The session manager is constructed but only exercised
- * by routes that need it; the news loop talks to the prod
- * market-data session directly, never to the main session.
+ * as `main.ts`. The session manager is constructed and exercises the
+ * single coordinator session; news reads it directly.
  */
 
 import { loadWorkerEnv, productionOrdersEnabled } from "./env";
@@ -63,10 +64,10 @@ import { gracefulStop, runHealthLoop } from "./health";
 import { runOrdersEntitlementProbe, startHttpApi, type HttpApiHandle } from "./http-api";
 import {
   syncNewsHeadlines,
-  syncNewsVendorCatalog,
+  syncNewsVendorCatalogViaSessions,
   persistVendorCatalogMarker,
 } from "./news-ingest";
-import { getMarketDataSession, tearDownMarketDataSession } from "./market-data";
+import { tearDownMarketDataSession } from "./market-data";
 import { loadHotSymbols, syncRetailPrices } from "./retail-ingest";
 import { recordWorkerEvent } from "./events";
 import { LICENSE_RELEASE_DELAY_MS, WorkerSessionManager } from "./session";
@@ -183,7 +184,13 @@ async function oneShotVendorCatalog(): Promise<void> {
     return; // Mock mode — nothing to fetch.
   }
   try {
-    const catalog = await syncNewsVendorCatalog();
+    // Single-seat (2026-08-07): the prod market-data session IS the
+    // coordinator's `WorkerSessionManager`. The previous code called
+    // `getMarketDataSession()` here, which opened a 2nd IRESSSession and
+    // immediately orphaned the orders session — the orphan we now see in
+    // `worker_session_metadata.iress_session_key = null`. The catalog
+    // probe goes through the same coordinator as everything else.
+    const catalog = await syncNewsVendorCatalogViaSessions(sessions);
     recordWorkerEvent({
       level: "info",
       event: "news_vendor_catalog",
@@ -459,26 +466,23 @@ void retailIngestLoop();
 void hotPriceLoop();
 
 if (process.env.IRESS_NEWS_INGEST === "1") {
-  // Trigger prod market-data bring-up early so the startup log shows
-  // seat status / endpoint. Wait for the session BEFORE running the
-  // vendor catalog fetch — they're not allowed to race, otherwise
-  // `syncNewsVendorCatalog()` opens its own login and evicts the
-  // market-data session (single-seat license).
-  void getMarketDataSession()
-    .then(async (md) => {
-      if (!md) {
-        console.warn(
-          "[iress-prod] CONFIG: market-data session unavailable at startup (IRESS_MARKET_DATA_PROD=0 or session bring-up failed) — news loop will fall back to the UAT session.",
-        );
-        return;
-      }
+  // Single-seat (2026-08-07): there is no separate "prod market-data session"
+  // to bring up. The coordinator's `WorkerSessionManager` IS the prod seat
+  // for orders, market data, and news. Touching it here only confirms the
+  // bring-up succeeded; if it fails we already see the 25008 back-off in
+  // the structured event log, and the news loop will retry on its own
+  // cadence. The catalog probe runs after the seat is confirmed alive.
+  void sessions
+    .getSession()
+    .then(async (session) => {
       console.info(
-        `[iress-prod] prod market-data session ready endpoint=${process.env.IRESS_MARKETDATA_BASE_URL ?? "https://webservices.iress.co.za/v4"}`,
+        `[iress-prod] prod seat ready endpoint=${process.env.IRESS_MARKETDATA_BASE_URL ?? "https://webservices.iress.co.za/v4"} sessionKey=${session.iressSessionKey.slice(0, 8)}…`,
       );
       await oneShotVendorCatalog();
     })
     .catch((err) => {
-      console.warn(`[iress-prod] prod market-data bring-up threw: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[iress-prod] prod seat bring-up failed (continuing): ${msg}`);
     });
 }
 
