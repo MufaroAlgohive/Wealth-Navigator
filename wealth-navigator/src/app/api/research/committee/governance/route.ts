@@ -9,6 +9,13 @@ import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 const scopes: CommitteeEnvironment[] = ["live", "uat"];
+const errorMessage = (error: unknown): string => {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
+    return error.message;
+  }
+  return "The institutional governance tables have not been deployed yet.";
+};
 
 export async function GET() {
   const auth = await getAdminContext();
@@ -20,12 +27,15 @@ export async function GET() {
     const entries = await Promise.all(
       scopes.map(async (scope) => [scope, await governanceFor(scope)] as const),
     );
-    return NextResponse.json({ ok: true, scopes: Object.fromEntries(entries) });
+    return NextResponse.json({
+      ok: true,
+      scopes: Object.fromEntries(entries.map(([scope, { members, policy }]) => [scope, { members, policy }])),
+    });
   } catch (error) {
     return NextResponse.json(
       {
         ok: false,
-        error: `IC governance schema unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        error: `IC voting settings need a one-time database migration: ${errorMessage(error)}`,
         migration: "supabase/migrations/20260812000001_ic_governance.sql",
       },
       { status: 409 },
