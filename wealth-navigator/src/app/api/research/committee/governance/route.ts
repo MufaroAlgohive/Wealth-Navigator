@@ -1,4 +1,4 @@
-import { canManageCommittee, getAdminContext } from "@/lib/admin/rbac";
+import { canManageCommittee, canSeeUatSurfaces, getAdminContext } from "@/lib/admin/rbac";
 import {
   type CommitteeEnvironment,
   type GovernanceMember,
@@ -21,11 +21,12 @@ export async function GET() {
   const auth = await getAdminContext();
   if (auth.status === "no-session")
     return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
-  if (auth.status !== "ok" || !canManageCommittee(auth.ctx))
+  if (auth.status !== "ok")
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   try {
+    const visibleScopes = canSeeUatSurfaces(auth.ctx) ? scopes : ["live"] as CommitteeEnvironment[];
     const entries = await Promise.all(
-      scopes.map(async (scope) => [scope, await governanceFor(scope)] as const),
+      visibleScopes.map(async (scope) => [scope, await governanceFor(scope)] as const),
     );
     return NextResponse.json({
       ok: true,

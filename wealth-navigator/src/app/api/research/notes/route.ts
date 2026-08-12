@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { can, getAdminContext } from "@/lib/admin/rbac";
+import { can, canSeeUatSurfaces, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
@@ -21,6 +21,7 @@ export const dynamic = "force-dynamic";
 interface ResearchNoteRow {
   id: string;
   symbol: string;
+  environment_scope: "live" | "uat";
   author_email: string;
   status: string;
   thesis: unknown;
@@ -54,6 +55,10 @@ export async function GET(req: Request) {
   const status = url.searchParams.get("status");
   const symbol = url.searchParams.get("symbol");
   const strategyId = url.searchParams.get("strategy_id");
+  const requestedScope = url.searchParams.get("scope") === "uat" ? "uat" : "live";
+  if (requestedScope === "uat" && !canSeeUatSurfaces(auth.ctx)) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
 
   const db = await openDb();
   if (!db) {
@@ -67,12 +72,13 @@ export async function GET(req: Request) {
   let q = db
     .from("research_note_c")
     .select(
-      "id, symbol, author_email, status, thesis, triggers, valuation, ic_session_id, created_at, updated_at, submitted_at, approved_at",
+      "id, symbol, environment_scope, author_email, status, thesis, triggers, valuation, ic_session_id, created_at, updated_at, submitted_at, approved_at",
     )
     .order("updated_at", { ascending: false })
     .limit(100);
 
   if (status) q = q.eq("status", status);
+  q = q.eq("environment_scope", requestedScope);
   if (symbol) q = q.eq("symbol", symbol.toUpperCase());
   // strategy_id isn't a column on research_note_c; the caller can filter
   // by symbol (one note per stock per IC cycle) or join via the
@@ -122,6 +128,10 @@ export async function POST(req: Request) {
   const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
   const symbol = typeof body.symbol === "string" ? body.symbol.trim().toUpperCase() : "";
   const thesis = body.thesis ?? {};
+  const environmentScope = body.environment_scope === "uat" ? "uat" : "live";
+  if (environmentScope === "uat" && !canSeeUatSurfaces(auth.ctx)) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
 
   if (!symbol) {
     return NextResponse.json({ ok: false, error: "symbol is required" }, { status: 400 });
@@ -134,6 +144,7 @@ export async function POST(req: Request) {
 
   const insert = {
     symbol,
+    environment_scope: environmentScope,
     author_email: auth.ctx.email,
     status: "draft",
     thesis,

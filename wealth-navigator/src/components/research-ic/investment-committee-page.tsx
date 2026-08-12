@@ -48,6 +48,7 @@ import {
   IC_MAJORITY_REQUIRED_YES,
 } from "@/lib/research-ic/committee";
 import { CommitteeGovernance } from "./committee-governance";
+import { CommitteeRightRail } from "./committee-right-rail";
 import {
   agendaKindForNote,
   agendaKindForRebalance,
@@ -121,10 +122,12 @@ export function InvestmentCommitteePage({
   perms,
   viewerEmail,
   viewerName,
+  canSeeUat,
 }: {
   perms: ResearchPerms;
   viewerEmail: string | null;
   viewerName: string | null;
+  canSeeUat: boolean;
 }) {
   void viewerName;
   const qc = useQueryClient();
@@ -288,7 +291,7 @@ export function InvestmentCommitteePage({
         })}
       </nav>
 
-      <div className="mt-5">
+      <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_280px]">
         <div className="space-y-5">
           {/* ── Agenda ──────────────────────────────────────────────────── */}
           {active === "agenda" && (
@@ -518,7 +521,8 @@ export function InvestmentCommitteePage({
         </div>
 
         {/* right rail — standing config (desktop) */}
-        <div className="hidden">
+        <div className="space-y-3 xl:sticky xl:top-20 xl:self-start">
+          <CommitteeRightRail scope="live" canSeeUat={canSeeUat} compact />
           <GlassSection title="Committee members" dataSource="supabase" db="institutional">
             <MembersList pills={pills} viewerEmail={viewerEmail} />
           </GlassSection>

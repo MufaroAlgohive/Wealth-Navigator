@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 
 export default async function Page() {
   const s = await resolveResearchSession();
-  return <InvestmentCommitteePage perms={s.perms} viewerEmail={s.viewerEmail} viewerName={s.viewerName} />;
+  return <InvestmentCommitteePage perms={s.perms} viewerEmail={s.viewerEmail} viewerName={s.viewerName} canSeeUat={s.canSeeUat} />;
 }

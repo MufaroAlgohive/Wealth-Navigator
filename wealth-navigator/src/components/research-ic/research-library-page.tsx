@@ -25,6 +25,7 @@ import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/gl
 import { cn } from "@/lib/cn";
 import { NoteDetail } from "./note-detail";
 import { NoteEditor } from "./note-editor";
+import { CommitteeRightRail } from "./committee-right-rail";
 import type { NoteStatus, ResearchNote, ResearchPerms } from "./types";
 import { ConvictionDot, RatingTag, STATUS_FILTERS, StatusDot, signedPct, useQuotes } from "./ui";
 
@@ -34,20 +35,23 @@ export function ResearchLibraryPage({
   perms,
   viewerEmail,
   viewerName,
+  canSeeUat,
 }: {
   perms: ResearchPerms;
   viewerEmail: string | null;
   viewerName: string | null;
+  canSeeUat: boolean;
 }) {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const noteFromUrl = searchParams.get("note");
   const newNoteSymbol = searchParams.get("new") === "1" ? searchParams.get("symbol")?.toUpperCase() : null;
+  const [scope, setScope] = React.useState<"live" | "uat">("live");
   const notesQuery = useQuery<{ notes: ResearchNote[]; notice?: string }>({
-    queryKey: ["ric-notes"],
+    queryKey: ["ric-notes", scope],
     refetchInterval: 30_000,
     queryFn: async () => {
-      const res = await fetch("/api/research/notes", { cache: "no-store" });
+      const res = await fetch(`/api/research/notes?scope=${scope}`, { cache: "no-store" });
       return (await res.json().catch(() => ({ notes: [] }))) as { notes: ResearchNote[]; notice?: string };
     },
   });
@@ -154,7 +158,8 @@ export function ResearchLibraryPage({
             Institutional-grade notes · thesis, valuation, triggers &amp; IC log for every position.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3">
+          {canSeeUat && <div className="flex rounded-md border border-[hsl(var(--glass-border))] p-0.5 text-[10px] font-semibold"><button type="button" onClick={() => setScope("live")} className={cn("rounded px-2 py-1", scope === "live" && "bg-primary/15 text-primary")}>LIVE research</button><button type="button" onClick={() => setScope("uat")} className={cn("rounded px-2 py-1", scope === "uat" && "bg-primary/15 text-primary")}>UAT research</button></div>}
           <div className="flex items-center gap-2.5 text-[11px] text-muted-foreground">
             <span>
               <b className="text-foreground">{notes.length}</b> notes
@@ -189,7 +194,7 @@ export function ResearchLibraryPage({
         </p>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[400px_1fr]">
+      <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_260px]">
         {/* library list */}
         <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.015)]">
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[hsl(var(--glass-border))] px-3 py-2">
@@ -316,6 +321,7 @@ export function ResearchLibraryPage({
           {mode.kind === "new" && (
             <NoteEditor
               initialSymbol={mode.symbol}
+              environmentScope={scope}
               onSaved={async (id) => {
                 await qc.invalidateQueries({ queryKey: ["ric-notes"] });
                 setSelectedId(id);
@@ -327,6 +333,7 @@ export function ResearchLibraryPage({
           {mode.kind === "edit" && (
             <NoteEditor
               note={mode.note}
+              environmentScope={scope}
               onSaved={async (id) => {
                 await qc.invalidateQueries({ queryKey: ["ric-notes"] });
                 setSelectedId(id);
@@ -354,6 +361,7 @@ export function ResearchLibraryPage({
               </GlassSection>
             ))}
         </div>
+        <CommitteeRightRail scope={scope} canSeeUat={canSeeUat} />
       </div>
     </ResearchLabCanvas>
   );

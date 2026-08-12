@@ -1,6 +1,6 @@
 import "server-only";
 
-import { can, getAdminContext } from "@/lib/admin/rbac";
+import { can, canSeeUatSurfaces, getAdminContext } from "@/lib/admin/rbac";
 import type { ResearchPerms } from "./types";
 
 /**
@@ -12,6 +12,7 @@ import type { ResearchPerms } from "./types";
 export interface ResearchSession {
   viewerEmail: string | null;
   viewerName: string | null;
+  canSeeUat: boolean;
   perms: ResearchPerms;
 }
 
@@ -29,7 +30,7 @@ export async function resolveResearchSession(): Promise<ResearchSession> {
   if (res.status !== "ok") {
     // Design-preview / local fallback (mirrors the /oems/(banking) group layout):
     // render the surface fully. The API still 401s an unauthenticated mutation.
-    return { viewerEmail: null, viewerName: "Design Preview", perms: FULL };
+    return { viewerEmail: null, viewerName: "Design Preview", canSeeUat: true, perms: FULL };
   }
   const ctx = res.ctx;
   const b = (v: boolean | "pending" | "direct") => v === true || v === "direct";
@@ -41,6 +42,7 @@ export async function resolveResearchSession(): Promise<ResearchSession> {
   return {
     viewerEmail: ctx.email,
     viewerName: ctx.fullName ?? ctx.email,
+    canSeeUat: canSeeUatSurfaces(ctx),
     perms: {
       createNote: isAdmin || b(can(ctx, "research-lab", "create_research_note")),
       approveNote: isAdmin || b(can(ctx, "research-lab", "approve_note")),

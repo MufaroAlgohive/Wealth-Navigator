@@ -354,8 +354,9 @@ export function RebalanceBuilderPage({
   const notesQ = useQuery<{
     notes?: Array<{ id: string; symbol: string; status: string; updated_at?: string }>;
   }>({
-    queryKey: ["ric-notes"],
-    queryFn: async () => (await fetch("/api/research/notes", { cache: "no-store" })).json(),
+    queryKey: ["ric-notes", isTestStrategy ? "uat" : "live"],
+    queryFn: async () =>
+      (await fetch(`/api/research/notes?scope=${isTestStrategy ? "uat" : "live"}`, { cache: "no-store" })).json(),
   });
   const notedSymbols = new Set((notesQ.data?.notes ?? []).map((nte) => String(nte.symbol).toUpperCase()));
   const missingResearch = changedTickers.filter((t) => !notedSymbols.has(t));

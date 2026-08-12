@@ -475,12 +475,14 @@ function Stepper({ step }: { step: number }) {
 export function NoteEditor({
   note,
   initialSymbol,
+  environmentScope = "live",
   onSaved,
   onCancel,
 }: {
   note?: ResearchNote | null;
   /** Optional rebalance hand-off; only pre-fills the draft's identifier. */
   initialSymbol?: string;
+  environmentScope?: "live" | "uat";
   onSaved: (noteId: string) => void;
   onCancel: () => void;
 }) {
@@ -879,7 +881,7 @@ export function NoteEditor({
       const res = await fetch(note ? `/api/research/notes/${note.id}` : "/api/research/notes", {
         method: editing ? "PATCH" : "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ symbol: sym, thesis, triggers: trg, valuation }),
+        body: JSON.stringify({ symbol: sym, thesis, triggers: trg, valuation, environment_scope: environmentScope }),
       });
       const json = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
