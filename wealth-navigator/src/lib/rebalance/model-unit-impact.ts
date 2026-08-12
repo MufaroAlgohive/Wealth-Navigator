@@ -24,7 +24,13 @@ export function calculateModelUnitImpact(input: {
   if (input.action === "hold") return { lots, targetQty: currentQty, deltaQty: 0 };
   if (input.action === "remove") return { lots, targetQty: 0, deltaQty: -currentQty };
 
-  const deltaQty = lots * (targetUnits - currentUnits);
+  // A model-unit edit is a direct per-client share edit. The previous lot
+  // multiplier meant that changing 3 → 4 units generated a +1 share change
+  // for every complete lot a client held, so a client with two lots received
+  // +2 shares. Rebalance compose controls now mean exactly what they show:
+  // +1 / -1 changes each affected client's holding by one share.
+  const requestedDelta = targetUnits - currentUnits;
+  const deltaQty = Math.max(-currentQty, requestedDelta);
   if (input.action === "decrease" && deltaQty > 0) {
     throw new Error("A model decrease cannot create a client BUY.");
   }
