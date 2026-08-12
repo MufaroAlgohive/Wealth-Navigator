@@ -201,6 +201,9 @@ export function RebalanceBuilderPage({
   }));
 
   const [working, setWorking] = React.useState<Holding[]>([]);
+  // The compact buy editor only changes this local draft. It never creates an
+  // order or bypasses the IC/affordability gates below.
+  const [editingSymbol, setEditingSymbol] = React.useState<string | null>(null);
   const [addOpen, setAddOpen] = React.useState(false);
   const [addTicker, setAddTicker] = React.useState("");
   const [addShares, setAddShares] = React.useState("");
@@ -287,6 +290,7 @@ export function RebalanceBuilderPage({
 
   React.useEffect(() => {
     setWorking(baseline.map((h) => ({ ...h })));
+    setEditingSymbol(null);
     setAddOpen(false);
     setStage("compose");
     setWizardStage("leg");
@@ -1041,7 +1045,10 @@ export function RebalanceBuilderPage({
                           <div className="flex items-center justify-end gap-1">
                             <button
                               type="button"
-                              onClick={() => setShares(keyOf(h), +1)}
+                              onClick={() => {
+                                setShares(keyOf(h), +1);
+                                setEditingSymbol(keyOf(h));
+                              }}
                               className="rounded p-1 text-muted-foreground hover:text-up"
                               title="+1 share"
                             >
@@ -1285,6 +1292,152 @@ export function RebalanceBuilderPage({
           })()}
         </div>
       )}
+
+      {stage === "compose" && editingSymbol
+        ? (() => {
+            const holding = working.find((h) => keyOf(h) === editingSymbol);
+            if (!holding) return null;
+            const baselineHolding = baseByKey.get(editingSymbol);
+            const baseUnits = baselineHolding?.shares ?? 0;
+            const deltaUnits = holding.shares - baseUnits;
+            const priceCents = priceOf(holding.ticker) ?? 0;
+            const aggregate = legBuyBreakdown(editingSymbol);
+            const researchRef = researchRefFor(holding.ticker);
+            const covered = impactQ.data?.totals?.cashOk !== false;
+            return (
+              <GlassSection
+                title={`Editing · ${holding.ticker} · ${deltaUnits >= 0 ? "increase" : "decrease"}`}
+                dataSource="hybrid"
+                db="retail"
+                subtitle="Draft only · this remains subject to research, affordability and IC approval"
+                right={
+                  <button
+                    type="button"
+                    onClick={() => setEditingSymbol(null)}
+                    className="rounded-md p-1 text-muted-foreground hover:bg-[hsl(var(--foreground)/0.06)] hover:text-foreground"
+                    title="Close editor"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                }
+                noPadding
+              >
+                <div className="grid gap-px bg-[hsl(var(--glass-border))] lg:grid-cols-2">
+                  <div className="space-y-3 bg-[hsl(var(--card))] p-4">
+                    <div className="flex items-center gap-3 text-[11px] uppercase tracking-wide text-muted-foreground">
+                      <span>Units per basket</span>
+                      <span className="font-mono text-base font-semibold normal-case text-foreground">
+                        {baseUnits}
+                      </span>
+                      <span>→</span>
+                      <span className="font-mono text-base font-semibold normal-case text-foreground">
+                        {holding.shares}
+                      </span>
+                      <span className={deltaUnits >= 0 ? "text-up" : "text-down"}>
+                        {deltaUnits > 0 ? `+${deltaUnits}` : deltaUnits}
+                      </span>
+                    </div>
+                    <div className="flex max-w-md items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShares(editingSymbol, -1)}
+                        className="flex h-9 w-9 items-center justify-center rounded-md border border-[hsl(var(--glass-border))] text-lg hover:bg-[hsl(var(--foreground)/0.05)]"
+                        aria-label="Reduce units"
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={holding.shares}
+                        onChange={(e) => setAbsoluteShares(editingSymbol, Number(e.target.value) || 0)}
+                        className="h-9 min-w-0 flex-1 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 text-center font-mono text-sm outline-none focus:border-primary/50"
+                        aria-label="Units per basket"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShares(editingSymbol, +1)}
+                        className="flex h-9 w-9 items-center justify-center rounded-md border border-[hsl(var(--glass-border))] text-lg hover:bg-[hsl(var(--foreground)/0.05)]"
+                        aria-label="Increase units"
+                      >
+                        +
+                      </button>
+                      <span className="text-[11px] text-muted-foreground">units per basket</span>
+                    </div>
+                    <div className="rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-3 py-2 text-[11px]">
+                      <div className="flex justify-between gap-4">
+                        <span className="text-muted-foreground">Price / share</span>
+                        <span className="font-mono">{moneyR(priceCents)}</span>
+                      </div>
+                      <div className="mt-1 flex justify-between gap-4">
+                        <span className="text-muted-foreground">Aggregate shares</span>
+                        <span className="font-mono">{aggregate.qty.toLocaleString()}</span>
+                      </div>
+                      <div className="mt-1 flex justify-between gap-4">
+                        <span className="text-muted-foreground">Estimated total cost</span>
+                        <span className="font-mono font-semibold">{centsToR(aggregate.totalCostCents)}</span>
+                      </div>
+                    </div>
+                    <p className={cn("text-[11px]", covered ? "text-up" : "text-down")}>
+                      {covered
+                        ? "Affordability will be rechecked against strategy CA and reserve before IC submission."
+                        : "Current draft exceeds available strategy CA and reserve; it cannot be submitted."}
+                    </p>
+                  </div>
+                  <div className="space-y-3 bg-[hsl(var(--card))] p-4">
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        Research & rationale
+                      </p>
+                      {researchRef ? (
+                        <Link
+                          href="/oems/research"
+                          className="mt-2 flex items-center justify-between rounded-md border border-primary/25 bg-primary/[0.05] px-3 py-2 text-xs hover:bg-primary/[0.09]"
+                        >
+                          <span className="font-mono font-semibold text-primary">{researchRef}</span>
+                          <span className="truncate pl-3 text-muted-foreground">Research note attached</span>
+                        </Link>
+                      ) : (
+                        <Link
+                          href="/oems/research"
+                          className="mt-2 block rounded-md border border-amber-500/35 bg-amber-500/[0.07] px-3 py-2 text-xs text-amber-600 hover:bg-amber-500/[0.12] dark:text-amber-400"
+                        >
+                          Attach research first — open Research Library
+                        </Link>
+                      )}
+                    </div>
+                    <input
+                      value={rationaleBySymbol[holding.ticker.toUpperCase()] ?? ""}
+                      onChange={(e) => setRationale(holding.ticker, e.target.value)}
+                      placeholder="One-line rationale for this change"
+                      className="h-10 w-full rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 text-sm outline-none focus:border-primary/50"
+                    />
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAbsoluteShares(editingSymbol, baseUnits);
+                          setEditingSymbol(null);
+                        }}
+                        className="rounded-md border border-[hsl(var(--glass-border))] px-3 py-2 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
+                      >
+                        Cancel change
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingSymbol(null)}
+                        className="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground"
+                      >
+                        Keep draft
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </GlassSection>
+            );
+          })()
+        : null}
 
       <TradeSequencePanel
         mode={stage}
@@ -2838,13 +2991,13 @@ function TradeSequencePanel({
           <>
             <div
               className={cn(
-                "flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3 text-xs",
+                "grid gap-2 border-b px-3 py-3 text-xs lg:grid-cols-[1fr_auto] lg:items-center",
                 cashOk
                   ? "border-[hsl(var(--glass-border))]"
                   : "border-[hsl(var(--down)/0.4)] bg-[hsl(var(--down)/0.06)]",
               )}
             >
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <div className="flex flex-wrap gap-1.5 [&>span]:rounded-md [&>span]:border [&>span]:border-[hsl(var(--glass-border))] [&>span]:bg-[hsl(var(--foreground)/0.025)] [&>span]:px-2 [&>span]:py-1">
                 <span className="text-muted-foreground">
                   {totals?.investorCount ?? investors.length} investor
                   {(totals?.investorCount ?? investors.length) === 1 ? "" : "s"}
@@ -2874,7 +3027,7 @@ function TradeSequencePanel({
                   Reserve <span className="font-mono">{centsToR(totals?.reserveCents)}</span>
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <span className="rounded-full border border-[hsl(var(--glass-border))] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                   {scopeLabel}
                 </span>
@@ -2889,10 +3042,10 @@ function TradeSequencePanel({
               </div>
             </div>
             {!isExecute && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+              <div className="m-3 overflow-x-auto rounded-lg border border-[hsl(var(--glass-border))]">
+                <table className="w-full min-w-[760px] text-[11px]">
+                  <thead className="sticky top-0 bg-[hsl(var(--foreground)/0.035)]">
+                    <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[9px] uppercase tracking-wider text-muted-foreground">
                       <th className="px-5 py-2 font-medium">Client</th>
                       {residualView ? (
                         <>
@@ -2933,7 +3086,7 @@ function TradeSequencePanel({
                             tabIndex={0}
                             aria-expanded={isExpanded}
                             className={cn(
-                              "cursor-pointer border-b border-[hsl(var(--glass-border))] transition-colors",
+                              "cursor-pointer border-b border-[hsl(var(--glass-border))] transition-colors last:border-0",
                               inv.shortfall
                                 ? "bg-[hsl(var(--down)/0.07)]"
                                 : inv.parked
