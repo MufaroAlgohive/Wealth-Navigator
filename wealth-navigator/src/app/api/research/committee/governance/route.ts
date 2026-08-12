@@ -5,6 +5,7 @@ import {
   type GovernancePolicy,
   governanceFor,
 } from "@/lib/research-ic/governance";
+import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
@@ -28,9 +29,24 @@ export async function GET() {
     const entries = await Promise.all(
       visibleScopes.map(async (scope) => [scope, await governanceFor(scope)] as const),
     );
+    let team: Array<{ email: string; full_name: string | null }> = [];
+    if (canManageCommittee(auth.ctx)) {
+      try {
+        const retail = createRetailServiceRoleClient();
+        const { data } = await retail
+          .from("admin_team")
+          .select("email, full_name")
+          .neq("status", "inactive")
+          .order("full_name", { ascending: true });
+        team = (data ?? []) as Array<{ email: string; full_name: string | null }>;
+      } catch {
+        // Governance remains usable with existing rows if the team directory is unavailable.
+      }
+    }
     return NextResponse.json({
       ok: true,
       scopes: Object.fromEntries(entries.map(([scope, { members, policy }]) => [scope, { members, policy }])),
+      team,
     });
   } catch (error) {
     return NextResponse.json(

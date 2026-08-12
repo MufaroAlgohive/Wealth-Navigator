@@ -51,6 +51,10 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const status = url.searchParams.get("status");
+  const requestedScope = url.searchParams.get("scope") === "uat" ? "uat" : "live";
+  if (requestedScope === "uat" && !canSeeUatSurfaces(auth.ctx)) {
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
 
   const db = await openDb();
   if (!db) {
@@ -64,11 +68,12 @@ export async function GET(req: Request) {
   let q = db
     .from("rebalance_request_c")
     .select(
-      "id, strategy_id, requested_by, current_composition, proposed_composition, affected_investors, status, ic_session_id, research_note_id, executed_at, created_at, updated_at",
+      "id, strategy_id, requested_by, current_composition, proposed_composition, affected_investors, status, environment_scope, ic_session_id, research_note_id, executed_at, created_at, updated_at",
     )
     .order("created_at", { ascending: false })
     .limit(100);
   if (status) q = q.eq("status", status);
+  q = q.eq("environment_scope", requestedScope);
 
   const { data, error } = await q;
   if (error) {
