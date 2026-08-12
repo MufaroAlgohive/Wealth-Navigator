@@ -210,10 +210,10 @@ export function InvestmentCommitteePage({
     agenda: true,
     approved: true,
     recent: true,
-    members: false,
-    charter: false,
-    checklist: false,
-    governance: false,
+    members: true,
+    charter: true,
+    checklist: true,
+    governance: true,
   }));
   const toggleSection = (k: string) => setOpenSections((prev) => ({ ...prev, [k]: !prev[k] }));
 
