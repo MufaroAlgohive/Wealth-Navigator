@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
+import { requireMasterPassword } from "@/lib/admin/step-up";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
@@ -21,7 +22,7 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
   const auth = await getAdminContext();
@@ -33,6 +34,15 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   }
   if (!canResearchIc(auth.ctx, "rebalance", "approve_rebalance")) {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  }
+
+  // This is the final release from the protected Rebalances queue into the
+  // Active Order Book. Re-authenticate the named master operator here, not
+  // just in the UI, so a direct request cannot bypass the confirmation.
+  const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+  const stepUp = await requireMasterPassword(body.admin_password);
+  if (!stepUp.ok) {
+    return NextResponse.json({ ok: false, error: stepUp.error }, { status: stepUp.status });
   }
 
   let db: ReturnType<typeof createInstitutionalServiceRoleClient> | null;
