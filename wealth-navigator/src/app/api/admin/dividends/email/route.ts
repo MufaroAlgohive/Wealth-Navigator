@@ -5,7 +5,7 @@ import { createSupabaseServerClient, createRetailServiceRoleClient } from '@/lib
 const writeAudit = async (supabase: any, entry: any) => {
   try {
     await supabase.from('admin_team_audit').insert([entry]);
-  } catch (err) {}
+  } catch (err) { }
 };
 
 async function sendViaResend({ to, subject, html }: { to: string, subject: string, html: string }) {
@@ -92,7 +92,7 @@ function parsePaymentDate(val: any) {
     }
     const nat = new Date(val);
     if (!isNaN(nat.getTime())) return nat;
-  } catch (e) {}
+  } catch (e) { }
   return null;
 }
 
@@ -237,10 +237,9 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
   <div class="header">
     <div class="header-logo">MINT Platforms</div>
     <h1>${subject}</h1>
-    <p class="header-sub">${
-      isFuture
-        ? `We have processed upcoming dividend payouts for your portfolio, scheduled for ${formattedDate || 'soon'}.`
-        : 'We have successfully processed dividend payouts for your portfolio.'
+    <p class="header-sub">${isFuture
+      ? `We have processed upcoming dividend payouts for your portfolio, scheduled for ${formattedDate || 'soon'}.`
+      : 'We have successfully processed dividend payouts for your portfolio.'
     }</p>
     <div class="header-meta">myMINT BASKETS &middot; INVESTOR STATEMENT &middot; ${new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' }).toUpperCase()}</div>
   </div>
@@ -248,61 +247,60 @@ function buildEmailHtml(profile: any, payouts: any[], securitiesMap: any, paymen
   <!-- BODY -->
   <div class="body">
 
-    <p class="lead">Hi ${name},<br><br>${
-      profile.is_child
-        ? 'When you invested in your childs future with myMINT, you became a shareholder in real companies. And shareholders get paid.'
-        : 'When you invested with myMINT, you became a shareholder in real companies. And shareholders get paid.'
-    }<br><br>${
-      isFuture
-        ? `The companies in your basket have declared upcoming dividends. Here is what you will be earning${formattedDate ? ` on <strong>${formattedDate}</strong>` : ''}:`
-        : 'Since you started investing, the companies in your basket have shared their profits with you:'
-    }</p>
+    <p class="lead">Hi ${name},<br><br>${profile.is_child
+      ? "When you invested in your child's future with myMINT, you became a shareholder in real companies. And shareholders get paid."
+      : "When you invested with myMINT, you became a shareholder in real companies. And shareholders get paid."
+} <br><br>${
+  isFuture
+    ? `The companies in your basket have declared upcoming dividends. Here is what you will be earning${formattedDate ? ` on <strong>${formattedDate}</strong>` : ''}:`
+    : 'Since you started investing, the companies in your basket have shared their profits with you:'
+} </p>
 
-    <!-- TABLE -->
-    <div class="section">
-      <h2>${isFuture ? 'UPCOMING DIVIDENDS' : 'COMPANY DIVIDENDS EARNED'}</h2>
-      <table class="snap">
-        <thead>
+  < !--TABLE -->
+    <div class="section" >
+      <h2>${ isFuture ? 'UPCOMING DIVIDENDS' : 'COMPANY DIVIDENDS EARNED' } </h2>
+        < table class="snap" >
+          <thead>
           <tr>
-            <th>COMPANY</th>
-            <th class="r">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rowsHtml}
-          <tr>
-            <td class="label" style="padding-top:20px; font-weight:700;">${isFuture ? 'Total upcoming payout' : 'Total earned since investing'}</td>
-            <td class="num r pos" style="padding-top:20px; font-size: 16px; font-weight:800; color:#31005E;">${formatMoney(totalCash)}</td>
-          </tr>
-        </tbody>
+          <th>COMPANY </th>
+          < th class="r" > Amount </th>
+            </tr>
+            </thead>
+            <tbody>
+          ${ rowsHtml }
+<tr>
+  <td class="label" style = "padding-top:20px; font-weight:700;" > ${ isFuture ? 'Total upcoming payout' : 'Total earned since investing' } </td>
+    < td class="num r pos" style = "padding-top:20px; font-size: 16px; font-weight:800; color:#31005E;" > ${ formatMoney(totalCash) } </td>
+      </tr>
+      </tbody>
       </table>
+      </div>
+      </div>
+
+      < !--CLOSE -->
+        <div class="close" >
+          <p>${
+            isFuture
+              ? 'Every cent will be automatically credited to your bank account on the payment date. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
+              : 'Every cent has been credited to your bank account. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
+} </p>
+  < a href = "https://app.mymint.co.za" > Grow my portfolio & rarr; </a>
     </div>
-  </div>
 
-  <!-- CLOSE -->
-  <div class="close">
-    <p>${
-      isFuture
-        ? 'Every cent will be automatically credited to your bank account on the payment date. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
-        : 'Every cent has been credited to your bank account. No forms, no waiting, no admin. That’s what ownership looks like: your money working while you live your life.<br><br>And this is just the beginning. The more you invest, the bigger your slice of the profits next time these companies pay out.'
-    }</p>
-    <a href="https://app.mymint.co.za">Grow my portfolio &rarr;</a>
-  </div>
-
-  <!-- FOOTER -->
-  <div class="footer">
-    <div class="footer-brand">MINT PLATFORMS</div>
-    <div class="footer-line">FSP 55118 &nbsp;|&nbsp; NCRCP22892 &nbsp;|&nbsp; Reg. 2024/644796/07</div>
-    <div class="footer-line">3 Gwen Lane, Sandown, Sandton, Johannesburg</div>
-    <div class="footer-line">support@mymint.co.za &nbsp;|&nbsp; www.mymint.co.za</div>
-    <div class="disclaimer">
-      This communication is an automated notification and does not constitute investment advice.
+    < !--FOOTER -->
+      <div class="footer" >
+        <div class="footer-brand" > MINT PLATFORMS </div>
+          < div class="footer-line" > FSP 55118 & nbsp;|& nbsp; NCRCP22892 & nbsp;|& nbsp; Reg. 2024 / 644796 /07 </div>
+            < div class="footer-line" > 3 Gwen Lane, Sandown, Sandton, Johannesburg </div>
+              < div class="footer-line" > support@mymint.co.za & nbsp;|& nbsp; www.mymint.co.za </div>
+                < div class="disclaimer" >
+                  This communication is an automated notification and does not constitute investment advice.
     </div>
-  </div>
+                    </div>
 
-</div>
-</body>
-</html>`;
+                    </div>
+                    </body>
+                    </html>`;
 }
 
 export async function GET(req: Request) {
@@ -317,7 +315,7 @@ async function handleEmailRequest(req: Request, method: string) {
   try {
     const authClient = await createSupabaseServerClient();
     const { data: { user } } = await authClient.auth.getUser();
-    
+
     if (!user) {
       return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
     }
@@ -326,7 +324,7 @@ async function handleEmailRequest(req: Request, method: string) {
     const searchParams = url.searchParams;
     let body: any = {};
     if (method === 'POST') {
-      try { body = await req.json(); } catch (e) {}
+      try { body = await req.json(); } catch (e) { }
     }
 
     const runId = searchParams.get('run_id') || body?.run_id;
@@ -335,7 +333,7 @@ async function handleEmailRequest(req: Request, method: string) {
     if (!runId) return NextResponse.json({ ok: false, error: 'run_id is required' }, { status: 400 });
 
     const supabase = createRetailServiceRoleClient();
-    
+
     const payouts = await getPayouts(Number(runId), 5000);
     if (!payouts || !payouts.length) {
       return NextResponse.json({ ok: false, error: 'No payouts found for this run' }, { status: 404 });
@@ -358,14 +356,14 @@ async function handleEmailRequest(req: Request, method: string) {
     // 3. Fetch profiles and family members
     const { data: profilesData } = await supabase.from('profiles').select('id,computershare_number,email,first_name').in('computershare_number', clientCodes);
     const { data: fmData } = await supabase.from('family_members').select('id,computershare_number,first_name,primary_user_id').in('computershare_number', clientCodes);
-    
+
     const parentIds = (fmData || []).map(fm => fm.primary_user_id).filter(Boolean);
     let parentProfiles: any[] = [];
     if (parentIds.length > 0) {
       const { data: pp } = await supabase.from('profiles').select('id,email,first_name').in('id', parentIds);
       parentProfiles = pp || [];
     }
-    
+
     const profileMap: Record<string, any> = {};
     (profilesData || []).forEach(p => {
       if (p.computershare_number) {
@@ -409,7 +407,7 @@ async function handleEmailRequest(req: Request, method: string) {
         if (runData[0].payment_date) paymentDate = runData[0].payment_date;
         if (runData[0].file_name) runFileName = runData[0].file_name;
       }
-    } catch (e) {}
+    } catch (e) { }
 
     if (!paymentDate) {
       paymentDate = findPaymentDate(payouts, null);
@@ -431,7 +429,7 @@ async function handleEmailRequest(req: Request, method: string) {
             sentCodes.push(...r.sent_client_codes);
           }
         });
-      } catch (subErr) {}
+      } catch (subErr) { }
     }
 
     if (runFileName && runFileName.trim() !== '' && runFileName !== 'unknown') {
@@ -442,7 +440,7 @@ async function handleEmailRequest(req: Request, method: string) {
             sentCodes.push(...r.sent_client_codes);
           }
         });
-      } catch (subErr) {}
+      } catch (subErr) { }
     }
     sentCodes = Array.from(new Set(sentCodes));
 
