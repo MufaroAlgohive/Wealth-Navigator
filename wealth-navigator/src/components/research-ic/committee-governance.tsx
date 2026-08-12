@@ -17,6 +17,8 @@ type Policy = {
   approval_mode: "count" | "percentage";
   required_yes_count: number;
   required_yes_percent: number;
+  auto_decide_research: boolean;
+  manual_research_decision_enabled: boolean;
 };
 type Settings = { members: Member[]; policy: Policy };
 type TeamMember = { email: string; full_name: string | null };
@@ -141,6 +143,16 @@ export function CommitteeGovernance() {
             }
             className="mt-1 block w-full rounded border bg-transparent px-2 py-1 text-sm"
           />
+        </label>
+      </div>
+      <div className="grid gap-3 rounded-lg border border-[hsl(var(--glass-border))] p-3 md:grid-cols-2">
+        <label className="flex items-start gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={current.policy.auto_decide_research} onChange={(e) => change((s) => ({ ...s, policy: { ...s.policy, auto_decide_research: e.target.checked } }))} />
+          <span><b className="block text-foreground">Automatic research decision</b>Approve at the YES threshold; reject at the matching NO threshold.</span>
+        </label>
+        <label className="flex items-start gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={current.policy.manual_research_decision_enabled} onChange={(e) => change((s) => ({ ...s, policy: { ...s.policy, manual_research_decision_enabled: e.target.checked } }))} />
+          <span><b className="block text-foreground">Show manual decision controls</b>Shows Approve and Reject only after the same vote threshold is reached.</span>
         </label>
       </div>
       <div className="space-y-2">

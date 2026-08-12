@@ -526,8 +526,9 @@ export function InvestmentCommitteePage({
         </div>
 
         {/* right rail — standing config (desktop) */}
-        {(active === "agenda" || active === "approved") && <div className="space-y-3 xl:sticky xl:top-20 xl:self-start">
-          <CommitteeRightRail scope="live" canSeeUat={canSeeUat} compact />
+        {(active === "agenda" || active === "approved" || (active === "uat" && canSeeUat)) && <div className="space-y-3 xl:sticky xl:top-20 xl:self-start">
+          <CommitteeRightRail scope={active === "uat" ? "uat" : "live"} canSeeUat={canSeeUat} compact />
+          {active !== "uat" && <>
           <GlassSection title="Committee members" dataSource="supabase" db="institutional">
             <MembersList pills={pills} viewerEmail={viewerEmail} />
           </GlassSection>
@@ -542,6 +543,7 @@ export function InvestmentCommitteePage({
               onChange={(i, v) => setChecks((prev) => prev.map((c, idx) => (idx === i ? v : c)))}
             />
           </GlassSection>
+          </>}
         </div>}
       </div>
 
@@ -1178,6 +1180,14 @@ function ResearchAgendaItem({
   const canCombinedApprove =
     kind === "both" ? perms.approveNote && perms.approveRebalance : perms.approveNote;
   const busyAny = busy != null || rebalanceTransition.busy != null;
+  const scope = note.environment_scope === "uat" ? "uat" : "live";
+  const governanceQ = useQuery<{
+    scopes?: Record<string, { members: Array<{ role: string; vote_scope: string[] }>; policy: { approval_mode: "count" | "percentage"; required_yes_count: number; required_yes_percent: number; auto_decide_research: boolean; manual_research_decision_enabled: boolean } }>;
+  }>({
+    queryKey: ["ric-governance", scope],
+    queryFn: async () => (await fetch("/api/research/committee/governance", { cache: "no-store" })).json(),
+    staleTime: 30_000,
+  });
 
   async function handleApprove() {
     if (kind === "both" && linkedRebalance && perms.approveRebalance) {
@@ -1208,6 +1218,16 @@ function ResearchAgendaItem({
       },
   });
   const tally = sumQ.data?.tally ?? { yes: 0, no: 0, abstain: 0, total: 0 };
+  const policy = governanceQ.data?.scopes?.[scope]?.policy;
+  const researchVoters = governanceQ.data?.scopes?.[scope]?.members.filter(
+    (member) => member.role !== "observer" && member.vote_scope.includes("research"),
+  ).length ?? 0;
+  const voteThreshold = policy?.approval_mode === "percentage"
+    ? Math.max(1, Math.ceil((Math.max(1, researchVoters) * policy.required_yes_percent) / 100))
+    : Math.max(1, policy?.required_yes_count ?? IC_MAJORITY_REQUIRED_YES);
+  const manualDecisionEnabled = policy?.manual_research_decision_enabled === true;
+  const manualApproveReady = tally.yes >= voteThreshold;
+  const manualRejectReady = tally.no >= voteThreshold;
 
   async function vote(v: "yes" | "no" | "abstain") {
     setVoting(v);
@@ -1223,12 +1243,13 @@ function ResearchAgendaItem({
         console.warn("vote rejected", body.error ?? r.status);
       }
       await qc.invalidateQueries({ queryKey: ["ric-ic-summary", note.id] });
+      await qc.invalidateQueries({ queryKey: ["ric-notes-all"] });
     } finally {
       setVoting(null);
     }
   }
 
-  const majorityMet = tally.yes >= IC_MAJORITY_REQUIRED_YES;
+  const majorityMet = tally.yes >= voteThreshold;
 
   return (
     <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
@@ -1289,10 +1310,10 @@ function ResearchAgendaItem({
             {majorityMet ? <span className="ml-1 text-up">· passed</span> : null}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        {manualDecisionEnabled && <div className="flex items-center gap-2">
           <button
             type="button"
-            disabled={!perms.approveNote || busyAny}
+            disabled={!perms.approveNote || busyAny || !manualRejectReady}
             onClick={() => go(note.id, "rejected", onChanged, "IC rejected")}
             className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
           >
@@ -1300,13 +1321,13 @@ function ResearchAgendaItem({
           </button>
           <button
             type="button"
-            disabled={!canCombinedApprove || busyAny}
+            disabled={!canCombinedApprove || busyAny || !manualApproveReady}
             onClick={handleApprove}
             className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
             <Check className="h-3.5 w-3.5" /> {approveLabel}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   );
