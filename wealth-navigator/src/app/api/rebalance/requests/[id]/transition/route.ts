@@ -126,7 +126,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // by calling this endpoint directly; the UI's disabled state was cosmetic,
   // not enforcement. No UAT exception: a rebalance on a test strategy is a
   // real rehearsal of this exact gate, not a reason to skip it.
-  if (from === "pending" && toStatus === "ic_approved") {
+  if (from === "pending" && (toStatus === "ic_approved" || toStatus === "rejected")) {
     const votesRes = await db
       .from("rebalance_vote_c")
       .select("voter_email, vote, voted_at")
@@ -156,12 +156,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       eligible.length,
       requiredYes(governance.policy, eligible.length) / Math.max(1, eligible.length),
     );
-    if (!tally.passed) {
+    // A master/dev may explicitly bypass the ballot only when this environment
+    // has enabled the manual rebalance override in IC Settings. The setting is
+    // checked here at the write boundary; a UI button alone is not authority.
+    if (toStatus === "ic_approved" && !governance.policy.manual_rebalance_decision_enabled && !tally.passed) {
       return NextResponse.json(
         {
           ok: false,
           error: `Committee majority not reached: ${tally.yes} of ${tally.requiredYes} required yes votes.`,
         },
+        { status: 409 },
+      );
+    }
+    if (toStatus === "rejected" && !governance.policy.manual_rebalance_decision_enabled) {
+      return NextResponse.json(
+        { ok: false, error: "Manual rebalance override is disabled for this environment; reject through the committee vote." },
         { status: 409 },
       );
     }

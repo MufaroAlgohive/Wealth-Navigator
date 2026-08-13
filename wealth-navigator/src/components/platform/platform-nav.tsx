@@ -123,11 +123,11 @@ export function PlatformNav() {
   return (
     <aside
       className={cn(
-        "flex shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200",
+        "isolate flex shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 [contain:paint]",
         collapsed ? "w-[60px]" : "w-[216px]",
       )}
     >
-      <nav className="flex-1 overflow-y-auto py-3 scrollbar-thin">
+      <nav className="flex-1 overflow-y-auto overscroll-contain py-3 scrollbar-thin [contain:paint]">
         {sections.map((section) => {
           const sectionOpen = collapsed || expandedSections.has(section.title);
           const sectionId = `platform-nav-${section.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;

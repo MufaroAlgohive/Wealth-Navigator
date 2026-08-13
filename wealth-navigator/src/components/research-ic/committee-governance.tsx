@@ -19,6 +19,7 @@ type Policy = {
   required_yes_percent: number;
   auto_decide_research: boolean;
   manual_research_decision_enabled: boolean;
+  manual_rebalance_decision_enabled: boolean;
 };
 type Settings = { members: Member[]; policy: Policy };
 type TeamMember = { email: string; full_name: string | null };
@@ -153,6 +154,10 @@ export function CommitteeGovernance() {
         <label className="flex items-start gap-2 text-xs text-muted-foreground">
           <input type="checkbox" checked={current.policy.manual_research_decision_enabled} onChange={(e) => change((s) => ({ ...s, policy: { ...s.policy, manual_research_decision_enabled: e.target.checked } }))} />
           <span><b className="block text-foreground">Show manual decision controls</b>Shows Approve and Reject only after the same vote threshold is reached.</span>
+        </label>
+        <label className="flex items-start gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={current.policy.manual_rebalance_decision_enabled} onChange={(e) => change((s) => ({ ...s, policy: { ...s.policy, manual_rebalance_decision_enabled: e.target.checked } }))} />
+          <span><b className="block text-foreground">Manual rebalance override</b>Lets an authorised approver approve or reject a rebalance without waiting for votes.</span>
         </label>
       </div>
       <div className="space-y-2">
