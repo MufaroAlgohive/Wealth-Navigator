@@ -813,8 +813,10 @@ function useTransition(kind: "note" | "rebalance") {
 /** Cast / revise an IC vote on a rebalance proposal. */
 function useVote() {
   const [busy, setBusy] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const cast = async (id: string, vote: "yes" | "no" | "abstain", onChanged: () => void) => {
     setBusy(vote);
+    setError(null);
     try {
       const r = await fetch(`/api/rebalance/requests/${id}/vote`, {
         method: "POST",
@@ -823,14 +825,17 @@ function useVote() {
       });
       if (!r.ok) {
         const body = (await r.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `vote failed (${r.status})`);
+        setError(body.error ?? `Vote failed (${r.status}).`);
+        return;
       }
       onChanged();
+    } catch {
+      setError("Could not record your vote. Please try again.");
     } finally {
       setBusy(null);
     }
   };
-  return { busy, cast };
+  return { busy, error, cast };
 }
 
 function RebalanceAgendaItem({
@@ -861,6 +866,13 @@ function RebalanceAgendaItem({
   const rows = Array.isArray(req.proposed_composition) ? req.proposed_composition : [];
   const changes = rows.filter((r) => r.action && r.action !== "hold").length;
   const kind = agendaKindForRebalance(req, linkedNote ? [linkedNote] : []);
+  const scope = req.environment_scope === "uat" ? "uat" : "live";
+  const governanceQ = useQuery<{ scopes?: Record<string, { policy: { manual_rebalance_decision_enabled: boolean } }> }>({
+    queryKey: ["ric-governance", scope],
+    queryFn: async () => (await fetch("/api/research/committee/governance", { cache: "no-store" })).json(),
+    staleTime: 30_000,
+  });
+  const manualOverrideEnabled = governanceQ.data?.scopes?.[scope]?.policy.manual_rebalance_decision_enabled === true;
   const actionLabel = icRebalanceActionLabel(kind);
   const canCombinedApprove = kind === "both" && canApprove && canApproveNote && linkedNote;
 
@@ -897,7 +909,7 @@ function RebalanceAgendaItem({
   const hasVotes = tally.yes > 0 || tally.no > 0;
   const noAhead = tally.no > tally.yes;
   const showStandaloneApprove = kind !== "both" && !noAhead;
-  const standaloneApproveDisabled = !canApprove || busyAny || !tally.passed;
+  const standaloneApproveDisabled = !canApprove || busyAny || (!manualOverrideEnabled && !tally.passed);
   const standaloneApproveTitle = !hasVotes
     ? "Awaiting votes — no votes cast yet"
     : !tally.passed
@@ -914,9 +926,8 @@ function RebalanceAgendaItem({
     await go(req.id, "ic_approved", onChanged, "IC approved by majority vote");
   }
 
-  // Per-member vote state for the committee-member pills. Only the viewer's
-  // own pill is clickable (when they're a recognised committee member); the
-  // rest are read-only indicators.
+  // Per-member vote state is a read-only audit trail. Voting is done by the
+  // explicit thumbs controls below, rather than a hidden click on initials.
   function pillFor(member: MemberPill) {
     const memberEmail = member.email;
     const isMe = member.isViewer;
@@ -938,21 +949,9 @@ function RebalanceAgendaItem({
     const baseCls = cn(
       "inline-flex h-7 w-9 items-center justify-center rounded-full border text-[10px] font-semibold",
       tone,
-      isMe && canVote && "cursor-pointer hover:ring-1 hover:ring-primary/40",
+      isMe && canVote && "ring-1 ring-primary/25",
     );
-    if (!isMe || !canVote) return <span className={baseCls}>{label}</span>;
-    const next = myVote === "yes" ? "no" : myVote === "no" ? "abstain" : "yes";
-    return (
-      <button
-        type="button"
-        disabled={busyAny}
-        onClick={() => vote.cast(req.id, next, onChanged)}
-        className={cn(baseCls, "disabled:opacity-50")}
-        title={`Click to vote ${next}`}
-      >
-        {label}
-      </button>
-    );
+    return <span className={baseCls}>{label}</span>;
   }
 
   return (
@@ -993,7 +992,7 @@ function RebalanceAgendaItem({
               // transition endpoint as the standalone one, with no vote gate
               // at all. Same tally.passed rule as standalone now, since the
               // server enforces it identically either way.
-              disabled={!canCombinedApprove || busyAny || !tally.passed}
+              disabled={!canCombinedApprove || busyAny || (!manualOverrideEnabled && !tally.passed)}
               onClick={approveBoth}
               title={
                 !tally.passed
@@ -1017,7 +1016,7 @@ function RebalanceAgendaItem({
           ) : null}
           <button
             type="button"
-            disabled={!canApprove || busyAny}
+            disabled={!canApprove || busyAny || !manualOverrideEnabled}
             onClick={() => go(req.id, "rejected", onChanged)}
             title="Chair override — reject this proposal"
             className="inline-flex items-center gap-1 rounded-lg border border-[hsl(var(--glass-border))] px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
@@ -1030,6 +1029,9 @@ function RebalanceAgendaItem({
       {/* Vote: row with member pills (Lovable spec). */}
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Vote:</span>
+        <button type="button" disabled={!canVote || busyAny || Boolean(myVote)} onClick={() => vote.cast(req.id, "yes", onChanged)} title={myVote ? "Your recorded vote is locked" : "Vote yes"} className={cn("rounded-md border p-1.5 disabled:opacity-50", myVote === "yes" ? "border-up/60 bg-up/15 text-up" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-up")}><ThumbsUp className="h-3.5 w-3.5" /></button>
+        <button type="button" disabled={!canVote || busyAny || Boolean(myVote)} onClick={() => vote.cast(req.id, "abstain", onChanged)} title={myVote ? "Your recorded vote is locked" : "Abstain"} className={cn("rounded-md border p-1.5 disabled:opacity-50", myVote === "abstain" ? "border-muted-foreground/60 bg-muted-foreground/15 text-foreground" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-foreground")}><MinusCircle className="h-3.5 w-3.5" /></button>
+        <button type="button" disabled={!canVote || busyAny || Boolean(myVote)} onClick={() => vote.cast(req.id, "no", onChanged)} title={myVote ? "Your recorded vote is locked" : "Vote no"} className={cn("rounded-md border p-1.5 disabled:opacity-50", myVote === "no" ? "border-down/60 bg-down/15 text-down" : "border-[hsl(var(--glass-border))] text-muted-foreground hover:text-down")}><ThumbsDown className="h-3.5 w-3.5" /></button>
         {pills.map((m) => (
           <div key={m.initials + m.email} className="flex items-center gap-1.5">
             {pillFor(m)}
@@ -1046,6 +1048,8 @@ function RebalanceAgendaItem({
           )}
         </span>
       </div>
+      {myVote && <p className="-mt-2 mb-3 text-[10px] text-up">Your {myVote.toUpperCase()} vote is recorded and locked.</p>}
+      {vote.error && <p className="-mt-2 mb-3 text-xs text-down">{vote.error}</p>}
 
       {/* Majority-vote gate — a proposal is promoted to the order-book lane once
           YES votes reach the strict-majority threshold (≥ 2 of 3 by default). */}

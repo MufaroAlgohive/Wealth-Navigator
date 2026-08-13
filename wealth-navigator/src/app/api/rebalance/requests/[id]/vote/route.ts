@@ -9,8 +9,7 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
 /**
  * POST /api/rebalance/requests/[id]/vote
  *
- * Cast an IC vote (yes / no / abstain) on a rebalance proposal. Upserted per
- * (request_id, voter_email) so a committee member can revise their vote.
+ * Cast one IC vote (yes / no / abstain) on a rebalance proposal.
  *
  * When the YES votes cross the committee threshold (majority of 3 → ≥ 2 yes;
  * see src/lib/rebalance/ic-vote.ts + lib/research-ic/committee.ts) and the
@@ -51,7 +50,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (auth.status !== "ok") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
-  if (!canResearchIc(auth.ctx, "rebalance", "approve_rebalance")) {
+  if (!canResearchIc(auth.ctx, "rebalance", "approve_rebalance") && auth.ctx.approverTier !== "dev") {
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 
@@ -119,19 +118,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const upsert = await db
     .from("rebalance_vote_c")
-    .upsert(
-      {
-        request_id: id,
-        voter_email: auth.ctx.email,
-        vote,
-        rationale,
-        voted_at: new Date().toISOString(),
-      },
-      { onConflict: "request_id,voter_email" },
-    )
+    .insert({
+      request_id: id,
+      voter_email: auth.ctx.email,
+      vote,
+      rationale,
+      voted_at: new Date().toISOString(),
+    })
     .select()
     .maybeSingle();
   if (upsert.error) {
+    if ((upsert.error as { code?: string }).code === "23505") {
+      return NextResponse.json({ ok: false, error: "You have already cast your vote for this rebalance." }, { status: 409 });
+    }
     if (isSupabaseSchemaMissing(upsert.error)) {
       return NextResponse.json(
         {

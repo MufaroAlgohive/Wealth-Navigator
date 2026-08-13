@@ -19,6 +19,7 @@ export interface GovernancePolicy {
   required_yes_percent: number;
   auto_decide_research: boolean;
   manual_research_decision_enabled: boolean;
+  manual_rebalance_decision_enabled: boolean;
 }
 
 const defaultPolicy = (environment_scope: CommitteeEnvironment): GovernancePolicy => ({
@@ -28,6 +29,7 @@ const defaultPolicy = (environment_scope: CommitteeEnvironment): GovernancePolic
   required_yes_percent: 66.67,
   auto_decide_research: true,
   manual_research_decision_enabled: false,
+  manual_rebalance_decision_enabled: false,
 });
 
 export async function governanceFor(scope: CommitteeEnvironment) {
@@ -40,7 +42,7 @@ export async function governanceFor(scope: CommitteeEnvironment) {
       .eq("is_active", true),
     db
       .from("committee_governance_policy_c")
-      .select("environment_scope, approval_mode, required_yes_count, required_yes_percent, auto_decide_research, manual_research_decision_enabled")
+      .select("environment_scope, approval_mode, required_yes_count, required_yes_percent, auto_decide_research, manual_research_decision_enabled, manual_rebalance_decision_enabled")
       .eq("environment_scope", scope)
       .maybeSingle(),
   ]);
