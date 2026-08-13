@@ -170,6 +170,8 @@ export interface RebalanceRequest {
   proposed_composition: ProposedHolding[];
   affected_investors: unknown | null;
   status: RebalanceStatus;
+  /** LIVE and UAT rebalance requests are governed independently. */
+  environment_scope?: "live" | "uat";
   ic_session_id: string | null;
   research_note_id: string | null;
   executed_at: string | null;
