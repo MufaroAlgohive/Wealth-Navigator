@@ -524,10 +524,14 @@ export function RebalanceBuilderPage({
 
   // Per-row gate flags surfaced in the table + Submit button:
   //  • every changed name needs a research note (already enforced above)
-  //  • every changed row needs a rationale (Lonwabo: "write a buy note")
+  //  • every changed row needs evidence: its attached research note is the
+  //    authoritative rationale; the short editor field is an optional IC
+  //    summary and must not duplicate an existing BUY/SELL research note
   //  • basket-level: a SELL action requires at least one BUY action and at least
   //    one ADD/INCREASE with shares>0 — otherwise the cash can't land anywhere
-  const rationalesMissing = changedTickers.filter((t) => !(rationaleBySymbol[t] ?? "").trim());
+  const rationalesMissing = changedTickers.filter(
+    (t) => !noteBySymbol.has(t) && !(rationaleBySymbol[t] ?? "").trim(),
+  );
   const sellActions = proposedComposition.filter((p) => p.action === "remove" || p.action === "decrease");
   const buyActions = proposedComposition.filter(
     (p) => (p.action === "add" || p.action === "increase") && (p.shares ?? 0) > 0,
@@ -736,7 +740,7 @@ export function RebalanceBuilderPage({
       return;
     }
     if (rationalesMissing.length) {
-      setError(`One-line rationale required for: ${rationalesMissing.join(", ")}. Tell the IC why.`);
+      setError(`Research or a one-line rationale is required for: ${rationalesMissing.join(", ")}.`);
       return;
     }
     if (impactQ.isFetching || !impactQ.data?.ok) {
@@ -832,7 +836,7 @@ export function RebalanceBuilderPage({
         : missingResearch.length > 0
       ? "Research missing for one or more changes"
       : rationalesMissing.length > 0
-        ? "Rationale required for one or more changes"
+        ? "Research or rationale required for one or more changes"
         : impactQ.isFetching
           ? "Calculating fee-adjusted client impact"
           : impactQ.data?.ok !== true
