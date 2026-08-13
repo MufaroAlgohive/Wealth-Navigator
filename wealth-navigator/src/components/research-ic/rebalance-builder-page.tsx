@@ -358,7 +358,10 @@ export function RebalanceBuilderPage({
     queryFn: async () =>
       (await fetch(`/api/research/notes?scope=${isTestStrategy ? "uat" : "live"}`, { cache: "no-store" })).json(),
   });
-  const notedSymbols = new Set((notesQ.data?.notes ?? []).map((nte) => String(nte.symbol).toUpperCase()));
+  // Notes are stored by their provider ticker in some older rows (e.g.
+  // AME.JO), while the rebalance model uses bare symbols (AME). Keep the
+  // research gate on the same canonical key as the basket.
+  const notedSymbols = new Set((notesQ.data?.notes ?? []).map((nte) => bare(String(nte.symbol))));
   const missingResearch = changedTickers.filter((t) => !notedSymbols.has(t));
   // On a real (non-test) strategy, don't just block submit on missing research
   // -- don't even offer the instrument as a buy target. Submitting without
@@ -372,7 +375,7 @@ export function RebalanceBuilderPage({
   const noteBySymbol = React.useMemo(() => {
     const m = new Map<string, { id: string; symbol: string; status: string; updated_at?: string }>();
     for (const n of notesQ.data?.notes ?? []) {
-      const k = String(n.symbol).toUpperCase();
+      const k = bare(String(n.symbol));
       const prev = m.get(k);
       if (!prev) {
         m.set(k, n);
@@ -392,10 +395,10 @@ export function RebalanceBuilderPage({
   // Symbol → R-SYM-NN researchRef code (matches the Lovable spec table). The
   // numeric suffix is the per-symbol approved-note count (1-based).
   const researchRefFor = (sym: string): string | undefined => {
-    const k = sym.toUpperCase();
+    const k = bare(sym);
     const note = noteBySymbol.get(k);
     if (!note) return undefined;
-    const sameSymbol = (notesQ.data?.notes ?? []).filter((n) => String(n.symbol).toUpperCase() === k);
+    const sameSymbol = (notesQ.data?.notes ?? []).filter((n) => bare(String(n.symbol)) === k);
     // Approved notes count first; otherwise 1 — keeps the code stable across edits.
     const approvedIdx = sameSymbol.filter((n) => n.status === "approved").findIndex((n) => n.id === note.id);
     const num = approvedIdx >= 0 ? approvedIdx + 1 : 1;
@@ -524,10 +527,14 @@ export function RebalanceBuilderPage({
 
   // Per-row gate flags surfaced in the table + Submit button:
   //  • every changed name needs a research note (already enforced above)
-  //  • every changed row needs a rationale (Lonwabo: "write a buy note")
+  //  • every changed row needs evidence: its attached research note is the
+  //    authoritative rationale; the short editor field is an optional IC
+  //    summary and must not duplicate an existing BUY/SELL research note
   //  • basket-level: a SELL action requires at least one BUY action and at least
   //    one ADD/INCREASE with shares>0 — otherwise the cash can't land anywhere
-  const rationalesMissing = changedTickers.filter((t) => !(rationaleBySymbol[t] ?? "").trim());
+  const rationalesMissing = changedTickers.filter(
+    (t) => !noteBySymbol.has(t) && !(rationaleBySymbol[t] ?? "").trim(),
+  );
   const sellActions = proposedComposition.filter((p) => p.action === "remove" || p.action === "decrease");
   const buyActions = proposedComposition.filter(
     (p) => (p.action === "add" || p.action === "increase") && (p.shares ?? 0) > 0,
@@ -736,7 +743,7 @@ export function RebalanceBuilderPage({
       return;
     }
     if (rationalesMissing.length) {
-      setError(`One-line rationale required for: ${rationalesMissing.join(", ")}. Tell the IC why.`);
+      setError(`Research or a one-line rationale is required for: ${rationalesMissing.join(", ")}.`);
       return;
     }
     if (impactQ.isFetching || !impactQ.data?.ok) {
@@ -832,7 +839,7 @@ export function RebalanceBuilderPage({
         : missingResearch.length > 0
       ? "Research missing for one or more changes"
       : rationalesMissing.length > 0
-        ? "Rationale required for one or more changes"
+        ? "Research or rationale required for one or more changes"
         : impactQ.isFetching
           ? "Calculating fee-adjusted client impact"
           : impactQ.data?.ok !== true
