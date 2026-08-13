@@ -215,7 +215,7 @@ export function RebalanceBuilderPage({
   // and each row needs its own rationale text before submit.
   const [rationaleBySymbol, setRationaleBySymbol] = React.useState<Record<string, string>>({});
   const setRationale = (sym: string, v: string) =>
-    setRationaleBySymbol((prev) => ({ ...prev, [sym.toUpperCase()]: v }));
+    setRationaleBySymbol((prev) => ({ ...prev, [bare(sym)]: v }));
   const [submitting, setSubmitting] = React.useState(false);
   const [pushingId, setPushingId] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -439,7 +439,7 @@ export function RebalanceBuilderPage({
         weight: 0,
         action,
         researchRef: researchRefFor(ticker),
-        rationale: rationaleBySymbol[ticker] || undefined,
+        rationale: rationaleBySymbol[bare(ticker)] || undefined,
       };
     });
   }, [legBuyBySymbol, baseByKey, priceOf, rationaleBySymbol]);
@@ -492,7 +492,7 @@ export function RebalanceBuilderPage({
         )
           ? undefined // Rating is in the note thesis; UI only renders the chip
           : undefined,
-        rationale: rationaleBySymbol[h.ticker.toUpperCase()] || undefined,
+        rationale: rationaleBySymbol[keyOf(h)] || undefined,
         fromWeight: b
           ? Number(
               (((priceOf(b.ticker) ?? 0) * b.shares) /
@@ -515,7 +515,7 @@ export function RebalanceBuilderPage({
         weight: 0,
         action: "remove" as CompAction,
         researchRef: researchRefFor(b.ticker),
-        rationale: rationaleBySymbol[b.ticker.toUpperCase()] || undefined,
+        rationale: rationaleBySymbol[keyOf(b)] || undefined,
       })),
     // Buys picked in the per-leg wizard — never written into `working` itself
     // (see chooseLegBuyInstrument), so they're folded in here instead.
@@ -1288,7 +1288,7 @@ export function RebalanceBuilderPage({
                                 <td className="px-5 py-2">
                                   {changed ? (
                                     <input
-                                      value={rationaleBySymbol[h.ticker.toUpperCase()] ?? ""}
+                                      value={rationaleBySymbol[keyOf(h)] ?? ""}
                                       onChange={(e) => setRationale(h.ticker, e.target.value)}
                                       placeholder={
                                         a === "decrease" || a === "remove"
@@ -1436,7 +1436,7 @@ export function RebalanceBuilderPage({
                       )}
                     </div>
                     <input
-                      value={rationaleBySymbol[holding.ticker.toUpperCase()] ?? ""}
+                      value={rationaleBySymbol[keyOf(holding)] ?? ""}
                       onChange={(e) => setRationale(holding.ticker, e.target.value)}
                       placeholder="One-line rationale for this change"
                       className="h-10 w-full rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 text-sm outline-none focus:border-primary/50"
