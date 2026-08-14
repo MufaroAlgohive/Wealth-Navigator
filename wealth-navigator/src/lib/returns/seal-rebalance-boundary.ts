@@ -63,7 +63,6 @@ export interface RebalanceExecutionEvidence {
 export async function recordRebalanceExecutionEvidence(
   retailDb: SupabaseClient,
   batchId: string,
-  strategyId: string,
   rows: RebalanceExecutionEvidence[],
 ): Promise<string | null> {
   for (const row of rows) {
@@ -83,7 +82,6 @@ export async function recordRebalanceExecutionEvidence(
     if (existing.data) continue;
     const inserted = await retailDb.from("rebalance_event").insert({
       batch_id: batchId,
-      strategy_id: strategyId,
       user_id: row.userId,
       family_member_id: row.familyMemberId,
       security_id: row.securityId,
@@ -294,7 +292,6 @@ export async function sealRebalanceBoundary(
   const eventError = await recordRebalanceExecutionEvidence(
     retailDb,
     batchId,
-    strategyId,
     params.executionEvidence ?? [],
   );
   if (eventError) return { sealed: false, error: eventError, batchId };

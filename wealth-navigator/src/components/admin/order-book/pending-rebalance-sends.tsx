@@ -89,11 +89,11 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   );
 
   const approvedQuery = usePolling<{ requests?: RebalanceRequestRow[] }>(
-    "/api/rebalance/requests?status=ic_approved",
+    `/api/rebalance/requests?status=ic_approved&scope=${scope}`,
     { interval: 15_000 },
   );
   const executedQuery = usePolling<{ requests?: RebalanceRequestRow[] }>(
-    "/api/rebalance/requests?status=executed",
+    `/api/rebalance/requests?status=executed&scope=${scope}`,
     { interval: 15_000 },
   );
 

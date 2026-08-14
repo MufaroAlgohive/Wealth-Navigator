@@ -44,7 +44,6 @@ describe("maybeCompleteRebalance", () => {
     expect(settlementMocks.recordRebalanceExecutionEvidence).toHaveBeenCalledWith(
       retailDb,
       "batch-1",
-      "strategy-1",
       [expect.objectContaining({ tradeSide: "SELL", avgFillCents: 1000 })],
     );
   });

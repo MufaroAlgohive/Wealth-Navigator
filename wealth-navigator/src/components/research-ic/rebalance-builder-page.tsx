@@ -739,6 +739,10 @@ export function RebalanceBuilderPage({
     setError(null);
     setSubmitSuccess(null);
     // Gates — short-circuit before opening the network tab.
+    if (changes === 0) {
+      setError("Make at least one increase, decrease, add, or removal before sending a rebalance to the IC.");
+      return;
+    }
     if (missingResearch.length) {
       setError(
         `Research required before submitting: ${missingResearch.join(", ")}. Add a note in the Research Library.`,
