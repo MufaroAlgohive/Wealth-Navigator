@@ -36,15 +36,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
   }
 
-  // This is the final release from the protected Rebalances queue into the
-  // Active Order Book. Re-authenticate the named master operator here, not
-  // just in the UI, so a direct request cannot bypass the confirmation.
-  const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
-  const stepUp = await requireMasterPassword(body.admin_password);
-  if (!stepUp.ok) {
-    return NextResponse.json({ ok: false, error: stepUp.error }, { status: stepUp.status });
-  }
-
   let db: ReturnType<typeof createInstitutionalServiceRoleClient> | null;
   try {
     db = createInstitutionalServiceRoleClient();
@@ -53,6 +44,29 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
   if (!db)
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
+
+  // UAT is a separately governed rehearsal environment. Its authorised IC
+  // approvers may progress an already-executed UAT rebalance without a Master
+  // password. LIVE remains step-up protected at the server boundary.
+  const requestRes = await db
+    .from("rebalance_request_c")
+    .select("environment_scope, status")
+    .eq("id", id)
+    .maybeSingle();
+  if (requestRes.error) return NextResponse.json({ ok: false, error: requestRes.error.message }, { status: 500 });
+  if (!requestRes.data) return NextResponse.json({ ok: false, error: "rebalance request not found" }, { status: 404 });
+  if (requestRes.data.status !== "executed") {
+    return NextResponse.json({ ok: false, error: "rebalance must be on the Rebalance tab before release" }, { status: 409 });
+  }
+
+  const isUat = String(requestRes.data.environment_scope ?? "live").toLowerCase() === "uat";
+  if (!isUat) {
+    const body = ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+    const stepUp = await requireMasterPassword(body.admin_password);
+    if (!stepUp.ok) {
+      return NextResponse.json({ ok: false, error: stepUp.error }, { status: stepUp.status });
+    }
+  }
 
   const { data, error } = await db
     .from("oems_order_audit")
