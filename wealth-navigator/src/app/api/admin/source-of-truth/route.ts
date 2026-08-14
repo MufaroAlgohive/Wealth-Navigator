@@ -129,6 +129,7 @@ async function listTruth(db: Db) {
     { data: profiles },
     { data: strategies },
     { data: strategyReturns },
+    { data: ledgerRows, error: ledgerError },
     excluded,
   ] = await Promise.all([
     db
@@ -145,9 +146,15 @@ async function listTruth(db: Db) {
       )
       .order("as_of_date", { ascending: false })
       .limit(4000),
+    db
+      .from("strategy_canonical_daily_ledger_c")
+      .select("strategy_id,as_of_date,certification_status,securities_value_cents,continuity_cash_cents,complete_value_cents,leg_snapshot,period_metrics,source_evidence,calculation_notes")
+      .order("as_of_date", { ascending: false })
+      .limit(1000),
     testUsers(db),
   ]);
   if (error) throw new Error(error.message);
+  if (ledgerError) throw new Error(`Canonical ledger: ${ledgerError.message}`);
   const profileMap = new Map((profiles ?? []).map((row) => [text(row.id), row]));
   const strategyMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
   const latestStrategyReturn = new Map<string, Row>();
@@ -199,6 +206,19 @@ async function listTruth(db: Db) {
         modelAsOf: model?.as_of_date ?? null,
       };
     }),
+    ledger: (ledgerRows ?? []).map((row) => ({
+      strategyId: text(row.strategy_id),
+      strategy: strategyMap.get(text(row.strategy_id))?.short_name || strategyMap.get(text(row.strategy_id))?.name || text(row.strategy_id),
+      asOf: text(row.as_of_date),
+      certificationStatus: text(row.certification_status),
+      securitiesCents: num(row.securities_value_cents),
+      continuityCashCents: num(row.continuity_cash_cents),
+      completeValueCents: num(row.complete_value_cents),
+      legs: Array.isArray(row.leg_snapshot) ? row.leg_snapshot : [],
+      periods: row.period_metrics && typeof row.period_metrics === "object" ? row.period_metrics : {},
+      evidence: row.source_evidence && typeof row.source_evidence === "object" ? row.source_evidence : {},
+      notes: row.calculation_notes && typeof row.calculation_notes === "object" ? row.calculation_notes : {},
+    })),
   };
 }
 

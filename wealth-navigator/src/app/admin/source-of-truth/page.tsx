@@ -8,6 +8,7 @@ import {
   DatabaseZap,
   Download,
   ExternalLink,
+  FileSpreadsheet,
   Info,
   RefreshCw,
   Search,
@@ -71,6 +72,19 @@ type Strategy = {
   modelSecuritiesCents?: number | null;
   modelCaCents?: number | null;
   modelAsOf?: string | null;
+};
+type LedgerRow = {
+  strategyId: string;
+  strategy: string;
+  asOf: string;
+  certificationStatus: string;
+  securitiesCents: number;
+  continuityCashCents: number;
+  completeValueCents: number;
+  legs: Array<Record<string, unknown>>;
+  periods: Record<string, { return_pct?: number; numerator_cents?: number; denominator_cents?: number; reference_date?: string }>;
+  evidence: Record<string, unknown>;
+  notes: Record<string, unknown>;
 };
 type Quote = {
   yahooSymbol: string;
@@ -538,9 +552,11 @@ function HoldingRows({ rows }: { rows: LiveHolding[] }) {
 }
 
 export default function SourceOfTruthPage() {
+  const [surface, setSurface] = useState<"overview" | "ledger">("overview");
   const [mode, setMode] = useState<"client" | "strategy">("client");
   const [positions, setPositions] = useState<Position[]>([]);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
+  const [ledger, setLedger] = useState<LedgerRow[]>([]);
   const [selected, setSelected] = useState<{ id: string; label: string } | null>(null);
   const [truth, setTruth] = useState<Truth | null>(null);
   const [query, setQuery] = useState("");
@@ -556,6 +572,7 @@ export default function SourceOfTruthPage() {
         if (!response.ok || !body.ok) throw new Error(body.error || "Could not load canonical index");
         setPositions(body.positions ?? []);
         setStrategies(body.strategies ?? []);
+        setLedger(body.ledger ?? []);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load source data"))
       .finally(() => setLoading(false));
@@ -675,8 +692,28 @@ export default function SourceOfTruthPage() {
             Run general health audit
           </Button>
         </div>
+        <div className="mt-5 flex w-fit rounded-xl border border-white/10 bg-black/15 p-1">
+          {([
+            ["overview", "Overview", DatabaseZap],
+            ["ledger", "Ledger", FileSpreadsheet],
+          ] as const).map(([item, label, Icon]) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setSurface(item)}
+              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${surface === item ? "bg-violet-500 text-white shadow-lg shadow-violet-500/20" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
+        </div>
       </header>
 
+      {surface === "ledger" ? (
+        <LedgerWorkbook rows={ledger} loading={loading} />
+      ) : (
+        <>
       <section className="relative overflow-hidden rounded-2xl border border-violet-400/20 bg-card/70 p-4">
         <div className="pointer-events-none absolute inset-x-0 top-0 h-px animate-pulse bg-gradient-to-r from-transparent via-cyan-300 to-transparent" />
         <div className="mb-4 flex items-center justify-between">
@@ -1056,6 +1093,8 @@ export default function SourceOfTruthPage() {
           </div>
         </details>
       )}
+        </>
+      )}
     </main>
   );
 }
@@ -1065,6 +1104,69 @@ const severityStyle = {
   warning: "border-amber-400/30 bg-amber-400/10 text-amber-200",
   urgent: "border-red-500/40 bg-red-500/15 text-red-300",
 };
+
+function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean }) {
+  const latest = useMemo(() => {
+    const byStrategy = new Map<string, LedgerRow>();
+    for (const row of rows) if (!byStrategy.has(row.strategyId)) byStrategy.set(row.strategyId, row);
+    return [...byStrategy.values()].sort((a, b) => a.strategy.localeCompare(b.strategy));
+  }, [rows]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = latest.find((row) => row.strategyId === selectedId) ?? latest[0] ?? null;
+  const status = selected?.certificationStatus === "CERTIFIED" ? "ok" : "warning";
+  const unresolved = Array.isArray(selected?.notes?.unresolved_evidence)
+    ? selected.notes.unresolved_evidence.map(String)
+    : [];
+  const periods = ["1D", "1W", "WTD", "1M", "3M", "YTD", "SI"];
+
+  if (loading) return <div className="rounded-2xl border border-white/10 bg-card/70 p-10 text-center text-sm text-muted-foreground">Loading canonical ledger…</div>;
+  if (!selected) return <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-8 text-sm text-amber-200">No canonical ledger rows have been staged yet.</div>;
+
+  return (
+    <section className="overflow-hidden rounded-2xl border border-violet-400/25 bg-card/80 shadow-[0_24px_80px_-45px_rgba(139,92,246,.9)]">
+      <div className="border-b border-white/10 bg-gradient-to-r from-violet-500/15 via-fuchsia-500/5 to-transparent p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-violet-300"><FileSpreadsheet className="h-4 w-4" /> Canonical strategy ledger</div>
+            <h2 className="mt-2 text-xl font-semibold">Excel-style audit workbook</h2>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Database-backed model legs and all return ranges. This surface displays the stored canonical record; it never recalculates a return in the browser.</p>
+          </div>
+          <StatusLight severity={status} />
+        </div>
+        <div className="mt-5 flex gap-2 overflow-x-auto pb-1">
+          {latest.map((row) => (
+            <button key={row.strategyId} type="button" onClick={() => setSelectedId(row.strategyId)} className={`shrink-0 rounded-lg border px-3 py-2 text-sm transition ${selected.strategyId === row.strategyId ? "border-violet-300/60 bg-violet-500/20 text-violet-100" : "border-white/10 bg-black/10 text-muted-foreground hover:border-violet-300/30 hover:text-foreground"}`}>
+              {row.strategy}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-3 border-b border-white/10 p-4 sm:grid-cols-2 xl:grid-cols-4">
+        <LedgerStat label="As of close" value={when(selected.asOf)} />
+        <LedgerStat label="Securities" value={money(selected.securitiesCents)} />
+        <LedgerStat label="Continuity cash" value={money(selected.continuityCashCents)} className="text-emerald-300" />
+        <LedgerStat label="Complete value" value={money(selected.completeValueCents)} />
+      </div>
+
+      <div className="grid gap-5 p-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(330px,.8fr)]">
+        <div className="overflow-hidden rounded-xl border border-white/10">
+          <div className="border-b border-white/10 bg-white/[0.025] px-4 py-3 text-sm font-semibold">Return range ledger</div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[620px] text-left text-xs"><thead className="border-b border-white/10 text-[10px] uppercase tracking-wider text-muted-foreground"><tr><th className="p-3">Range</th><th className="p-3">Reference date</th><th className="p-3">P/L</th><th className="p-3">Opening value</th><th className="p-3">Return</th></tr></thead><tbody>{periods.map((range) => { const metric = selected.periods[range] ?? {}; return <tr key={range} className="border-b border-white/5 last:border-0 hover:bg-violet-500/[0.035]"><td className="p-3 font-semibold text-violet-200">{range}</td><td className="p-3">{when(metric.reference_date)}</td><td className={`p-3 tabular-nums ${Number(metric.numerator_cents) >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{money(metric.numerator_cents)}</td><td className="p-3 tabular-nums">{money(metric.denominator_cents)}</td><td className={`p-3 font-semibold tabular-nums ${Number(metric.return_pct) >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{pct(metric.return_pct)}</td></tr>; })}</tbody></table></div>
+        </div>
+        <div className="space-y-3">
+          <div className="rounded-xl border border-white/10 bg-black/10 p-4 text-xs"><div className="font-semibold">Value identity</div><div className="mt-3 flex items-center justify-between text-muted-foreground"><span>Securities + continuity cash</span><span className="tabular-nums text-foreground">{money(selected.securitiesCents)} + {money(selected.continuityCashCents)}</span></div><div className="mt-2 flex items-center justify-between border-t border-white/10 pt-2 font-semibold"><span>Complete value</span><span className="tabular-nums">{money(selected.completeValueCents)}</span></div></div>
+          <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-4 text-xs"><div className="font-semibold text-amber-200">Evidence status</div><div className="mt-2 text-muted-foreground">{selected.certificationStatus === "CERTIFIED" ? "Certified values may be read by app surfaces." : "Draft only. This row cannot replace public app/OEM returns."}</div>{unresolved.length > 0 && <ul className="mt-3 space-y-1 text-amber-200">{unresolved.map((item) => <li key={item}>• {item.replaceAll("_", " ")}</li>)}</ul>}</div>
+        </div>
+      </div>
+      <div className="border-t border-white/10 p-4"><div className="mb-3 flex items-center justify-between"><div className="text-sm font-semibold">Model-leg evidence</div><span className="text-xs text-muted-foreground">{selected.legs.length} legs</span></div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead className="border-b border-white/10 text-[10px] uppercase tracking-wider text-muted-foreground"><tr><th className="p-3">Ticker</th><th className="p-3">Entry</th><th className="p-3">Exit</th><th className="p-3">Units</th><th className="p-3">Entry price</th><th className="p-3">Evidence</th></tr></thead><tbody>{selected.legs.map((leg, index) => <tr key={`${String(leg.leg_id)}-${index}`} className="border-b border-white/5 last:border-0"><td className="p-3 font-semibold">{String(leg.ticker ?? "—")}</td><td className="p-3">{when(String(leg.entry_date ?? ""))}</td><td className="p-3">{when(String(leg.exit_date ?? ""))}</td><td className="p-3 tabular-nums">{String(leg.units ?? "—")}</td><td className="p-3 tabular-nums">{money(Number(leg.entry_price_cents ?? 0))}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-[10px] ${String(leg.source ?? "").includes("MODELED") ? "bg-amber-400/15 text-amber-200" : "bg-emerald-400/10 text-emerald-300"}`}>{String(leg.source ?? "UNKNOWN")}</span></td></tr>)}</tbody></table></div></div>
+    </section>
+  );
+}
+
+function LedgerStat({ label, value, className }: { label: string; value: string; className?: string }) {
+  return <div className="rounded-xl border border-white/10 bg-black/10 p-3"><div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">{label}</div><div className={cn("mt-1 text-lg font-semibold tabular-nums", className)}>{value}</div></div>;
+}
 
 function StatusLight({ severity }: { severity: "ok" | "warning" | "urgent" }) {
   return (
