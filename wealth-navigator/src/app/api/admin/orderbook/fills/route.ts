@@ -532,7 +532,7 @@ export async function POST(req: Request) {
             // leg, every client — has actually finished, same trigger as the
             // model flip above.
             const cash = outcome.completed
-              ? await settleRebalanceCashForClients(retailDb as SupabaseClient, db, rid)
+              ? await settleRebalanceCashForClients(retailDb as SupabaseClient, db, rid, outcome.settlementBatchId)
               : null;
             return { rebalance_request_id: rid, ...outcome, cashSettlement: cash };
           }),

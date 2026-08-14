@@ -33,8 +33,13 @@ export async function settleRebalanceCashForClients(
   retailDb: SupabaseClient,
   institutionalDb: SupabaseClient,
   rebalanceRequestId: string,
+  settlementBatchId: string | undefined,
 ): Promise<SettleRebalanceCashResult> {
   const result: SettleRebalanceCashResult = { settledUserIds: [], errors: [] };
+  if (!settlementBatchId) {
+    result.errors.push("cash evidence requires the completed retail settlement batch");
+    return result;
+  }
 
   const feeRes = await retailDb.from("app_settings").select("value").eq("key", "fees").limit(1).maybeSingle();
   const feeValue = feeRes.data?.value as Record<string, unknown> | null;
@@ -66,6 +71,7 @@ export async function settleRebalanceCashForClients(
     byUser.set(uid, list);
   }
 
+  const settlements: Record<string, unknown>[] = [];
   for (const [userId, userOrders] of byUser) {
     try {
       let grossSellCents = 0;
@@ -127,6 +133,7 @@ export async function settleRebalanceCashForClients(
       }
 
       let reserveCents = 0;
+      let bufferConsumedCents = 0;
       if (transactionId) {
         const { data: txn } = await retailDb
           .from("transactions")
@@ -134,6 +141,7 @@ export async function settleRebalanceCashForClients(
           .eq("id", transactionId)
           .maybeSingle();
         if (txn) {
+          bufferConsumedCents = Number(txn.buffer_consumed_cents ?? 0);
           reserveCents = Math.max(0, Number(txn.buffer_cents ?? 0) - Number(txn.buffer_consumed_cents ?? 0));
         }
       }
@@ -173,54 +181,43 @@ export async function settleRebalanceCashForClients(
       // its own contribution and carries the rest through, so adding here is
       // safe in either order.
       //
-      // These fees get no `buffer_drawdowns_c` row of their own: that table's
-      // `event_type` CHECK is a closed set (slippage_drawdown / shortfall), so
-      // giving rebalance fees a ledger entry needs a migration. Until then the
-      // column itself is the only record of this draw.
-      if (transactionId && bridge.reserveUsedCents > 0) {
-        const { data: txn } = await retailDb
-          .from("transactions")
-          .select("buffer_consumed_cents")
-          .eq("id", transactionId)
-          .maybeSingle();
-        await retailDb
-          .from("transactions")
-          .update({
-            buffer_consumed_cents: Number(txn?.buffer_consumed_cents ?? 0) + bridge.reserveUsedCents,
-          })
-          .eq("id", transactionId);
-      }
-
-      if (realStrategyRowId) {
-        const { data: existing } = await retailDb
-          .from("strategy_rebalance_residuals")
-          .select("user_id")
-          .eq("user_id", userId)
-          .eq("strategy_id", realStrategyRowId)
-          .is("family_member_id", null)
-          .maybeSingle();
-        if (existing) {
-          await retailDb
-            .from("strategy_rebalance_residuals")
-            .update({ balance_cents: bridge.strategyCashAfterCents, updated_at: new Date().toISOString() })
-            .eq("user_id", userId)
-            .eq("strategy_id", realStrategyRowId)
-            .is("family_member_id", null);
-        } else {
-          await retailDb.from("strategy_rebalance_residuals").insert({
-            user_id: userId,
-            strategy_id: realStrategyRowId,
-            balance_cents: bridge.strategyCashAfterCents,
-          });
-        }
-      }
-
-      result.settledUserIds.push(userId);
+      // The atomic database function below writes both the reserve evidence
+      // and the residual-cash evidence, then changes these balances in the
+      // same transaction. It refuses a stale opening balance rather than
+      // risking an unreconcilable cash trail.
+      if (!realStrategyRowId) throw new Error("settled rebalance client has no retail strategy identity");
+      settlements.push({
+        user_id: userId,
+        strategy_id: realStrategyRowId,
+        transaction_id: transactionId,
+        opening_residual_cents: residualCents,
+        closing_residual_cents: bridge.strategyCashAfterCents,
+        reserve_before_cents: reserveCents,
+        reserve_used_cents: bridge.reserveUsedCents,
+        reserve_after_cents: bridge.reserveAfterCents,
+        requested_fee_cents: bridge.totalFeesCents,
+        fee_shortfall_cents: bridge.feeShortfallCents,
+        expected_buffer_consumed_cents: bufferConsumedCents,
+        gross_sell_cents: bridge.grossSellCents,
+        gross_buy_cents: bridge.grossBuyCents,
+      });
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
     }
   }
 
+  // Do not write a subset of owners: the reconciliation contract requires
+  // one immutable cash/reserve pair for every affected owner in the batch.
+  if (settlements.length === 0 || result.errors.length > 0) return result;
+  const recorded = await retailDb.rpc("record_rebalance_cash_settlement", {
+    p_batch_id: settlementBatchId,
+    p_settlements: settlements,
+  });
+  if (recorded.error) {
+    result.errors.push(`cash evidence write failed: ${recorded.error.message}`);
+    return result;
+  }
+  result.settledUserIds = settlements.map((item) => String(item.user_id));
   return result;
 
   async function resolveStrategyRowId(userOrders: FilledOrder[]): Promise<string | null> {

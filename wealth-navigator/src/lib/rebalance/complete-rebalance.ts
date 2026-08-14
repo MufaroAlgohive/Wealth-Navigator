@@ -304,6 +304,7 @@ export async function maybeCompleteRebalance(
   return {
     completed: true,
     scope: "strategy",
+    settlementBatchId: boundary.batchId,
     boundary: {
       sealed: true,
       ytdPct: boundary.ytdPct,

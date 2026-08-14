@@ -53,6 +53,6 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (!completion.completed) {
     return NextResponse.json({ ok: false, completion, error: completion.error ?? "rebalance is not ready for settlement" }, { status: 409 });
   }
-  const cashSettlement = await settleRebalanceCashForClients(retail, institutional, id);
+  const cashSettlement = await settleRebalanceCashForClients(retail, institutional, id, completion.settlementBatchId);
   return NextResponse.json({ ok: true, completion, cashSettlement });
 }
