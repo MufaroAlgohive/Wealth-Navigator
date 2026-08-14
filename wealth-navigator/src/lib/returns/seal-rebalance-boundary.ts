@@ -233,6 +233,8 @@ export async function sealRebalanceBoundary(
      */
     allowEmptyHoldings?: boolean;
     holdingsBefore?: unknown;
+    /** Filled broker rows to persist before this strategy boundary is finalized. */
+    executionEvidence?: RebalanceExecutionEvidence[];
     effectiveAt?: Date;
   },
 ): Promise<SealBoundaryResult> {
