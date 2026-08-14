@@ -75,6 +75,7 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   const [bookingId, setBookingId] = React.useState<string | null>(null);
   const [cancellingId, setCancellingId] = React.useState<string | null>(null);
   const [releasingId, setReleasingId] = React.useState<string | null>(null);
+  const [completingId, setCompletingId] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [expandedHistory, setExpandedHistory] = React.useState<Set<string>>(new Set());
   const [showHistory, setShowHistory] = React.useState(false);
@@ -160,6 +161,22 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
       await executedQuery.refresh();
     } finally {
       setReleasingId(null);
+    }
+  }
+
+  async function retryUatSettlement(id: string) {
+    setCompletingId(id);
+    try {
+      const res = await fetch(`/api/rebalance/requests/${id}/retry-settlement`, { method: "POST" });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        window.alert(body.error ?? "UAT settlement could not be completed.");
+      } else {
+        window.alert("UAT rebalance settlement completed. Refresh the strategy to see the updated model basket.");
+      }
+      await executedQuery.refresh();
+    } finally {
+      setCompletingId(null);
     }
   }
 
@@ -274,6 +291,8 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                 }
                 releasing={releasingId === r.id}
                 onRelease={() => releaseToOrderBook(r.id)}
+                completing={completingId === r.id}
+                onRetrySettlement={scope === "uat" ? () => retryUatSettlement(r.id) : undefined}
               />
             ))
           )}
@@ -289,12 +308,16 @@ function BookedRebalanceRow({
   onToggle,
   releasing,
   onRelease,
+  completing,
+  onRetrySettlement,
 }: {
   r: RebalanceRequestRow;
   open: boolean;
   onToggle: () => void;
   releasing: boolean;
   onRelease: () => Promise<void>;
+  completing: boolean;
+  onRetrySettlement?: () => Promise<void>;
 }) {
   const ordersQuery = usePolling<{ orders?: BookedOrder[] }>(`/api/rebalance/requests/${r.id}/orders`, {
     interval: open ? 10_000 : 60_000,
@@ -303,6 +326,7 @@ function BookedRebalanceRow({
   const orders = ordersQuery.data?.orders ?? [];
   const stillParked = orders.filter((o) => o.source === "PAPER_MODEL_REBALANCE" && o.status === "parked");
   const released = orders.length > 0 && stillParked.length === 0;
+  const allFilled = orders.length > 0 && orders.every((o) => o.status === "filled");
 
   // onRelease only refreshes the parent's request list — this row's own
   // order table polls separately (up to 10s while expanded) and wouldn't
@@ -342,6 +366,11 @@ function BookedRebalanceRow({
                   <Rocket className="mr-1.5 h-3.5 w-3.5" /> Send to Order Book
                 </>
               )}
+            </Button>
+          ) : null}
+          {allFilled && onRetrySettlement ? (
+            <Button type="button" size="sm" variant="outline" onClick={onRetrySettlement} disabled={completing}>
+              {completing ? <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Settling...</> : "Retry settlement"}
             </Button>
           ) : null}
         </div>
