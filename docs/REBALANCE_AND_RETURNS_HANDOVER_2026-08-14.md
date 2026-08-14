@@ -153,6 +153,52 @@ Before implementing this, inspect the current book key construction in:
 
 The correct durable key is the rebalance request ID, not strategy name.
 
+## UAT settlement proof — REB-2026-002
+
+The UAT STX500-to-AME test completed successfully after the post-fill recovery
+path was used.
+
+| Evidence | Verified result |
+| --- | --- |
+| Filled order legs | 6: each of three test owners sold 2 STX500 and bought 1 AME |
+| Execution source | UAT self-fill only; no live broker order |
+| Settlement batch | `e3bfb777-1031-4abd-92e5-41e1f3dcbddd`, `SETTLED` / `COMPLETE` on 14 Aug 2026 |
+| Model result | STX500 `5 -> 3`; AME `11 -> 12`; model weights updated in OEM |
+| Execution evidence | 6 immutable `rebalance_event` rows with fill prices/dates |
+| Return boundary | Sealed against that batch; complete value and chain preserved |
+
+The first settlement attempt failed safely because the OEM institutional auth
+user was not a retail `auth.users` ID, while `rebalance_batch.created_by` has a
+retail foreign key. Commit `8912dcf` resolves the actor to a valid retail
+owner for this cross-project attribution case. The recovery endpoint is
+UAT-only and idempotent only for incomplete settlement; do not click it again
+after a successful batch exists.
+
+### Cash/reserve audit gap discovered by this test
+
+The UAT fill did update client residual balances and execution reserve
+consumption, but it did **not** write
+`strategy_rebalance_cash_events_c` or
+`strategy_rebalance_reserve_events_c`. This is because the current
+`settleRebalanceCashForClients` implementation updates residuals/transactions
+directly and has no batch ID argument.
+
+Do not backfill this completed test with invented opening balances. There is no
+pre-settlement residual snapshot retained for the exact batch. For all future
+settlements, replace the direct multi-step writes with one idempotent,
+transactional retail RPC that:
+
+1. receives the exact `rebalance_batch.id` returned by completion;
+2. locks/reads the opening residual and reserve;
+3. calculates the documented proceeds bridge from actual fills;
+4. inserts one immutable cash event and one reserve event per affected owner;
+5. updates the residual and reserve consumption in the same transaction;
+6. rejects a duplicate batch/owner event if values disagree.
+
+Then the existing CA-reconciliation migration can require those events without
+leaving an audit hole. This is an implementation requirement before calling
+the LIVE cash ledger fully audit-complete.
+
 ## Returns/Excel programme — the main remaining goal
 
 ### Target design
