@@ -1,0 +1,66 @@
+import { describe, expect, it, vi } from "vitest";
+
+const settlementMocks = vi.hoisted(() => ({
+  sealRebalanceBoundary: vi.fn(),
+  recordRebalanceSettlement: vi.fn(),
+}));
+
+vi.mock("@/lib/returns/seal-rebalance-boundary", () => ({
+  sealRebalanceBoundary: settlementMocks.sealRebalanceBoundary,
+  recordRebalanceSettlement: settlementMocks.recordRebalanceSettlement,
+}));
+
+import { maybeCompleteRebalance } from "./complete-rebalance";
+
+function chain(result: unknown) {
+  const api: Record<string, unknown> = {};
+  for (const method of ["select", "eq", "in"]) api[method] = () => api;
+  api.maybeSingle = () => Promise.resolve(result);
+  api.then = (resolve: (value: unknown) => unknown) => Promise.resolve(result).then(resolve);
+  return api;
+}
+
+describe("maybeCompleteRebalance", () => {
+  it("never flips model holdings if sealing the return boundary fails", async () => {
+    settlementMocks.sealRebalanceBoundary.mockResolvedValue({ sealed: false, error: "missing close" });
+    const retailUpdate = vi.fn(() => chain({ data: null, error: null }));
+    const retailDb = {
+      from: vi.fn((table: string) => {
+        if (table === "securities_c") return chain({ data: [{ symbol: "ABC.JO", last_price: 1000 }], error: null });
+        if (table === "strategies_c") {
+          return {
+            select: () => chain({ data: { id: "strategy-1", holdings: [{ symbol: "OLD.JO", shares: 1 }] }, error: null }),
+            update: retailUpdate,
+          };
+        }
+        throw new Error(`unexpected retail table: ${table}`);
+      }),
+    };
+    const institutionalDb = {
+      from: vi.fn((table: string) => {
+        if (table === "oems_order_audit") {
+          return chain({ data: [{ status: "filled", payload: { user_id: "user-1" } }], error: null });
+        }
+        if (table === "rebalance_request_c") {
+          return {
+            select: () => chain({
+              data: {
+                strategy_id: "Strategy Name",
+                affected_investors: { scope: "strategy" },
+                proposed_composition: [{ ticker: "ABC.JO", shares: 2, action: "increase" }],
+              },
+              error: null,
+            }),
+          };
+        }
+        throw new Error(`unexpected institutional table: ${table}`);
+      }),
+    };
+
+    const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
+
+    expect(outcome).toMatchObject({ completed: false, error: expect.stringContaining("return boundary not sealed") });
+    expect(settlementMocks.sealRebalanceBoundary).toHaveBeenCalledOnce();
+    expect(retailUpdate).not.toHaveBeenCalled();
+  });
+});
