@@ -139,18 +139,19 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   }
 
   async function releaseToOrderBook(id: string) {
-    const adminPassword = window.prompt(
+    let adminPassword: string | null = null;
+    if (scope === "live") adminPassword = window.prompt(
       "Send this rebalance from the protected Rebalances queue to the Active Order Book.\n\n" +
         "Re-enter your own password to confirm — only Master ★ accounts can release orders.",
     );
-    if (adminPassword == null || adminPassword === "") return;
+    if (scope === "live" && (adminPassword == null || adminPassword === "")) return;
 
     setReleasingId(id);
     try {
       const res = await fetch(`/api/rebalance/requests/${id}/release-to-orderbook`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ admin_password: adminPassword }),
+        body: JSON.stringify(scope === "live" ? { admin_password: adminPassword } : {}),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !body.ok) {
