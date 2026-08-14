@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { recordRebalanceSettlement, sealRebalanceBoundary } from "@/lib/returns/seal-rebalance-boundary";
+import { recordRebalanceSettlement, sealRebalanceBoundary, type RebalanceExecutionEvidence } from "@/lib/returns/seal-rebalance-boundary";
 
 /**
  * Once every order booked for a rebalance (reconcile-parked-holdings.ts /
@@ -68,12 +68,15 @@ export async function maybeCompleteRebalance(
 ): Promise<CompleteRebalanceResult> {
   const siblingsRes = await institutionalDb
     .from("oems_order_audit")
-    .select("status, payload")
+    .select("status,side,quantity,payload,result_payload")
     .eq("payload->>rebalance_request_id", rebalanceRequestId);
   if (siblingsRes.error) return { completed: false, error: siblingsRes.error.message };
   const siblings = (siblingsRes.data ?? []) as Array<{
     status: string;
+    side?: string | null;
+    quantity?: number | null;
     payload: Record<string, unknown> | null;
+    result_payload?: Record<string, unknown> | null;
   }>;
   if (siblings.length === 0) return { completed: false };
   const allDone = siblings.every((r) => ["filled", "cancelled", "rejected"].includes(r.status));
@@ -116,6 +119,32 @@ export async function maybeCompleteRebalance(
     }
   }
   const affectedOwners = [...owners.values()];
+  const executionEvidence: RebalanceExecutionEvidence[] = [];
+  for (const sibling of siblings.filter((row) => row.status === "filled")) {
+    const payload = sibling.payload ?? {};
+    const userId = typeof payload.user_id === "string" ? payload.user_id : "";
+    const securityId = typeof payload.security_id === "string" ? payload.security_id : "";
+    const side = String(sibling.side ?? "").toUpperCase();
+    const tradeSide = side === "BUY" ? "BUY" : side === "SELL" ? "SELL" : null;
+    const quantity = Number(payload.filled ?? sibling.quantity ?? 0);
+    const avgFillCents = Number(sibling.result_payload?.avgFillPrice ?? payload.avgPx ?? 0);
+    const fillDate = typeof payload.lastFillAt === "string" ? payload.lastFillAt.slice(0, 10) : "";
+    if (!userId || !securityId || !tradeSide || !(quantity > 0) || !(avgFillCents > 0) || !fillDate) {
+      return { completed: false, error: "filled rebalance order is missing immutable execution evidence" };
+    }
+    executionEvidence.push({
+      userId,
+      familyMemberId: typeof payload.family_member_id === "string" ? payload.family_member_id : null,
+      securityId,
+      tradeSide,
+      quantity,
+      avgFillCents,
+      fillDate,
+    });
+  }
+  if (executionEvidence.length === 0) {
+    return { completed: false, error: "rebalance has no filled execution evidence" };
+  }
 
   const reqRes = await institutionalDb
     .from("rebalance_request_c")
@@ -236,6 +265,7 @@ export async function maybeCompleteRebalance(
     // complete value into continuity cash, which is exactly right: the
     // strategy still holds what it held, just as cash rather than stock.
     allowEmptyHoldings: isLiquidation,
+    executionEvidence,
   });
   if (!boundary.sealed) {
     return {

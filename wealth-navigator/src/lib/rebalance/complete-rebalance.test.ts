@@ -21,6 +21,20 @@ function chain(result: unknown) {
 }
 
 describe("maybeCompleteRebalance", () => {
+  it("does not complete a rebalance with no filled execution evidence", async () => {
+    const retailDb = { from: vi.fn() };
+    const institutionalDb = {
+      from: vi.fn(() => ({
+        select: () => chain({ data: [{ status: "cancelled", payload: {} }], error: null }),
+      })),
+    };
+
+    const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
+
+    expect(outcome).toMatchObject({ completed: false, error: "rebalance has no filled execution evidence" });
+    expect(settlementMocks.sealRebalanceBoundary).not.toHaveBeenCalled();
+  });
+
   it("never flips model holdings if sealing the return boundary fails", async () => {
     settlementMocks.sealRebalanceBoundary.mockResolvedValue({ sealed: false, error: "missing close" });
     const retailUpdate = vi.fn(() => chain({ data: null, error: null }));
@@ -39,7 +53,21 @@ describe("maybeCompleteRebalance", () => {
     const institutionalDb = {
       from: vi.fn((table: string) => {
         if (table === "oems_order_audit") {
-          return chain({ data: [{ status: "filled", payload: { user_id: "user-1" } }], error: null });
+          return chain({
+            data: [{
+              status: "filled",
+              side: "buy",
+              quantity: 2,
+              payload: {
+                user_id: "user-1",
+                security_id: "security-1",
+                filled: 2,
+                lastFillAt: "2026-08-14T12:00:00.000Z",
+              },
+              result_payload: { avgFillPrice: 1000 },
+            }],
+            error: null,
+          });
         }
         if (table === "rebalance_request_c") {
           return {

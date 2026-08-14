@@ -49,6 +49,56 @@ export interface RecordSettlementResult {
   error?: string;
 }
 
+/** A broker-confirmed execution row to preserve in the retail audit ledger. */
+export interface RebalanceExecutionEvidence {
+  userId: string;
+  familyMemberId: string | null;
+  securityId: string;
+  tradeSide: "BUY" | "SELL";
+  quantity: number;
+  avgFillCents: number;
+  fillDate: string;
+}
+
+async function recordExecutionEvidence(
+  retailDb: SupabaseClient,
+  batchId: string,
+  strategyId: string,
+  rows: RebalanceExecutionEvidence[],
+): Promise<string | null> {
+  for (const row of rows) {
+    if (!row.userId || !row.securityId || !(row.quantity > 0) || !(row.avgFillCents > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(row.fillDate)) {
+      return "invalid rebalance execution evidence";
+    }
+    const existing = await retailDb
+      .from("rebalance_event")
+      .select("id")
+      .eq("batch_id", batchId)
+      .eq("user_id", row.userId)
+      .eq("security_id", row.securityId)
+      .eq("trade_side", row.tradeSide)
+      .eq("quantity", row.quantity)
+      .maybeSingle();
+    if (existing.error) return `rebalance_event lookup failed: ${existing.error.message}`;
+    if (existing.data) continue;
+    const inserted = await retailDb.from("rebalance_event").insert({
+      batch_id: batchId,
+      strategy_id: strategyId,
+      user_id: row.userId,
+      family_member_id: row.familyMemberId,
+      security_id: row.securityId,
+      trade_side: row.tradeSide,
+      quantity: row.quantity,
+      price_at_commit: row.avgFillCents,
+      avg_fill: row.avgFillCents,
+      fill_date: row.fillDate,
+      closed_reason: row.tradeSide === "BUY" ? "REBALANCE_EVENT_BUY" : "REBALANCE_EVENT_SELL",
+    });
+    if (inserted.error) return `rebalance_event insert failed: ${inserted.error.message}`;
+  }
+  return null;
+}
+
 /**
  * Record the settlement itself: one SETTLED `rebalance_batch` naming the
  * owners it moved.
@@ -73,6 +123,8 @@ export async function recordRebalanceSettlement(
     holdings: BoundaryHolding[];
     actorId: string;
     owners: BoundaryOwner[];
+    /** Filled broker executions; written before the strategy composition can flip. */
+    executionEvidence?: RebalanceExecutionEvidence[];
     holdingsBefore?: unknown;
     effectiveAt?: Date;
   },
@@ -233,6 +285,17 @@ export async function sealRebalanceBoundary(
     return { sealed: false, error: recorded.error ?? "settlement batch not recorded" };
   }
   const batchId = recorded.batchId;
+
+  // A batch without its execution rows cannot later explain the model legs
+  // that changed. Refuse the boundary (and therefore the composition flip)
+  // rather than leave a plausible-looking but unverifiable rebalance behind.
+  const eventError = await recordExecutionEvidence(
+    retailDb,
+    batchId,
+    strategyId,
+    params.executionEvidence ?? [],
+  );
+  if (eventError) return { sealed: false, error: eventError, batchId };
 
   const rpcRes = await retailDb.rpc("finalize_rebalance_return_boundary", {
     p_batch_id: batchId,
