@@ -1,6 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { recordRebalanceSettlement, sealRebalanceBoundary, type RebalanceExecutionEvidence } from "@/lib/returns/seal-rebalance-boundary";
+import {
+  recordRebalanceExecutionEvidence,
+  recordRebalanceSettlement,
+  sealRebalanceBoundary,
+  type RebalanceExecutionEvidence,
+} from "@/lib/returns/seal-rebalance-boundary";
 
 /**
  * Once every order booked for a rebalance (reconcile-parked-holdings.ts /
@@ -194,6 +199,22 @@ export async function maybeCompleteRebalance(
       return {
         completed: false,
         error: `client rebalance boundary not recorded: ${recorded.error}`,
+        scope: "single_user",
+      };
+    }
+    if (!recorded.batchId) {
+      return { completed: false, error: "client rebalance recorded no batch id", scope: "single_user" };
+    }
+    const eventError = await recordRebalanceExecutionEvidence(
+      retailDb,
+      recorded.batchId,
+      singleStrategyId,
+      executionEvidence,
+    );
+    if (eventError) {
+      return {
+        completed: false,
+        error: `client rebalance execution evidence not recorded: ${eventError}`,
         scope: "single_user",
       };
     }

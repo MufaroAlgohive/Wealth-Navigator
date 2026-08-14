@@ -60,7 +60,7 @@ export interface RebalanceExecutionEvidence {
   fillDate: string;
 }
 
-async function recordExecutionEvidence(
+export async function recordRebalanceExecutionEvidence(
   retailDb: SupabaseClient,
   batchId: string,
   strategyId: string,
@@ -289,7 +289,7 @@ export async function sealRebalanceBoundary(
   // A batch without its execution rows cannot later explain the model legs
   // that changed. Refuse the boundary (and therefore the composition flip)
   // rather than leave a plausible-looking but unverifiable rebalance behind.
-  const eventError = await recordExecutionEvidence(
+  const eventError = await recordRebalanceExecutionEvidence(
     retailDb,
     batchId,
     strategyId,

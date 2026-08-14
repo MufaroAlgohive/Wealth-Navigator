@@ -3,11 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 const settlementMocks = vi.hoisted(() => ({
   sealRebalanceBoundary: vi.fn(),
   recordRebalanceSettlement: vi.fn(),
+  recordRebalanceExecutionEvidence: vi.fn(),
 }));
 
 vi.mock("@/lib/returns/seal-rebalance-boundary", () => ({
   sealRebalanceBoundary: settlementMocks.sealRebalanceBoundary,
   recordRebalanceSettlement: settlementMocks.recordRebalanceSettlement,
+  recordRebalanceExecutionEvidence: settlementMocks.recordRebalanceExecutionEvidence,
 }));
 
 import { maybeCompleteRebalance } from "./complete-rebalance";
@@ -21,6 +23,32 @@ function chain(result: unknown) {
 }
 
 describe("maybeCompleteRebalance", () => {
+  it("records execution events for a completed single-client rebalance", async () => {
+    settlementMocks.recordRebalanceSettlement.mockResolvedValue({ batchId: "batch-1" });
+    settlementMocks.recordRebalanceExecutionEvidence.mockResolvedValue(null);
+    const retailDb = {
+      from: vi.fn(() => ({ select: () => chain({ data: { id: "strategy-1" }, error: null }) })),
+    };
+    const institutionalDb = {
+      from: vi.fn((table: string) => {
+        if (table === "oems_order_audit") {
+          return chain({ data: [{ status: "filled", side: "sell", quantity: 1, payload: { user_id: "user-1", security_id: "security-1", filled: 1, lastFillAt: "2026-08-14T12:00:00.000Z" }, result_payload: { avgFillPrice: 1000 } }], error: null });
+        }
+        return { select: () => chain({ data: { strategy_id: "Strategy Name", affected_investors: { scope: "single_user" }, proposed_composition: [] }, error: null }) };
+      }),
+    };
+
+    const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
+
+    expect(outcome).toMatchObject({ completed: true, scope: "single_user", settlementBatchId: "batch-1" });
+    expect(settlementMocks.recordRebalanceExecutionEvidence).toHaveBeenCalledWith(
+      retailDb,
+      "batch-1",
+      "strategy-1",
+      [expect.objectContaining({ tradeSide: "SELL", avgFillCents: 1000 })],
+    );
+  });
+
   it("does not complete a rebalance with no filled execution evidence", async () => {
     const retailDb = { from: vi.fn() };
     const institutionalDb = {
