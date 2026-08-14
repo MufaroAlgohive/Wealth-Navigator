@@ -219,6 +219,8 @@ export function RebalanceBuilderPage({
   const [submitting, setSubmitting] = React.useState(false);
   const [pushingId, setPushingId] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = React.useState<string | null>(null);
+  const proposedBasketRef = React.useRef<HTMLDivElement | null>(null);
   // Auto-expanded right after a successful Submit to IC, so the just-raised
   // proposal is immediately visible instead of hidden behind the list's
   // default-collapsed state.
@@ -735,6 +737,7 @@ export function RebalanceBuilderPage({
 
   async function submitToIc() {
     setError(null);
+    setSubmitSuccess(null);
     // Gates — short-circuit before opening the network tab.
     if (missingResearch.length) {
       setError(
@@ -797,6 +800,9 @@ export function RebalanceBuilderPage({
         return;
       }
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+      setSubmitSuccess(
+        `Trade sequence created and sent to the ${isTestStrategy ? "UAT" : "LIVE"} Investment Committee. No market order has been sent.`,
+      );
       setProposalsOpen(true);
       // Proposal raised — return the page to a clean slate instead of leaving
       // the just-committed edits on screen.
@@ -880,6 +886,19 @@ export function RebalanceBuilderPage({
         </p>
       )}
 
+      {submitSuccess && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.1)] px-3 py-2 text-xs text-up">
+          <span>{submitSuccess}</span>
+          <button
+            type="button"
+            onClick={() => proposedBasketRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+            className="shrink-0 rounded-md border border-[hsl(var(--up)/0.4)] px-2 py-0.5 text-[11px] font-medium hover:bg-[hsl(var(--up)/0.12)]"
+          >
+            View proposed basket
+          </button>
+        </div>
+      )}
+
       {pendingForThisStrategy.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/35 bg-primary/10 px-3 py-2 text-xs text-primary">
           <span>
@@ -890,10 +909,10 @@ export function RebalanceBuilderPage({
           </span>
           <button
             type="button"
-            onClick={() => setProposalsOpen(true)}
+            onClick={() => proposedBasketRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
             className="shrink-0 rounded-md border border-primary/40 px-2 py-0.5 text-[11px] font-medium hover:bg-primary/10"
           >
-            View below
+            View proposed basket
           </button>
         </div>
       )}
@@ -1013,27 +1032,24 @@ export function RebalanceBuilderPage({
                     <th className="px-5 py-2 font-medium">Ticker</th>
                     <th className="px-3 py-2 font-medium">Name</th>
                     <th className="px-3 py-2 text-right font-medium">Units</th>
-                    <th className="px-3 py-2 text-right font-medium">Δ shares</th>
                     <th className="px-3 py-2 text-right font-medium">Price</th>
                     <th className="px-3 py-2 text-right font-medium">Weight</th>
-                    <th className="px-3 py-2 font-medium">Action</th>
                     <th className="px-5 py-2 text-right font-medium">Edit</th>
                   </tr>
                 </thead>
                 <tbody>
                   {working.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="px-5 py-6 text-center text-caption">
+                      <td colSpan={6} className="px-5 py-6 text-center text-caption">
                         {compQ.isLoading
                           ? "Loading current basket…"
                           : "No holdings for this strategy yet. Add stocks to build a proposal."}
                       </td>
                     </tr>
                   )}
-                  {working.map((h) => {
-                    const b = baseByKey.get(keyOf(h));
-                    const delta = (b?.shares ?? 0) === 0 ? h.shares : h.shares - (b?.shares ?? 0);
-                    const a = actionFor(h);
+                  {baseline.map((h) => {
+                    const draft = working.find((candidate) => keyOf(candidate) === keyOf(h)) ?? h;
+                    const a = actionFor(draft);
                     const isChanged = a !== "hold";
                     const isEditing = editingSymbol === keyOf(h);
                     return (
@@ -1051,22 +1067,11 @@ export function RebalanceBuilderPage({
                         <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                         <td className="px-3 py-2 text-foreground/85">{h.name}</td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums">{h.shares}</td>
-                        <td
-                          className={cn(
-                            "px-3 py-2 text-right font-mono tabular-nums",
-                            delta === 0 ? "text-muted-foreground" : delta > 0 ? "text-up" : "text-down",
-                          )}
-                        >
-                          {delta > 0 ? `+${delta}` : delta}
-                        </td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
                           {moneyR(priceOf(h.ticker))}
                         </td>
                         <td className="px-3 py-2 text-right font-mono tabular-nums">
                           {weightPct(weightOf(h))}
-                        </td>
-                        <td className="px-3 py-2">
-                          <ActionBadge action={a} />
                         </td>
                         <td className="px-5 py-2">
                           <div className="flex items-center justify-end gap-1">
@@ -1121,6 +1126,7 @@ export function RebalanceBuilderPage({
               === 0), show the most recent outstanding IC proposal instead of
               an empty/reset draft, so what's actually sitting with the IC is
               visible here rather than looking like nothing was submitted. */}
+          <div ref={proposedBasketRef}>
           {(() => {
             const showingPending = changes === 0 && !!activePendingProposal;
             const pendingRows = activePendingProposal?.proposed_composition ?? [];
@@ -1323,6 +1329,7 @@ export function RebalanceBuilderPage({
               </GlassSection>
             );
           })()}
+          </div>
         </div>
       )}
 
