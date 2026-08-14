@@ -58,7 +58,6 @@ describe("sealRebalanceBoundary", () => {
     expect(result).toMatchObject({ sealed: true, batchId: "batch-1" });
     expect(eventInsert).toHaveBeenCalledWith(expect.objectContaining({
       batch_id: "batch-1",
-      strategy_id: "strategy-1",
       trade_side: "BUY",
       quantity: 2,
       avg_fill: 1200,

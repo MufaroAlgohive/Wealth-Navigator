@@ -208,7 +208,6 @@ export async function maybeCompleteRebalance(
     const eventError = await recordRebalanceExecutionEvidence(
       retailDb,
       recorded.batchId,
-      singleStrategyId,
       executionEvidence,
     );
     if (eventError) {
