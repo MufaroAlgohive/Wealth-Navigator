@@ -241,6 +241,14 @@ export async function POST(req: Request) {
     );
   }
 
+  // A reset draft must never become a convincing-looking all-HOLD IC item.
+  if (changedSymbols(currentComposition, proposedComposition).length === 0) {
+    return NextResponse.json(
+      { ok: false, error: "A rebalance proposal needs at least one composition change." },
+      { status: 422 },
+    );
+  }
+
   // Cash-availability guard. A proposal whose fees can't be covered by sale
   // proceeds plus the 8% execution reserve leaves the client short, and the
   // proceeds bridge floors their strategy cash at zero rather than going
