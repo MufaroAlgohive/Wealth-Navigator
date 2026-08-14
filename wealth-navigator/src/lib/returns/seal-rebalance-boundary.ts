@@ -46,6 +46,8 @@ export interface BoundaryOwner {
 
 export interface RecordSettlementResult {
   batchId?: string;
+  /** Retail auth user used for foreign-key-safe settlement attribution. */
+  actorId?: string;
   error?: string;
 }
 
@@ -58,6 +60,26 @@ export interface RebalanceExecutionEvidence {
   quantity: number;
   avgFillCents: number;
   fillDate: string;
+}
+
+/**
+ * OEM sessions are issued by the institutional project, while rebalance_batch
+ * belongs to RETAIL and its `created_by`/`settled_by` columns reference retail
+ * auth.users. Prefer a supplied actor only when it is a retail profile; an
+ * institutional-only operator ID would otherwise fail the batch insert. For a
+ * strategy-wide rebalance, an affected retail owner is a valid fallback and
+ * keeps the settlement traceable without inventing a user.
+ */
+async function resolveRetailSettlementActor(
+  retailDb: SupabaseClient,
+  suppliedActorId: string,
+  owners: BoundaryOwner[],
+): Promise<string | null> {
+  if (suppliedActorId) {
+    const actor = await retailDb.from("profiles").select("id").eq("id", suppliedActorId).maybeSingle();
+    if (!actor.error && actor.data?.id) return suppliedActorId;
+  }
+  return owners.find((owner) => owner.userId)?.userId ?? null;
 }
 
 export async function recordRebalanceExecutionEvidence(
@@ -128,7 +150,8 @@ export async function recordRebalanceSettlement(
   },
 ): Promise<RecordSettlementResult> {
   const effectiveAt = params.effectiveAt ?? new Date();
-  if (!params.actorId) return { error: "no actor to attribute the settlement to" };
+  const settlementActorId = await resolveRetailSettlementActor(retailDb, params.actorId, params.owners);
+  if (!settlementActorId) return { error: "no retail actor or affected owner to attribute the settlement to" };
 
   const swaps = params.owners
     .filter((o) => o.userId)
@@ -146,8 +169,8 @@ export async function recordRebalanceSettlement(
       holdings_snapshot_before: params.holdingsBefore ?? null,
       holdings_snapshot_planned: params.holdings,
       pending_swap_snapshot: swaps,
-      created_by: params.actorId,
-      settled_by: params.actorId,
+      created_by: settlementActorId,
+      settled_by: settlementActorId,
       settled_at: effectiveAt.toISOString(),
       is_reversed: false,
     })
@@ -156,7 +179,7 @@ export async function recordRebalanceSettlement(
   if (res.error) return { error: `rebalance_batch insert failed: ${res.error.message}` };
   const batchId = res.data?.id as string | undefined;
   if (!batchId) return { error: "rebalance_batch insert returned no id" };
-  return { batchId };
+  return { batchId, actorId: settlementActorId };
 }
 
 export interface SealBoundaryResult {
@@ -245,8 +268,6 @@ export async function sealRebalanceBoundary(
   if (holdings.length === 0 && !params.allowEmptyHoldings) {
     return { sealed: false, error: "no positive holdings to value" };
   }
-  if (!actorId) return { sealed: false, error: "no actor to attribute the settlement to" };
-
   const { priceCents, freshestAt } = await latestPrices(
     retailDb,
     holdings.map((h) => h.symbol),
@@ -285,6 +306,8 @@ export async function sealRebalanceBoundary(
     return { sealed: false, error: recorded.error ?? "settlement batch not recorded" };
   }
   const batchId = recorded.batchId;
+  const settlementActorId = recorded.actorId;
+  if (!settlementActorId) return { sealed: false, error: "settlement batch has no retail actor", batchId };
 
   // A batch without its execution rows cannot later explain the model legs
   // that changed. Refuse the boundary (and therefore the composition flip)
@@ -302,7 +325,7 @@ export async function sealRebalanceBoundary(
     p_holdings_snapshot: holdings,
     p_effective_at: effectiveAt.toISOString(),
     p_price_observed_at: freshestAt ?? effectiveAt.toISOString(),
-    p_actor: actorId,
+    p_actor: settlementActorId,
   });
   if (rpcRes.error) return { sealed: false, error: `boundary RPC failed: ${rpcRes.error.message}`, batchId };
 

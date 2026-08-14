@@ -9,8 +9,12 @@ function resolved(data: unknown) {
 describe("sealRebalanceBoundary", () => {
   it("persists confirmed execution evidence before finalizing the return boundary", async () => {
     const eventInsert = vi.fn(() => Promise.resolve(resolved(null)));
+    const batchInsert = vi.fn(() => ({ select: () => ({ maybeSingle: () => Promise.resolve(resolved({ id: "batch-1" })) }) }));
     const db = {
       from: vi.fn((table: string) => {
+        if (table === "profiles") {
+          return { select: () => ({ eq: () => ({ maybeSingle: () => Promise.resolve(resolved(null)) }) }) };
+        }
         if (table === "stock_intraday_c") {
           const query: Record<string, unknown> = {};
           for (const method of ["select", "in", "gte", "order"]) query[method] = () => query;
@@ -20,7 +24,7 @@ describe("sealRebalanceBoundary", () => {
           return query;
         }
         if (table === "rebalance_batch") {
-          return { insert: () => ({ select: () => ({ maybeSingle: () => Promise.resolve(resolved({ id: "batch-1" })) }) }) };
+          return { insert: batchInsert };
         }
         if (table === "rebalance_event") {
           const query: Record<string, unknown> = {};
@@ -63,6 +67,11 @@ describe("sealRebalanceBoundary", () => {
       avg_fill: 1200,
       fill_date: "2026-08-14",
     }));
+    expect(batchInsert).toHaveBeenCalledWith(expect.objectContaining({
+      created_by: "user-1",
+      settled_by: "user-1",
+    }));
+    expect((db.rpc as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatchObject({ p_actor: "user-1" });
     expect((db.rpc as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0]).toBeGreaterThan(
       eventInsert.mock.invocationCallOrder[0],
     );
