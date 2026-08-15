@@ -591,3 +591,20 @@ reconciliation and must be separately bridged. Yield Basket has four batches
 reconciliation rows; it remains blocked from certification. Diversified and
 Multi-sector remain unsupported because their composition changes have no
 Retail settlement evidence at all.
+
+`scripts/stage-single-boundary-canonical-ledger.ts` now reconstructs and
+validates the Blended Focus boundary. It refuses incomplete fills, requires fill
+unit deltas to reproduce the post-boundary composition, derives continuity cash
+from actual fills, paginates stored closes, labels prior-close carries, and
+protects all non-DRAFT rows from replacement. The 2026-05-11 evidence exactly
+reconciles OUT -6 and STX500 +2 with 17,666 cents remaining as strategy cash.
+The boundary moved from 515,824 cents on 2026-05-08 to 520,246 cents on
+2026-05-11, a normal +0.8572691461% return rather than a rebalance spike.
+
+Blended Focus now has 135 matching DRAFT ledger rows from 2026-01-30 through
+2026-08-14. The old 2026-08-12 DRAFT checkpoint (502,292 cents, cash omitted)
+was replaced by the complete 520,232-cent value. The latest row is 500,697
+cents of securities plus 17,666 cents of continuity cash = 518,363 cents, with
+SI/YTD -1.0170158243%. An idempotent rerun found 135 existing matches, zero
+missing rows and zero conflicts. Its guarded public publication still shows
+500,697 cents and remains unchanged until certification/cutover.
