@@ -533,3 +533,22 @@ complete-value identities passed, every row is DRAFT on
 `excel-static-lot-v1`, every row records the provider-unavailable block, and
 the latest seven period metrics equal the reviewed dry run. This completes ETF
 DRAFT construction; it does not authorize certification or public cutover.
+
+The next family-wide decision report is
+`scripts/audit-canonical-ledger-family.ts`. It classifies every active non-test
+strategy using actual creation date, composition count, rebalance evidence,
+canonical row coverage, ACTIVE rule and latest guarded publication. Only a
+strategy with one composition and zero rebalance batches can enter the generic
+static DRAFT generator; all others remain evidence-dependent.
+
+The Retail family audit ran successfully on 2026-08-15. It classified ETF
+Basket, MINT Famous Brands and UCT as `STATIC_DRAFT_CANDIDATE`: each has one
+composition interval and no rebalance batch. ETF already has 100 complete DRAFT
+rows from its 2026-03-20 creation date through 2026-08-14. Famous Brands and UCT
+each still have only their earlier single-row DRAFT checkpoint and are the next
+safe reconstruction targets. MINT Diversified Basket (two compositions), MINT
+Multi-sector (two compositions), MyGrowthFund (four compositions and three
+settled batches), Yield Basket (four compositions and four batches), and Blended
+Focus (one composition but one settled batch) are `EVIDENCE_DEPENDENT`. Those
+five must not be treated as static histories. Their execution/capital boundaries
+must be proved or explicitly bridged before full-history certification.
