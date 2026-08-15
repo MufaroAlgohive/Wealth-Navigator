@@ -8,16 +8,16 @@
  * Only LIVE money counts: UAT strategies and test accounts are excluded on both
  * axes (a test account can hold a LIVE strategy, and vice versa).
  *
- * Reads the RETAIL prod DB:
- *   - `client_strategy_returns_c`: one row per (user/family-member/strategy) per
- *     `as_of_date`. We snapshot the LATEST date and sum the book.
- *   - `stock_holdings_c`: count of active holdings across the book.
+ * AUM and counts come from the shared canonical holdings-based calculation.
+ * The latest `client_strategy_returns_c` snapshot remains the source for the
+ * separate day/YTD P&L fields until the client return chain is certified.
  *
  * All money values are RANDS (numbers — `basket_value`, `1d_pnl`, `ytd_pnl` are
  * the user's portion in Rands). `source: "retail-supabase"` lets the UI badge
  * the tiles honestly while IPS is unavailable.
  */
 import type { BffUnavailableReason } from "@/lib/bff-reasons";
+import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
 import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -73,6 +73,25 @@ export async function GET() {
   }
 
   const supabase = createRetailServiceRoleClient();
+  let canonicalAum: Awaited<ReturnType<typeof loadCanonicalRetailAum>>;
+  try {
+    canonicalAum = await loadCanonicalRetailAum(supabase);
+  } catch (error) {
+    return Response.json(
+      {
+        source: "unavailable",
+        aum: 0,
+        dayPnl: 0,
+        ytdPnl: 0,
+        investors: 0,
+        holdings: 0,
+        asOf: null,
+        reason: "supabase_query_failed",
+        error: `Canonical LIVE AUM unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      } satisfies ClientBookResponse,
+      { status: 200 },
+    );
+  }
 
   // 1. Latest snapshot date in the book.
   const { data: latestRows, error: latestError } = await supabase
@@ -198,45 +217,23 @@ export async function GET() {
     );
   }
 
-  // 3. Aggregate the book.
-  let aum = 0;
+  // 3. Aggregate P&L only. AUM and counts come from the canonical helper.
   let dayPnl = 0;
   let ytdPnl = 0;
-  const investorSet = new Set<string>();
   for (const r of returns) {
-    aum += num(r.basket_value);
     dayPnl += num(r["1d_pnl"]);
     ytdPnl += num(r.ytd_pnl);
-    if (r.user_id) investorSet.add(r.user_id);
-  }
-
-  // Active holdings — counted separately from `stock_holdings_c`, and filtered
-  // on the same two axes as the money above so the count describes the same
-  // book the AUM figure does. Selects the two id columns rather than using a
-  // head-only `count`, because the exclusion can't be expressed as a server
-  // -side filter without inlining both id sets into the URL. A failure here
-  // must not blank the AUM tile, so holdings degrades to 0.
-  let holdings = 0;
-  const { data: holdingRows, error: holdingsError } = await supabase
-    .from("stock_holdings_c")
-    .select("user_id, strategy_id")
-    .eq("is_active", true);
-  if (!holdingsError) {
-    holdings = ((holdingRows ?? []) as Array<{ user_id: string | null; strategy_id: string | null }>).filter(
-      (h) =>
-        !(h.strategy_id && uatStrategyIds.has(h.strategy_id)) && !(h.user_id && testUserIds.has(h.user_id)),
-    ).length;
   }
 
   // basket_value / 1d_pnl / ytd_pnl are integer CENTS in retail (they match the
   // holdings_snapshot prices), despite the legacy docs saying Rands — convert.
   return Response.json({
     source: "retail-supabase",
-    aum: aum / 100,
+    aum: canonicalAum.totalAumCents / 100,
     dayPnl: dayPnl / 100,
     ytdPnl: ytdPnl / 100,
-    investors: investorSet.size,
-    holdings,
-    asOf,
+    investors: canonicalAum.investorCount,
+    holdings: canonicalAum.holdingCount,
+    asOf: canonicalAum.asOf.slice(0, 10),
   } satisfies ClientBookResponse);
 }

@@ -29,15 +29,15 @@ import {
 } from "@/lib/supabase/server";
 import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
 import { getAdminContext } from "@/lib/admin/rbac";
+import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Retail model-portfolio catalogue (`strategies_c`) + per-strategy AUM/PnL
- * aggregated from `client_strategy_returns_c` (latest snapshot). This is the
- * real, populated source today; the institutional `oems_strategy_c` rollup is
- * a fallback (empty until the IPS/portfolio rollup loop exists).
+ * Retail model-portfolio catalogue (`strategies_c`) + canonical holdings-based
+ * per-strategy AUM. Strategy P&L percentages come from the guarded effective
+ * returns chain. The institutional `oems_strategy_c` rollup remains a fallback.
  */
 interface RetailStrategyRow {
   id: string;
@@ -74,7 +74,7 @@ async function loadRetailStrategies(
   // Stage 1 — every read here is independent; run them concurrently. The
   // previous fully-sequential chain (9 round trips) multiplied the pegged
   // DB's per-query latency into a page-blocking wait.
-  const [stratRes, testProfileRows, testWalletRows, clientHoldingsRes, residualRes, strategyReturnRes] = await Promise.all([
+  const [stratRes, testProfileRows, testWalletRows, clientHoldingsRes, residualRes, strategyReturnRes, canonicalAum] = await Promise.all([
     retail
       .from("strategies_c")
       .select(
@@ -97,6 +97,7 @@ async function loadRetailStrategies(
           .from("strategy_returns_effective_latest_c")
           .select('strategy_id,ytd_pct,"1d_pct",continuity_cash_cents,securities_value_cents')
       : Promise.resolve({ data: [], error: null }),
+    wantCore ? loadCanonicalRetailAum(retail) : Promise.resolve(null),
   ]);
   const { data: stratData, error: stratErr } = stratRes;
   if (stratErr) throw stratErr;
@@ -298,9 +299,9 @@ async function loadRetailStrategies(
   }
 
   const view = strategies.map((s) => {
-    const a = agg.get(s.id) ?? { aum: 0, cash: 0, users: new Set<string>() };
+    const canonical = canonicalAum?.byStrategy.get(s.id);
     // basket_value / pnl are integer CENTS in retail (see /api/client-book).
-    const aumR = a.aum / 100;
+    const aumR = (canonical?.aumCents ?? 0) / 100;
     // CA is the canonical model-level continuity cash weight. Never derive it
     // by summing client residuals, which duplicates the same strategy asset
     // once per investor.
@@ -356,7 +357,7 @@ async function loadRetailStrategies(
       // Rebalance residual as a percentage of the canonical strategy model.
       cashWeight: cashPct,
       nav: aumR,
-      investorCount: a.users.size,
+      investorCount: canonical?.users.size ?? 0,
       holdingsCount: (Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0) + (cashPct != null && cashPct > 0 ? 1 : 0),
       holdingsPreview: [
         ...previewSymbols.map((symbol) => securityBySymbol.get(symbol) ?? { symbol, logoUrl: null }),

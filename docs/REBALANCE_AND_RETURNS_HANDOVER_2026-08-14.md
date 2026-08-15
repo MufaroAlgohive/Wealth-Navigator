@@ -833,3 +833,61 @@ the single missing reconciliation, refuses conflicting existing evidence and
 does not alter holdings, client cash, reserve, canonical returns or public
 values. After it is applied, rerun the audit and then extend the MyGrowth
 workbook ledger across the newly evidenced boundary.
+
+### MyGrowth full multi-boundary canonical ledger
+
+After the 23 July reconciliation was applied, the read-only audit found the
+stored row and reproduced it exactly. `scripts/stage-mygrowth-canonical-ledger.ts`
+now reconstructs MyGrowth from its first JSE session on 20 April 2026 through
+the latest guarded publication. It validates all four dated compositions, all
+three settled/COMPLETE batches, all three CA reconciliations, and a single
+unambiguous model fill price for every model-unit delta. Same-day 3 August
+boundaries are applied in creation order. Ncumolwethu's extra fifth STXACW
+share remains an owner exception and is excluded from the four-share public
+model.
+
+The 2026-08-15 dry run produced 81 daily JSE-session rows through 14 August,
+with four explicitly labelled prior-close carries. The latest row is 104,680
+cents of securities plus 57 cents of authoritative strategy CA = 104,737
+cents, exactly matching the guarded publication. Period returns use the Excel
+leg-P/L method across exits and entries instead of raw basket-value jumps. The
+latest computed values are 1D -0.2181658823%, 1W/WTD -0.5799825341%, 1M
+-0.5903384746%, 3M -1.9343315033%, and YTD/SI 1.8835008744%. The old guarded
+YTD is 8.7069670537%; this material methodology difference remains DRAFT and
+must not reach the app until workbook and provider certification pass.
+
+Draft replacement is a single upsert statement keyed by strategy/date. It can
+replace only DRAFT conflicts and refuses any certified conflict. The previous
+nine-row post-August draft is therefore superseded without a delete/insert
+gap, while public values remain untouched.
+
+### AUM read-only reconciliation
+
+The 2026-08-15 live-data audit defines current AUM as active securities at the
+latest available price + unused transaction reserve + strategy rebalance
+residual - already-consumed AUM fees, grouped by owner/family/strategy. Test
+profiles, test wallets and UAT strategies are excluded.
+
+Canonical LIVE AUM was R19,763.91. The Cockpit `/api/client-book` legacy
+snapshot route returned R16,822.53, understating AUM by R2,941.38 because it
+sums the latest `client_strategy_returns_c` snapshot instead of current
+holdings and cash. `/api/strategies` returned R19,779.11, overstating AUM by
+R15.20; that variance exactly equals AUM fees already consumed but not
+subtracted by that route. No UAT value leaked into this snapshot. Both routes
+must be moved to one shared holdings-based server calculation before this AUM
+audit is considered closed.
+
+`src/lib/aum/canonical-retail-aum.ts` now implements that shared calculation.
+It fails closed when a valid holding lacks a market price, prefers recent
+intraday evidence, then stored EOD closes, and only then the security's stored
+last price. Structurally invalid holdings without an owner, strategy or
+security are excluded before UUID queries. Transaction reserve is counted once
+per owner/family/strategy position and only for posted, unreversed purchases.
+
+Both `/api/strategies` and `/api/client-book` now consume the shared result.
+The client-book keeps the legacy snapshot only for its separate day/YTD P&L
+fields. Focused tests cover one-time reserve/residual counting, fee subtraction
+and independent UAT/test exclusion. A live read-only rerun reproduced the
+audited total exactly: 1,976,391 cents (R19,763.91), including 1,520 cents of
+consumed AUM fees removed once, across six real investors and 33 active holding
+rows. No database write is involved in the AUM calculation.
