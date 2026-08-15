@@ -3,13 +3,24 @@ import { createHash } from "node:crypto";
 import { createRetailServiceRoleClient } from "../src/lib/supabase/server";
 
 const STRATEGY_NAME = process.env.BOUNDARY_STRATEGY_NAME?.trim() || "Blended Focus";
-const LEDGER_VERSION = "excel-single-fill-boundary-v1";
+const LEDGER_VERSION = "excel-leg-pnl-boundary-v2";
 const apply = process.env.APPLY_CANONICAL_LEDGER_DRAFT === "1";
 const replaceConflictingDraft = process.env.REPLACE_CONFLICTING_CANONICAL_DRAFT === "1";
 const db = createRetailServiceRoleClient();
 
 type Holding = { ticker: string; units: number };
 type StoredClose = { symbol: string; as_of_date: string; current_price: number; fetched_at: string };
+type LedgerLeg = {
+  ticker: string;
+  leg: string;
+  units: number;
+  entryDate: string;
+  entryPriceCents: number;
+  exitDate: string | null;
+  exitPriceCents: number | null;
+  sourceRef: string;
+  isCash?: boolean;
+};
 
 function iso(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -121,7 +132,7 @@ const [compositions, batches, publications, existingRows] = await Promise.all([
     "existing canonical rows",
     db
       .from("strategy_canonical_daily_ledger_c")
-      .select("as_of_date, certification_status, securities_value_cents, continuity_cash_cents, complete_value_cents")
+      .select("as_of_date, ledger_version, certification_status, securities_value_cents, continuity_cash_cents, complete_value_cents")
       .eq("strategy_id", strategy.id),
   ),
 ]);
@@ -251,6 +262,88 @@ const navRows = dates.map((date) => {
 });
 if (missing.length > 0) throw new Error(`missing ${missing.length} closes without a prior: ${missing.slice(0, 30)}`);
 
+function storedPriceOnOrBefore(ticker: string, targetDate: string): number {
+  for (let index = dates.length - 1; index >= 0; index -= 1) {
+    const date = dates[index];
+    if (date > targetDate) continue;
+    const price = priceByKey.get(`${date}:${ticker}`);
+    if (price) return price.cents;
+  }
+  throw new Error(`no stored price on or before ${targetDate} for ${ticker}`);
+}
+
+const fillByTickerSide = new Map<string, { quantity: number; fillCents: number }>();
+for (const event of events) {
+  const ticker = securityTicker.get(event.security_id)!;
+  fillByTickerSide.set(`${ticker}:${event.trade_side}`, {
+    quantity: Number(event.quantity),
+    fillCents: Number(event.avg_fill),
+  });
+}
+const ledgerLegs: LedgerLeg[] = [];
+for (const holding of beforeHoldings) {
+  const delta = expectedDeltas.get(holding.ticker) ?? 0;
+  const soldUnits = Math.max(0, -delta);
+  const retainedUnits = holding.units - soldUnits;
+  const entryPriceCents = storedPriceOnOrBefore(holding.ticker, inceptionDate);
+  if (retainedUnits > 0) {
+    ledgerLegs.push({
+      ticker: holding.ticker,
+      leg: "Start leg",
+      units: retainedUnits,
+      entryDate: inceptionDate,
+      entryPriceCents,
+      exitDate: null,
+      exitPriceCents: null,
+      sourceRef: "holdings_snapshot_before",
+    });
+  }
+  if (soldUnits > 0) {
+    const sellFill = fillByTickerSide.get(`${holding.ticker}:SELL`);
+    if (!sellFill || sellFill.quantity !== soldUnits) {
+      throw new Error(`missing exact sell fill for ${holding.ticker}:${soldUnits}`);
+    }
+    ledgerLegs.push({
+      ticker: holding.ticker,
+      leg: "Start leg sold/trimmed",
+      units: soldUnits,
+      entryDate: inceptionDate,
+      entryPriceCents,
+      exitDate: batch.effective_date,
+      exitPriceCents: sellFill.fillCents,
+      sourceRef: `rebalance_batch:${batch.id}`,
+    });
+  }
+}
+for (const [ticker, delta] of expectedDeltas) {
+  if (delta <= 0) continue;
+  const buyFill = fillByTickerSide.get(`${ticker}:BUY`);
+  if (!buyFill || buyFill.quantity !== delta) throw new Error(`missing exact buy fill for ${ticker}:${delta}`);
+  ledgerLegs.push({
+    ticker,
+    leg: "Rebalance buy",
+    units: delta,
+    entryDate: batch.effective_date,
+    entryPriceCents: buyFill.fillCents,
+    exitDate: null,
+    exitPriceCents: null,
+    sourceRef: `rebalance_batch:${batch.id}`,
+  });
+}
+if (fillCashCents > 0) {
+  ledgerLegs.push({
+    ticker: "CASH",
+    leg: "Undeployed rebalance proceeds",
+    units: 1,
+    entryDate: batch.effective_date,
+    entryPriceCents: fillCashCents,
+    exitDate: null,
+    exitPriceCents: null,
+    sourceRef: `rebalance_batch:${batch.id}`,
+    isCash: true,
+  });
+}
+
 function rowOnOrBefore(target: string, currentIndex: number) {
   for (let index = currentIndex; index >= 0; index -= 1) {
     if (navRows[index].date <= target) return navRows[index];
@@ -258,16 +351,46 @@ function rowOnOrBefore(target: string, currentIndex: number) {
   return navRows[0];
 }
 
+function valueForLeg(leg: LedgerLeg, date: string): number {
+  if (leg.isCash) return leg.entryPriceCents;
+  if (date === leg.entryDate) return leg.units * leg.entryPriceCents;
+  return leg.units * storedPriceOnOrBefore(leg.ticker, date);
+}
+
 function metric(currentIndex: number, requestedReferenceDate: string) {
   const current = navRows[currentIndex];
-  const basis = rowOnOrBefore(requestedReferenceDate, currentIndex);
-  const numerator = current.completeValueCents - basis.completeValueCents;
+  const mappedReference = rowOnOrBefore(requestedReferenceDate, currentIndex).date;
+  const legTrace = ledgerLegs.flatMap((leg) => {
+    if (leg.entryDate > current.date) return [];
+    const referenceDate = leg.entryDate > mappedReference ? leg.entryDate : mappedReference;
+    if (leg.exitDate && leg.exitDate <= referenceDate) {
+      return [{ ticker: leg.ticker, leg: leg.leg, reference_date: referenceDate, benchmark_cents: 0, numerator_cents: 0, pnl_cents: 0 }];
+    }
+    const benchmarkCents = valueForLeg(leg, referenceDate);
+    const numeratorCents = leg.exitDate && leg.exitDate <= current.date
+      ? leg.units * Number(leg.exitPriceCents)
+      : valueForLeg(leg, current.date);
+    return [{
+      ticker: leg.ticker,
+      leg: leg.leg,
+      reference_date: referenceDate,
+      benchmark_cents: benchmarkCents,
+      numerator_cents: numeratorCents,
+      pnl_cents: numeratorCents - benchmarkCents,
+    }];
+  });
+  const denominator = legTrace.reduce((sum, leg) => sum + leg.benchmark_cents, 0);
+  const numerator = legTrace.reduce((sum, leg) => sum + leg.numerator_cents, 0);
+  const pnl = legTrace.reduce((sum, leg) => sum + leg.pnl_cents, 0);
   return {
     requested_reference_date: requestedReferenceDate,
-    reference_date: basis.date,
-    numerator_cents: numerator,
-    denominator_cents: basis.completeValueCents,
-    return_pct: basis.completeValueCents > 0 ? (numerator / basis.completeValueCents) * 100 : null,
+    reference_date: mappedReference,
+    numerator_value_cents: numerator,
+    numerator_cents: pnl,
+    denominator_cents: denominator,
+    pnl_cents: pnl,
+    return_pct: denominator > 0 ? (pnl / denominator) * 100 : null,
+    leg_trace: legTrace,
   };
 }
 
@@ -297,7 +420,22 @@ const ledgerRows = navRows.map((current, index) => {
     securities_value_cents: current.securitiesValueCents,
     continuity_cash_cents: current.continuityCashCents,
     complete_value_cents: current.completeValueCents,
-    leg_snapshot: current.legs,
+    leg_snapshot: ledgerLegs
+      .filter((leg) => leg.entryDate <= current.date)
+      .map((leg) => ({
+        ticker: leg.ticker,
+        leg: leg.leg,
+        units: leg.units,
+        entry_date: leg.entryDate,
+        entry_price_cents: leg.entryPriceCents,
+        exit_date: leg.exitDate,
+        exit_price_cents: leg.exitPriceCents,
+        source_ref: leg.sourceRef,
+        counts_in_current_strategy: !leg.exitDate || leg.exitDate > current.date,
+        current_or_exit_value_cents: leg.exitDate && leg.exitDate <= current.date
+          ? leg.units * Number(leg.exitPriceCents)
+          : valueForLeg(leg, current.date),
+      })),
     period_metrics: {
       "1D": metric(index, addDays(current.date, -1)),
       "1W": metric(index, addDays(current.date, -7)),
@@ -311,6 +449,7 @@ const ledgerRows = navRows.map((current, index) => {
     source_evidence_sha256: evidenceHash,
     calculation_notes: {
       method: LEDGER_VERSION,
+      return_method: "WORKBOOK_LEG_PNL_OVER_LEG_BENCHMARK",
       report_mode: "UPSERT_DRAFT_ONLY",
       promotion_blocked: true,
       certification_requirements: [
@@ -328,6 +467,7 @@ const conflicts = existingRows.flatMap((existing) => {
   const computed = computedByDate.get(existing.as_of_date);
   if (!computed) return [{ date: existing.as_of_date, certification_status: existing.certification_status }];
   const matches =
+    existing.ledger_version === LEDGER_VERSION &&
     Number(existing.securities_value_cents) === computed.securities_value_cents &&
     Number(existing.continuity_cash_cents) === computed.continuity_cash_cents &&
     Number(existing.complete_value_cents) === computed.complete_value_cents;

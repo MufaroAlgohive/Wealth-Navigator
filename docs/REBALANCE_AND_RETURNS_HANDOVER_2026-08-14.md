@@ -605,6 +605,26 @@ Blended Focus now has 135 matching DRAFT ledger rows from 2026-01-30 through
 2026-08-14. The old 2026-08-12 DRAFT checkpoint (502,292 cents, cash omitted)
 was replaced by the complete 520,232-cent value. The latest row is 500,697
 cents of securities plus 17,666 cents of continuity cash = 518,363 cents, with
-SI/YTD -1.0170158243%. An idempotent rerun found 135 existing matches, zero
+an initial simple-NAV SI/YTD of -1.0170158243% (superseded below). An
+idempotent rerun found 135 existing matches, zero
 missing rows and zero conflicts. Its guarded public publication still shows
 500,697 cents and remains unchanged until certification/cutover.
+
+That first Blended pass correctly reconstructed complete value but still used a
+plain NAV-ratio return. The CEO workbook was re-opened and its formulas in
+`06_Strategy_Ledger` and `07_Public_Strategy_View` were followed literally:
+each starting, sold and rebalance-buy leg has its own entry/exit dates and
+prices; period benchmarks use `MAX(leg entry date, mapped reference date)`;
+closed legs after the benchmark contribute realised P/L; and return is summed
+leg P/L divided by summed leg benchmarks. Recycled sale capital is represented
+by the replacement leg plus any genuinely undeployed CASH leg, not treated as
+unexplained performance.
+
+Blended was therefore upgraded to `excel-leg-pnl-boundary-v2`. The latest DRAFT
+complete value remains 518,363 cents, but the workbook-style returns are now:
+1D -0.7731593677%, 1W/WTD -0.1188870477%, 1M 1.2206314244%, 3M
+-0.7212776919%, and YTD/SI -0.9406586730%. Every metric carries a per-leg trace
+of benchmark value, numerator value and P/L. All 135 DRAFT rows were replaced
+with v2, then an idempotent rerun returned 135 matches, zero inserts, zero
+conflicts and zero writes. The earlier -1.0170158243% was the superseded simple
+NAV-ratio result and must not be promoted.
