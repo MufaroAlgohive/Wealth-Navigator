@@ -195,12 +195,13 @@ const [compositions, batches, reconciliations, publications, existingRows] = awa
     securities_value_cents: number;
     continuity_cash_cents: number;
     complete_value_cents: number;
+    source_evidence_sha256: string | null;
   }>(
     "existing canonical rows",
     db
       .from("strategy_canonical_daily_ledger_c")
       .select(
-        "as_of_date,ledger_version,certification_status,securities_value_cents,continuity_cash_cents,complete_value_cents",
+        "as_of_date,ledger_version,certification_status,securities_value_cents,continuity_cash_cents,complete_value_cents,source_evidence_sha256",
       )
       .eq("strategy_id", strategy.id),
   ),
@@ -537,6 +538,18 @@ const sourceEvidence = {
   owner_exception_excluded_from_model: "Ncumolwethu 5 STXACW fill does not alter public model quantity 4",
   price_source: "stock_returns_c exact JSE-session close with labelled prior-close carry-forward",
   carry_forward_leg_count: carryForwardCount,
+  workbook_reference: {
+    file: "MINT_returns_engine_rebalance_clarity_v7_1 (1).xlsx",
+    sha256: "bde94581727f9a08232ec5e80f2672bde3a1ef73c733309ec8723fe78bcaa301",
+    ledger_sheet: "06_Strategy_Ledger",
+    public_view_sheet: "07_Public_Strategy_View",
+    formula_match: "LEG_BENCHMARK_NUMERATOR_PNL_AND_RETURN_CELL_PATTERN_MATCHED",
+  },
+  independent_provider_check: {
+    yahoo: "UNAVAILABLE_2026_SERIES_ZERO_BARS",
+    iress: "UNAVAILABLE_DOCUMENTED_WORKER_DOMAINS_RETURNED_404",
+    certification_effect: "BLOCKED",
+  },
   public_visibility: "DRAFT_NOT_EXPOSED",
 };
 const sourceEvidenceHash = createHash("sha256").update(JSON.stringify(sourceEvidence)).digest("hex");
@@ -602,6 +615,7 @@ const conflicts = existingRows.flatMap((existing) => {
     ];
   const matches =
     existing.ledger_version === LEDGER_VERSION &&
+    existing.source_evidence_sha256 === sourceEvidenceHash &&
     Number(existing.securities_value_cents) === computed.securities_value_cents &&
     Number(existing.continuity_cash_cents) === computed.continuity_cash_cents &&
     Number(existing.complete_value_cents) === computed.complete_value_cents;

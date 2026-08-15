@@ -891,3 +891,36 @@ and independent UAT/test exclusion. A live read-only rerun reproduced the
 audited total exactly: 1,976,391 cents (R19,763.91), including 1,520 cents of
 consumed AUM fees removed once, across six real investors and 33 active holding
 rows. No database write is involved in the AUM calculation.
+
+### MyGrowth workbook parity and structural certification gate
+
+The supplied CEO workbook
+`MINT_returns_engine_rebalance_clarity_v7_1 (1).xlsx` was reopened and hashed
+before using it as methodology evidence. Its SHA-256 is
+`BDE94581727F9A08232EC5E80F2672BDE3A1EF73C733309EC8723FE78BCAA301`.
+The formulas in `06_Strategy_Ledger` and `07_Public_Strategy_View` match the
+canonical implementation cell-for-cell: each leg begins at the later of its
+entry date and the mapped period reference date; exited legs contribute zero
+after exit; open/new legs use the current or exit numerator; return is the sum
+of leg P/L divided by the sum of leg benchmarks.
+
+The MyGrowth DRAFT rows were refreshed atomically with that workbook identity
+and independent-provider status in `source_evidence`. No values changed and no
+CERTIFIED or public row was touched. A subsequent dry run was idempotent: all
+81 expected sessions already existed, with zero inserts, zero conflicts, zero
+writes and zero latest-value variance.
+
+`scripts/verify-mygrowth-canonical-ledger.ts` independently recalculates every
+stored benchmark, numerator, P/L and return from each row's leg trace. It also
+checks the daily identity `complete value = securities + strategy CA`, exact
+JSE-session coverage, one evidence hash, DRAFT-only status, workbook hash and
+latest value. The 15 August verification passed structurally across all 81
+sessions with zero metric-identity failures; the latest value remained 104,737
+cents.
+
+Certification deliberately remains blocked. Yahoo returned zero 2026 history
+bars during the independent comparison, and both previously documented Railway
+IRESS worker domains returned `404 Application not found`. These provider
+failures are recorded as unavailable evidence, never interpreted as matching
+prices. MyGrowth therefore remains DRAFT until a reviewed IRESS export, working
+provider endpoint or other approved independent price file reproduces it.
