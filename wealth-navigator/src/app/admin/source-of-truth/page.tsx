@@ -16,6 +16,7 @@ import {
   Upload,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
+import type { CellValue } from "exceljs";
 import {
   Area,
   AreaChart,
@@ -1305,6 +1306,183 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
     URL.revokeObjectURL(url);
   };
 
+  const exportPublicStrategyWorkbook = async () => {
+    const ExcelJS = await import("exceljs");
+    const book = new ExcelJS.Workbook();
+    book.creator = "MINT Source of Truth";
+    book.company = "MINT Platforms (Pty) Ltd";
+    book.calcProperties.fullCalcOnLoad = true;
+    const usedNames = new Set<string>();
+    const sheetName = (raw: string) => {
+      const base = raw.replace(/[\\/?*:[\]]/g, " ").trim().slice(0, 31) || "Strategy";
+      let name = base;
+      let suffix = 2;
+      while (usedNames.has(name)) {
+        const tail = ` ${suffix++}`;
+        name = `${base.slice(0, 31 - tail.length)}${tail}`;
+      }
+      usedNames.add(name);
+      return name;
+    };
+    const dateValue = (value: unknown) => value ? new Date(`${String(value).slice(0, 10)}T00:00:00Z`) : null;
+    const rands = (value: unknown) => Number(value ?? 0) / 100;
+    const moneyFormat = "#,##0.00;[Red](#,##0.00);-";
+    const unitsFormat = "#,##0.0000;[Red](#,##0.0000);-";
+    const percentFormat = "0.0%;[Red](0.0%);-";
+    const purple = "FF7030A0";
+    const grey = "FFD9D9D9";
+
+    for (const current of latest) {
+      const publicName = sheetName(current.strategy);
+      const supportName = sheetName(`_${current.strategy.slice(0, 27)}`);
+      const support = book.addWorksheet(supportName);
+      support.state = "veryHidden";
+      const strategyHistory = rows.filter((row) => row.strategyId === current.strategyId).sort((a, b) => a.asOf.localeCompare(b.asOf));
+      const tickers = [...new Set(strategyHistory.flatMap((row) => row.legs.map((leg) => String(leg.ticker ?? "")).filter(Boolean)))];
+      support.addRow(["Date", ...tickers.map((ticker) => `${ticker}_Units_Per_Lot`), "Securities", "Continuity_Cash", "Complete_Value", "SI_P/L", "What_Changed", "Status"]);
+      let previousSignature = "";
+      strategyHistory.forEach((ledgerRow, index) => {
+        const active = ledgerRow.legs.filter((leg) => Boolean(leg.counts_in_current_strategy));
+        const unitMap = new Map(active.map((leg) => [String(leg.ticker ?? ""), Number(leg.units ?? 0)]));
+        const signature = active.map((leg) => `${String(leg.ticker)}:${Number(leg.units ?? 0)}`).sort().join("|");
+        const changed = index === 0 ? "Initial basket" : signature === previousSignature ? "No composition change" : "Composition changed / rebalance boundary";
+        previousSignature = signature;
+        support.addRow([
+          dateValue(ledgerRow.asOf), ...tickers.map((ticker) => unitMap.get(ticker) ?? 0),
+          ledgerRow.securitiesCents / 100, ledgerRow.continuityCashCents / 100, ledgerRow.completeValueCents / 100,
+          rands(ledgerRow.periods.SI?.pnl_cents ?? ledgerRow.periods.SI?.numerator_cents), changed, ledgerRow.certificationStatus,
+        ]);
+      });
+      const dailyLastRow = strategyHistory.length + 1;
+      const legHeaderRow = dailyLastRow + 3;
+      support.getRow(legHeaderRow).values = ["Ticker", "Leg", "Entry_Date", "Exit_Date", "Units", "Entry_Price", "Entry_Cost", "Exit_or_Current_Value", "SI_P/L", "Is_Current"];
+      current.legs.forEach((leg) => {
+        const units = Number(leg.units ?? 0);
+        const entryPrice = rands(leg.entry_price_cents);
+        const exitOrCurrent = rands(leg.current_or_exit_value_cents);
+        support.addRow([
+          String(leg.ticker ?? ""), String(leg.leg ?? ""), dateValue(leg.entry_date), dateValue(leg.exit_date), units,
+          entryPrice, units * entryPrice, exitOrCurrent, exitOrCurrent - units * entryPrice, Boolean(leg.counts_in_current_strategy) ? "Yes" : "No",
+        ]);
+      });
+      const legFirstRow = legHeaderRow + 1;
+      const legLastRow = legHeaderRow + current.legs.length;
+      const metricHeaderRow = legLastRow + 3;
+      support.getRow(metricHeaderRow).values = ["Period", "Benchmark", "Numerator", "P/L", "Return", "Reference_Date"];
+      ["1W", "WTD", "1M", "3M", "YTD", "SI"].forEach((period) => {
+        const metric = current.periods[period] ?? {};
+        const benchmark = rands(metric.denominator_cents);
+        const pnl = rands(metric.pnl_cents ?? metric.numerator_cents);
+        const numerator = rands(metric.numerator_value_cents) || benchmark + pnl;
+        support.addRow([period, benchmark, numerator, pnl, metric.return_pct == null ? null : Number(metric.return_pct) / 100, dateValue(metric.reference_date)]);
+      });
+
+      const view = book.addWorksheet(publicName, { pageSetup: { orientation: "portrait", fitToWidth: 1, fitToHeight: 1 } });
+      view.mergeCells("A1:B1");
+      view.getCell("A1").value = `PUBLIC STRATEGY VIEW - ${current.strategy.toUpperCase()}`;
+      view.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
+      view.getCell("A1").font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
+      view.getCell("A1").alignment = { horizontal: "left", vertical: "middle" };
+      view.getRow(3).values = ["Metric", "Formula / Value", "Why it matters"];
+      const supportRef = `'${supportName.replaceAll("'", "''")}'`;
+      const completeColumn = tickers.length + 4;
+      const cashColumn = tickers.length + 3;
+      const siPnlColumn = tickers.length + 5;
+      const col = (number: number) => support.getColumn(number).letter;
+      const firstComplete = Number(strategyHistory[0]?.completeValueCents ?? 0) / 100;
+      const latestComplete = current.completeValueCents / 100;
+      const initialCash = Number(strategyHistory[0]?.continuityCashCents ?? 0) / 100;
+      const latestCash = current.continuityCashCents / 100;
+      const closedProceeds = current.legs.filter((leg) => Boolean(leg.exit_date)).reduce((sum, leg) => sum + rands(leg.current_or_exit_value_cents), 0);
+      const replacementCost = current.legs.filter((leg) => Boolean(leg.counts_in_current_strategy) && String(leg.entry_date ?? "") > String(strategyHistory[0]?.asOf ?? ""))
+        .reduce((sum, leg) => sum + Number(leg.units ?? 0) * rands(leg.entry_price_cents), 0);
+      const metricRows: Array<[string, { formula: string; result: string | number | null } | Date | number, string]> = [
+        ["As_Of_Date", { formula: `MAX(${supportRef}!$A$2:$A$${dailyLastRow})`, result: current.asOf }, "Latest date in the canonical daily ledger."],
+        ["Current_Open_Strategy_Value_Per_Lot", { formula: `${supportRef}!$${col(completeColumn)}$${dailyLastRow}`, result: latestComplete }, "Open securities plus valid strategy-level continuity cash."],
+        ["Starting_Capital_Per_Lot", { formula: `${supportRef}!$${col(completeColumn)}$2`, result: firstComplete }, "The strategy's first canonical complete value per lot."],
+        ["New_Cash_Added_Per_Lot", { formula: `${supportRef}!$${col(cashColumn)}$${dailyLastRow}-${supportRef}!$${col(cashColumn)}$2`, result: latestCash - initialCash }, "Net change in strategy-level continuity cash; owner reserve and residual are excluded."],
+        ["Closed_Leg_Proceeds_Per_Lot", { formula: `SUMIFS(${supportRef}!$H$${legFirstRow}:$H$${legLastRow},${supportRef}!$D$${legFirstRow}:$D$${legLastRow},"<>")`, result: closedProceeds }, "Exit value retained for closed legs in the audit trail."],
+        ["Replacement_Leg_Cost_Per_Lot", { formula: `SUMIFS(${supportRef}!$G$${legFirstRow}:$G$${legLastRow},${supportRef}!$C$${legFirstRow}:$C$${legLastRow},">"&${supportRef}!$A$2,${supportRef}!$J$${legFirstRow}:$J$${legLastRow},"Yes")`, result: replacementCost }, "Entry cost of post-inception open model legs, retained to explain rebalance funding."],
+        ["Current_Open_P/L_Per_Lot", { formula: `B5-(B6+B7)`, result: latestComplete - (firstComplete + latestCash - initialCash) }, "Current complete value less starting capital and net continuity capital added."],
+        ["Leg_Level_SI_P/L_Per_Lot", { formula: `SUM(${supportRef}!$I$${legFirstRow}:$I$${legLastRow})`, result: current.legs.reduce((sum, leg) => sum + rands(leg.current_or_exit_value_cents) - Number(leg.units ?? 0) * rands(leg.entry_price_cents), 0) }, "Independent leg-level since-inception P/L cross-check."],
+      ];
+      metricRows.forEach(([label, value, why], index) => {
+        const row = index + 4;
+        view.getCell(row, 1).value = label;
+        view.getCell(row, 2).value = value as CellValue;
+        view.getCell(row, 3).value = why;
+        view.getCell(row, 2).numFmt = row === 4 ? "dd-mmm-yyyy" : moneyFormat;
+      });
+
+      view.getCell("A13").value = "Public strategy returns";
+      view.getCell("A13").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
+      view.getCell("A13").font = { bold: true, color: { argb: "FFFFFFFF" } };
+      view.getRow(15).values = ["Period", "Benchmark_Value", "Numerator_Value", "P/L", "Return"];
+      ["1W", "WTD", "1M", "3M", "YTD", "SI"].forEach((period, index) => {
+        const row = 16 + index;
+        const sourceRow = metricHeaderRow + 1 + index;
+        const metric = current.periods[period] ?? {};
+        const benchmark = rands(metric.denominator_cents);
+        const pnl = rands(metric.pnl_cents ?? metric.numerator_cents);
+        const numerator = rands(metric.numerator_value_cents) || benchmark + pnl;
+        view.getCell(row, 1).value = period;
+        view.getCell(row, 2).value = { formula: `${supportRef}!B${sourceRow}`, result: benchmark };
+        view.getCell(row, 3).value = { formula: `${supportRef}!C${sourceRow}`, result: numerator };
+        view.getCell(row, 4).value = { formula: `${supportRef}!D${sourceRow}`, result: pnl };
+        view.getCell(row, 5).value = { formula: `IFERROR(D${row}/B${row},"")`, result: metric.return_pct == null ? "" : Number(metric.return_pct) / 100 };
+        [2, 3, 4].forEach((column) => { view.getCell(row, column).numFmt = moneyFormat; });
+        view.getCell(row, 5).numFmt = percentFormat;
+      });
+
+      view.getCell("A25").value = "Open strategy value by date per lot";
+      view.getCell("A25").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
+      view.getCell("A25").font = { bold: true, color: { argb: "FFFFFFFF" } };
+      const valueColumn = tickers.length + 2;
+      const pnlColumn = valueColumn + 1;
+      const changeColumn = valueColumn + 2;
+      view.getRow(27).values = ["Date", ...tickers.map((ticker) => `${ticker}_Units_Per_Lot`), "Open_Strategy_Value_Per_Lot", "Open_P/L_Per_Lot", "What changed"];
+      strategyHistory.forEach((ledgerRow, index) => {
+        const targetRow = 28 + index;
+        const sourceRow = index + 2;
+        view.getCell(targetRow, 1).value = { formula: `${supportRef}!A${sourceRow}`, result: dateValue(ledgerRow.asOf) ?? ledgerRow.asOf };
+        view.getCell(targetRow, 1).numFmt = "dd-mmm-yyyy";
+        tickers.forEach((_, tickerIndex) => {
+          view.getCell(targetRow, tickerIndex + 2).value = { formula: `${supportRef}!${col(tickerIndex + 2)}${sourceRow}`, result: Number(support.getCell(sourceRow, tickerIndex + 2).value ?? 0) };
+          view.getCell(targetRow, tickerIndex + 2).numFmt = unitsFormat;
+        });
+        view.getCell(targetRow, valueColumn).value = { formula: `${supportRef}!${col(completeColumn)}${sourceRow}`, result: ledgerRow.completeValueCents / 100 };
+        view.getCell(targetRow, pnlColumn).value = { formula: `${supportRef}!${col(siPnlColumn)}${sourceRow}`, result: rands(ledgerRow.periods.SI?.pnl_cents ?? ledgerRow.periods.SI?.numerator_cents) };
+        view.getCell(targetRow, changeColumn).value = { formula: `${supportRef}!${col(siPnlColumn + 1)}${sourceRow}`, result: String(support.getCell(sourceRow, siPnlColumn + 1).value ?? "") };
+        view.getCell(targetRow, valueColumn).numFmt = moneyFormat;
+        view.getCell(targetRow, pnlColumn).numFmt = moneyFormat;
+      });
+
+      [3, 15, 27].forEach((rowNumber) => {
+        view.getRow(rowNumber).eachCell({ includeEmpty: true }, (cell) => {
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: grey } };
+          cell.font = { bold: true };
+          cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        });
+      });
+      for (let row = 4; row <= 11; row += 1) for (let column = 1; column <= 3; column += 1) view.getCell(row, column).alignment = { vertical: "top", wrapText: true };
+      view.getColumn(1).width = 40.42578125;
+      for (let column = 2; column <= Math.max(8, changeColumn); column += 1) view.getColumn(column).width = column === changeColumn ? 70 : 40.42578125;
+      for (let column = 9; column <= 14; column += 1) view.getColumn(column).width = 12;
+      view.getColumn(15).width = 70;
+      view.views = [{ state: "frozen", ySplit: 3 }];
+      view.headerFooter.oddFooter = "MINT public strategy view | &A | Page &P of &N";
+    }
+
+    const buffer = await book.xlsx.writeBuffer();
+    const blob = new Blob([new Uint8Array(buffer)], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `MINT-07-public-strategy-views-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const exportCanonicalWorkbook = async () => {
     const XLSX = await import("xlsx");
     const book = XLSX.utils.book_new();
@@ -1445,7 +1623,7 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Database-backed model legs and all return ranges. This surface displays the stored canonical record; it never recalculates a return in the browser.</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button type="button" size="sm" variant="outline" onClick={() => void exportCeoWorkbook()}>
+            <Button type="button" size="sm" variant="outline" onClick={() => void exportPublicStrategyWorkbook()}>
               <Download className="mr-1.5 h-3.5 w-3.5" /> Export Excel
             </Button>
             {history.length > 1 && (

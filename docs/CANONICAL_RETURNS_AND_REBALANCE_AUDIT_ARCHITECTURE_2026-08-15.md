@@ -649,7 +649,7 @@ The Wealth Navigator Source of Truth page now exposes the physical canonical led
 - Yahoo-style CSV upload for read-only independent price proof;
 - normalized provider-evidence SHA-256.
 
-The Excel export mirrors the CEO workbook's `06_Strategy_Ledger` structure rather than exporting a generic daily table. It creates one worksheet per strategy and preserves the 39-column `Ticker` through `SI_P/L` layout, formula cells, audit traces, date formats, red negatives, purple headings/calculated cells, yellow evidence/input cells, frozen panes and per-strategy totals. The worksheet subtitle exposes DRAFT versus CERTIFIED status; exporting a DRAFT strategy does not certify it.
+The Excel export mirrors the CEO workbook's `07_Public_Strategy_View` rather than exporting a generic daily table. It creates one visible worksheet per strategy with the public value/capital reconciliation, 1W/WTD/1M/3M/YTD/SI benchmark and numerator table, and date-by-date units/value/P&L/change history. Formula-support sheets are `veryHidden`, leaving only strategy tabs visible while preserving live Excel formulas and their cached database results. Purple section titles, grey headers, date/number/percentage formats, red negatives, column widths and explanatory text follow the supplied workbook. Exporting a DRAFT strategy does not certify it.
 
 The CSV proof endpoint is authenticated and read-only. It accepts `Date` + `Close`, optionally `Ticker`/`Symbol`, converts currency units to cents, applies a one-cent comparison tolerance, and reports matches, mismatches, or missing stored rows. It never promotes a strategy or rewrites a price.
 
