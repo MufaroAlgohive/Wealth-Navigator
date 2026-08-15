@@ -615,10 +615,11 @@ Audit evidence hashes:
 
 ### MyGrowthFund
 
-- Full multi-boundary ledger uses the reviewed 23 July evidence repair plus two 3 August reconciled settlements.
-- The 23 July repair records zero model CA because all surplus went to owner residual and fees came from execution reserve.
-- Owner residual and reserve are explicitly excluded from public strategy CA.
-- The currently missing four independent points are all 14 August provider gaps.
+- **Status: DRAFT and structurally blocked from family promotion.** This is not a credible market-loss chart.
+- On 23 July the approved valuation rule preserved `R1,435.91` per lot (`R1,278.42` securities + `R157.49` continuity cash), while the daily ledger omitted that continuity cash and published roughly `R1,289.24`.
+- On 3 August two completed settlements replaced the model basket, but the ledger reset around `R1,038` instead of carrying forward the pre-rebalance economic capital. Approximately `R230` per lot remains to be reconciled to sale proceeds, new holdings and valid model continuity cash.
+- These two discontinuities must be replayed in effective-time order and reconciled to the batch/event evidence before any row is certified or displayed to clients.
+- Owner residual and execution reserve remain excluded from public strategy CA; only strategy-level economic continuity cash may bridge a rebalance.
 
 ### MINT Diversified Basket and MINT Multi-sector
 
@@ -647,6 +648,8 @@ The Wealth Navigator Source of Truth page now exposes the physical canonical led
 - paginated history beyond Supabase's 1,000-row cap;
 - Yahoo-style CSV upload for read-only independent price proof;
 - normalized provider-evidence SHA-256.
+
+The Excel export mirrors the CEO workbook's `06_Strategy_Ledger` structure rather than exporting a generic daily table. It creates one worksheet per strategy and preserves the 39-column `Ticker` through `SI_P/L` layout, formula cells, audit traces, date formats, red negatives, purple headings/calculated cells, yellow evidence/input cells, frozen panes and per-strategy totals. The worksheet subtitle exposes DRAFT versus CERTIFIED status; exporting a DRAFT strategy does not certify it.
 
 The CSV proof endpoint is authenticated and read-only. It accepts `Date` + `Close`, optionally `Ticker`/`Symbol`, converts currency units to cents, applies a one-cent comparison tolerance, and reports matches, mismatches, or missing stored rows. It never promotes a strategy or rewrites a price.
 

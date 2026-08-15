@@ -26,6 +26,9 @@ const knownEvidenceGaps = {
   "Yield Basket": 92,
 };
 const requiredPeriods = ["1D", "1W", "WTD", "1M", "3M", "YTD", "SI"];
+const structurallyBlockedStrategies = new Map([
+  ["MyGrowthFund", "23 July and 3 August rebalance continuity breaks require reviewed capital-preserving repair"],
+]);
 
 async function rows(label, query) {
   const { data, error } = await query;
@@ -40,8 +43,13 @@ const names = new Map(strategies.map((strategy) => [strategy.id, strategy.name])
 const drafts = await rows("DRAFT canonical ledger", db.from("strategy_canonical_daily_ledger_c")
   .select("strategy_id,as_of_date,ledger_version,certification_status,securities_value_cents,continuity_cash_cents,complete_value_cents,leg_snapshot,period_metrics,source_evidence,source_evidence_sha256,calculation_notes")
   .in("strategy_id", strategyIds).eq("certification_status", "DRAFT").order("as_of_date"));
+const blockedDrafts = drafts.filter((row) => structurallyBlockedStrategies.has(names.get(row.strategy_id)));
+if (apply && blockedDrafts.length) {
+  throw new Error(`promotion blocked for structural audit exceptions: ${JSON.stringify([...new Set(blockedDrafts.map((row) => ({ strategy: names.get(row.strategy_id), reason: structurallyBlockedStrategies.get(names.get(row.strategy_id)) })) )])}`);
+}
+const promotableDrafts = drafts.filter((row) => !structurallyBlockedStrategies.has(names.get(row.strategy_id)));
 
-const invalid = drafts.flatMap((row) => {
+const invalid = promotableDrafts.flatMap((row) => {
   const failures = [];
   if (Number(row.complete_value_cents) !== Number(row.securities_value_cents) + Number(row.continuity_cash_cents))
     failures.push("COMPLETE_VALUE_FORMULA");
@@ -57,7 +65,7 @@ if (invalid.length) throw new Error(`promotion validation failed: ${JSON.stringi
 const now = new Date().toISOString();
 let written = 0;
 if (apply) {
-  for (const row of drafts) {
+  for (const row of promotableDrafts) {
     const strategyName = names.get(row.strategy_id);
     const sourceEvidence = {
       ...(row.source_evidence || {}),
@@ -96,8 +104,8 @@ console.log(JSON.stringify({
   policy: waiver ? "APPROVED_EVIDENCE_WAIVER" : "DRY_RUN_ONLY",
   active_strategy_count: strategies.length,
   strategies: strategies.map((strategy) => strategy.name),
-  draft_rows_validated: drafts.length,
+  draft_rows_validated: promotableDrafts.length,
   rows_promoted: written,
-  excluded: ["Test Strategy"],
+  excluded: ["Test Strategy", ...[...structurallyBlockedStrategies].map(([strategy, blockedReason]) => `${strategy}: ${blockedReason}`)],
   read_path_prerequisite: "MINT /api/returns/approved certified union deployed",
 }, null, 2));
