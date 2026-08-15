@@ -552,3 +552,25 @@ settled batches), Yield Basket (four compositions and four batches), and Blended
 Focus (one composition but one settled batch) are `EVIDENCE_DEPENDENT`. Those
 five must not be treated as static histories. Their execution/capital boundaries
 must be proved or explicitly bridged before full-history certification.
+
+`scripts/stage-static-canonical-ledger.ts` now generalises the ETF methodology
+for strategies proven static by the family audit. Its price reader paginates
+`stock_returns_c`; this fixed a calculator defect where Supabase's 1,000-row
+response cap made Famous Brands appear stale after 2026-07-24. Missing exact
+session closes use only the last known prior close (never a future close), with
+each carried leg labelled `STORED_PRIOR_CLOSE_CARRY_FORWARD` in evidence. The
+script is dry-run by default, rejects any non-DRAFT conflict, and requires both
+`APPLY_CANONICAL_LEDGER_DRAFT=1` and
+`REPLACE_CONFLICTING_CANONICAL_DRAFT=1` before a conflicting DRAFT checkpoint
+can be replaced.
+
+On 2026-08-15, MINT Famous Brands was reconstructed to 135 DRAFT rows from
+2026-01-30 through 2026-08-14. It has 16 carried legs, a latest complete value
+of 302,764 cents and latest SI/YTD of 6.3023587324%. UCT was reconstructed to
+90 DRAFT rows from 2026-04-07 through 2026-08-14. It has two carried legs, a
+latest complete value of 113,723 cents and latest SI/YTD of 7.3891858203%.
+Their pre-existing 2026-08-07 DRAFT checkpoints were the only conflicts and
+were replaced: Famous Brands 307,996 -> 306,838 cents; UCT 113,410 -> 114,216
+cents. An idempotent rerun found all 135 and 90 rows matching, zero missing rows
+and zero remaining conflicts. These histories remain DRAFT and do not alter the
+public app until an explicit certification/cutover decision.
