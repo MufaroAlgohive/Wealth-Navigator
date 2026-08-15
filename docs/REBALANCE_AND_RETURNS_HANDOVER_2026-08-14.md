@@ -924,3 +924,42 @@ IRESS worker domains returned `404 Application not found`. These provider
 failures are recorded as unavailable evidence, never interpreted as matching
 prices. MyGrowth therefore remains DRAFT until a reviewed IRESS export, working
 provider endpoint or other approved independent price file reproduces it.
+
+### Diversified and Multi-sector composition-only ledgers
+
+The two remaining strategies with no canonical history were audited across
+both databases. Retail contains their dated composition logs but no
+`rebalance_batch`, `rebalance_event`, cash event, reserve event or model-CA
+reconciliation. Institutional contains no matching June execution: the NY1
+order found there was a cancelled manual order on 27 July, and the GRT order
+was an unrelated UAT gift order on 15 August. Neither is valid evidence for the
+June model changes.
+
+`scripts/stage-composition-proxy-canonical-ledger.ts` now provides a deliberately
+restricted DRAFT-only reconstruction for `MINT Diversified Basket` and
+`MINT Multi-sector`. It refuses any other strategy and refuses to run if a
+rebalance batch or CA reconciliation has subsequently appeared. It applies the
+workbook leg-P/L formulas, records every composition delta, uses zero model cash
+because no authoritative reconciliation exists, protects non-DRAFT rows, and
+labels boundary values as model EOD proxies rather than broker fills.
+
+Diversified's 18 June boundary has exact stored closes for all ten reduced or
+removed holdings. Its 135 JSE-session rows span 30 January through 14 August.
+The latest DRAFT value is 252,346 cents and the workbook-style returns are 1D
+-0.8112888644%, 1W/WTD -1.4708351392%, 1M -2.6345235247%, 3M
+3.0870258991%, and YTD/SI 7.6229200182%.
+
+Multi-sector's effective boundary is 16 June, a JSE holiday. Its NY1 -2, TGA
+-3 and STX500 +2 legs therefore use the prior 15 June stored close, with the
+price date and `STORED_PRIOR_CLOSE_BOUNDARY_PROXY` source persisted per leg.
+Its 121 JSE-session rows span 19 February through 14 August. The latest DRAFT
+value is 242,701 cents and returns are 1D 0.3000309949%, 1W/WTD
+-2.7289487395%, 1M -0.6382543192%, 3M -4.6834593442%, and YTD/SI
+-11.0577941515%.
+
+The staging write inserted 135 Diversified and 121 Multi-sector DRAFT rows.
+The immediate rerun found all 256 rows already matching, with zero inserts,
+zero conflicts, zero replacements and zero writes. Their existing guarded
+publications and app values remain unchanged. Promotion is blocked until the
+model-boundary proxy is approved or replaced by execution evidence and an
+independent price comparison passes.
