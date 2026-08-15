@@ -1051,3 +1051,47 @@ performed zero writes. The 15 August run recognized the JSE weekend and exited
 before reading strategies. Focused tests passed for ticker normalization,
 cash/exited-leg exclusion and composition-change detection. Public/app values
 remain unchanged; this writer only maintains the shadow DRAFT ledger.
+
+### Evidence-backed daily rebalance continuation and provider proof
+
+The daily writer now has a guarded continuation path for a composition or
+strategy-CA change. It will cross the boundary only when exactly one non-reversed
+`SETTLED` / `COMPLETE` batch sits between the preceding ledger close and the
+requested close; the batch before/after snapshots must reproduce the old and new
+model baskets; every changed ticker must have positive dated fills; aggregate
+fill quantities must resolve to one consistent positive integer owner scale;
+and exactly one CA reconciliation must satisfy both its capital identity and
+owner-count identity. The ACTIVE valuation rule's CA must equal the reconciled
+strategy CA. Missing or ambiguous evidence still leaves the strategy on its
+last DRAFT close.
+
+On a valid boundary, the writer splits and freezes sold model legs at their
+weighted execution fill, opens bought model legs at their weighted fill,
+replaces the prior CA leg with the authoritative reconciled CA, and records any
+positive difference between prior CA + per-lot fill residual and new CA as an
+explicit `EXECUTION_COST` leg. It rejects a negative bridge as unexplained
+external capital. The evidence, owner scale, model deltas, cash bridge and batch
+ID are appended to the canonical row and included in a new SHA-256 evidence
+hash. Multiple boundaries in one daily gap remain fail-closed so they can be
+replayed in order rather than collapsed.
+
+The Source of Truth `Ledger` tab already exposes each strategy as a workbook tab,
+the daily complete-value chart, all seven return ranges, value identity and leg
+evidence. It now also accepts one or more Yahoo-style CSV exports for independent
+price proof. `Date` + `Close` files are interpreted in currency units and
+converted to cents; multi-ticker files can include `Ticker` or `Symbol`, while a
+single-ticker export can use its filename. The authenticated read-only endpoint
+compares these rows with the latest exact stored close for the same ticker/date,
+uses a one-cent tolerance, reports matches, mismatches and missing stored rows,
+and hashes the normalized provider evidence. It never writes prices or promotes
+a ledger automatically.
+
+Six focused tests now cover the original daily-writer guards plus valid model
+fill scaling/leg reconstruction, snapshot mismatch rejection and unexplained
+capital rejection. All six pass, TypeScript passes, and the full Next.js 16.2.10
+production build completes successfully including the new authenticated
+`/api/admin/source-of-truth/price-proof` route. A database dry run was not
+repeated from this Windows shell because Bun is not installed on the PATH; the
+production cron/runtime remains the intended configured execution surface.
+Public/app values are still unchanged and every canonical family row remains
+DRAFT pending independent provider/workbook sign-off.

@@ -1,6 +1,13 @@
+import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "../supabase/server";
+import {
+  type BoundaryFill,
+  type BoundaryReconciliation,
+  type SettledBoundaryBatch,
+  rebuildLegsAcrossSettledBoundary,
+} from "./canonical-rebalance-boundary";
 
 type JsonRow = Record<string, unknown>;
 type Holding = { ticker: string; units: number };
@@ -378,27 +385,101 @@ export async function publishCanonicalLedgerDraft(
       }
       const currentHoldings = parseModelHoldings(composition.holdings);
       const priorHoldings = activeHoldingsFromLedger(previous);
-      if (!sameModelHoldings(priorHoldings, currentHoldings)) {
-        results.push({
-          strategy: strategy.name,
-          action: "skipped",
-          reason: "REBALANCE_REQUIRES_SETTLED_EVIDENCE_REBUILD",
-        });
-        skipped += 1;
-        continue;
-      }
       const continuityCashCents = Number(rule.continuity_cash_per_lot_cents);
-      if (continuityCashCents !== Number(previous.continuity_cash_cents)) {
-        results.push({
-          strategy: strategy.name,
-          action: "skipped",
-          reason: "MODEL_CASH_CHANGE_REQUIRES_RECONCILIATION_REBUILD",
+      let boundaryLegs: NormalizedLeg[] | null = null;
+      let boundaryEvidence: JsonRow | null = null;
+      if (
+        !sameModelHoldings(priorHoldings, currentHoldings) ||
+        continuityCashCents !== Number(previous.continuity_cash_cents)
+      ) {
+        const batches = await many<SettledBoundaryBatch>(
+          "settled rebalance boundary",
+          db
+            .from("rebalance_batch")
+            .select(
+              "id,status,settlement_state,effective_date,is_reversed,holdings_snapshot_before,holdings_snapshot_after,holdings_snapshot_planned",
+            )
+            .eq("strategy_id", strategy.id)
+            .eq("status", "SETTLED")
+            .eq("settlement_state", "COMPLETE")
+            .eq("is_reversed", false)
+            .gt("effective_date", previous.as_of_date)
+            .lte("effective_date", asOf)
+            .order("effective_date"),
+        );
+        if (batches.length !== 1) {
+          results.push({
+            strategy: strategy.name,
+            action: "skipped",
+            reason:
+              batches.length === 0
+                ? "REBALANCE_REQUIRES_SETTLED_EVIDENCE_REBUILD"
+                : "MULTIPLE_REBALANCE_BOUNDARIES_REQUIRE_ORDERED_REBUILD",
+          });
+          skipped += 1;
+          continue;
+        }
+        const [batch] = batches;
+        if (!batch) throw new Error("REBALANCE_REQUIRES_SETTLED_EVIDENCE_REBUILD");
+        const fills = await many<BoundaryFill>(
+          "rebalance fills",
+          db
+            .from("rebalance_event")
+            .select("security_id,trade_side,quantity,avg_fill,fill_date")
+            .eq("batch_id", batch.id),
+        );
+        const reconciliations = await many<BoundaryReconciliation>(
+          "rebalance CA reconciliation",
+          db
+            .from("strategy_rebalance_ca_reconciliation_c")
+            .select(
+              "model_capital_cents,securities_value_cents,strategy_ca_cents,affected_owner_count,reconciled_owner_count,capital_source",
+            )
+            .eq("batch_id", batch.id),
+        );
+        if (reconciliations.length !== 1) {
+          results.push({
+            strategy: strategy.name,
+            action: "skipped",
+            reason: "REBALANCE_CA_RECONCILIATION_REQUIRED",
+          });
+          skipped += 1;
+          continue;
+        }
+        const securityIds = [...new Set(fills.map((fill) => fill.security_id).filter(Boolean))];
+        const securities = securityIds.length
+          ? await many<{ id: string; symbol: string }>(
+              "rebalance securities",
+              db.from("securities_c").select("id,symbol").in("id", securityIds),
+            )
+          : [];
+        const [reconciliation] = reconciliations;
+        if (!reconciliation) throw new Error("REBALANCE_CA_RECONCILIATION_REQUIRED");
+        const rebuilt = rebuildLegsAcrossSettledBoundary({
+          previousDate: previous.as_of_date,
+          previousHoldings: priorHoldings,
+          previousCashCents: Number(previous.continuity_cash_cents),
+          previousLegs: normalizeLedgerLegs(previous),
+          currentHoldings,
+          currentCashCents: continuityCashCents,
+          batch,
+          fills,
+          securitySymbols: new Map(securities.map((security) => [security.id, security.symbol])),
+          reconciliation,
         });
-        skipped += 1;
-        continue;
+        boundaryLegs = rebuilt.legs;
+        boundaryEvidence = rebuilt.evidence;
       }
 
-      const tickers = currentHoldings.map((holding) => holding.ticker);
+      const metricLegs = boundaryLegs ?? (isLegLedger(previous) ? normalizeLedgerLegs(previous) : null);
+      const tickers = [
+        ...new Set([
+          ...currentHoldings.map((holding) => holding.ticker),
+          ...(metricLegs ?? [])
+            .map((leg) => leg.ticker)
+            .filter((ticker) => ticker !== "CASH" && ticker !== "EXECUTION_COST"),
+        ]),
+      ];
       const earliestDate = ledgerRows.at(0)?.as_of_date ?? previous.as_of_date;
       const prices = await fetchPriceHistory(
         db,
@@ -441,8 +522,8 @@ export async function publishCanonicalLedgerDraft(
         SI: earliestDate,
       };
       const allRows = [...ledgerRows, current];
-      if (isLegLedger(previous)) {
-        const normalized = normalizeLedgerLegs(previous);
+      if (metricLegs) {
+        const normalized = metricLegs;
         current.leg_snapshot = normalized.map((leg) => ({
           ticker: leg.ticker,
           leg: leg.leg,
@@ -483,10 +564,24 @@ export async function publishCanonicalLedgerDraft(
       }
       current.calculation_notes = {
         ...previous.calculation_notes,
-        daily_writer: "canonical-draft-stable-composition-v1",
+        daily_writer: boundaryEvidence
+          ? "canonical-draft-evidence-backed-boundary-v2"
+          : "canonical-draft-stable-composition-v1",
         report_mode: "DAILY_DRAFT_APPEND_ONLY",
         promotion_blocked: true,
       };
+      if (boundaryEvidence) {
+        const priorBoundaries = Array.isArray(previous.source_evidence?.daily_boundaries)
+          ? previous.source_evidence.daily_boundaries
+          : [];
+        current.source_evidence = {
+          ...previous.source_evidence,
+          daily_boundaries: [...priorBoundaries, boundaryEvidence],
+        };
+        current.source_evidence_sha256 = createHash("sha256")
+          .update(JSON.stringify(current.source_evidence))
+          .digest("hex");
+      }
 
       if (apply) {
         const { error } = await db.from("strategy_canonical_daily_ledger_c").insert(current);
