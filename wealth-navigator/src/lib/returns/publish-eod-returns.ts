@@ -1,16 +1,17 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
+import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "../supabase/server";
 
 /**
  * Rebalance-aware EOD return publisher.
  *
  * Each trading day this publishes every active strategy through the guarded
  * RPC `publish_guarded_strategy_return`, chaining from that strategy's own
- * prior publication. A strategy's value is its COMPLETE lot: securities
- * (the `strategies_c.holdings` template priced at the latest intraday tick)
- * plus continuity cash (from its ACTIVE `strategy_valuation_rules_c` row,
- * else zero). Because complete value is preserved across a rebalance — the
+ * prior publication. A strategy's value is its COMPLETE lot: securities from
+ * the composition effective on the requested date, priced from that date's
+ * stored close (guarded intraday fallback), plus continuity cash from its
+ * required ACTIVE `strategy_valuation_rules_c` row. Because complete value is
+ * preserved across a rebalance — the
  * value the new basket no longer represents becomes continuity cash, sealed
  * by `finalize_rebalance_return_boundary` at settlement — a composition
  * change is not seen as a return, and YTD chains through instead of stepping.
@@ -20,9 +21,9 @@ import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib
  * inconsistent, so a bad day simply does not publish rather than publishing a
  * wrong number.
  *
- * This is a port of the CRM's `api/_returns-publish.js`. It reads and writes
- * exactly the same retail tables and RPC — the CRM *project* is being retired,
- * the return chain it maintains is not. Only one of the two may be scheduled
+ * This controlled fallback reads and writes the same retail tables and guarded
+ * RPC as the primary MINT publisher. MyMintAdmin's old publisher is retired.
+ * Only one publisher may be scheduled
  * at a time: both writing the same (strategy, as_of_date) would have them
  * disagree on `composition_effective_from` and manufacture spurious boundary
  * bridges, which is visible in the Aug 2026 history.
@@ -113,11 +114,40 @@ export async function publishEodReturns(
     return { ok: true, asOf, apply, summary: empty, results: [], note: "no active strategies" };
   }
 
-  // Template holdings per strategy + the full symbol universe to price.
+  // Resolve the composition effective on the requested close. A valuation
+  // rule date is a capital/cash anchor, not a composition boundary.
+  const strategyIds = strategies.map((strategy) => strategy.id);
+  const compositionRes = await db
+    .from("strategy_composition_log_c")
+    .select("strategy_id, effective_from, effective_to, holdings, created_at")
+    .in("strategy_id", strategyIds)
+    .lte("effective_from", asOf)
+    .order("effective_from", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (compositionRes.error) {
+    return { ok: false, asOf, apply, summary: empty, results: [], note: compositionRes.error.message };
+  }
+  const compositionBy = new Map<
+    string,
+    { effective_from: string; effective_to: string | null; holdings: unknown }
+  >();
+  for (const row of (compositionRes.data ?? []) as Array<{
+    strategy_id: string;
+    effective_from: string;
+    effective_to: string | null;
+    holdings: unknown;
+  }>) {
+    if (!compositionBy.has(row.strategy_id) && (!row.effective_to || row.effective_to >= asOf)) {
+      compositionBy.set(row.strategy_id, row);
+    }
+  }
+
+  // Effective model holdings per strategy + the full symbol universe to price.
   const template = new Map<string, TemplateHolding[]>();
   const bases = new Set<string>();
   for (const s of strategies) {
-    const rows = (Array.isArray(s.holdings) ? s.holdings : []) as Array<Record<string, unknown>>;
+    const sourceHoldings = compositionBy.get(s.id)?.holdings;
+    const rows = (Array.isArray(sourceHoldings) ? sourceHoldings : []) as Array<Record<string, unknown>>;
     const parsed = rows
       .map((h) => ({
         symbol: bare(String(h.symbol ?? h.ticker ?? "")),
@@ -130,14 +160,44 @@ export async function publishEodReturns(
 
   const universe = [...bases, ...[...bases].map((b) => `${b}.JO`)];
   const since = new Date(Date.now() - 4 * DAY_MS).toISOString();
-  const pxRes = await db
-    .from("stock_intraday_c")
-    .select("symbol, current_price, timestamp")
-    .in("symbol", universe)
-    .gte("timestamp", since)
-    .order("timestamp", { ascending: false });
+  const [pxRes, eodRes] = await Promise.all([
+    db
+      .from("stock_intraday_c")
+      .select("symbol, current_price, timestamp")
+      .in("symbol", universe)
+      .gte("timestamp", since)
+      .order("timestamp", { ascending: false }),
+    db
+      .from("stock_returns_c")
+      .select("symbol, current_price, as_of_date, fetched_at")
+      .in("symbol", universe)
+      .eq("as_of_date", asOf),
+  ]);
+  if (pxRes.error || eodRes.error) {
+    return {
+      ok: false,
+      asOf,
+      apply,
+      summary: empty,
+      results: [],
+      note: pxRes.error?.message || eodRes.error?.message,
+    };
+  }
   const priceCents = new Map<string, number>();
   const priceAt = new Map<string, string>();
+  const priceSource = new Map<string, "STORED_EOD_CLOSE" | "GUARDED_INTRADAY">();
+  for (const r of (eodRes.data ?? []) as Array<{
+    symbol: string;
+    current_price: number | string | null;
+    fetched_at: string | null;
+  }>) {
+    const b = bare(r.symbol);
+    const p = Number(r.current_price);
+    if (priceCents.has(b) || !(p > 0) || !r.fetched_at) continue;
+    priceCents.set(b, p);
+    priceAt.set(b, r.fetched_at);
+    priceSource.set(b, "STORED_EOD_CLOSE");
+  }
   for (const r of (pxRes.data ?? []) as Array<{
     symbol: string;
     current_price: number | string | null;
@@ -148,6 +208,7 @@ export async function publishEodReturns(
     if (priceCents.has(b) || !(p > 0)) continue;
     priceCents.set(b, p);
     priceAt.set(b, r.timestamp);
+    priceSource.set(b, "GUARDED_INTRADAY");
   }
 
   // ACTIVE valuation rules carry continuity cash + the composition's effective date.
@@ -172,6 +233,12 @@ export async function publishEodReturns(
   for (const s of strategies) {
     const holds = template.get(s.id) ?? [];
     try {
+      const composition = compositionBy.get(s.id);
+      if (!composition) {
+        results.push({ strategy: s.name, action: "skip", reason: "no effective composition" });
+        skipped += 1;
+        continue;
+      }
       if (holds.length === 0) {
         results.push({ strategy: s.name, action: "skip", reason: "no template holdings" });
         skipped += 1;
@@ -179,8 +246,9 @@ export async function publishEodReturns(
       }
 
       let securitiesCents = 0;
-      let freshest: string | null = null;
+      let oldestUsedPriceAt: string | null = null;
       const missing: string[] = [];
+      const sources = new Set<string>();
       for (const h of holds) {
         const p = priceCents.get(h.symbol);
         if (p == null) {
@@ -189,7 +257,9 @@ export async function publishEodReturns(
         }
         securitiesCents += h.shares * p;
         const at = priceAt.get(h.symbol);
-        if (at && (!freshest || at > freshest)) freshest = at;
+        if (at && (!oldestUsedPriceAt || at < oldestUsedPriceAt)) oldestUsedPriceAt = at;
+        const source = priceSource.get(h.symbol);
+        if (source) sources.add(source);
       }
       if (missing.length > 0) {
         results.push({ strategy: s.name, action: "skip", reason: `missing price: ${missing.join(",")}` });
@@ -197,13 +267,18 @@ export async function publishEodReturns(
         continue;
       }
       // The RPC rejects prices older than a day; skip early rather than log a failure.
-      if (!freshest || new Date(freshest).getTime() < new Date(asOf).getTime() - DAY_MS) {
+      if (!oldestUsedPriceAt || new Date(oldestUsedPriceAt).getTime() < new Date(asOf).getTime() - DAY_MS) {
         results.push({ strategy: s.name, action: "skip", reason: "stale prices (non-trading day?)" });
         skipped += 1;
         continue;
       }
 
       const rule = ruleBy.get(s.id);
+      if (!rule) {
+        results.push({ strategy: s.name, action: "skip", reason: "no active valuation rule" });
+        skipped += 1;
+        continue;
+      }
       const continuityCents = Math.round(Number(rule?.continuity_cash_per_lot_cents ?? 0));
       const completeCents = Math.round(securitiesCents) + continuityCents;
 
@@ -229,13 +304,21 @@ export async function publishEodReturns(
         continue;
       }
 
-      const compEffFrom =
-        rule?.effective_from ?? prev?.composition_effective_from ?? `${asOf.slice(0, 4)}-01-01`;
+      const compEffFrom = composition.effective_from;
+
+      if (prev && String(prev.composition_effective_from) !== String(compEffFrom)) {
+        results.push({
+          strategy: s.name,
+          action: "skip",
+          reason: `unsealed composition boundary: ${prev.composition_effective_from} -> ${compEffFrom}`,
+        });
+        skipped += 1;
+        continue;
+      }
 
       let chainFactor: number;
       let ytd: number;
       let oneDayPct: number | null = null;
-      let bridge: number | null = null;
       let mode: string;
 
       if (prev) {
@@ -243,14 +326,7 @@ export async function publishEodReturns(
         oneDayPct = ((completeCents - prevComplete) / prevComplete) * 100;
         chainFactor = Number(prev.chain_factor) * (1 + oneDayPct / 100);
         ytd = (chainFactor - 1) * 100;
-        // A composition boundary should already be sealed by settlement. If the
-        // daily run still sees one, bridge on the (preserved) complete-value move.
-        if (String(prev.composition_effective_from) !== String(compEffFrom)) {
-          bridge = oneDayPct;
-          mode = "chain+bridge";
-        } else {
-          mode = "chain";
-        }
+        mode = "chain";
       } else {
         const seed = await seedYtd(db, s.id);
         ytd = seed.ytd;
@@ -268,13 +344,19 @@ export async function publishEodReturns(
           p_complete_value_cents: completeCents,
           p_covered_holdings: holds.length,
           p_expected_holdings: holds.length,
-          p_freshest_price_at: freshest,
+          p_freshest_price_at: oldestUsedPriceAt,
           p_composition_effective_from: compEffFrom,
           p_holdings_snapshot: holds,
-          p_boundary_bridge_pct: bridge,
+          p_boundary_bridge_pct: null,
           p_chain_factor: chainFactor,
           p_ytd_pct: ytd,
-          p_checks: { source: "oem_eod_cron", mode },
+          p_checks: {
+            source: "oem_eod_cron",
+            mode,
+            price_sources: [...sources].sort(),
+            price_timestamp_is_oldest_used: true,
+            composition_source: "strategy_composition_log_c",
+          },
         });
         if (rpc.error) throw new Error(rpc.error.message);
       }

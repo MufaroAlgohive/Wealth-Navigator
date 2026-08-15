@@ -43,6 +43,11 @@ import { publishEodReturns } from "@/lib/returns/publish-eod-returns";
  * CLIENT-level boundary — the MINT app publishes strategy returns only, never
  * `client_strategy_return_publication_audit_c`.
  *
+ * The fallback resolves boundaries from `strategy_composition_log_c` and
+ * prefers an exact requested-date `stock_returns_c` close. It remains opt-in:
+ * this is a controlled recovery path when the primary MINT writer missed a
+ * row, not a competing scheduled publisher.
+ *
  * `?asOf=` runs it for a specific date. An admin can force a real write with
  * `?apply=1` for debugging without touching the env var.
  *

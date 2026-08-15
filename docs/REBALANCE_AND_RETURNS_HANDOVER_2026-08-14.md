@@ -322,3 +322,107 @@ rebalance_request_c (request/book ID)
 - [ ] Implement request-ID-scoped rebalance books for all future tests.
 - [ ] Resume the ledger/Excel audit without changing public values until
       certification.
+
+## 15 Aug 2026 continuation: static publication recovery
+
+Six static strategies stopped receiving guarded publication rows after
+10 Aug because they had no ACTIVE `strategy_valuation_rules_c` record. A
+reviewed, idempotent migration restored rules for Blended Focus, ETF Basket,
+MINT Diversified Basket, MINT Famous Brands, MINT Multi-sector and UCT from
+their last fully checked publication anchor. No holding, price, investor
+balance or historic return was overwritten.
+
+The legacy RPC `calculate_daily_strategy_metrics('2026-08-14')` was tested and
+failed safely with `relation "strategies" does not exist`. It belongs to the
+old schema and is not the production guarded publisher. Do not repair it by
+only renaming its table: its calculation contract is legacy and separate from
+the current cash/rebalance chain.
+
+Current writer ownership:
+
+1. Primary strategy publisher: MINT `server/index.cjs`,
+   `computeAndSaveStrategyReturns`, using `strategies_c`, effective composition
+   logs, active valuation rules, a 15% daily spike guard and the guarded RPC.
+2. Controlled fallback: Wealth Navigator
+   `src/lib/returns/publish-eod-returns.ts`, opt-in only.
+3. MyMintAdmin's `_returns-publish.js` remains retired; reconnecting it would
+   create a competing writer.
+
+A dry run found two defects in the fallback before any row was published:
+
+- it treated `strategy_valuation_rules_c.effective_from` as the composition
+  date, creating false rebalance bridges for newly seeded static rules;
+- it read only recent intraday ticks, skipping SYGEMF and STXNDQ despite exact
+  stored 14 Aug closes.
+
+The fallback now resolves composition from `strategy_composition_log_c`,
+requires an ACTIVE valuation rule, prefers the exact requested-date
+`stock_returns_c` close, records price provenance and validates the oldest
+timestamp used across all holdings. Public writes remain guarded and opt-in.
+
+The first corrected 14 Aug dry run resolved all previously missing prices and
+produced ordinary chain plans for UCT, Yield Basket, MINT Famous Brands, ETF
+Basket, Blended Focus and MyGrowthFund. Diversified and Multi-sector exposed
+real unsealed composition boundaries (the known 18 Jun GRT and 16 Jun NY1
+evidence gaps). The fallback now refuses any such boundary; it never invents a
+bridge. Those strategies remain stale/uncertified until their transition
+evidence is repaired.
+
+Operator command (dry-run unless the explicit apply flag is set):
+
+```powershell
+$env:EOD_RETURN_RECOVERY_DATE='2026-08-14'
+.\node_modules\.bin\vite-node.cmd scripts\run-eod-return-recovery.ts
+```
+
+Only after the dry-run has no unexplained skips/failures:
+
+```powershell
+$env:APPLY_EOD_RETURN_RECOVERY='1'
+.\node_modules\.bin\vite-node.cmd scripts\run-eod-return-recovery.ts
+```
+
+Verify the persisted rows without writing anything:
+
+```powershell
+$env:EOD_RETURN_RECOVERY_DATE='2026-08-14'
+.\node_modules\.bin\vite-node.cmd scripts\verify-eod-return-recovery.ts
+```
+
+The post-apply idempotency run on 15 Aug returned zero failures. UCT, Yield
+Basket, MINT Famous Brands, ETF Basket, Blended Focus and MyGrowthFund all
+reported `already published today`; Test Strategy already had its own row.
+MINT Diversified Basket and MINT Multi-sector remained blocked at their known
+unsealed composition boundaries. This is the intended fail-closed result.
+The verifier reads only columns that exist on the guarded audit table; daily
+percentage fields remain consumer-view calculations and are not duplicated in
+the audit-row verifier.
+
+Persisted 14 Aug verification result (all six rows passed complete-value
+identity, full price coverage, composition snapshot and chain reconciliation):
+
+| Strategy | Securities cents | Continuity cash cents | Complete cents | YTD % |
+| --- | ---: | ---: | ---: | ---: |
+| Blended Focus | 500697 | 0 | 500697 | -0.9771813036 |
+| ETF Basket | 237139 | 0 | 237139 | 14.2574680705 |
+| MINT Famous Brands | 302764 | 0 | 302764 | 9.2726424089 |
+| MyGrowthFund | 104680 | 57 | 104737 | 8.7069670537 |
+| UCT | 113723 | 0 | 113723 | 10.9731301795 |
+| Yield Basket | 184747 | 49194 | 233941 | 17.0657736272 |
+
+Every row records `STORED_EOD_CLOSE`, `mode=chain`,
+`composition_source=strategy_composition_log_c`, and
+`boundary_bridge_required=false`. Diversified and Multi-sector have no 14 Aug
+recovery row by design; evidence repair must precede their next publication.
+
+Verification on 15 Aug:
+
+- recovery dry-run after apply: 0 failures; published rows were idempotently
+  skipped and both unsealed boundaries remained blocked;
+- read-only persisted-row verifier: 6 rows, 6/6 complete-value identities;
+- focused TypeScript compile of the publisher, Supabase server helper and both
+  operator scripts: passed;
+- `git diff --check`: passed;
+- full repository `npm run typecheck`: still blocked by pre-existing errors in
+  unrelated Bun tests, `office-crypto`, settlement fixtures and gift-worker
+  fixtures; none of the errors reference the recovery files.

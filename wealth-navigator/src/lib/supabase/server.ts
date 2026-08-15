@@ -8,7 +8,7 @@ import { createServerClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 
-import { getSupabaseAnonKey, getSupabaseUrl } from "@/lib/supabase/config";
+import { getSupabaseAnonKey, getSupabaseUrl } from "./config";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
