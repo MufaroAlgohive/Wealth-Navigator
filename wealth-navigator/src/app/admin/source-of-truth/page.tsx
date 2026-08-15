@@ -1112,7 +1112,24 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
     return [...byStrategy.values()].sort((a, b) => a.strategy.localeCompare(b.strategy));
   }, [rows]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = latest.find((row) => row.strategyId === selectedId) ?? latest[0] ?? null;
+  const [selectedAsOf, setSelectedAsOf] = useState<string | null>(null);
+  const selectedStrategy = latest.find((row) => row.strategyId === selectedId) ?? latest[0] ?? null;
+  const history = useMemo(
+    () => rows
+      .filter((row) => row.strategyId === selectedStrategy?.strategyId)
+      .sort((a, b) => b.asOf.localeCompare(a.asOf)),
+    [rows, selectedStrategy?.strategyId],
+  );
+  const selected = history.find((row) => row.asOf === selectedAsOf) ?? history[0] ?? selectedStrategy;
+  const chartRows = useMemo(
+    () => [...history].reverse().map((row) => ({
+      date: row.asOf,
+      complete: row.completeValueCents / 100,
+      securities: row.securitiesCents / 100,
+      cash: row.continuityCashCents / 100,
+    })),
+    [history],
+  );
   const status = selected?.certificationStatus === "CERTIFIED" ? "ok" : "warning";
   const unresolved = Array.isArray(selected?.notes?.unresolved_evidence)
     ? selected.notes.unresolved_evidence.map(String)
@@ -1131,11 +1148,23 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
             <h2 className="mt-2 text-xl font-semibold">Excel-style audit workbook</h2>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Database-backed model legs and all return ranges. This surface displays the stored canonical record; it never recalculates a return in the browser.</p>
           </div>
-          <StatusLight severity={status} />
+          <div className="flex items-center gap-2">
+            {history.length > 1 && (
+              <select
+                value={selected.asOf}
+                onChange={(event) => setSelectedAsOf(event.target.value)}
+                className="rounded-lg border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-foreground outline-none focus:border-violet-300/50"
+                aria-label="Ledger close date"
+              >
+                {history.map((row) => <option key={row.asOf} value={row.asOf}>{row.asOf} · {row.certificationStatus}</option>)}
+              </select>
+            )}
+            <StatusLight severity={status} />
+          </div>
         </div>
         <div className="mt-5 flex gap-2 overflow-x-auto pb-1">
           {latest.map((row) => (
-            <button key={row.strategyId} type="button" onClick={() => setSelectedId(row.strategyId)} className={`shrink-0 rounded-lg border px-3 py-2 text-sm transition ${selected.strategyId === row.strategyId ? "border-violet-300/60 bg-violet-500/20 text-violet-100" : "border-white/10 bg-black/10 text-muted-foreground hover:border-violet-300/30 hover:text-foreground"}`}>
+            <button key={row.strategyId} type="button" onClick={() => { setSelectedId(row.strategyId); setSelectedAsOf(null); }} className={`shrink-0 rounded-lg border px-3 py-2 text-sm transition ${selected.strategyId === row.strategyId ? "border-violet-300/60 bg-violet-500/20 text-violet-100" : "border-white/10 bg-black/10 text-muted-foreground hover:border-violet-300/30 hover:text-foreground"}`}>
               {row.strategy}
             </button>
           ))}
@@ -1147,6 +1176,37 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
         <LedgerStat label="Securities" value={money(selected.securitiesCents)} />
         <LedgerStat label="Continuity cash" value={money(selected.continuityCashCents)} className="text-emerald-300" />
         <LedgerStat label="Complete value" value={money(selected.completeValueCents)} />
+      </div>
+
+      <div className="border-b border-white/10 p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-semibold">Daily complete-value ledger</div>
+            <div className="mt-1 text-xs text-muted-foreground">Stored database rows only · no browser-side return reconstruction</div>
+          </div>
+          <span className="rounded-full border border-white/10 bg-black/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{history.length} closes</span>
+        </div>
+        {chartRows.length > 1 ? (
+          <div className="h-52 rounded-xl border border-white/10 bg-black/10 p-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartRows} margin={{ top: 10, right: 12, left: 4, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="canonicalLedgerValue" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.42} />
+                    <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.06)" vertical={false} />
+                <XAxis dataKey="date" tick={{ fill: "#9ca3af", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={24} />
+                <YAxis tick={{ fill: "#9ca3af", fontSize: 10 }} axisLine={false} tickLine={false} width={56} tickFormatter={(value) => `R${Number(value).toLocaleString("en-ZA", { maximumFractionDigits: 0 })}`} />
+                <Tooltip formatter={(value) => [`R${Number(value).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, "Complete value"]} labelFormatter={(label) => `Close ${label}`} />
+                <Area type="monotone" dataKey="complete" stroke="#a78bfa" strokeWidth={2} fill="url(#canonicalLedgerValue)" dot={{ r: 2, fill: "#c4b5fd" }} activeDot={{ r: 4 }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-white/10 bg-black/10 p-6 text-center text-xs text-muted-foreground">The chart will form as additional certified or draft closes are stored.</div>
+        )}
       </div>
 
       <div className="grid gap-5 p-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(330px,.8fr)]">
