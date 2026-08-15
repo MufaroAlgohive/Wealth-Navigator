@@ -963,3 +963,11 @@ zero conflicts, zero replacements and zero writes. Their existing guarded
 publications and app values remain unchanged. Promotion is blocked until the
 model-boundary proxy is approved or replaced by execution evidence and an
 independent price comparison passes.
+
+The Source of Truth `Ledger` tab already reads this physical canonical table
+directly. Its API now paginates all ledger rows in 500-row database pages
+instead of silently truncating at 1,000 as the daily family history grows. The
+UI also exposes each row's real certification requirements and recognises
+`source_ref` on model legs, so composition-proxy evidence is visibly amber
+rather than being displayed as unknown or green. These are audit-surface
+changes only; they do not promote DRAFT data.

@@ -1131,9 +1131,12 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
     [history],
   );
   const status = selected?.certificationStatus === "CERTIFIED" ? "ok" : "warning";
-  const unresolved = Array.isArray(selected?.notes?.unresolved_evidence)
-    ? selected.notes.unresolved_evidence.map(String)
-    : [];
+  const unresolvedSource = Array.isArray(selected?.notes?.unresolved_evidence)
+    ? selected.notes.unresolved_evidence
+    : Array.isArray(selected?.notes?.certification_requirements)
+      ? selected.notes.certification_requirements
+      : [];
+  const unresolved = unresolvedSource.map(String);
   const periods = ["1D", "1W", "WTD", "1M", "3M", "YTD", "SI"];
 
   if (loading) return <div className="rounded-2xl border border-white/10 bg-card/70 p-10 text-center text-sm text-muted-foreground">Loading canonical ledger…</div>;
@@ -1219,7 +1222,7 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
           <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-4 text-xs"><div className="font-semibold text-amber-200">Evidence status</div><div className="mt-2 text-muted-foreground">{selected.certificationStatus === "CERTIFIED" ? "Certified values may be read by app surfaces." : "Draft only. This row cannot replace public app/OEM returns."}</div>{unresolved.length > 0 && <ul className="mt-3 space-y-1 text-amber-200">{unresolved.map((item) => <li key={item}>• {item.replaceAll("_", " ")}</li>)}</ul>}</div>
         </div>
       </div>
-      <div className="border-t border-white/10 p-4"><div className="mb-3 flex items-center justify-between"><div className="text-sm font-semibold">Model-leg evidence</div><span className="text-xs text-muted-foreground">{selected.legs.length} legs</span></div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead className="border-b border-white/10 text-[10px] uppercase tracking-wider text-muted-foreground"><tr><th className="p-3">Ticker</th><th className="p-3">Entry</th><th className="p-3">Exit</th><th className="p-3">Units</th><th className="p-3">Entry price</th><th className="p-3">Evidence</th></tr></thead><tbody>{selected.legs.map((leg, index) => <tr key={`${String(leg.leg_id)}-${index}`} className="border-b border-white/5 last:border-0"><td className="p-3 font-semibold">{String(leg.ticker ?? "—")}</td><td className="p-3">{when(String(leg.entry_date ?? ""))}</td><td className="p-3">{when(String(leg.exit_date ?? ""))}</td><td className="p-3 tabular-nums">{String(leg.units ?? "—")}</td><td className="p-3 tabular-nums">{money(Number(leg.entry_price_cents ?? 0))}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-[10px] ${String(leg.source ?? "").includes("MODELED") ? "bg-amber-400/15 text-amber-200" : "bg-emerald-400/10 text-emerald-300"}`}>{String(leg.source ?? "UNKNOWN")}</span></td></tr>)}</tbody></table></div></div>
+      <div className="border-t border-white/10 p-4"><div className="mb-3 flex items-center justify-between"><div className="text-sm font-semibold">Model-leg evidence</div><span className="text-xs text-muted-foreground">{selected.legs.length} legs</span></div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead className="border-b border-white/10 text-[10px] uppercase tracking-wider text-muted-foreground"><tr><th className="p-3">Ticker</th><th className="p-3">Entry</th><th className="p-3">Exit</th><th className="p-3">Units</th><th className="p-3">Entry price</th><th className="p-3">Evidence</th></tr></thead><tbody>{selected.legs.map((leg, index) => { const evidence = String(leg.source ?? leg.source_ref ?? "UNKNOWN"); return <tr key={`${String(leg.leg_id)}-${index}`} className="border-b border-white/5 last:border-0"><td className="p-3 font-semibold">{String(leg.ticker ?? "—")}</td><td className="p-3">{when(String(leg.entry_date ?? ""))}</td><td className="p-3">{when(String(leg.exit_date ?? ""))}</td><td className="p-3 tabular-nums">{String(leg.units ?? "—")}</td><td className="p-3 tabular-nums">{money(Number(leg.entry_price_cents ?? 0))}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-[10px] ${evidence.includes("MODELED") || evidence.includes("proxy") ? "bg-amber-400/15 text-amber-200" : "bg-emerald-400/10 text-emerald-300"}`}>{evidence}</span></td></tr>; })}</tbody></table></div></div>
     </section>
   );
 }
