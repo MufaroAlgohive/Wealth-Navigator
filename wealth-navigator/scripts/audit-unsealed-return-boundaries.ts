@@ -4,7 +4,10 @@ import {
   isInstitutionalSupabaseConfigured,
 } from "../src/lib/supabase/server";
 
-const TARGETS = ["MINT Diversified Basket", "MINT Multi-sector"];
+const TARGETS = process.env.AUDIT_STRATEGIES
+  ?.split("|")
+  .map((name) => name.trim())
+  .filter(Boolean) ?? ["MINT Diversified Basket", "MINT Multi-sector"];
 const db = createRetailServiceRoleClient();
 
 const read = async <T>(label: string, query: PromiseLike<{ data: T | null; error: { message: string } | null }>) => {
@@ -91,7 +94,7 @@ const report = strategies.map((strategy) => {
 });
 
 let institutionalEvidence: unknown = { available: false };
-if (isInstitutionalSupabaseConfigured()) {
+if (process.env.SKIP_INSTITUTIONAL_AUDIT !== "1" && isInstitutionalSupabaseConfigured()) {
   const institutional = createInstitutionalServiceRoleClient();
   const orders =
     (await read(

@@ -574,3 +574,20 @@ were replaced: Famous Brands 307,996 -> 306,838 cents; UCT 113,410 -> 114,216
 cents. An idempotent rerun found all 135 and 90 rows matching, zero missing rows
 and zero remaining conflicts. These histories remain DRAFT and do not alter the
 public app until an explicit certification/cutover decision.
+
+The evidence-dependent family audit was then expanded using
+`AUDIT_STRATEGIES` and `SKIP_INSTITUTIONAL_AUDIT`. Blended Focus has one settled
+2026-05-11 boundary with two fills but no cash/reserve/reconciliation row. Its
+before snapshot held 8 OUT; the current composition holds 2 OUT and 2 STX500.
+The fills record sale of 6 OUT at 7,085 cents and purchase of 2 STX500 at
+12,422 cents, which independently derives 17,666 cents of continuity cash per
+model lot. This is the next evidence-supported segmented-ledger candidate.
+
+MyGrowthFund has three settled batches and twelve fills. Its two 2026-08-03
+batches have cash/reserve evidence and CA reconciliations (103,847 = 103,847 +
+0 cents, then 103,800 = 103,743 + 57 cents). Its earlier 2026-07-23 batch has no
+reconciliation and must be separately bridged. Yield Basket has four batches
+(three settled and one reversed) and twelve fills but zero cash, reserve or CA
+reconciliation rows; it remains blocked from certification. Diversified and
+Multi-sector remain unsupported because their composition changes have no
+Retail settlement evidence at all.
