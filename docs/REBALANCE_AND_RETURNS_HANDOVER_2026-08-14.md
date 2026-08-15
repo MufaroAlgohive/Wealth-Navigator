@@ -971,3 +971,44 @@ UI also exposes each row's real certification requirements and recognises
 `source_ref` on model legs, so composition-proxy evidence is visibly amber
 rather than being displayed as unknown or green. These are audit-surface
 changes only; they do not promote DRAFT data.
+
+### Yield Basket execution-backed ledger resolution
+
+Yield was previously parked because the older reconstruction matched a
+composition change to a batch only when aggregate client quantities happened
+to equal one model lot. The 15 August read-only audit established the actual
+relationship: the completed 15 June CLI-to-ABG batch is two owner lots, while
+the completed 1 July EXX-to-TBS and 14 July ABG liquidation batches are three
+owner lots each. One earlier 15 June attempt is `REVERSED`, has no fills and is
+excluded. The three completed batches have unambiguous average fills and their
+per-lot deltas exactly reproduce all four dated composition snapshots.
+
+`scripts/stage-yield-canonical-ledger.ts` validates that evidence and builds a
+DRAFT-only history from Yield's first real JSE session on 30 January through
+14 August. It uses model quantities, divides aggregate execution quantities by
+the proven owner scale, freezes exited legs at their actual fill, marks each
+daily holding from stored EOD close with explicit prior-close carry-forward,
+and applies the supplied workbook's leg-P/L formulas across every range.
+
+The fills produce 50,390 cents of gross residual cash per model lot. The
+independently ACTIVE valuation rule anchors model CA at 49,194 cents from
+18 July, so the 1,196-cent difference is recorded explicitly as a cumulative
+execution-cost bridge. Its exact timing remains a certification item; it is
+not hidden in a price or invented as capital. The dry run produced 135 JSE
+session rows, found one replaceable legacy DRAFT checkpoint, and reconciled the
+14 August close exactly to 184,747 cents of securities + 49,194 cents of model
+CA = 233,941 cents. Latest workbook-style ranges were 1D 0.6545152563%,
+1W/WTD 0.2109596747%, 1M 2.6064303294%, 3M -0.0042791517%, and YTD/SI
+6.8012689537%. The guarded YTD remains 17.0657736272% and is comparison-only.
+
+Promotion remains blocked until the execution-cost timing and independent
+provider/workbook tolerances are signed off. Applying this script may replace
+only DRAFT conflicts, never a CERTIFIED row, and cannot change any existing
+public/app return.
+
+The DRAFT apply wrote all 135 Yield sessions atomically, including replacement
+of the one legacy DRAFT checkpoint. The immediate dry rerun was idempotent:
+135 existing rows, zero inserts, zero conflicts, zero replacements and zero
+writes. The subsequent family audit confirmed complete DRAFT session coverage
+through 14 August for all eight non-test strategies. TypeScript and the full
+Next.js production build both passed after this change.
