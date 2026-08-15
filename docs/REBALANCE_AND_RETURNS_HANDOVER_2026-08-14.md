@@ -699,3 +699,65 @@ This prevents new single-owner or family-member rebalances from reproducing the
 historical cross-owner corruption. It does not rewrite the historical MyGrowth
 rows; any correction of those rows requires a separately approved,
 owner-by-owner reconciliation.
+
+## Strategy CA at new purchase, separate from the 8% reserve (2026-08-15)
+
+The purchase contract now follows the same accounting identity as the
+cash-aware front end and return ledger:
+
+`complete model value = securities value + model CA`
+
+Model CA is strategy capital. The 8% execution reserve is owner-level money
+held against execution variance and fees. They are deliberately distinct:
+
+- `strategy_valuation_rules_c.continuity_cash_per_lot_cents` is the effective
+  model CA per whole strategy lot;
+- `strategy_rebalance_residuals.balance_cents` carries the owner's allocated
+  strategy cash sleeve;
+- `transactions.buffer_cents - buffer_consumed_cents` is the unused execution
+  reserve and must never be added to model CA;
+- the reserve is charged at purchase and the current implementation can consume
+  it for rebalance brokerage/custody fees, buy-fill slippage and gated month-end
+  AUM settlement; any remainder is returned on a full exit;
+- the complete purchase denominator is securities per lot plus model CA per
+  lot, while the existing capped reserve bridge may cover a small price drift
+  but may not mint an extra lot.
+
+The read-only `scripts/audit-strategy-model-cash.ts` inventory found active
+model CA of 57 cents per lot for MyGrowthFund and 49,194 cents per lot for
+Yield Basket. The other non-test active strategies currently have zero model
+CA. No current composition JSON contains an explicit synthetic CASH holding;
+the authoritative amount is therefore the effective ACTIVE valuation rule and
+its reconciliation evidence, not an invented ticker leg.
+
+Migration `20260815000001_strategy_purchase_model_cash.sql` reuses existing
+balance tables rather than creating another cash ledger. It adds explicit
+purchase evidence to `transactions` (`strategy_id`, model lots, model cash and
+allocation timestamp) and creates the service-role-only, idempotent
+`record_strategy_purchase_with_model_cash` RPC. The RPC locks the purchase,
+reads the effective CA rule itself, inserts all pending security holdings,
+credits `model lots × CA per lot` to the exact `(user_id, family_member_id,
+strategy_id)` residual balance, and stamps the transaction in one database
+transaction. It accepts no client-provided cash amount.
+
+Both `api/record-investment.js` and `api/child-invest.js` call that RPC. Both
+derive whole lots server-side from the complete model value. The child route no
+longer trusts its legacy client-supplied units field. Focused investment tests
+cover the separation with a R400 lot made of R350 securities and R50 CA: five
+lots allocate R250 CA while the R160 8% reserve remains on the transaction.
+
+Deployment order is mandatory: apply the Wealth Navigator migration before
+deploying the MINT purchase API changes. The RPC fails closed if the migration
+or an effective ACTIVE CA rule is missing, so no client can be charged and left
+with only part of a strategy allocation.
+
+The business owner clarified that Siliziwe, Ncumolwethu and the KG account are
+the real accounts relevant to the historical MyGrowth review; the remaining
+accounts may be excluded as UAT-like for that certification exercise. Match KG
+to an exact database identity before any historical correction—initials alone
+are not sufficient evidence.
+
+Next after deployment: audit pre-migration purchases for those confirmed real
+owners and Yield Basket, then prepare a separately reviewed, idempotent
+backfill. Do not infer missing model CA from client residuals, reserve balances
+or sell proceeds.
