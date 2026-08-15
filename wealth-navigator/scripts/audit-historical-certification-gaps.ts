@@ -1,7 +1,12 @@
-import { createRetailServiceRoleClient } from "../src/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
 
 const TARGETS = ["Yield Basket", "ETF Basket"];
-const db = createRetailServiceRoleClient();
+const url = process.env.RETAIL_SUPABASE_URL ?? process.env.SUPABASE_URL;
+const key = process.env.RETAIL_SUPABASE_SERVICE_ROLE_KEY
+  ?? process.env.SUPABASE_SERVICE_ROLE_KEY
+  ?? process.env.service_role_key;
+if (!url || !key) throw new Error("Retail Supabase service configuration is missing");
+const db = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 
 async function rows<T>(label: string, query: PromiseLike<{ data: T | null; error: { message: string } | null }>) {
   const { data, error } = await query;
@@ -165,7 +170,33 @@ const stxidByDate = new Map(stxidPrices.map((price) => [price.as_of_date, price]
 
 console.log(
   JSON.stringify(
-    {
+    process.env.AUDIT_SUMMARY_ONLY === "1" ? {
+      generated_at: new Date().toISOString(),
+      report: report.map((entry) => ({
+        strategy: {
+          id: entry.strategy.id,
+          name: entry.strategy.name,
+          status: entry.strategy.status,
+          created_at: entry.strategy.created_at,
+          holdings: (Array.isArray(entry.strategy.holdings) ? entry.strategy.holdings : []).map((holding) => ({
+            ticker: holding.ticker ?? holding.symbol,
+            units: holding.units ?? holding.quantity ?? holding.shares,
+          })),
+        },
+        compositions: entry.compositions.map((composition) => ({
+          effective_from: composition.effective_from,
+          effective_to: composition.effective_to,
+          holdings: (Array.isArray(composition.holdings) ? composition.holdings : []).map((holding) => ({
+            ticker: holding.ticker ?? holding.symbol,
+            units: holding.units ?? holding.quantity ?? holding.shares,
+          })),
+        })),
+        valuation_rules: entry.valuation_rules,
+        canonical_ledger_range: entry.canonical_ledger_range,
+      })),
+      stxid_price_range: summarizeRange(stxidPrices),
+      missing_required_stxid_dates: [...requiredStxidDates].sort().filter((date) => !stxidByDate.has(date)),
+    } : {
       generated_at: new Date().toISOString(),
       canonical_ledger_columns: Object.keys(ledgerSample[0] ?? {}).sort(),
       report,

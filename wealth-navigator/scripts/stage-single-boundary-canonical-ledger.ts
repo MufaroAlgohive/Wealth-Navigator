@@ -132,7 +132,7 @@ const [compositions, batches, publications, existingRows] = await Promise.all([
     "existing canonical rows",
     db
       .from("strategy_canonical_daily_ledger_c")
-      .select("as_of_date, ledger_version, certification_status, securities_value_cents, continuity_cash_cents, complete_value_cents")
+      .select("as_of_date, ledger_version, certification_status, securities_value_cents, continuity_cash_cents, complete_value_cents, source_evidence_sha256")
       .eq("strategy_id", strategy.id),
   ),
 ]);
@@ -421,6 +421,12 @@ const sourceEvidence = {
   price_source: "stock_returns_c paginated exact closes with labelled prior-close carry-forward",
   carry_forward_leg_count: carryForwardCount,
   independent_provider_check: "UNAVAILABLE_2026_SERIES",
+  workbook_reference: {
+    file: "MINT_returns_engine_rebalance_clarity_v7_1 (1).xlsx",
+    sha256: "bde94581727f9a08232ec5e80f2672bde3a1ef73c733309ec8723fe78bcaa301",
+    ledger_sheet: "06_Strategy_Ledger",
+    formula_match: "LEG_PNL_OVER_LEG_BENCHMARK_WITH_REBALANCE_BOUNDARY",
+  },
   public_visibility: "DRAFT_NOT_EXPOSED",
 };
 const evidenceHash = createHash("sha256").update(JSON.stringify(sourceEvidence)).digest("hex");
@@ -483,6 +489,7 @@ const conflicts = existingRows.flatMap((existing) => {
   if (!computed) return [{ date: existing.as_of_date, certification_status: existing.certification_status }];
   const matches =
     existing.ledger_version === LEDGER_VERSION &&
+    existing.source_evidence_sha256 === evidenceHash &&
     Number(existing.securities_value_cents) === computed.securities_value_cents &&
     Number(existing.continuity_cash_cents) === computed.continuity_cash_cents &&
     Number(existing.complete_value_cents) === computed.complete_value_cents;

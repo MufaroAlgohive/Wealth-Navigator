@@ -34,6 +34,7 @@ export type CanonicalDraftResultRow = {
   asOf?: string;
   completeValueCents?: number;
   ledgerVersion?: string;
+  replacedExistingDraft?: boolean;
 };
 
 export type CanonicalDraftPublishResult = {
@@ -288,10 +289,11 @@ function legMetric(
 }
 
 export async function publishCanonicalLedgerDraft(
-  options: { asOfDate?: string; apply?: boolean } = {},
+  options: { asOfDate?: string; apply?: boolean; replaceExistingDraft?: boolean } = {},
 ): Promise<CanonicalDraftPublishResult> {
   const asOf = options.asOfDate ?? new Date().toISOString().slice(0, 10);
   const apply = options.apply === true;
+  const replaceExistingDraft = options.replaceExistingDraft === true;
   const empty = { written: 0, planned: 0, skipped: 0, failed: 0, total: 0 };
   if (!isRetailSupabaseConfigured()) {
     return { ok: false, asOf, apply, summary: empty, results: [], note: "retail supabase not configured" };
@@ -356,14 +358,21 @@ export async function publishCanonicalLedgerDraft(
             .limit(1),
         ),
       ]);
-      const previous = ledgerRows.at(-1);
-      if (!previous) {
-        results.push({ strategy: strategy.name, action: "skipped", reason: "NO_CANONICAL_BASELINE" });
+      const existingCurrent = ledgerRows.at(-1)?.as_of_date === asOf ? ledgerRows.at(-1) : null;
+      if (existingCurrent && !replaceExistingDraft) {
+        results.push({ strategy: strategy.name, action: "skipped", reason: "ALREADY_EXISTS", asOf });
         skipped += 1;
         continue;
       }
-      if (previous.as_of_date === asOf) {
-        results.push({ strategy: strategy.name, action: "skipped", reason: "ALREADY_EXISTS", asOf });
+      if (existingCurrent?.certification_status !== undefined && existingCurrent.certification_status !== "DRAFT") {
+        results.push({ strategy: strategy.name, action: "skipped", reason: "EXISTING_ROW_NOT_DRAFT", asOf });
+        skipped += 1;
+        continue;
+      }
+      const priorLedgerRows = existingCurrent ? ledgerRows.slice(0, -1) : ledgerRows;
+      const previous = priorLedgerRows.at(-1);
+      if (!previous) {
+        results.push({ strategy: strategy.name, action: "skipped", reason: "NO_CANONICAL_BASELINE" });
         skipped += 1;
         continue;
       }
@@ -480,7 +489,7 @@ export async function publishCanonicalLedgerDraft(
             .filter((ticker) => ticker !== "CASH" && ticker !== "EXECUTION_COST"),
         ]),
       ];
-      const earliestDate = ledgerRows.at(0)?.as_of_date ?? previous.as_of_date;
+      const earliestDate = priorLedgerRows.at(0)?.as_of_date ?? previous.as_of_date;
       const prices = await fetchPriceHistory(
         db,
         tickers.flatMap((ticker) => [ticker, `${ticker}.JO`]),
@@ -521,7 +530,7 @@ export async function publishCanonicalLedgerDraft(
         YTD: `${Number(asOf.slice(0, 4)) - 1}-12-31`,
         SI: earliestDate,
       };
-      const allRows = [...ledgerRows, current];
+      const allRows = [...priorLedgerRows, current];
       if (metricLegs) {
         const normalized = metricLegs;
         current.leg_snapshot = normalized.map((leg) => ({
@@ -584,7 +593,10 @@ export async function publishCanonicalLedgerDraft(
       }
 
       if (apply) {
-        const { error } = await db.from("strategy_canonical_daily_ledger_c").insert(current);
+        const write = existingCurrent
+          ? db.from("strategy_canonical_daily_ledger_c").upsert(current, { onConflict: "strategy_id,as_of_date" })
+          : db.from("strategy_canonical_daily_ledger_c").insert(current);
+        const { error } = await write;
         if (error) throw new Error(`DRAFT_INSERT_FAILED:${error.message}`);
         written += 1;
       } else {
@@ -594,6 +606,7 @@ export async function publishCanonicalLedgerDraft(
         strategy: strategy.name,
         action: apply ? "written" : "planned",
         asOf,
+        replacedExistingDraft: Boolean(existingCurrent),
         completeValueCents,
         ledgerVersion: previous.ledger_version,
       });

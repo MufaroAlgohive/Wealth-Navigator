@@ -1180,10 +1180,15 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
           const cells = line.split(delimiter).map((value) => value.trim().replace(/^"|"$/g, ""));
           const close = Number(cells[closeIndex]);
           if (!cells[dateIndex] || !(close > 0)) continue;
+          const ticker = String(tickerIndex >= 0 ? cells[tickerIndex] : inferredTicker).trim();
+          const yahooJseCents = /\.(JO|JSE)$/i.test(ticker);
+          if (centsIndex < 0 && !yahooJseCents) {
+            throw new Error(`${file.name} has an ambiguous Close unit; use a .JO ticker or a Close_Cents column`);
+          }
           providerRows.push({
-            ticker: String(tickerIndex >= 0 ? cells[tickerIndex] : inferredTicker),
+            ticker,
             date: String(cells[dateIndex]).slice(0, 10),
-            closeCents: centsIndex >= 0 ? close : Math.round(close * 100),
+            closeCents: close,
             sourceFile: file.name,
           });
         }
@@ -1298,7 +1303,7 @@ function PriceProofPanel({ proof, busy, error, onFiles }: { proof: PriceProofRes
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-sm font-semibold">Independent closing-price proof</div>
-          <p className="mt-1 max-w-3xl text-xs text-muted-foreground">Upload Yahoo-style CSV exports. Date + Close files are converted from currency units to cents; a multi-ticker export may include Ticker or Symbol. The comparison is read-only and never edits prices or certifies a ledger automatically.</p>
+          <p className="mt-1 max-w-3xl text-xs text-muted-foreground">Upload Yahoo-style CSV exports. Yahoo JSE `.JO` closes are ZAc and remain in cents; otherwise provide an explicit Close_Cents column. A multi-ticker export may include Ticker or Symbol. The comparison is read-only and never edits prices or certifies a ledger automatically.</p>
         </div>
         <label className="inline-flex cursor-pointer items-center rounded-lg border border-violet-300/30 bg-violet-500/10 px-3 py-2 text-xs font-semibold text-violet-100 transition hover:bg-violet-500/20">
           <Upload className="mr-2 h-4 w-4" />{busy ? "Comparing…" : "Compare provider CSV"}

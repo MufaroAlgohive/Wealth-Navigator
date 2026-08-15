@@ -50,7 +50,11 @@ type ServiceTarget = "RETAIL" | "INSTITUTIONAL";
 function resolveServiceTarget(target: ServiceTarget): { url: string; key: string } {
   const url = process.env[`${target}_SUPABASE_URL`] ?? process.env.SUPABASE_URL;
   const key =
-    process.env[`${target}_SUPABASE_SERVICE_ROLE_KEY`] ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+    process.env[`${target}_SUPABASE_SERVICE_ROLE_KEY`] ??
+    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+    // Legacy retail tooling used this lowercase key. Keep the compatibility
+    // narrow: it must never silently select the institutional database.
+    (target === "RETAIL" ? process.env.service_role_key : undefined);
   if (!url || !key) {
     throw new Error(
       `${target}_SUPABASE_URL / ${target}_SUPABASE_SERVICE_ROLE_KEY (or legacy SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY) is not configured`,
@@ -157,7 +161,9 @@ export function createAnonServerClient(): SupabaseClient {
 function isTargetConfigured(target: ServiceTarget): boolean {
   const url = process.env[`${target}_SUPABASE_URL`] ?? process.env.SUPABASE_URL;
   const key =
-    process.env[`${target}_SUPABASE_SERVICE_ROLE_KEY`] ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+    process.env[`${target}_SUPABASE_SERVICE_ROLE_KEY`] ??
+    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+    (target === "RETAIL" ? process.env.service_role_key : undefined);
   return Boolean(url && key);
 }
 

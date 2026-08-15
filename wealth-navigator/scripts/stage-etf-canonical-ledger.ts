@@ -5,6 +5,7 @@ import { createRetailServiceRoleClient } from "../src/lib/supabase/server";
 const STRATEGY_NAME = "ETF Basket";
 const LEDGER_VERSION = "excel-static-lot-v1";
 const apply = process.env.APPLY_CANONICAL_LEDGER_DRAFT === "1";
+const replaceConflictingDraft = process.env.REPLACE_CONFLICTING_CANONICAL_DRAFT === "1";
 const db = createRetailServiceRoleClient();
 
 function iso(date: Date): string {
@@ -83,13 +84,10 @@ const [compositions, publications, existingRows] = await Promise.all([
     "existing ETF canonical rows",
     db
       .from("strategy_canonical_daily_ledger_c")
-      .select("as_of_date, certification_status, ledger_version")
+      .select("as_of_date, certification_status, ledger_version, securities_value_cents, continuity_cash_cents, complete_value_cents, source_evidence_sha256")
       .eq("strategy_id", strategy.id),
   ),
 ]);
-if (existingRows.length > 0) {
-  throw new Error(`refusing to overwrite ${existingRows.length} existing ETF canonical ledger row(s)`);
-}
 const endDate = publications.at(-1)?.as_of_date;
 if (!endDate) throw new Error("ETF has no guarded publication end date");
 
@@ -203,6 +201,12 @@ const ledgerRows = navRows.map((current, index) => {
     full_price_coverage: true,
     holding_count: holdings.length,
     independent_provider_check: "UNAVAILABLE_2026_SERIES",
+    workbook_reference: {
+      file: "MINT_returns_engine_rebalance_clarity_v7_1 (1).xlsx",
+      sha256: "bde94581727f9a08232ec5e80f2672bde3a1ef73c733309ec8723fe78bcaa301",
+      ledger_sheet: "06_Strategy_Ledger",
+      formula_match: "STATIC_NAV_DELTA_EQUIVALENT_NO_BOUNDARY",
+    },
     public_visibility: "DRAFT_NOT_EXPOSED",
   };
   return {
@@ -244,6 +248,27 @@ const guardedComparison = publications.map((publication) => {
   };
 });
 const guardedMismatches = guardedComparison.filter((row) => row.variance_cents !== 0);
+const computedByDate = new Map(ledgerRows.map((row) => [row.as_of_date, row] as const));
+const conflicts = existingRows.flatMap((existing) => {
+  const computed = computedByDate.get(existing.as_of_date);
+  if (!computed) return [{ date: existing.as_of_date, reason: "outside computed session range", certification_status: existing.certification_status }];
+  const matches =
+    existing.source_evidence_sha256 === computed.source_evidence_sha256 &&
+    Number(existing.securities_value_cents) === computed.securities_value_cents &&
+    Number(existing.continuity_cash_cents) === computed.continuity_cash_cents &&
+    Number(existing.complete_value_cents) === computed.complete_value_cents;
+  return matches ? [] : [{ date: existing.as_of_date, reason: "stored checkpoint disagrees with rebuilt ETF NAV", certification_status: existing.certification_status }];
+});
+const protectedConflicts = conflicts.filter((conflict) => conflict.certification_status !== "DRAFT");
+if (protectedConflicts.length) throw new Error(`refusing to replace non-DRAFT conflict(s): ${JSON.stringify(protectedConflicts)}`);
+if (apply && conflicts.length && !replaceConflictingDraft) {
+  throw new Error(`set REPLACE_CONFLICTING_CANONICAL_DRAFT=1 to replace DRAFT-only ETF conflicts`);
+}
+const existingDates = new Set(existingRows.map((row) => row.as_of_date));
+const conflictDates = new Set(conflicts.map((conflict) => conflict.date));
+const rowsToInsert = ledgerRows.filter((row) => !existingDates.has(row.as_of_date));
+const rowsToReplace = ledgerRows.filter((row) => conflictDates.has(row.as_of_date));
+const rowsToWrite = replaceConflictingDraft ? [...rowsToInsert, ...rowsToReplace] : rowsToInsert;
 
 const summary = {
   strategy: STRATEGY_NAME,
@@ -251,6 +276,8 @@ const summary = {
   start_date: startDate,
   end_date: endDate,
   row_count: ledgerRows.length,
+  rows_to_insert: rowsToInsert.length,
+  rows_to_replace: rowsToReplace.length,
   holdings,
   guarded_comparison: {
     compared_rows: guardedComparison.length,
@@ -262,9 +289,9 @@ const summary = {
   last: ledgerRows.at(-1),
 };
 
-if (apply) {
-  const { error } = await db.from("strategy_canonical_daily_ledger_c").insert(ledgerRows);
-  if (error) throw new Error(`DRAFT insert failed: ${error.message}`);
+if (apply && rowsToWrite.length) {
+  const { error } = await db.from("strategy_canonical_daily_ledger_c").upsert(rowsToWrite, { onConflict: "strategy_id,as_of_date" });
+  if (error) throw new Error(`DRAFT upsert failed: ${error.message}`);
 }
 
 console.log(JSON.stringify(summary, null, 2));

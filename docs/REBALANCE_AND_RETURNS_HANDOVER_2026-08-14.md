@@ -1095,3 +1095,86 @@ repeated from this Windows shell because Bun is not installed on the PATH; the
 production cron/runtime remains the intended configured execution surface.
 Public/app values are still unchanged and every canonical family row remains
 DRAFT pending independent provider/workbook sign-off.
+
+### 15 August exact-close repair and certification replay
+
+The independent certification pass proved that all seven ledger formulas were
+internally exact but that many historical `stock_returns_c.current_price`
+values were not Yahoo's official daily JSE close. The old MINT EOD endpoint
+copied the latest intraday observation into the close table, which is not
+necessarily the closing-auction value. Yahoo `.JO` metadata also cannot be
+trusted blindly for units: JSE prices normally arrive as ZAc, but the current
+STXID history is labelled ZAc while returning a Rand-like 46.09 series.
+
+`scripts/repair-stock-returns-yahoo.mjs` is a dry-run-by-default repair tool for
+the 42 securities actually used by the eight non-test canonical strategies. It
+fetches daily Yahoo history, converts ZAR to cents only when metadata genuinely
+reports ZAR, rounds to whole cents, compares exact dates, and writes only when
+`APPLY_YAHOO_CLOSE_REPAIR=1`. It does not alter the table's uncertain derived
+return columns unless `REPAIR_DERIVED_STOCK_RETURNS=1` is separately provided.
+Before applying, it writes a JSON rollback backup to the operating-system temp
+directory. `scripts/restore-stock-returns-backup.mjs` provides a ticker-scoped,
+dry-run-first restore path.
+
+The first repair wrote 728 corrected closes and 139 missing official daily
+bars. A stricter exact-cent pass then corrected 25 remaining one-cent rows. The
+provider evidence SHA-256 for both runs was
+`02a5fe15862e66e2b73bd7e20b3a94560457db54ebcfc31d0b71a74b50edda01`.
+The corresponding rollback backups were:
+
+- `mint-stock-returns-backup-1786810047891.json`, SHA-256
+  `0bf6f871127e3a02821fb3d79e46ec321f6b39351c613b5f82d77c5c35739822`;
+- `mint-stock-returns-backup-1786811088806.json`, SHA-256
+  `4c21fbce895d286fd1ae5d45d0de30069a429b03d476dbbb25a43f0e2712ab1c`.
+
+The initial run exposed STXID's 100x provider defect. Eleven touched STXID rows
+were restored exactly from the first backup, with no inserted rows to delete.
+Both the repair and certification tools now compute the median ratio across
+same-date provider/stored overlaps and quarantine a ticker outside 0.2x-5x.
+STXID is currently quarantined at 0.009980472987632893 across 14 overlaps. CLI
+is separately labelled partial-history because current Yahoo history begins on
+29 June, after Yield's CLI leg had already ended. Neither gap is filled with an
+invented price.
+
+All eight strategy DRAFT ledgers were rebuilt with the repaired closes. The
+daily writer gained an explicit `replaceExistingDraft` option, exposed to the
+script as `REPLACE_EXISTING_CANONICAL_DRAFT=1`. It can refresh an existing date
+only when that row is still DRAFT; non-DRAFT rows remain protected. The 11-14
+August rows were replayed chronologically for all eight strategies: 32 writes,
+zero skips and zero failures. This fixes the earlier append-only limitation
+when an official close arrives or is repaired after a DRAFT row exists.
+
+`scripts/audit-canonical-certification.mjs` now requires same-session provider
+evidence, rounds provider closes to whole cents, distinguishes missing evidence
+from a mismatch, validates provider scale, re-sums each strategy valuation and
+recomputes every period formula. It also requires the supplied CEO workbook
+SHA-256
+`bde94581727f9a08232ec5e80f2672bde3a1ef73c733309ec8723fe78bcaa301`.
+After replay, every strategy has zero exact-price mismatches, zero valuation
+mismatches and zero formula failures. MINT Famous Brands additionally has zero
+missing provider points and is the first family to satisfy every automated
+certification check. It remains DRAFT until the controlled promotion/read-path
+step is implemented and reviewed.
+
+The other seven remain DRAFT only because evidence is unavailable: ETF Basket
+is blocked by quarantined STXID history; Yield is blocked by pre-29-June CLI
+history; and several strategies lack independent Yahoo bars for one or more
+14-August holdings even though their stored DRAFT valuations are internally
+exact. No such absence is treated as a match. The next safe steps are to obtain
+official JSE/IRESS/Satrix evidence for those points, add a controlled promotion
+record, and switch public chart reads strategy-by-strategy only after that
+strategy's full audit passes.
+
+Verification after these changes: 18 focused tests passed, `tsc --noEmit`
+passed, and the full Next.js 16.2.10 production build completed successfully.
+
+The recurrence fix lives in the MINT app checkout. `api/prices/eod-save.js`
+no longer copies the latest intraday tick into `stock_returns_c`. It now fetches
+the exact market-date Yahoo daily candle, normalizes ZAc/ZAR exactly once, and
+uses the latest guarded intraday value only as a 0.2x-5x scale reference. A
+missing candle, unsupported currency, provider failure or STXID-style scale
+divergence is counted as provider-rejected and skipped. The cron moved from
+15:15 UTC to 15:45 UTC (17:45 SAST) to allow the closing candle to settle.
+`api/_lib/yahoo-close.js` contains the pure normalization/guard functions and
+`test/yahoo-eod-close.test.mjs` verifies ZAc, ZAR, exact-date and 100x rejection.
+All three Node tests pass and the full MINT Vite 7.3.3 production build passes.

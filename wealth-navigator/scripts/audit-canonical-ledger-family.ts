@@ -80,6 +80,7 @@ const report = strategies.map((strategy) => {
     canonical_statuses: [...new Set(ownLedger.map((row) => row.certification_status))],
     canonical_first_date: ownLedger.at(0)?.as_of_date ?? null,
     canonical_last_date: ownLedger.at(-1)?.as_of_date ?? null,
+    canonical_latest_version: ownLedger.at(-1)?.ledger_version ?? null,
     active_rule: ownRule,
     latest_guarded_publication: ownPublications.at(-1) ?? null,
     classification: staticCandidate ? "STATIC_DRAFT_CANDIDATE" : "EVIDENCE_DEPENDENT",
