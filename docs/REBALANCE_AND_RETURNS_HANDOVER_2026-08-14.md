@@ -785,3 +785,26 @@ evidence. Existing real MyGrowth owners received or failed to receive cash at
 the rebalance settlement boundary, which must be reconciled against their
 batch/cash/reserve evidence—not rewritten as a purchase credit. Future adult
 and child purchases are protected by the atomic purchase RPC already deployed.
+
+### MyGrowth independently anchored post-boundary ledger
+
+`scripts/stage-mygrowth-post-boundary-ledger.ts` now reconstructs the proven
+MyGrowth segment beginning 2026-08-03. It requires exactly the two settled
+COMPLETE batches on that date, both CA reconciliations, the final open
+composition and an ACTIVE rule whose 57-cent CA equals the last reconciliation.
+The public model remains four STXACW; Ncumolwethu's fifth share is explicitly
+recorded as an owner-level exception and cannot change the model ledger.
+
+The 2026-08-15 dry run produced nine exact JSE-session rows through 14 Aug. The
+latest row is 104,680 cents of securities plus 57 cents of CA = 104,737 cents,
+with zero-cent variance to the guarded publication. Latest 1D is
+-0.2181658823%; 1W and WTD are -0.5799825341%. The 1M, 3M, YTD and SI metrics
+are null with `REFERENCE_PRECEDES_PROVEN_2026_08_03_CA_BOUNDARY`, because those
+ranges cross the unreconciled 23 Jul boundary.
+
+The DRAFT apply inserted eight new rows and replaced the single old 12 Aug
+`excel-leg-v1` DRAFT checkpoint (105,065 cents) with the exact-close result
+(105,196 cents). No certified/public row was touched. An immediate idempotency
+rerun returned nine matching sessions, zero inserts, zero conflicts, zero
+replacements, zero writes and zero-cent latest variance. Ledger version is
+`excel-segmented-post-ca-boundary-v1`.
