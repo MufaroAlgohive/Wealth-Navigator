@@ -1157,6 +1157,82 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
   const unresolved = unresolvedSource.map(String);
   const periods = ["1D", "1W", "WTD", "1M", "3M", "YTD", "SI"];
 
+  const exportCanonicalWorkbook = async () => {
+    const XLSX = await import("xlsx");
+    const book = XLSX.utils.book_new();
+    const usedNames = new Set<string>();
+    const sheetName = (name: string) => {
+      const base = name.replace(/[\\/?*:[\]]/g, " ").trim().slice(0, 31) || "Strategy";
+      let candidate = base;
+      let suffix = 2;
+      while (usedNames.has(candidate)) {
+        const tail = ` ${suffix++}`;
+        candidate = `${base.slice(0, 31 - tail.length)}${tail}`;
+      }
+      usedNames.add(candidate);
+      return candidate;
+    };
+    const strategyGroups = [...new Map(rows.map((row) => [row.strategyId, row.strategy])).entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]));
+    for (const [strategyId, strategyName] of strategyGroups) {
+      const strategyRows = rows
+        .filter((row) => row.strategyId === strategyId)
+        .sort((a, b) => a.asOf.localeCompare(b.asOf));
+      const headings = ["As_Of_Date", "Securities_ZAR", "Continuity_CA_ZAR", "Complete_Value_ZAR", "Status"];
+      for (const period of periods) headings.push(`${period}_Date`, `${period}_Opening_ZAR`, `${period}_P&L_ZAR`, `${period}_Return`);
+      const grid: unknown[][] = [
+        [`MINT canonical strategy ledger — ${strategyName}`],
+        ["Database-backed Excel-leg methodology. Purple cells are calculated formulas; DRAFT rows are not client-facing."],
+        headings,
+      ];
+      for (const row of strategyRows) {
+        const values: unknown[] = [
+          row.asOf,
+          row.securitiesCents / 100,
+          row.continuityCashCents / 100,
+          row.completeValueCents / 100,
+          row.certificationStatus,
+        ];
+        for (const period of periods) {
+          const metric = row.periods[period] ?? {};
+          values.push(
+            metric.reference_date ?? "",
+            Number(metric.denominator_cents ?? 0) / 100,
+            Number(metric.numerator_cents ?? 0) / 100,
+            metric.return_pct == null ? null : Number(metric.return_pct) / 100,
+          );
+        }
+        grid.push(values);
+      }
+      const sheet = XLSX.utils.aoa_to_sheet(grid);
+      sheet["!merges"] = [XLSX.utils.decode_range(`A1:${XLSX.utils.encode_col(headings.length - 1)}1`), XLSX.utils.decode_range(`A2:${XLSX.utils.encode_col(headings.length - 1)}2`)];
+      sheet["!cols"] = headings.map((heading, index) => ({ wch: index === 0 ? 13 : heading.endsWith("_Date") ? 13 : heading === "Status" ? 12 : 18 }));
+      sheet["!autofilter"] = { ref: `A3:${XLSX.utils.encode_col(headings.length - 1)}${strategyRows.length + 3}` };
+      sheet["!freeze"] = { xSplit: 1, ySplit: 3, topLeftCell: "B4", activePane: "bottomRight", state: "frozen" };
+      for (let offset = 0; offset < strategyRows.length; offset += 1) {
+        const excelRow = offset + 4;
+        const completeCell = sheet[`D${excelRow}`];
+        if (completeCell) Object.assign(completeCell, { f: `B${excelRow}+C${excelRow}`, z: 'R #,##0.00;[Red]-R #,##0.00' });
+        for (let periodIndex = 0; periodIndex < periods.length; periodIndex += 1) {
+          const openingColumn = 6 + periodIndex * 4;
+          const pnlColumn = openingColumn + 1;
+          const returnColumn = openingColumn + 2;
+          const openingRef = `${XLSX.utils.encode_col(openingColumn)}${excelRow}`;
+          const pnlRef = `${XLSX.utils.encode_col(pnlColumn)}${excelRow}`;
+          const pnlCell = sheet[pnlRef];
+          const returnRef = `${XLSX.utils.encode_col(returnColumn)}${excelRow}`;
+          const returnCell = sheet[returnRef];
+          if (pnlCell) pnlCell.z = 'R #,##0.00;[Red]-R #,##0.00';
+          if (returnCell) Object.assign(returnCell, { f: `IFERROR(${pnlRef}/${openingRef},0)`, z: '0.0000%;[Red]-0.0000%' });
+        }
+        for (const column of ["B", "C", "D"]) if (sheet[`${column}${excelRow}`]) sheet[`${column}${excelRow}`].z = 'R #,##0.00;[Red]-R #,##0.00';
+      }
+      XLSX.utils.book_append_sheet(book, sheet, sheetName(strategyName));
+    }
+    (book as unknown as { CalcPr: { calcMode: string } }).CalcPr = { calcMode: "auto" };
+    XLSX.writeFile(book, `MINT-canonical-strategy-ledgers-${new Date().toISOString().slice(0, 10)}.xlsx`, { compression: true });
+  };
+
   const compareProviderFiles = async (files: FileList | null) => {
     if (!files?.length) return;
     setProofBusy(true);
@@ -1221,6 +1297,9 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Database-backed model legs and all return ranges. This surface displays the stored canonical record; it never recalculates a return in the browser.</p>
           </div>
           <div className="flex items-center gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={() => void exportCanonicalWorkbook()}>
+              <Download className="mr-1.5 h-3.5 w-3.5" /> Export Excel
+            </Button>
             {history.length > 1 && (
               <select
                 value={selected.asOf}

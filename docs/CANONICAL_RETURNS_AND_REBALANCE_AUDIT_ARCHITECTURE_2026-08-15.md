@@ -979,3 +979,7 @@ On the first eligible JSE close after a new active strategy has an active compos
 `scripts/promote-canonical-ledger-family.mjs` validates every DRAFT row for the complete-value formula, a non-empty leg snapshot, and all seven finite period returns. Dry-run is the default. Apply mode requires an explicit certifier UUID, a detailed reason, and `CANONICAL_EVIDENCE_WAIVER=1`. The decision is embedded in `source_evidence`, including known independent-provider gaps, and Test Strategy is always excluded. The MINT certified-union read path must be deployed before apply mode is used.
 
 Promotion changes the displayed return values and chart series because the app then reads the canonical complete-value chain. It does not rewrite owner-level personal returns.
+
+## Pre-merge workbook review
+
+The Wealth Navigator branch preview exposes `Admin → Source of Truth → Ledger` while every canonical row is still DRAFT and invisible to the retail app. `Export Excel` downloads one worksheet per active strategy. Each dated row contains securities, continuity CA, formula-driven complete value, certification status, and the reference date, opening value, P/L, and formula-driven return for 1D, 1W, WTD, 1M, 3M, YTD, and SI. Excel recalculation is enabled so reviewers can inspect formulas and alter a copy without changing the database.
