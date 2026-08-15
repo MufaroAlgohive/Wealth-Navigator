@@ -426,3 +426,34 @@ Verification on 15 Aug:
 - full repository `npm run typecheck`: still blocked by pre-existing errors in
   unrelated Bun tests, `office-crypto`, settlement fixtures and gift-worker
   fixtures; none of the errors reference the recovery files.
+
+Next precision gate: use the read-only
+`scripts/audit-unsealed-return-boundaries.ts` report to search all known retail
+rebalance batches, execution events, cash events, reserve events and CA
+reconciliations for the Diversified and Multi-sector composition changes. Do
+not seal either boundary unless this report exposes exact, internally
+consistent execution evidence.
+The audit also checks the institutional `oems_order_audit` and
+`oems_fill_settlement_c` mirrors for GRT/NY1 orders when institutional service
+credentials are supplied; this is the final existing-system evidence search
+before a boundary is classified as unsupported.
+
+Retail boundary audit result on 15 Aug:
+
+- MINT Diversified Basket: composition changed on 18 Jun from GRT 28 to 22,
+  removed VKE/CML/INL and reduced DSY/MTN/SBK/MRP/STX500/STXNDQ. Retail contains
+  no matching `rebalance_batch`, `rebalance_event`, cash event, reserve event or
+  CA reconciliation for this strategy.
+- MINT Multi-sector: composition changed on 16 Jun from NY1 6 to 4, removed TGA
+  and added STX500 2. Retail contains no matching batch, event, cash event,
+  reserve event or CA reconciliation.
+- Therefore neither boundary may be sealed from Retail evidence. They remain
+  deliberately stale/uncertified.
+- The institutional GRT/NY1 order-mirror query was completed. It found no GRT
+  order and only one unrelated NY1 order: manual buy order `700003` for two
+  units on 27 Jul, cancelled with zero filled and no settlement record. It is
+  not evidence for the 16 Jun model change.
+- Final classification: the 18 Jun Diversified and 16 Jun Multi-sector
+  boundaries are `UNSUPPORTED_EXECUTION_EVIDENCE`. Keep their affected periods
+  stale/uncertified. Do not infer fills, proceeds or continuity cash from the
+  composition deltas alone.
