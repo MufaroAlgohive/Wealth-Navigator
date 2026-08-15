@@ -1383,6 +1383,18 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
       view.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
       view.getCell("A1").font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
       view.getCell("A1").alignment = { horizontal: "left", vertical: "middle" };
+      const creationDate = String(strategyHistory[0]?.evidence?.strategy_created_at ?? strategyHistory[0]?.asOf ?? current.asOf).slice(0, 10);
+      const firstCloseDate = strategyHistory[0]?.asOf ?? current.asOf;
+      view.getCell("A2").value = "Inception_to_Latest_Coverage";
+      view.getCell("B2").value = {
+        formula: `TEXT(DATE(${creationDate.slice(0, 4)},${Number(creationDate.slice(5, 7))},${Number(creationDate.slice(8, 10))}),"dd-mmm-yyyy")&" to "&TEXT(MAX(${`'${supportName.replaceAll("'", "''")}'`}!$A$2:$A$${dailyLastRow}),"dd-mmm-yyyy")`,
+        result: `${creationDate} to ${current.asOf}`,
+      };
+      view.getCell("C2").value = creationDate === firstCloseDate
+        ? "Daily market-close history begins on the strategy creation date and continues to the latest available close."
+        : `Created ${creationDate}; the first legitimate market close is ${firstCloseDate} because the creation date was not a trading day.`;
+      for (let column = 1; column <= 3; column += 1) view.getCell(2, column).alignment = { vertical: "top", wrapText: true };
+      view.getRow(2).height = 32.1;
       view.getRow(3).values = ["Metric", "Formula / Value", "Why it matters"];
       const supportRef = `'${supportName.replaceAll("'", "''")}'`;
       const completeColumn = tickers.length + 4;
