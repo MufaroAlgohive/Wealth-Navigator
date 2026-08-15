@@ -628,3 +628,27 @@ of benchmark value, numerator value and P/L. All 135 DRAFT rows were replaced
 with v2, then an idempotent rerun returned 135 matches, zero inserts, zero
 conflicts and zero writes. The earlier -1.0170158243% was the superseded simple
 NAV-ratio result and must not be promoted.
+
+The MyGrowth evidence then clarified a second accounting distinction: raw
+sell-minus-buy residual is not automatically public strategy CA. Client
+`REBALANCE_RESIDUAL` balances can receive that cash, while public model CA is
+authoritative only when recorded by
+`strategy_rebalance_ca_reconciliation_c.strategy_ca_cents`. Blended has no CA
+reconciliation and its batch records `net_proceeds = 0`, so fail-closed model
+CA is zero. The realised OUT proceeds still contribute to the closed leg's P/L;
+they are not lost, but the R176.66 residual must not be added to current public
+basket value as unsupported cash.
+
+Blended was therefore finalised as DRAFT version
+`excel-leg-pnl-authoritative-ca-v3`: latest securities/complete value 500,697
+cents, CA zero, 1D -0.8002203132%, 1W/WTD -0.1230765548%, 1M 1.2642432136%,
+3M -0.7465364160%, and YTD/SI -0.9709534340%. The guarded value is also
+500,697 cents and guarded YTD is -0.9771813036%, a difference of only
+0.0062278696 percentage points. All 135 v3 DRAFT rows passed the final
+idempotency check with zero inserts, conflicts, replacements or writes. The v2
+518,363-cent cash-inclusive result is superseded and must not be promoted.
+
+Important chart rule: a rebalance that returns residual capital to clients can
+change raw open-basket value even though investment performance is continuous.
+Charts must therefore use the canonical leg-P/L return/index series, never raw
+`complete_value_cents` as an unadjusted chart ordinate across such a boundary.

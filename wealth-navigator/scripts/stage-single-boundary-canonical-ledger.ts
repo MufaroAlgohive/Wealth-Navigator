@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { createRetailServiceRoleClient } from "../src/lib/supabase/server";
 
 const STRATEGY_NAME = process.env.BOUNDARY_STRATEGY_NAME?.trim() || "Blended Focus";
-const LEDGER_VERSION = "excel-leg-pnl-boundary-v2";
+const LEDGER_VERSION = "excel-leg-pnl-authoritative-ca-v3";
 const apply = process.env.APPLY_CANONICAL_LEDGER_DRAFT === "1";
 const replaceConflictingDraft = process.env.REPLACE_CONFLICTING_CANONICAL_DRAFT === "1";
 const db = createRetailServiceRoleClient();
@@ -154,6 +154,18 @@ const events = await many(
 if (events.length === 0 || events.some((event) => !(Number(event.quantity) > 0) || !(Number(event.avg_fill) > 0))) {
   throw new Error("boundary does not have complete positive-quantity fills");
 }
+const reconciliations = await many(
+  "boundary CA reconciliation",
+  db
+    .from("strategy_rebalance_ca_reconciliation_c")
+    .select("strategy_ca_cents, model_capital_cents, securities_value_cents, capital_source, checks")
+    .eq("batch_id", batch.id),
+);
+if (reconciliations.length > 1) throw new Error("boundary has multiple CA reconciliations");
+const authoritativeStrategyCashCents = reconciliations.length === 1
+  ? Number(reconciliations[0].strategy_ca_cents)
+  : 0;
+if (authoritativeStrategyCashCents < 0) throw new Error("authoritative strategy CA cannot be negative");
 const securities = await many(
   "boundary securities",
   db
@@ -234,7 +246,7 @@ const navRows = dates.map((date) => {
     if (exact) lastPriceByTicker.set(ticker, { ...exact, asOfDate: date });
   }
   const holdings = date < batch.effective_date ? beforeHoldings : afterHoldings;
-  const continuityCashCents = date < batch.effective_date ? 0 : fillCashCents;
+  const continuityCashCents = date < batch.effective_date ? 0 : authoritativeStrategyCashCents;
   const legs = holdings.map((holding) => {
     const exact = priceByKey.get(`${date}:${holding.ticker}`);
     const price = exact ? { ...exact, asOfDate: date } : lastPriceByTicker.get(holding.ticker);
@@ -330,13 +342,13 @@ for (const [ticker, delta] of expectedDeltas) {
     sourceRef: `rebalance_batch:${batch.id}`,
   });
 }
-if (fillCashCents > 0) {
+if (authoritativeStrategyCashCents > 0) {
   ledgerLegs.push({
     ticker: "CASH",
-    leg: "Undeployed rebalance proceeds",
+    leg: "Authoritative strategy CA",
     units: 1,
     entryDate: batch.effective_date,
-    entryPriceCents: fillCashCents,
+    entryPriceCents: authoritativeStrategyCashCents,
     exitDate: null,
     exitPriceCents: null,
     sourceRef: `rebalance_batch:${batch.id}`,
@@ -401,7 +413,9 @@ const sourceEvidence = {
   boundary_batch_id: batch.id,
   boundary_effective_date: batch.effective_date,
   fill_count: events.length,
-  fill_cash_cents: fillCashCents,
+  fill_residual_cents: fillCashCents,
+  authoritative_strategy_ca_cents: authoritativeStrategyCashCents,
+  ca_reconciliation: reconciliations[0] ?? null,
   recorded_batch_net_proceeds: batch.net_proceeds,
   fill_deltas_match_composition: true,
   price_source: "stock_returns_c paginated exact closes with labelled prior-close carry-forward",
@@ -455,7 +469,8 @@ const ledgerRows = navRows.map((current, index) => {
       certification_requirements: [
         "independent workbook comparison",
         "independent provider price signoff",
-        "17,666-cent boundary cash signoff",
+        "fill residual versus client residual signoff",
+        "authoritative strategy CA signoff",
         "period return tolerance review",
       ],
     },
@@ -510,7 +525,8 @@ console.log(JSON.stringify({
   boundary: {
     batch_id: batch.id,
     effective_date: batch.effective_date,
-    fill_cash_cents: fillCashCents,
+    fill_residual_cents: fillCashCents,
+    authoritative_strategy_ca_cents: authoritativeStrategyCashCents,
     recorded_net_proceeds: batch.net_proceeds,
     deltas: Object.fromEntries(fillDeltas),
     previous_session: boundaryBefore && {
