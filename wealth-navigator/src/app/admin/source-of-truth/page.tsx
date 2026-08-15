@@ -1379,7 +1379,7 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
 
       const view = book.addWorksheet(publicName, { pageSetup: { orientation: "portrait", fitToWidth: 1, fitToHeight: 1 } });
       view.mergeCells("A1:B1");
-      view.getCell("A1").value = `PUBLIC STRATEGY VIEW - ${current.strategy.toUpperCase()}`;
+      view.getCell("A1").value = "PUBLIC STRATEGY VIEW - WHAT THE STRATEGY PAGE SHOULD SHOW";
       view.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
       view.getCell("A1").font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
       view.getCell("A1").alignment = { horizontal: "left", vertical: "middle" };
@@ -1417,6 +1417,7 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
       view.getCell("A13").value = "Public strategy returns";
       view.getCell("A13").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
       view.getCell("A13").font = { bold: true, color: { argb: "FFFFFFFF" } };
+      view.getCell("A14").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
       view.getRow(15).values = ["Period", "Benchmark_Value", "Numerator_Value", "P/L", "Return"];
       ["1W", "WTD", "1M", "3M", "YTD", "SI"].forEach((period, index) => {
         const row = 16 + index;
@@ -1464,6 +1465,16 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
           cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
         });
       });
+      view.getCell("A10").fill = { type: "pattern", pattern: "solid", fgColor: { argb: grey } };
+      view.getCell("A10").font = { bold: true };
+      view.getCell("A10").alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      for (let column = 1; column <= 15; column += 1) {
+        const returnCell = view.getCell(16, column);
+        returnCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: grey } };
+        returnCell.font = { bold: true };
+        returnCell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        view.getCell(23, column).fill = { type: "pattern", pattern: "solid", fgColor: { argb: grey } };
+      }
       for (let row = 4; row <= 11; row += 1) for (let column = 1; column <= 3; column += 1) view.getCell(row, column).alignment = { vertical: "top", wrapText: true };
       view.getColumn(1).width = 40.42578125;
       for (let column = 2; column <= Math.max(8, changeColumn); column += 1) view.getColumn(column).width = column === changeColumn ? 70 : 40.42578125;
