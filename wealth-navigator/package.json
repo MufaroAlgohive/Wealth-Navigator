@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "audit:canonical-certification": "node --env-file=.env.local scripts/audit-canonical-certification.mjs",
+    "promote:canonical-family": "node scripts/promote-canonical-ledger-family.mjs",
     "repair:stock-returns-yahoo": "node --env-file=.env.local scripts/repair-stock-returns-yahoo.mjs",
     "restore:stock-returns-backup": "node --env-file=.env.local scripts/restore-stock-returns-backup.mjs",
     "typecheck": "tsc --noEmit",

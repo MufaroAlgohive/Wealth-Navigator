@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeHoldingsFromLedger,
+  buildCanonicalInceptionLegs,
   parseModelHoldings,
   sameModelHoldings,
 } from "@/lib/returns/publish-canonical-ledger-draft";
@@ -47,5 +48,16 @@ describe("canonical ledger DRAFT writer guards", () => {
         { ticker: "SUI", units: 4 },
       ]),
     ).toBe(false);
+  });
+
+  it("bootstraps a new strategy with exact-close legs and explicit continuity cash", () => {
+    expect(buildCanonicalInceptionLegs(
+      [{ ticker: "NED", units: 2, close_cents: 25_000 }],
+      "2026-08-14",
+      8_000,
+    )).toEqual([
+      expect.objectContaining({ ticker: "NED", units: 2, entryDate: "2026-08-14", entryPriceCents: 25_000 }),
+      expect.objectContaining({ ticker: "CASH", units: 1, entryPriceCents: 8_000 }),
+    ]);
   });
 });
