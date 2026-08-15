@@ -234,7 +234,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // they get confined to that account. Completion is likewise scoped: see
     // maybeCompleteRebalance, which skips the model flip and return boundary
     // entirely for this scope, because the strategy itself does not change.
-    const affected = request.affected_investors as { scope?: unknown; user_id?: unknown } | null;
+    const affected = request.affected_investors as {
+      scope?: unknown;
+      user_id?: unknown;
+      family_member_id?: unknown;
+    } | null;
     const isSingleUser = affected?.scope === "single_user";
     const singleUserId = typeof affected?.user_id === "string" ? affected.user_id : "";
     if (isSingleUser && !singleUserId) {
@@ -244,6 +248,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       );
     }
     const restrictToUserId = isSingleUser ? singleUserId : undefined;
+    const restrictToFamilyMemberId = isSingleUser && typeof affected?.family_member_id === "string"
+      ? affected.family_member_id
+      : null;
 
     try {
       parked = await reconcileParkedHoldings(
@@ -256,6 +263,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         id,
         isUatStrategy,
         restrictToUserId,
+        restrictToFamilyMemberId,
       );
     } catch (err) {
       parked = { reconciledUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
@@ -276,6 +284,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         id,
         isUatStrategy,
         restrictToUserId,
+        restrictToFamilyMemberId,
       );
     } catch (err) {
       booked = { bookedUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };

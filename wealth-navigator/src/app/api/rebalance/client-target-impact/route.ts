@@ -46,6 +46,9 @@ export async function POST(req: Request) {
   const strategyId = typeof body.strategy_id === "string" ? body.strategy_id.trim() : "";
   const strategyName = typeof body.strategy_name === "string" ? body.strategy_name.trim() : "";
   const userId = typeof body.user_id === "string" ? body.user_id.trim() : "";
+  const familyMemberId = typeof body.family_member_id === "string" && body.family_member_id.trim()
+    ? body.family_member_id.trim()
+    : null;
   const targetsRaw = Array.isArray(body.targets) ? (body.targets as TargetLine[]) : [];
   if (!strategyId && !strategyName) {
     return NextResponse.json(
@@ -117,21 +120,29 @@ export async function POST(req: Request) {
     `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() || (profile.email as string) || "Client";
   const account = String(profile.mint_number || profile.email || profile.id);
 
-  let holdRes = await db
+  let holdingQuery = db
     .from("stock_holdings_c")
     .select("security_id, quantity, avg_fill, Expected_fill")
     .eq("is_active", true)
     .eq("trade_side", "BUY")
     .eq("user_id", userId)
     .eq("strategy_id", strategyId || "00000000-0000-0000-0000-000000000000");
+  holdingQuery = familyMemberId
+    ? holdingQuery.eq("family_member_id", familyMemberId)
+    : holdingQuery.is("family_member_id", null);
+  let holdRes = await holdingQuery;
   if ((!holdRes.data || holdRes.data.length === 0) && strategyName) {
-    holdRes = await db
+    let fallbackHoldingQuery = db
       .from("stock_holdings_c")
       .select("security_id, quantity, avg_fill, Expected_fill")
       .eq("is_active", true)
       .eq("trade_side", "BUY")
       .eq("user_id", userId)
       .eq("strategy_name_snapshot", strategyName);
+    fallbackHoldingQuery = familyMemberId
+      ? fallbackHoldingQuery.eq("family_member_id", familyMemberId)
+      : fallbackHoldingQuery.is("family_member_id", null);
+    holdRes = await fallbackHoldingQuery;
   }
   if (holdRes.error) {
     return NextResponse.json({ ok: false, error: holdRes.error.message }, { status: 500 });
@@ -232,28 +243,34 @@ export async function POST(req: Request) {
   }
   lines.sort((a, b) => Number(b.valueCents) - Number(a.valueCents));
 
+  let residualQuery = db
+    .from("strategy_rebalance_residuals")
+    .select("balance_cents")
+    .eq("user_id", userId)
+    .eq("strategy_id", strategyId || "00000000-0000-0000-0000-000000000000");
+  residualQuery = familyMemberId
+    ? residualQuery.eq("family_member_id", familyMemberId)
+    : residualQuery.is("family_member_id", null);
   const residualRes = strategyId
-    ? await db
-        .from("strategy_rebalance_residuals")
-        .select("balance_cents")
-        .eq("user_id", userId)
-        .eq("strategy_id", strategyId)
+    ? await residualQuery
     : { data: [] as Array<{ balance_cents: number | null }>, error: null };
   if (residualRes.error) {
     return NextResponse.json({ ok: false, error: residualRes.error.message }, { status: 500 });
   }
   const residualCents = (residualRes.data ?? []).reduce((s, r) => s + Number(r.balance_cents ?? 0), 0);
 
+  let transactionHoldingQuery = db
+    .from("stock_holdings_c")
+    .select("transaction_id")
+    .eq("is_active", true)
+    .eq("trade_side", "BUY")
+    .eq("user_id", userId);
+  transactionHoldingQuery = familyMemberId
+    ? transactionHoldingQuery.eq("family_member_id", familyMemberId)
+    : transactionHoldingQuery.is("family_member_id", null);
   const heldTransactionIds = [
     ...new Set(
-      (
-        await db
-          .from("stock_holdings_c")
-          .select("transaction_id")
-          .eq("is_active", true)
-          .eq("trade_side", "BUY")
-          .eq("user_id", userId)
-      ).data?.map((r) => r.transaction_id) ?? [],
+      (await transactionHoldingQuery).data?.map((r) => r.transaction_id) ?? [],
     ),
   ].filter(Boolean) as string[];
   let reserveCents = 0;

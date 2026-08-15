@@ -64,8 +64,9 @@ export async function bookSettledRebalanceOrders(
    * account. Without it a `single_user` request would fan its target
    * quantities out across the whole strategy — the composition it carries is
    * one client's personal holdings, not a model template.
-   */
+  */
   restrictToUserId?: string,
+  restrictToFamilyMemberId?: string | null,
 ): Promise<BookSettledResult> {
   const result: BookSettledResult = { bookedUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
@@ -98,7 +99,7 @@ export async function bookSettledRebalanceOrders(
   // fill — the mirror image of reconcile-parked-holdings.ts's query.
   let settledRes = await db
     .from("stock_holdings_c")
-    .select("id, user_id, security_id, quantity, transaction_id, Fill_date")
+    .select("id, user_id, family_member_id, security_id, quantity, transaction_id, Fill_date")
     .eq("is_active", true)
     .eq("trade_side", "BUY")
     .not("Fill_date", "is", null)
@@ -106,7 +107,7 @@ export async function bookSettledRebalanceOrders(
   if ((!settledRes.data || settledRes.data.length === 0) && strategyName) {
     settledRes = await db
       .from("stock_holdings_c")
-      .select("id, user_id, security_id, quantity, transaction_id, Fill_date")
+      .select("id, user_id, family_member_id, security_id, quantity, transaction_id, Fill_date")
       .eq("is_active", true)
       .eq("trade_side", "BUY")
       .not("Fill_date", "is", null)
@@ -119,6 +120,7 @@ export async function bookSettledRebalanceOrders(
   const allSettledRows = (settledRes.data ?? []) as Array<{
     id: string;
     user_id: string;
+    family_member_id: string | null;
     security_id: string;
     quantity: number | null;
     transaction_id: string | null;
@@ -128,15 +130,20 @@ export async function bookSettledRebalanceOrders(
   // (strategy_id, then strategy_name_snapshot) in one place, and the row set
   // is a single strategy's holdings either way.
   const settledRows = restrictToUserId
-    ? allSettledRows.filter((r) => r.user_id === restrictToUserId)
+    ? allSettledRows.filter(
+        (r) =>
+          r.user_id === restrictToUserId &&
+          (r.family_member_id ?? null) === (restrictToFamilyMemberId ?? null),
+      )
     : allSettledRows;
   if (settledRows.length === 0) return result;
 
-  const byUser = new Map<string, typeof settledRows>();
+  const byOwner = new Map<string, typeof settledRows>();
   for (const row of settledRows) {
-    const list = byUser.get(row.user_id) ?? [];
+    const key = `${row.user_id}|${row.family_member_id ?? ""}`;
+    const list = byOwner.get(key) ?? [];
     list.push(row);
-    byUser.set(row.user_id, list);
+    byOwner.set(key, list);
   }
 
   const heldSecIds = [...new Set(settledRows.map((r) => r.security_id).filter(Boolean))];
@@ -164,7 +171,7 @@ export async function bookSettledRebalanceOrders(
     if (!secBySymbol.has(sym)) secBySymbol.set(sym, { id: s.id, priceCents: cents });
   }
 
-  const userIds = [...byUser.keys()];
+  const userIds = [...new Set(settledRows.map((row) => row.user_id))];
   const profilesRes = userIds.length
     ? await db.from("profiles").select("id, email").in("id", userIds)
     : { data: [] as Array<{ id: string; email: string | null }> };
@@ -173,8 +180,10 @@ export async function bookSettledRebalanceOrders(
     if (p.email) emailByUser.set(p.id, p.email);
   }
 
-  for (const [userId, rows] of byUser) {
+  for (const rows of byOwner.values()) {
     try {
+      const userId = rows[0]!.user_id;
+      const familyMemberId = rows[0]!.family_member_id ?? null;
       const clientEmail = emailByUser.get(userId) ?? "unknown@mymint.co.za";
       // A symbol can have more than one filled leg (earlier buys, earlier
       // rebalance increases). Aggregate quantity for correct lot-sizing;
@@ -229,6 +238,7 @@ export async function bookSettledRebalanceOrders(
             .from("stock_holdings_c")
             .insert({
               user_id: userId,
+              family_member_id: familyMemberId,
               security_id: security.id,
               quantity: 0,
               strategy_id: strategyId,
@@ -262,7 +272,7 @@ export async function bookSettledRebalanceOrders(
               security_id: security.id,
               isin: null,
               holding_id: newHoldingId,
-              family_member_id: null,
+              family_member_id: familyMemberId,
               user_id: userId,
               limitPrice: priceCents / 100,
               sent_by: clientEmail,
@@ -310,7 +320,7 @@ export async function bookSettledRebalanceOrders(
               security_id: security?.id ?? null,
               isin: null,
               holding_id: position.rowId,
-              family_member_id: null,
+              family_member_id: familyMemberId,
               user_id: userId,
               limitPrice: priceCents / 100,
               sent_by: clientEmail,

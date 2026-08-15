@@ -62,17 +62,58 @@ export async function settleRebalanceCashForClients(
   const orders = (ordersRes.data ?? []) as FilledOrder[];
   if (orders.length === 0) return result;
 
-  const byUser = new Map<string, FilledOrder[]>();
+  // The order payload is not authoritative for ownership: older OEM orders
+  // hard-coded family_member_id=null. Resolve the owner from the holding that
+  // was actually filled so a parent's and child's cash/reserve pools can never
+  // be combined.
+  const holdingIds = [
+    ...new Set(
+      orders
+        .map((order) => order.payload?.holding_id)
+        .filter((id): id is string => typeof id === "string" && id.length > 0),
+    ),
+  ];
+  const ownerByHoldingId = new Map<string, { userId: string; familyMemberId: string | null }>();
+  if (holdingIds.length > 0) {
+    const ownerRes = await retailDb
+      .from("stock_holdings_c")
+      .select("id,user_id,family_member_id")
+      .in("id", holdingIds);
+    if (ownerRes.error) {
+      result.errors.push(`cash owner lookup failed: ${ownerRes.error.message}`);
+      return result;
+    }
+    for (const row of (ownerRes.data ?? []) as Array<{
+      id: string;
+      user_id: string;
+      family_member_id: string | null;
+    }>) {
+      ownerByHoldingId.set(row.id, {
+        userId: row.user_id,
+        familyMemberId: row.family_member_id ?? null,
+      });
+    }
+  }
+
+  const byOwner = new Map<string, { userId: string; familyMemberId: string | null; orders: FilledOrder[] }>();
   for (const o of orders) {
-    const uid = typeof o.payload?.user_id === "string" ? o.payload.user_id : "";
-    if (!uid) continue;
-    const list = byUser.get(uid) ?? [];
-    list.push(o);
-    byUser.set(uid, list);
+    const holdingId = typeof o.payload?.holding_id === "string" ? o.payload.holding_id : "";
+    const holdingOwner = holdingId ? ownerByHoldingId.get(holdingId) : undefined;
+    const userId = holdingOwner?.userId ?? (typeof o.payload?.user_id === "string" ? o.payload.user_id : "");
+    const familyMemberId = holdingOwner
+      ? holdingOwner.familyMemberId
+      : typeof o.payload?.family_member_id === "string"
+        ? o.payload.family_member_id
+        : null;
+    if (!userId) continue;
+    const key = `${userId}|${familyMemberId ?? ""}`;
+    const owner = byOwner.get(key) ?? { userId, familyMemberId, orders: [] };
+    owner.orders.push(o);
+    byOwner.set(key, owner);
   }
 
   const settlements: Record<string, unknown>[] = [];
-  for (const [userId, userOrders] of byUser) {
+  for (const { userId, familyMemberId, orders: userOrders } of byOwner.values()) {
     try {
       let grossSellCents = 0;
       let grossBuyCents = 0;
@@ -120,13 +161,17 @@ export async function settleRebalanceCashForClients(
           .filter((o) => o.side === "buy" && typeof o.payload?.holding_id === "string")
           .map((o) => o.payload.holding_id as string);
         if (excludeIds.length === 0) excludeIds.push("00000000-0000-0000-0000-000000000000");
-        const { data } = await retailDb
+        let fallbackHoldingQuery = retailDb
           .from("stock_holdings_c")
           .select("transaction_id")
           .eq("user_id", userId)
           .eq("strategy_id", realStrategyRowId)
           .not("transaction_id", "is", null)
-          .not("id", "in", `(${excludeIds.join(",")})`)
+          .not("id", "in", `(${excludeIds.join(",")})`);
+        fallbackHoldingQuery = familyMemberId
+          ? fallbackHoldingQuery.eq("family_member_id", familyMemberId)
+          : fallbackHoldingQuery.is("family_member_id", null);
+        const { data } = await fallbackHoldingQuery
           .order("created_at", { ascending: true })
           .limit(1);
         transactionId = (data?.[0]?.transaction_id as string | null) ?? null;
@@ -151,12 +196,15 @@ export async function settleRebalanceCashForClients(
       // swap math.
       let residualCents = 0;
       if (realStrategyRowId) {
-        const { data: residualRows } = await retailDb
+        let residualQuery = retailDb
           .from("strategy_rebalance_residuals")
           .select("balance_cents")
           .eq("user_id", userId)
-          .eq("strategy_id", realStrategyRowId)
-          .is("family_member_id", null)
+          .eq("strategy_id", realStrategyRowId);
+        residualQuery = familyMemberId
+          ? residualQuery.eq("family_member_id", familyMemberId)
+          : residualQuery.is("family_member_id", null);
+        const { data: residualRows } = await residualQuery
           .maybeSingle();
         residualCents = Number(residualRows?.balance_cents ?? 0);
       }
@@ -188,6 +236,7 @@ export async function settleRebalanceCashForClients(
       if (!realStrategyRowId) throw new Error("settled rebalance client has no retail strategy identity");
       settlements.push({
         user_id: userId,
+        family_member_id: familyMemberId,
         strategy_id: realStrategyRowId,
         transaction_id: transactionId,
         opening_residual_cents: residualCents,

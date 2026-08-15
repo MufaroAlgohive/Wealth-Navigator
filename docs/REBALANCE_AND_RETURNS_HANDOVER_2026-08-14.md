@@ -652,3 +652,50 @@ Important chart rule: a rebalance that returns residual capital to clients can
 change raw open-basket value even though investment performance is continuous.
 Charts must therefore use the canonical leg-P/L return/index series, never raw
 `complete_value_cents` as an unadjusted chart ordinate across such a boundary.
+
+## MyGrowth owner-level forensic audit and family isolation (2026-08-15)
+
+The CEO-era MyGrowth process has now been checked against Retail records with
+`scripts/audit-mygrowth-owner-rebalance.ts`. The script is read-only and emits
+strategy compositions, batches, owner-scoped holdings, fills, residuals,
+reserve evidence and model-CA reconciliations. Set
+`AUDIT_SUMMARY_ONLY=1` for the compact owner/event report.
+
+The evidence corroborates the operational account of a partial, irregular
+rebalance. MyGrowth currently has six distinct owner accounts, but its twelve
+historical `rebalance_event` rows cover only two owners: Siliziwe Mafika and
+Ncumolwethu Damane. On the final 2026-08-03 boundary, Siliziwe bought the model
+quantity of four STXACW while Ncumolwethu bought five; Ncumolwethu's active
+holding still carries five. Luli Maswanganye remains on the pre-rebalance
+basket. Zenande Sidlayi and Tsie M Masilo each carry 18 STXCAP rather than the
+model seven. Mpumelelo Maswanganye has the current model quantities but all four
+rows remain unfilled. These differences must be treated as owner-level facts,
+not silently normalised into model history.
+
+The first 2026-07-23 MyGrowth boundary has owner cash/reserve events but no
+model-CA reconciliation. The first 2026-08-03 boundary certifies model CA of
+zero cents; the second certifies 57 cents. Client residual balances are not
+model CA. No other CA amount may be inferred from proceeds or owner residuals.
+Before certifying another strategy, obtain the business owner's explicit list
+of strategies intended to carry model CA and reconcile each list entry to
+`strategy_rebalance_ca_reconciliation_c`.
+
+MINT Diversified Basket has two stored composition intervals but no current
+owner holdings, no `rebalance_batch`, and no `rebalance_event`. Its June
+composition change is therefore not a proven executed rebalance and remains
+uncertified.
+
+The OEM path had a structural family-ownership defect: strategy-wide grouping,
+single-client filtering and some order payloads used only `user_id`, allowing a
+parent and family member to be merged. The 2026-08-15 fix makes the effective
+owner key `(user_id, family_member_id)` across the impact preview, parked and
+settled order booking, completion evidence and post-fill cash settlement. When
+an old order payload says `family_member_id=null`, the completion and cash
+writers now recover the authoritative owner from the touched holding. Residual
+and execution-reserve reads are also family-scoped, and the atomic settlement
+RPC receives `family_member_id`.
+
+This prevents new single-owner or family-member rebalances from reproducing the
+historical cross-owner corruption. It does not rewrite the historical MyGrowth
+rows; any correction of those rows requires a separately approved,
+owner-by-owner reconciliation.
