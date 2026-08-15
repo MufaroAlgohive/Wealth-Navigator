@@ -24,6 +24,10 @@
     {
       "path": "/api/cron/client-returns-publish",
       "schedule": "20 17 * * 1-5"
+    },
+    {
+      "path": "/api/cron/canonical-ledger-draft",
+      "schedule": "30 17 * * 1-5"
     }
   ]
 }

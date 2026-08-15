@@ -1020,3 +1020,34 @@ one reversed-batch exclusion and 50,390 - 1,196 = 49,194 cash bridge. All 135
 rows passed with zero metric failures. The verifier reports
 `certification_ready: false` fail-closed because repeatable provider and fee
 timing sign-off remain outstanding.
+
+### Canonical daily DRAFT writer
+
+`src/lib/returns/publish-canonical-ledger-draft.ts` and
+`/api/cron/canonical-ledger-draft` now provide the first production-safe daily
+continuation path for the one physical canonical ledger. The job runs after
+the existing return publishers at 17:30 UTC on JSE weekdays, but remains
+read-only unless `CANONICAL_LEDGER_DRAFT_APPLY=1` is explicitly set. An admin
+may also dry-run a date, or deliberately apply it, through `?asOf=YYYY-MM-DD`
+and `?apply=1`.
+
+The writer excludes Test Strategy, requires an existing DRAFT baseline, an
+effective composition and ACTIVE valuation rule, and an exact same-day stored
+EOD close for every active model holding. It appends to the existing table and
+does not create a second return table. It preserves the workbook leg method
+for evidence-backed ledgers and uses direct complete-value movement only for
+unchanged static compositions.
+
+It fails closed rather than manufacture a bridge: any composition difference
+returns `REBALANCE_REQUIRES_SETTLED_EVIDENCE_REBUILD`, and any CA difference
+returns `MODEL_CASH_CHANGE_REQUIRES_RECONCILIATION_REBUILD`. Those strategies
+remain on their last verified DRAFT row until their settled batch, fills and
+CA reconciliation are incorporated by the evidence-backed rebuild. Missing
+exact closes also fail that strategy; no prior-close carry is silently used by
+the daily publisher.
+
+The 14 August live dry run found all eight non-test rows already present and
+performed zero writes. The 15 August run recognized the JSE weekend and exited
+before reading strategies. Focused tests passed for ticker normalization,
+cash/exited-leg exclusion and composition-change detection. Public/app values
+remain unchanged; this writer only maintains the shadow DRAFT ledger.
