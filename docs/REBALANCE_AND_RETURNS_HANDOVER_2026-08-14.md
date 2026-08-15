@@ -761,3 +761,27 @@ Next after deployment: audit pre-migration purchases for those confirmed real
 owners and Yield Basket, then prepare a separately reviewed, idempotent
 backfill. Do not infer missing model CA from client residuals, reserve balances
 or sell proceeds.
+
+### Post-migration historical purchase audit result
+
+`scripts/audit-pre-migration-model-cash.ts` now performs that audit without any
+writes. It considers only non-test strategies with a non-zero effective ACTIVE
+CA rule, joins each purchase through its transaction-linked active holdings,
+and accepts model lots only when every constituent has the same positive whole
+number ratio to the effective composition. It reports the owner's current
+residual and the transaction's 8% reserve separately. Test Strategy and owners
+whose profile is marked `is_test=true` can never become backfill candidates.
+
+The 2026-08-15 run found three purchase groups after a non-zero CA rule became
+effective. All three were Yield Basket transactions owned by the explicitly
+test-marked Mpumelelo Maswanganye profile and were classified
+`EXCLUDED_TEST_PROFILE`. One reproduced exactly one Yield model lot; the other
+two had zero purchase base and inconsistent constituent ratios. There were no
+eligible LIVE backfill candidates and no MyGrowth post-rule transaction-linked
+purchase gap.
+
+Therefore no historical write migration is warranted from the available
+evidence. Existing real MyGrowth owners received or failed to receive cash at
+the rebalance settlement boundary, which must be reconciled against their
+batch/cash/reserve evidence—not rewritten as a purchase credit. Future adult
+and child purchases are protected by the atomic purchase RPC already deployed.
