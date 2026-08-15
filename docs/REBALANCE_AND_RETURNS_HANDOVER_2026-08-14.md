@@ -1012,3 +1012,11 @@ of the one legacy DRAFT checkpoint. The immediate dry rerun was idempotent:
 writes. The subsequent family audit confirmed complete DRAFT session coverage
 through 14 August for all eight non-test strategies. TypeScript and the full
 Next.js production build both passed after this change.
+
+`scripts/verify-yield-canonical-ledger.ts` independently re-sums every stored
+period's leg benchmarks, numerators, P/L and return, checks the complete-value
+identity and exact JSE-session coverage, and asserts the 2/3/3 owner scales,
+one reversed-batch exclusion and 50,390 - 1,196 = 49,194 cash bridge. All 135
+rows passed with zero metric failures. The verifier reports
+`certification_ready: false` fail-closed because repeatable provider and fee
+timing sign-off remain outstanding.
