@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   activeHoldingsFromLedger,
   buildCanonicalInceptionLegs,
+  canExtendCanonicalCheckpoint,
   parseModelHoldings,
   sameModelHoldings,
 } from "@/lib/returns/publish-canonical-ledger-draft";
@@ -59,5 +60,12 @@ describe("canonical ledger DRAFT writer guards", () => {
       expect.objectContaining({ ticker: "NED", units: 2, entryDate: "2026-08-14", entryPriceCents: 25_000 }),
       expect.objectContaining({ ticker: "CASH", units: 1, entryPriceCents: 8_000 }),
     ]);
+  });
+
+  it("continues after certification but fails closed on rejected or unknown checkpoints", () => {
+    expect(canExtendCanonicalCheckpoint("DRAFT")).toBe(true);
+    expect(canExtendCanonicalCheckpoint("CERTIFIED")).toBe(true);
+    expect(canExtendCanonicalCheckpoint("REJECTED")).toBe(false);
+    expect(canExtendCanonicalCheckpoint("")).toBe(false);
   });
 });

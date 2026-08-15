@@ -126,6 +126,10 @@ export function sameModelHoldings(left: Holding[], right: Holding[]) {
   );
 }
 
+export function canExtendCanonicalCheckpoint(status: string) {
+  return status === "DRAFT" || status === "CERTIFIED";
+}
+
 function isLegLedger(row: CanonicalRow) {
   return row.leg_snapshot.some(
     (leg) => leg.entry_date != null && leg.entry_price_cents != null && leg.ticker != null,
@@ -404,8 +408,8 @@ export async function publishCanonicalLedgerDraft(
       }
       const priorLedgerRows = existingCurrent ? ledgerRows.slice(0, -1) : ledgerRows;
       const previous = priorLedgerRows.at(-1);
-      if (previous && previous.certification_status !== "DRAFT") {
-        results.push({ strategy: strategy.name, action: "skipped", reason: "LATEST_ROW_NOT_DRAFT" });
+      if (previous && !canExtendCanonicalCheckpoint(previous.certification_status)) {
+        results.push({ strategy: strategy.name, action: "skipped", reason: "LATEST_ROW_NOT_EXTENDABLE" });
         skipped += 1;
         continue;
       }

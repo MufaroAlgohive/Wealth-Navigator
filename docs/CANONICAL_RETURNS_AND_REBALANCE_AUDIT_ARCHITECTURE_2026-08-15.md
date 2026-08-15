@@ -974,6 +974,8 @@ The production design is no longer a Famous Brands-only overlay. Famous Brands w
 
 On the first eligible JSE close after a new active strategy has an active composition and valuation rule, the daily writer creates a DRAFT inception ledger row automatically. It requires an exact same-date stored close for every security and includes continuity cash from the active valuation rule. Every inception range starts at zero. The row remains non-public until certification; this prevents a newly curated strategy from publishing unreviewed values while removing the former manual baseline dependency.
 
+Subsequent daily DRAFT rows may extend either a DRAFT or CERTIFIED checkpoint. This ensures certification never stalls the following trading day's chain; rejected or unknown checkpoint states still fail closed.
+
 ## Controlled family promotion
 
 `scripts/promote-canonical-ledger-family.mjs` validates every DRAFT row for the complete-value formula, a non-empty leg snapshot, and all seven finite period returns. Dry-run is the default. Apply mode requires an explicit certifier UUID, a detailed reason, and `CANONICAL_EVIDENCE_WAIVER=1`. The decision is embedded in `source_evidence`, including known independent-provider gaps, and Test Strategy is always excluded. The MINT certified-union read path must be deployed before apply mode is used.
