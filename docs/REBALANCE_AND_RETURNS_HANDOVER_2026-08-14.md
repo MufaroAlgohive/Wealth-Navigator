@@ -808,3 +808,28 @@ The DRAFT apply inserted eight new rows and replaced the single old 12 Aug
 rerun returned nine matching sessions, zero inserts, zero conflicts, zero
 replacements, zero writes and zero-cent latest variance. Ledger version is
 `excel-segmented-post-ca-boundary-v1`.
+
+### MyGrowth 23 July historical boundary repair
+
+`scripts/audit-mygrowth-20260723-boundary.ts` independently rechecks the missing
+23 Jul CA reconciliation. It requires the settled COMPLETE batch, exact model
+delta (`STX40 -3`, `GLPROP +3`), matching fill/cash/reserve owner sets, complete
+fill prices, exact stored 23 Jul closes and a later authoritative zero-CA
+checkpoint.
+
+The read-only audit passed every identity for both affected real owners. Per
+owner, STX40 sale proceeds were 30,105 cents, GLPROP cost was 15,258 cents and
+the 14,847-cent difference exactly matched the credited owner residual. Each
+owner's 5,227-cent rebalance fee was fully consumed from their separate 8%
+execution reserve with zero shortfall. The exact after-model close was 127,842
+cents: STXNDQ 53,840 + SYGEMF 9,324 + SYG500 49,420 + GLPROP 15,258. The next
+3 Aug CA checkpoint independently records zero CA.
+
+This supports the missing public-model identity `127,842 = 127,842 + 0` without
+converting owner residual or reserve into model cash. Migration
+`20260815000002_mygrowth_20260723_ca_reconciliation.sql` is idempotent and
+fail-closed: it rechecks the immutable totals and exact closes before inserting
+the single missing reconciliation, refuses conflicting existing evidence and
+does not alter holdings, client cash, reserve, canonical returns or public
+values. After it is applied, rerun the audit and then extend the MyGrowth
+workbook ledger across the newly evidenced boundary.
