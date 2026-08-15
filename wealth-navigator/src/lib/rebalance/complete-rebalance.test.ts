@@ -48,6 +48,75 @@ describe("maybeCompleteRebalance", () => {
     );
   });
 
+  it("takes execution owner scope from the touched holding, not a null payload family id", async () => {
+    settlementMocks.recordRebalanceSettlement.mockResolvedValue({ batchId: "batch-child" });
+    settlementMocks.recordRebalanceExecutionEvidence.mockResolvedValue(null);
+    const retailDb = {
+      from: vi.fn((table: string) => {
+        if (table === "stock_holdings_c") {
+          return chain({
+            data: [{ id: "holding-child", user_id: "parent-1", family_member_id: "child-1" }],
+            error: null,
+          });
+        }
+        return { select: () => chain({ data: { id: "strategy-1" }, error: null }) };
+      }),
+    };
+    const institutionalDb = {
+      from: vi.fn((table: string) => {
+        if (table === "oems_order_audit") {
+          return chain({
+            data: [{
+              status: "filled",
+              side: "buy",
+              quantity: 2,
+              payload: {
+                holding_id: "holding-child",
+                user_id: "parent-1",
+                family_member_id: null,
+                security_id: "security-1",
+                filled: 2,
+                lastFillAt: "2026-08-14T12:00:00.000Z",
+              },
+              result_payload: { avgFillPrice: 1000 },
+            }],
+            error: null,
+          });
+        }
+        return {
+          select: () => chain({
+            data: {
+              strategy_id: "Strategy Name",
+              affected_investors: { scope: "single_user" },
+              proposed_composition: [],
+            },
+            error: null,
+          }),
+        };
+      }),
+    };
+
+    const outcome = await maybeCompleteRebalance(
+      retailDb as never,
+      institutionalDb as never,
+      "request-child",
+      "actor-1",
+    );
+
+    expect(outcome).toMatchObject({ completed: true, scope: "single_user", settlementBatchId: "batch-child" });
+    expect(settlementMocks.recordRebalanceSettlement).toHaveBeenCalledWith(
+      retailDb,
+      expect.objectContaining({
+        owners: [{ userId: "parent-1", familyMemberId: "child-1" }],
+      }),
+    );
+    expect(settlementMocks.recordRebalanceExecutionEvidence).toHaveBeenCalledWith(
+      retailDb,
+      "batch-child",
+      [expect.objectContaining({ userId: "parent-1", familyMemberId: "child-1" })],
+    );
+  });
+
   it("does not complete a rebalance with no filled execution evidence", async () => {
     const retailDb = { from: vi.fn() };
     const institutionalDb = {

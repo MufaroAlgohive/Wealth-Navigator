@@ -64,6 +64,7 @@ type DriftLine = {
 };
 type ImpactInvestor = {
   user_id: string;
+  family_member_id?: string | null;
   name: string;
   account?: string;
   basketCents: number;
@@ -2510,7 +2511,7 @@ function SingleClientRebalancePanel({
       shortfall: boolean;
     };
   }>({
-    queryKey: ["client-target-impact", strategyId, investor.user_id, JSON.stringify(debounced)],
+    queryKey: ["client-target-impact", strategyId, investor.user_id, investor.family_member_id ?? null, JSON.stringify(debounced)],
     enabled: targetsPayload.length > 0,
     queryFn: async () => {
       const res = await fetch("/api/rebalance/client-target-impact", {
@@ -2520,6 +2521,7 @@ function SingleClientRebalancePanel({
           strategy_id: strategyId,
           strategy_name: strategyName,
           user_id: investor.user_id,
+          family_member_id: investor.family_member_id ?? null,
           targets: targetsPayload,
         }),
       });
@@ -2582,6 +2584,7 @@ function SingleClientRebalancePanel({
           affected_investors: {
             scope: "single_user",
             user_id: investor.user_id,
+            family_member_id: investor.family_member_id ?? null,
             name: investor.name,
             account: investor.account,
             bridge,

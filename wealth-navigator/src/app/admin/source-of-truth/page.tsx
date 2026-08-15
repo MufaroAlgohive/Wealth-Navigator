@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  Upload,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
@@ -85,6 +86,20 @@ type LedgerRow = {
   periods: Record<string, { return_pct?: number; numerator_cents?: number; denominator_cents?: number; reference_date?: string }>;
   evidence: Record<string, unknown>;
   notes: Record<string, unknown>;
+};
+type PriceProofResult = {
+  readOnly: boolean;
+  evidenceSha256: string;
+  summary: { total: number; matched: number; mismatched: number; missing: number; pass: boolean };
+  comparisons: Array<{
+    ticker: string;
+    date: string;
+    closeCents: number;
+    storedCloseCents: number | null;
+    differenceCents: number | null;
+    status: "MATCH" | "MISMATCH" | "MISSING_STORED_CLOSE";
+    sourceFile: string;
+  }>;
 };
 type Quote = {
   yahooSymbol: string;
@@ -1112,12 +1127,86 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
     return [...byStrategy.values()].sort((a, b) => a.strategy.localeCompare(b.strategy));
   }, [rows]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selected = latest.find((row) => row.strategyId === selectedId) ?? latest[0] ?? null;
+  const [selectedAsOf, setSelectedAsOf] = useState<string | null>(null);
+  const [proof, setProof] = useState<PriceProofResult | null>(null);
+  const [proofBusy, setProofBusy] = useState(false);
+  const [proofError, setProofError] = useState("");
+  const selectedStrategy = latest.find((row) => row.strategyId === selectedId) ?? latest[0] ?? null;
+  const history = useMemo(
+    () => rows
+      .filter((row) => row.strategyId === selectedStrategy?.strategyId)
+      .sort((a, b) => b.asOf.localeCompare(a.asOf)),
+    [rows, selectedStrategy?.strategyId],
+  );
+  const selected = history.find((row) => row.asOf === selectedAsOf) ?? history[0] ?? selectedStrategy;
+  const chartRows = useMemo(
+    () => [...history].reverse().map((row) => ({
+      date: row.asOf,
+      complete: row.completeValueCents / 100,
+      securities: row.securitiesCents / 100,
+      cash: row.continuityCashCents / 100,
+    })),
+    [history],
+  );
   const status = selected?.certificationStatus === "CERTIFIED" ? "ok" : "warning";
-  const unresolved = Array.isArray(selected?.notes?.unresolved_evidence)
-    ? selected.notes.unresolved_evidence.map(String)
-    : [];
+  const unresolvedSource = Array.isArray(selected?.notes?.unresolved_evidence)
+    ? selected.notes.unresolved_evidence
+    : Array.isArray(selected?.notes?.certification_requirements)
+      ? selected.notes.certification_requirements
+      : [];
+  const unresolved = unresolvedSource.map(String);
   const periods = ["1D", "1W", "WTD", "1M", "3M", "YTD", "SI"];
+
+  const compareProviderFiles = async (files: FileList | null) => {
+    if (!files?.length) return;
+    setProofBusy(true);
+    setProof(null);
+    setProofError("");
+    try {
+      const providerRows: Array<{ ticker: string; date: string; closeCents: number; sourceFile: string }> = [];
+      for (const file of Array.from(files)) {
+        const lines = (await file.text()).replace(/^\uFEFF/, "").split(/\r?\n/).filter(Boolean);
+        if (lines.length < 2) throw new Error(`${file.name} has no price rows`);
+        const headerLine = lines[0] ?? "";
+        const delimiter = (headerLine.match(/;/g)?.length ?? 0) > (headerLine.match(/,/g)?.length ?? 0) ? ";" : ",";
+        const headers = headerLine.split(delimiter).map((value) => value.trim().toLowerCase().replaceAll("_", " "));
+        const dateIndex = headers.findIndex((value) => value === "date" || value === "as of date");
+        const tickerIndex = headers.findIndex((value) => value === "ticker" || value === "symbol");
+        const centsIndex = headers.findIndex((value) => value === "close cents" || value === "price cents");
+        const closeIndex = centsIndex >= 0 ? centsIndex : headers.findIndex((value) => value === "close" || value === "adj close");
+        if (dateIndex < 0 || closeIndex < 0) throw new Error(`${file.name} needs Date and Close columns`);
+        const inferredTicker = file.name.replace(/\.csv$/i, "").split(/[_ -]/)[0]?.toUpperCase() ?? "";
+        for (const line of lines.slice(1)) {
+          const cells = line.split(delimiter).map((value) => value.trim().replace(/^"|"$/g, ""));
+          const close = Number(cells[closeIndex]);
+          if (!cells[dateIndex] || !(close > 0)) continue;
+          const ticker = String(tickerIndex >= 0 ? cells[tickerIndex] : inferredTicker).trim();
+          const yahooJseCents = /\.(JO|JSE)$/i.test(ticker);
+          if (centsIndex < 0 && !yahooJseCents) {
+            throw new Error(`${file.name} has an ambiguous Close unit; use a .JO ticker or a Close_Cents column`);
+          }
+          providerRows.push({
+            ticker,
+            date: String(cells[dateIndex]).slice(0, 10),
+            closeCents: close,
+            sourceFile: file.name,
+          });
+        }
+      }
+      const response = await fetch("/api/admin/source-of-truth/price-proof", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: providerRows }),
+      });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error(body.error || "Price comparison failed");
+      setProof(body);
+    } catch (reason) {
+      setProofError(reason instanceof Error ? reason.message : "Price comparison failed");
+    } finally {
+      setProofBusy(false);
+    }
+  };
 
   if (loading) return <div className="rounded-2xl border border-white/10 bg-card/70 p-10 text-center text-sm text-muted-foreground">Loading canonical ledger…</div>;
   if (!selected) return <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.05] p-8 text-sm text-amber-200">No canonical ledger rows have been staged yet.</div>;
@@ -1131,11 +1220,23 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
             <h2 className="mt-2 text-xl font-semibold">Excel-style audit workbook</h2>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Database-backed model legs and all return ranges. This surface displays the stored canonical record; it never recalculates a return in the browser.</p>
           </div>
-          <StatusLight severity={status} />
+          <div className="flex items-center gap-2">
+            {history.length > 1 && (
+              <select
+                value={selected.asOf}
+                onChange={(event) => setSelectedAsOf(event.target.value)}
+                className="rounded-lg border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-foreground outline-none focus:border-violet-300/50"
+                aria-label="Ledger close date"
+              >
+                {history.map((row) => <option key={row.asOf} value={row.asOf}>{row.asOf} · {row.certificationStatus}</option>)}
+              </select>
+            )}
+            <StatusLight severity={status} />
+          </div>
         </div>
         <div className="mt-5 flex gap-2 overflow-x-auto pb-1">
           {latest.map((row) => (
-            <button key={row.strategyId} type="button" onClick={() => setSelectedId(row.strategyId)} className={`shrink-0 rounded-lg border px-3 py-2 text-sm transition ${selected.strategyId === row.strategyId ? "border-violet-300/60 bg-violet-500/20 text-violet-100" : "border-white/10 bg-black/10 text-muted-foreground hover:border-violet-300/30 hover:text-foreground"}`}>
+            <button key={row.strategyId} type="button" onClick={() => { setSelectedId(row.strategyId); setSelectedAsOf(null); }} className={`shrink-0 rounded-lg border px-3 py-2 text-sm transition ${selected.strategyId === row.strategyId ? "border-violet-300/60 bg-violet-500/20 text-violet-100" : "border-white/10 bg-black/10 text-muted-foreground hover:border-violet-300/30 hover:text-foreground"}`}>
               {row.strategy}
             </button>
           ))}
@@ -1149,6 +1250,37 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
         <LedgerStat label="Complete value" value={money(selected.completeValueCents)} />
       </div>
 
+      <div className="border-b border-white/10 p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-semibold">Daily complete-value ledger</div>
+            <div className="mt-1 text-xs text-muted-foreground">Stored database rows only · no browser-side return reconstruction</div>
+          </div>
+          <span className="rounded-full border border-white/10 bg-black/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{history.length} closes</span>
+        </div>
+        {chartRows.length > 1 ? (
+          <div className="h-52 rounded-xl border border-white/10 bg-black/10 p-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={chartRows} margin={{ top: 10, right: 12, left: 4, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="canonicalLedgerValue" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.42} />
+                    <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.06)" vertical={false} />
+                <XAxis dataKey="date" tick={{ fill: "#9ca3af", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={24} />
+                <YAxis tick={{ fill: "#9ca3af", fontSize: 10 }} axisLine={false} tickLine={false} width={56} tickFormatter={(value) => `R${Number(value).toLocaleString("en-ZA", { maximumFractionDigits: 0 })}`} />
+                <Tooltip formatter={(value) => [`R${Number(value).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, "Complete value"]} labelFormatter={(label) => `Close ${label}`} />
+                <Area type="monotone" dataKey="complete" stroke="#a78bfa" strokeWidth={2} fill="url(#canonicalLedgerValue)" dot={{ r: 2, fill: "#c4b5fd" }} activeDot={{ r: 4 }} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-dashed border-white/10 bg-black/10 p-6 text-center text-xs text-muted-foreground">The chart will form as additional certified or draft closes are stored.</div>
+        )}
+      </div>
+
       <div className="grid gap-5 p-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(330px,.8fr)]">
         <div className="overflow-hidden rounded-xl border border-white/10">
           <div className="border-b border-white/10 bg-white/[0.025] px-4 py-3 text-sm font-semibold">Return range ledger</div>
@@ -1159,8 +1291,37 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
           <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.05] p-4 text-xs"><div className="font-semibold text-amber-200">Evidence status</div><div className="mt-2 text-muted-foreground">{selected.certificationStatus === "CERTIFIED" ? "Certified values may be read by app surfaces." : "Draft only. This row cannot replace public app/OEM returns."}</div>{unresolved.length > 0 && <ul className="mt-3 space-y-1 text-amber-200">{unresolved.map((item) => <li key={item}>• {item.replaceAll("_", " ")}</li>)}</ul>}</div>
         </div>
       </div>
-      <div className="border-t border-white/10 p-4"><div className="mb-3 flex items-center justify-between"><div className="text-sm font-semibold">Model-leg evidence</div><span className="text-xs text-muted-foreground">{selected.legs.length} legs</span></div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead className="border-b border-white/10 text-[10px] uppercase tracking-wider text-muted-foreground"><tr><th className="p-3">Ticker</th><th className="p-3">Entry</th><th className="p-3">Exit</th><th className="p-3">Units</th><th className="p-3">Entry price</th><th className="p-3">Evidence</th></tr></thead><tbody>{selected.legs.map((leg, index) => <tr key={`${String(leg.leg_id)}-${index}`} className="border-b border-white/5 last:border-0"><td className="p-3 font-semibold">{String(leg.ticker ?? "—")}</td><td className="p-3">{when(String(leg.entry_date ?? ""))}</td><td className="p-3">{when(String(leg.exit_date ?? ""))}</td><td className="p-3 tabular-nums">{String(leg.units ?? "—")}</td><td className="p-3 tabular-nums">{money(Number(leg.entry_price_cents ?? 0))}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-[10px] ${String(leg.source ?? "").includes("MODELED") ? "bg-amber-400/15 text-amber-200" : "bg-emerald-400/10 text-emerald-300"}`}>{String(leg.source ?? "UNKNOWN")}</span></td></tr>)}</tbody></table></div></div>
+      <PriceProofPanel proof={proof} busy={proofBusy} error={proofError} onFiles={compareProviderFiles} />
+      <div className="border-t border-white/10 p-4"><div className="mb-3 flex items-center justify-between"><div className="text-sm font-semibold">Model-leg evidence</div><span className="text-xs text-muted-foreground">{selected.legs.length} legs</span></div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-xs"><thead className="border-b border-white/10 text-[10px] uppercase tracking-wider text-muted-foreground"><tr><th className="p-3">Ticker</th><th className="p-3">Entry</th><th className="p-3">Exit</th><th className="p-3">Units</th><th className="p-3">Entry price</th><th className="p-3">Evidence</th></tr></thead><tbody>{selected.legs.map((leg, index) => { const evidence = String(leg.source ?? leg.source_ref ?? "UNKNOWN"); return <tr key={`${String(leg.leg_id)}-${index}`} className="border-b border-white/5 last:border-0"><td className="p-3 font-semibold">{String(leg.ticker ?? "—")}</td><td className="p-3">{when(String(leg.entry_date ?? ""))}</td><td className="p-3">{when(String(leg.exit_date ?? ""))}</td><td className="p-3 tabular-nums">{String(leg.units ?? "—")}</td><td className="p-3 tabular-nums">{money(Number(leg.entry_price_cents ?? 0))}</td><td className="p-3"><span className={`rounded-full px-2 py-1 text-[10px] ${evidence.includes("MODELED") || evidence.includes("proxy") ? "bg-amber-400/15 text-amber-200" : "bg-emerald-400/10 text-emerald-300"}`}>{evidence}</span></td></tr>; })}</tbody></table></div></div>
     </section>
+  );
+}
+
+function PriceProofPanel({ proof, busy, error, onFiles }: { proof: PriceProofResult | null; busy: boolean; error: string; onFiles: (files: FileList | null) => Promise<void> }) {
+  return (
+    <div className="border-t border-white/10 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold">Independent closing-price proof</div>
+          <p className="mt-1 max-w-3xl text-xs text-muted-foreground">Upload Yahoo-style CSV exports. Yahoo JSE `.JO` closes are ZAc and remain in cents; otherwise provide an explicit Close_Cents column. A multi-ticker export may include Ticker or Symbol. The comparison is read-only and never edits prices or certifies a ledger automatically.</p>
+        </div>
+        <label className="inline-flex cursor-pointer items-center rounded-lg border border-violet-300/30 bg-violet-500/10 px-3 py-2 text-xs font-semibold text-violet-100 transition hover:bg-violet-500/20">
+          <Upload className="mr-2 h-4 w-4" />{busy ? "Comparing…" : "Compare provider CSV"}
+          <input type="file" accept=".csv,text/csv" multiple disabled={busy} className="hidden" onChange={(event) => void onFiles(event.target.files)} />
+        </label>
+      </div>
+      {error && <div className="mt-3 rounded-lg border border-rose-400/25 bg-rose-400/[0.06] p-3 text-xs text-rose-200">{error}</div>}
+      {proof && (
+        <div className={`mt-3 rounded-xl border p-4 ${proof.summary.pass ? "border-emerald-400/25 bg-emerald-400/[0.05]" : "border-amber-400/25 bg-amber-400/[0.05]"}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <span className={`font-semibold ${proof.summary.pass ? "text-emerald-300" : "text-amber-200"}`}>{proof.summary.pass ? "Provider export matches stored closes" : "Provider differences require review"}</span>
+            <span className="text-muted-foreground">{proof.summary.matched}/{proof.summary.total} matched · {proof.summary.mismatched} mismatched · {proof.summary.missing} missing</span>
+          </div>
+          <div className="mt-2 break-all font-mono text-[10px] text-muted-foreground">SHA-256 {proof.evidenceSha256}</div>
+          {!proof.summary.pass && <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[620px] text-left text-xs"><thead className="text-[10px] uppercase text-muted-foreground"><tr><th className="p-2">Date</th><th className="p-2">Ticker</th><th className="p-2">Provider</th><th className="p-2">Stored</th><th className="p-2">Difference</th></tr></thead><tbody>{proof.comparisons.filter((row) => row.status !== "MATCH").slice(0, 20).map((row) => <tr key={`${row.sourceFile}:${row.date}:${row.ticker}`} className="border-t border-white/5"><td className="p-2">{row.date}</td><td className="p-2 font-semibold">{row.ticker}</td><td className="p-2 tabular-nums">{money(row.closeCents)}</td><td className="p-2 tabular-nums">{row.storedCloseCents == null ? "Missing" : money(row.storedCloseCents)}</td><td className="p-2 tabular-nums text-amber-200">{row.differenceCents == null ? "—" : money(row.differenceCents)}</td></tr>)}</tbody></table></div>}
+        </div>
+      )}
+    </div>
   );
 }
 

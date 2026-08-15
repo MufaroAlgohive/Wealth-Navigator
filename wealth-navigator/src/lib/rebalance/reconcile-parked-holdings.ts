@@ -81,8 +81,9 @@ export async function reconcileParkedHoldings(
    * account. Without it a `single_user` request would fan its target
    * quantities out across the whole strategy — the composition it carries is
    * one client's personal holdings, not a model template.
-   */
+  */
   restrictToUserId?: string,
+  restrictToFamilyMemberId?: string | null,
 ): Promise<ReconcileParkedResult> {
   const result: ReconcileParkedResult = { reconciledUserIds: [], errors: [] };
   const ACCOUNT_CODE = process.env.IRESS_ACCOUNT_CODE?.trim() || "";
@@ -128,7 +129,7 @@ export async function reconcileParkedHoldings(
   // Parked = active BUY holdings for this strategy with no confirmed fill yet.
   let parkedRes = await db
     .from("stock_holdings_c")
-    .select("id, user_id, security_id, quantity, transaction_id, avg_fill, Expected_fill")
+    .select("id, user_id, family_member_id, security_id, quantity, transaction_id, avg_fill, Expected_fill")
     .eq("is_active", true)
     .eq("trade_side", "BUY")
     .is("Fill_date", null)
@@ -136,7 +137,7 @@ export async function reconcileParkedHoldings(
   if ((!parkedRes.data || parkedRes.data.length === 0) && strategyName) {
     parkedRes = await db
       .from("stock_holdings_c")
-      .select("id, user_id, security_id, quantity, transaction_id, avg_fill, Expected_fill")
+      .select("id, user_id, family_member_id, security_id, quantity, transaction_id, avg_fill, Expected_fill")
       .eq("is_active", true)
       .eq("trade_side", "BUY")
       .is("Fill_date", null)
@@ -149,6 +150,7 @@ export async function reconcileParkedHoldings(
   const allParkedRows = (parkedRes.data ?? []) as Array<{
     id: string;
     user_id: string;
+    family_member_id: string | null;
     security_id: string;
     quantity: number | null;
     transaction_id: string | null;
@@ -159,15 +161,20 @@ export async function reconcileParkedHoldings(
   // (strategy_id, then strategy_name_snapshot) in one place, and the row set
   // is a single strategy's holdings either way.
   const parkedRows = restrictToUserId
-    ? allParkedRows.filter((r) => r.user_id === restrictToUserId)
+    ? allParkedRows.filter(
+        (r) =>
+          r.user_id === restrictToUserId &&
+          (r.family_member_id ?? null) === (restrictToFamilyMemberId ?? null),
+      )
     : allParkedRows;
   if (parkedRows.length === 0) return result;
 
-  const byUser = new Map<string, typeof parkedRows>();
+  const byOwner = new Map<string, typeof parkedRows>();
   for (const row of parkedRows) {
-    const list = byUser.get(row.user_id) ?? [];
+    const key = `${row.user_id}|${row.family_member_id ?? ""}`;
+    const list = byOwner.get(key) ?? [];
     list.push(row);
-    byUser.set(row.user_id, list);
+    byOwner.set(key, list);
   }
 
   // Resolve symbol + last price for every held security id (needed for both
@@ -197,7 +204,7 @@ export async function reconcileParkedHoldings(
     if (!secBySymbol.has(sym)) secBySymbol.set(sym, { id: s.id, priceCents: cents });
   }
 
-  const userIds = [...byUser.keys()];
+  const userIds = [...new Set(parkedRows.map((row) => row.user_id))];
   const profilesRes = userIds.length
     ? await db.from("profiles").select("id, email").in("id", userIds)
     : { data: [] as Array<{ id: string; email: string | null }> };
@@ -206,8 +213,10 @@ export async function reconcileParkedHoldings(
     if (p.email) emailByUser.set(p.id, p.email);
   }
 
-  for (const [userId, rows] of byUser) {
+  for (const rows of byOwner.values()) {
     try {
+      const userId = rows[0]!.user_id;
+      const familyMemberId = rows[0]!.family_member_id ?? null;
       const clientEmail = emailByUser.get(userId) ?? "unknown@mymint.co.za";
       const positions = new Map<string, { quantity: number; rowId: string }>();
       for (const row of rows) {
@@ -300,6 +309,7 @@ export async function reconcileParkedHoldings(
             .from("stock_holdings_c")
             .insert({
               user_id: userId,
+              family_member_id: familyMemberId,
               security_id: security.id,
               quantity: 0,
               strategy_id: strategyId,
@@ -333,7 +343,7 @@ export async function reconcileParkedHoldings(
                 security_id: security.id,
                 isin: null,
                 holding_id: newHoldingId,
-                family_member_id: null,
+                family_member_id: familyMemberId,
                 user_id: userId,
                 limitPrice: priceCents / 100,
                 sent_by: clientEmail,
@@ -365,11 +375,15 @@ export async function reconcileParkedHoldings(
       }
 
       if (grossSellCents !== 0 || grossBuyCents !== 0) {
-        const residualRes = await db
+        let residualQuery = db
           .from("strategy_rebalance_residuals")
           .select("id, balance_cents")
           .eq("user_id", userId)
-          .eq("strategy_id", strategyId)
+          .eq("strategy_id", strategyId);
+        residualQuery = familyMemberId
+          ? residualQuery.eq("family_member_id", familyMemberId)
+          : residualQuery.is("family_member_id", null);
+        const residualRes = await residualQuery
           .limit(1)
           .maybeSingle();
         const residualCents = Number(residualRes.data?.balance_cents ?? 0);
@@ -441,6 +455,7 @@ export async function reconcileParkedHoldings(
         } else {
           await db.from("strategy_rebalance_residuals").insert({
             user_id: userId,
+            family_member_id: familyMemberId,
             strategy_id: strategyId,
             balance_cents: bridge.strategyCashAfterCents,
           });

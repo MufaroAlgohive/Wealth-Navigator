@@ -101,17 +101,21 @@ export async function maybeCompleteRebalance(
     ),
   ];
   const owners = new Map<string, { userId: string; familyMemberId: string | null }>();
+  const ownerByHoldingId = new Map<string, { userId: string; familyMemberId: string | null }>();
   if (touchedHoldingIds.length > 0) {
     const ownerRes = await retailDb
       .from("stock_holdings_c")
-      .select("user_id, family_member_id")
+      .select("id, user_id, family_member_id")
       .in("id", touchedHoldingIds);
-    for (const row of (ownerRes.data ?? []) as Array<{ user_id: string; family_member_id: string | null }>) {
+    if (ownerRes.error) return { completed: false, error: `rebalance owner lookup failed: ${ownerRes.error.message}` };
+    for (const row of (ownerRes.data ?? []) as Array<{ id: string; user_id: string; family_member_id: string | null }>) {
       if (!row.user_id) continue;
-      owners.set(`${row.user_id}|${row.family_member_id ?? ""}`, {
+      const owner = {
         userId: row.user_id,
         familyMemberId: row.family_member_id ?? null,
-      });
+      };
+      owners.set(`${owner.userId}|${owner.familyMemberId ?? ""}`, owner);
+      ownerByHoldingId.set(row.id, owner);
     }
   }
   // Fall back to the payload's user_id for any order whose holding row could
@@ -127,7 +131,14 @@ export async function maybeCompleteRebalance(
   const executionEvidence: RebalanceExecutionEvidence[] = [];
   for (const sibling of siblings.filter((row) => row.status === "filled")) {
     const payload = sibling.payload ?? {};
-    const userId = typeof payload.user_id === "string" ? payload.user_id : "";
+    const holdingId = typeof payload.holding_id === "string" ? payload.holding_id : "";
+    const holdingOwner = holdingId ? ownerByHoldingId.get(holdingId) : undefined;
+    const userId = holdingOwner?.userId ?? (typeof payload.user_id === "string" ? payload.user_id : "");
+    const familyMemberId = holdingOwner
+      ? holdingOwner.familyMemberId
+      : typeof payload.family_member_id === "string"
+        ? payload.family_member_id
+        : null;
     const securityId = typeof payload.security_id === "string" ? payload.security_id : "";
     const side = String(sibling.side ?? "").toUpperCase();
     const tradeSide = side === "BUY" ? "BUY" : side === "SELL" ? "SELL" : null;
@@ -139,7 +150,7 @@ export async function maybeCompleteRebalance(
     }
     executionEvidence.push({
       userId,
-      familyMemberId: typeof payload.family_member_id === "string" ? payload.family_member_id : null,
+      familyMemberId,
       securityId,
       tradeSide,
       quantity,

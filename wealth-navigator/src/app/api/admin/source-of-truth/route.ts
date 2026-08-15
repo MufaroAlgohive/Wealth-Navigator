@@ -123,13 +123,31 @@ async function testUsers(db: Db) {
   ]);
 }
 
+async function canonicalLedgerRows(db: Db) {
+  const pageSize = 500;
+  const rows: Row[] = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await db
+      .from("strategy_canonical_daily_ledger_c")
+      .select(
+        "strategy_id,as_of_date,certification_status,securities_value_cents,continuity_cash_cents,complete_value_cents,leg_snapshot,period_metrics,source_evidence,calculation_notes",
+      )
+      .order("as_of_date", { ascending: false })
+      .range(offset, offset + pageSize - 1);
+    if (error) throw new Error(`Canonical ledger: ${error.message}`);
+    rows.push(...((data ?? []) as Row[]));
+    if ((data?.length ?? 0) < pageSize) break;
+  }
+  return rows;
+}
+
 async function listTruth(db: Db) {
   const [
     { data: latest, error },
     { data: profiles },
     { data: strategies },
     { data: strategyReturns },
-    { data: ledgerRows, error: ledgerError },
+    ledgerRows,
     excluded,
   ] = await Promise.all([
     db
@@ -146,15 +164,10 @@ async function listTruth(db: Db) {
       )
       .order("as_of_date", { ascending: false })
       .limit(4000),
-    db
-      .from("strategy_canonical_daily_ledger_c")
-      .select("strategy_id,as_of_date,certification_status,securities_value_cents,continuity_cash_cents,complete_value_cents,leg_snapshot,period_metrics,source_evidence,calculation_notes")
-      .order("as_of_date", { ascending: false })
-      .limit(1000),
+    canonicalLedgerRows(db),
     testUsers(db),
   ]);
   if (error) throw new Error(error.message);
-  if (ledgerError) throw new Error(`Canonical ledger: ${ledgerError.message}`);
   const profileMap = new Map((profiles ?? []).map((row) => [text(row.id), row]));
   const strategyMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
   const latestStrategyReturn = new Map<string, Row>();
@@ -206,7 +219,7 @@ async function listTruth(db: Db) {
         modelAsOf: model?.as_of_date ?? null,
       };
     }),
-    ledger: (ledgerRows ?? []).map((row) => ({
+    ledger: ledgerRows.map((row) => ({
       strategyId: text(row.strategy_id),
       strategy: strategyMap.get(text(row.strategy_id))?.short_name || strategyMap.get(text(row.strategy_id))?.name || text(row.strategy_id),
       asOf: text(row.as_of_date),

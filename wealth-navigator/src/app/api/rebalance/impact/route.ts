@@ -236,7 +236,7 @@ export async function POST(req: Request) {
   let holdRes = await db
     .from("stock_holdings_c")
     .select(
-      "user_id, security_id, quantity, strategy_id, strategy_name_snapshot, transaction_id, avg_fill, Expected_fill, Fill_date",
+      "user_id, family_member_id, security_id, quantity, strategy_id, strategy_name_snapshot, transaction_id, avg_fill, Expected_fill, Fill_date",
     )
     .eq("is_active", true)
     .eq("trade_side", "BUY")
@@ -246,7 +246,7 @@ export async function POST(req: Request) {
     holdRes = await db
       .from("stock_holdings_c")
       .select(
-        "user_id, security_id, quantity, strategy_id, strategy_name_snapshot, transaction_id, avg_fill, Expected_fill, Fill_date",
+        "user_id, family_member_id, security_id, quantity, strategy_id, strategy_name_snapshot, transaction_id, avg_fill, Expected_fill, Fill_date",
       )
       .eq("is_active", true)
       .eq("trade_side", "BUY")
@@ -258,6 +258,7 @@ export async function POST(req: Request) {
   }
   const holdings = (holdRes.data ?? []) as Array<{
     user_id: string;
+    family_member_id: string | null;
     security_id: string;
     quantity: number | null;
     transaction_id: string | null;
@@ -269,7 +270,28 @@ export async function POST(req: Request) {
   // for the caveat) — surfaced here purely for the UI to highlight these
   // clients, since they get rebalanced fee-free on IC approval instead of a
   // real trade like everyone else.
-  const parkedUserIds = new Set(holdings.filter((h) => !h.Fill_date).map((h) => h.user_id));
+  const ownerKey = (userId: string, familyMemberId: string | null | undefined) =>
+    `${userId}|${familyMemberId ?? ""}`;
+  const parkedOwnerKeys = new Set(
+    holdings.filter((h) => !h.Fill_date).map((h) => ownerKey(h.user_id, h.family_member_id)),
+  );
+
+  const familyIds = [...new Set(holdings.map((holding) => holding.family_member_id).filter(Boolean))] as string[];
+  const familyRes = familyIds.length
+    ? await db.from("family_members").select("id,first_name,last_name,mint_number").in("id", familyIds)
+    : { data: [] as Array<{ id: string; first_name: string | null; last_name: string | null; mint_number: string | null }>, error: null };
+  if (familyRes.error) {
+    return NextResponse.json({ ok: false, error: familyRes.error.message }, { status: 500 });
+  }
+  const familyNameById = new Map<string, string>();
+  const familyAccountById = new Map<string, string>();
+  for (const member of familyRes.data ?? []) {
+    familyNameById.set(
+      member.id,
+      `${member.first_name ?? ""} ${member.last_name ?? ""}`.trim() || "Family member",
+    );
+    familyAccountById.set(member.id, String(member.mint_number || member.id));
+  }
 
   // (3) Resolve securities: held ids + proposed symbols → price (cents).
   const heldSecIds = [...new Set(holdings.map((h) => h.security_id).filter(Boolean))];
@@ -323,11 +345,11 @@ export async function POST(req: Request) {
     return intradayById.get(s.id) || s.lastCents || 0;
   };
 
-  const residualByUser = new Map<string, number>();
+  const residualByOwner = new Map<string, number>();
   if (strategyId) {
     const residualRes = await db
       .from("strategy_rebalance_residuals")
-      .select("user_id,balance_cents")
+      .select("user_id,family_member_id,balance_cents")
       .in("user_id", eligibleIds)
       .eq("strategy_id", strategyId);
     if (residualRes.error) {
@@ -335,11 +357,13 @@ export async function POST(req: Request) {
     }
     for (const residual of (residualRes.data ?? []) as Array<{
       user_id: string;
+      family_member_id: string | null;
       balance_cents: number | null;
     }>) {
-      residualByUser.set(
-        residual.user_id,
-        (residualByUser.get(residual.user_id) ?? 0) + Number(residual.balance_cents ?? 0),
+      const key = ownerKey(residual.user_id, residual.family_member_id);
+      residualByOwner.set(
+        key,
+        (residualByOwner.get(key) ?? 0) + Number(residual.balance_cents ?? 0),
       );
     }
   }
@@ -350,7 +374,16 @@ export async function POST(req: Request) {
   const transactionIds = [
     ...new Set(holdings.map((holding) => holding.transaction_id).filter(Boolean)),
   ] as string[];
-  const reserveByUser = new Map<string, number>();
+  const reserveByOwner = new Map<string, number>();
+  const ownerKeyByTransactionId = new Map<string, string>();
+  for (const holding of holdings) {
+    if (holding.transaction_id) {
+      ownerKeyByTransactionId.set(
+        holding.transaction_id,
+        ownerKey(holding.user_id, holding.family_member_id),
+      );
+    }
+  }
   if (transactionIds.length) {
     const transactionRes = await db
       .from("transactions")
@@ -372,14 +405,22 @@ export async function POST(req: Request) {
         0,
         Number(transaction.buffer_cents ?? 0) - Number(transaction.buffer_consumed_cents ?? 0),
       );
-      reserveByUser.set(transaction.user_id, (reserveByUser.get(transaction.user_id) ?? 0) + available);
+      const key = ownerKeyByTransactionId.get(transaction.id) ?? ownerKey(transaction.user_id, null);
+      reserveByOwner.set(key, (reserveByOwner.get(key) ?? 0) + available);
     }
   }
 
   // (5) Per-investor model-unit impact. A model decrease always produces a
   // client SELL and an increase always produces a BUY. Existing odd shares are
   // retained on partial changes; a full remove exits the entire holding.
-  const byUser = new Map<string, Map<string, { quantity: number; costValueCents: number }>>();
+  const byOwner = new Map<
+    string,
+    {
+      userId: string;
+      familyMemberId: string | null;
+      positions: Map<string, { quantity: number; costValueCents: number }>;
+    }
+  >();
   for (const h of holdings) {
     const meta = secById.get(h.security_id);
     if (!meta) continue;
@@ -388,13 +429,19 @@ export async function POST(req: Request) {
     const referencePriceCents = priceCentsForSymbol(meta.symbol) || meta.lastCents;
     const costPriceCents =
       rawFill > 0 && rawFill < referencePriceCents / 5 ? Math.round(rawFill * 100) : Math.round(rawFill);
-    const m = byUser.get(h.user_id) ?? new Map<string, { quantity: number; costValueCents: number }>();
+    const key = ownerKey(h.user_id, h.family_member_id);
+    const owner = byOwner.get(key) ?? {
+      userId: h.user_id,
+      familyMemberId: h.family_member_id ?? null,
+      positions: new Map<string, { quantity: number; costValueCents: number }>(),
+    };
+    const m = owner.positions;
     const current = m.get(meta.symbol) ?? { quantity: 0, costValueCents: 0 };
     m.set(meta.symbol, {
       quantity: current.quantity + quantity,
       costValueCents: current.costValueCents + Math.round(quantity * costPriceCents),
     });
-    byUser.set(h.user_id, m);
+    byOwner.set(key, owner);
   }
 
   // Strategy-wide model basket value (same for every investor) — denominator
@@ -416,7 +463,8 @@ export async function POST(req: Request) {
   let tReserve = 0;
   let tReserveUsed = 0;
   let tFeeShortfall = 0;
-  for (const [userId, positions] of byUser) {
+  for (const [key, owner] of byOwner) {
+    const { userId, familyMemberId, positions } = owner;
     let basketCents = 0;
     for (const [sym, position] of positions) {
       basketCents += position.quantity * priceCentsForSymbol(sym);
@@ -501,14 +549,14 @@ export async function POST(req: Request) {
       });
     }
 
-    const residualCents = residualByUser.get(userId) ?? 0;
-    const reserveCents = reserveByUser.get(userId) ?? 0;
+    const residualCents = residualByOwner.get(key) ?? 0;
+    const reserveCents = reserveByOwner.get(key) ?? 0;
     // A parked (never-filled) client is rewritten fee-free on IC approval —
     // see reconcile-parked-holdings.ts. Match that exactly here so this
     // preview's numbers back up the "Unfilled" badge's fee-free claim
     // instead of contradicting it: no brokerage, no fee on repositioning,
     // only a genuinely new asset (action="add") costs one custody fee.
-    const isParked = parkedUserIds.has(userId);
+    const isParked = parkedOwnerKeys.has(key);
     const bridge = calculateProceedsBridge({
       grossSellCents: sellCents,
       grossBuyCents: buyCents,
@@ -534,8 +582,11 @@ export async function POST(req: Request) {
     tFeeShortfall += bridge.feeShortfallCents;
     investors.push({
       user_id: userId,
-      name: nameById.get(userId) ?? "Client",
-      account: accountById.get(userId) ?? userId,
+      family_member_id: familyMemberId,
+      name: familyMemberId ? familyNameById.get(familyMemberId) ?? "Family member" : nameById.get(userId) ?? "Client",
+      account: familyMemberId
+        ? familyAccountById.get(familyMemberId) ?? familyMemberId
+        : accountById.get(userId) ?? userId,
       basketCents,
       buyCents,
       sellCents,
@@ -543,7 +594,7 @@ export async function POST(req: Request) {
       ...bridge,
       lines: lines.sort((a, b) => Number(b.valueCents) - Number(a.valueCents)),
       driftLines,
-      parked: parkedUserIds.has(userId),
+      parked: parkedOwnerKeys.has(key),
     });
   }
 
