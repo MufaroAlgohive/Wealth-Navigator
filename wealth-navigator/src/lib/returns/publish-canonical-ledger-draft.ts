@@ -27,6 +27,8 @@ type CanonicalRow = {
   calculation_notes: JsonRow;
 };
 
+const DAILY_LEDGER_VERSION = "EXCEL_LEG_CANONICAL_DAILY_V1";
+
 export type CanonicalDraftResultRow = {
   strategy: string;
   action: "planned" | "written" | "skipped" | "failed";
@@ -124,6 +126,10 @@ export function sameModelHoldings(left: Holding[], right: Holding[]) {
   );
 }
 
+export function canExtendCanonicalCheckpoint(status: string) {
+  return status === "DRAFT" || status === "CERTIFIED";
+}
+
 function isLegLedger(row: CanonicalRow) {
   return row.leg_snapshot.some(
     (leg) => leg.entry_date != null && leg.entry_price_cents != null && leg.ticker != null,
@@ -213,6 +219,37 @@ type NormalizedLeg = {
   exitPriceCents: number | null;
   sourceRef: string;
 };
+
+export function buildCanonicalInceptionLegs(
+  holdings: Array<{ ticker: string; units: number; close_cents: number }>,
+  asOf: string,
+  continuityCashCents: number,
+): NormalizedLeg[] {
+  return [
+    ...holdings.map((leg) => ({
+      ticker: leg.ticker,
+      leg: "Inception model leg",
+      units: leg.units,
+      entryDate: asOf,
+      entryPriceCents: leg.close_cents,
+      exitDate: null,
+      exitPriceCents: null,
+      sourceRef: "automatic_inception_exact_close",
+    })),
+    ...(continuityCashCents > 0
+      ? [{
+          ticker: "CASH",
+          leg: "Inception continuity cash",
+          units: 1,
+          entryDate: asOf,
+          entryPriceCents: continuityCashCents,
+          exitDate: null,
+          exitPriceCents: null,
+          sourceRef: "active_valuation_rule",
+        }]
+      : []),
+  ];
+}
 
 function normalizeLedgerLegs(row: CanonicalRow): NormalizedLeg[] {
   return row.leg_snapshot.map((leg) => ({
@@ -371,13 +408,8 @@ export async function publishCanonicalLedgerDraft(
       }
       const priorLedgerRows = existingCurrent ? ledgerRows.slice(0, -1) : ledgerRows;
       const previous = priorLedgerRows.at(-1);
-      if (!previous) {
-        results.push({ strategy: strategy.name, action: "skipped", reason: "NO_CANONICAL_BASELINE" });
-        skipped += 1;
-        continue;
-      }
-      if (previous.certification_status !== "DRAFT") {
-        results.push({ strategy: strategy.name, action: "skipped", reason: "LATEST_ROW_NOT_DRAFT" });
+      if (previous && !canExtendCanonicalCheckpoint(previous.certification_status)) {
+        results.push({ strategy: strategy.name, action: "skipped", reason: "LATEST_ROW_NOT_EXTENDABLE" });
         skipped += 1;
         continue;
       }
@@ -393,13 +425,19 @@ export async function publishCanonicalLedgerDraft(
         continue;
       }
       const currentHoldings = parseModelHoldings(composition.holdings);
-      const priorHoldings = activeHoldingsFromLedger(previous);
+      if (currentHoldings.length === 0) {
+        results.push({ strategy: strategy.name, action: "skipped", reason: "EMPTY_ACTIVE_COMPOSITION" });
+        skipped += 1;
+        continue;
+      }
+      const priorHoldings = previous ? activeHoldingsFromLedger(previous) : [];
       const continuityCashCents = Number(rule.continuity_cash_per_lot_cents);
       let boundaryLegs: NormalizedLeg[] | null = null;
       let boundaryEvidence: JsonRow | null = null;
       if (
+        previous &&
         !sameModelHoldings(priorHoldings, currentHoldings) ||
-        continuityCashCents !== Number(previous.continuity_cash_cents)
+        previous && continuityCashCents !== Number(previous.continuity_cash_cents)
       ) {
         const batches = await many<SettledBoundaryBatch>(
           "settled rebalance boundary",
@@ -480,7 +518,7 @@ export async function publishCanonicalLedgerDraft(
         boundaryEvidence = rebuilt.evidence;
       }
 
-      const metricLegs = boundaryLegs ?? (isLegLedger(previous) ? normalizeLedgerLegs(previous) : null);
+      const metricLegs = boundaryLegs ?? (previous && isLegLedger(previous) ? normalizeLedgerLegs(previous) : null);
       const tickers = [
         ...new Set([
           ...currentHoldings.map((holding) => holding.ticker),
@@ -489,7 +527,7 @@ export async function publishCanonicalLedgerDraft(
             .filter((ticker) => ticker !== "CASH" && ticker !== "EXECUTION_COST"),
         ]),
       ];
-      const earliestDate = priorLedgerRows.at(0)?.as_of_date ?? previous.as_of_date;
+      const earliestDate = priorLedgerRows.at(0)?.as_of_date ?? asOf;
       const prices = await fetchPriceHistory(
         db,
         tickers.flatMap((ticker) => [ticker, `${ticker}.JO`]),
@@ -512,8 +550,25 @@ export async function publishCanonicalLedgerDraft(
       });
       const securitiesValueCents = currentLegs.reduce((sum, leg) => sum + leg.market_value_cents, 0);
       const completeValueCents = securitiesValueCents + continuityCashCents;
+      const bootstrapLegs = buildCanonicalInceptionLegs(currentLegs, asOf, continuityCashCents);
+      const bootstrapEvidence = {
+        method: "AUTO_INCEPTION_BOOTSTRAP_V1",
+        strategy_name: strategy.name,
+        inception_ledger_date: asOf,
+        composition_effective_from: composition.effective_from,
+        valuation_rule_effective_from: rule.effective_from,
+        exact_close_required: true,
+        public_visibility: "DRAFT_NOT_EXPOSED",
+      };
       const current: CanonicalRow = {
-        ...previous,
+        ...(previous ?? {
+          strategy_id: strategy.id,
+          ledger_version: DAILY_LEDGER_VERSION,
+          certification_status: "DRAFT",
+          source_evidence: bootstrapEvidence,
+          source_evidence_sha256: createHash("sha256").update(JSON.stringify(bootstrapEvidence)).digest("hex"),
+          calculation_notes: {},
+        }),
         as_of_date: asOf,
         securities_value_cents: securitiesValueCents,
         continuity_cash_cents: continuityCashCents,
@@ -531,8 +586,8 @@ export async function publishCanonicalLedgerDraft(
         SI: earliestDate,
       };
       const allRows = [...priorLedgerRows, current];
-      if (metricLegs) {
-        const normalized = metricLegs;
+      if (metricLegs || !previous) {
+        const normalized = metricLegs ?? bootstrapLegs;
         current.leg_snapshot = normalized.map((leg) => ({
           ticker: leg.ticker,
           leg: leg.leg,
@@ -572,14 +627,16 @@ export async function publishCanonicalLedgerDraft(
         );
       }
       current.calculation_notes = {
-        ...previous.calculation_notes,
-        daily_writer: boundaryEvidence
+        ...(previous?.calculation_notes ?? {}),
+        daily_writer: !previous
+          ? "canonical-draft-auto-inception-v1"
+          : boundaryEvidence
           ? "canonical-draft-evidence-backed-boundary-v2"
           : "canonical-draft-stable-composition-v1",
         report_mode: "DAILY_DRAFT_APPEND_ONLY",
         promotion_blocked: true,
       };
-      if (boundaryEvidence) {
+      if (boundaryEvidence && previous) {
         const priorBoundaries = Array.isArray(previous.source_evidence?.daily_boundaries)
           ? previous.source_evidence.daily_boundaries
           : [];
@@ -608,7 +665,7 @@ export async function publishCanonicalLedgerDraft(
         asOf,
         replacedExistingDraft: Boolean(existingCurrent),
         completeValueCents,
-        ledgerVersion: previous.ledger_version,
+        ledgerVersion: current.ledger_version,
       });
     } catch (error) {
       failed += 1;

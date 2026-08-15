@@ -615,10 +615,11 @@ Audit evidence hashes:
 
 ### MyGrowthFund
 
-- Full multi-boundary ledger uses the reviewed 23 July evidence repair plus two 3 August reconciled settlements.
-- The 23 July repair records zero model CA because all surplus went to owner residual and fees came from execution reserve.
-- Owner residual and reserve are explicitly excluded from public strategy CA.
-- The currently missing four independent points are all 14 August provider gaps.
+- **Status: DRAFT and structurally blocked from family promotion.** This is not a credible market-loss chart.
+- On 23 July the approved valuation rule preserved `R1,435.91` per lot (`R1,278.42` securities + `R157.49` continuity cash), while the daily ledger omitted that continuity cash and published roughly `R1,289.24`.
+- On 3 August two completed settlements replaced the model basket, but the ledger reset around `R1,038` instead of carrying forward the pre-rebalance economic capital. Approximately `R230` per lot remains to be reconciled to sale proceeds, new holdings and valid model continuity cash.
+- These two discontinuities must be replayed in effective-time order and reconciled to the batch/event evidence before any row is certified or displayed to clients.
+- Owner residual and execution reserve remain excluded from public strategy CA; only strategy-level economic continuity cash may bridge a rebalance.
 
 ### MINT Diversified Basket and MINT Multi-sector
 
@@ -647,6 +648,8 @@ The Wealth Navigator Source of Truth page now exposes the physical canonical led
 - paginated history beyond Supabase's 1,000-row cap;
 - Yahoo-style CSV upload for read-only independent price proof;
 - normalized provider-evidence SHA-256.
+
+The Excel export mirrors the CEO workbook's `06_Strategy_Ledger` structure rather than exporting a generic daily table. It creates one worksheet per strategy and preserves the 39-column `Ticker` through `SI_P/L` layout, formula cells, audit traces, date formats, red negatives, purple headings/calculated cells, yellow evidence/input cells, frozen panes and per-strategy totals. The worksheet subtitle exposes DRAFT versus CERTIFIED status; exporting a DRAFT strategy does not certify it.
 
 The CSV proof endpoint is authenticated and read-only. It accepts `Date` + `Close`, optionally `Ticker`/`Symbol`, converts currency units to cents, applies a one-cent comparison tolerance, and reports matches, mismatches, or missing stored rows. It never promotes a strategy or rewrites a price.
 
@@ -962,3 +965,26 @@ The calculation engine, evidence model, price repair, safe DRAFT replay, and aud
 | Boundary | A date where the model composition or model CA changes |
 | Evidence hash | SHA-256 fingerprint of normalized inputs used to make tampering/drift detectable |
 | Fail closed | Skip or block publication when evidence is incomplete instead of guessing |
+# Family-wide rollout update — 2026-08-15
+
+The production design is no longer a Famous Brands-only overlay. Famous Brands was the first zero-gap proof strategy; the release path now covers every active, non-test strategy.
+
+## Complete read path
+
+`MINT /api/returns/approved` unions certified rows from `strategy_canonical_daily_ledger_c` with the legacy effective view. A certified canonical date may therefore add a missing newer date rather than requiring an existing legacy row. The API exposes `1D`, `1W`, `WTD`, `1M`, `3M`, `YTD`, and `SI`; `5d_pct` remains a compatibility alias for `1W`. Personal client returns remain sourced from `client_strategy_returns_effective_c` because owner cash flows must not be replaced by model-strategy performance.
+
+## New-strategy lifecycle
+
+On the first eligible JSE close after a new active strategy has an active composition and valuation rule, the daily writer creates a DRAFT inception ledger row automatically. It requires an exact same-date stored close for every security and includes continuity cash from the active valuation rule. Every inception range starts at zero. The row remains non-public until certification; this prevents a newly curated strategy from publishing unreviewed values while removing the former manual baseline dependency.
+
+Subsequent daily DRAFT rows may extend either a DRAFT or CERTIFIED checkpoint. This ensures certification never stalls the following trading day's chain; rejected or unknown checkpoint states still fail closed.
+
+## Controlled family promotion
+
+`scripts/promote-canonical-ledger-family.mjs` validates every DRAFT row for the complete-value formula, a non-empty leg snapshot, and all seven finite period returns. Dry-run is the default. Apply mode requires an explicit certifier UUID, a detailed reason, and `CANONICAL_EVIDENCE_WAIVER=1`. The decision is embedded in `source_evidence`, including known independent-provider gaps, and Test Strategy is always excluded. The MINT certified-union read path must be deployed before apply mode is used.
+
+Promotion changes the displayed return values and chart series because the app then reads the canonical complete-value chain. It does not rewrite owner-level personal returns.
+
+## Pre-merge workbook review
+
+The Wealth Navigator branch preview exposes `Admin → Source of Truth → Ledger` while every canonical row is still DRAFT and invisible to the retail app. `Export Excel` downloads one worksheet per active strategy. Each dated row contains securities, continuity CA, formula-driven complete value, certification status, and the reference date, opening value, P/L, and formula-driven return for 1D, 1W, WTD, 1M, 3M, YTD, and SI. Excel recalculation is enabled so reviewers can inspect formulas and alter a copy without changing the database.
