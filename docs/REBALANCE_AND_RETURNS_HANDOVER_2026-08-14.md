@@ -457,3 +457,79 @@ Retail boundary audit result on 15 Aug:
   boundaries are `UNSUPPORTED_EXECUTION_EVIDENCE`. Keep their affected periods
   stale/uncertified. Do not infer fills, proceeds or continuity cash from the
   composition deltas alone.
+
+Next certification audit is implemented as the read-only
+`scripts/audit-historical-certification-gaps.ts`. It compares Yield Basket and
+ETF Basket inception metadata, effective compositions, valuation rules,
+guarded publications, effective/raw return ranges, canonical DRAFT rows and
+all stored STXID closes. Its purpose is to identify the exact first
+unverifiable date before any promotion decision.
+
+Historical certification audit result on 15 Aug:
+
+- Yield Basket remains `DRAFT_REQUIRES_EVIDENCE`. The strategy was created on
+  30 Jan 2026, while its composition log begins 1 Jan and its legacy raw rows
+  begin in 2023. The 15 Jun and 1 Jul transitions have no matching batch or
+  capital evidence; the 14 Jul batch also has no capital reconciliation.
+- Yield's 13 Aug DRAFT Excel-leg result is YTD/SI `7.62670048%`; the guarded
+  comparison is `16.2206%`, an `8.59389952` percentage-point variance. Do not
+  promote either number as the Excel-certified answer until the transitions
+  and opening capital are evidenced.
+- ETF Basket was created on 20 Mar 2026. Legacy effective/raw history beginning
+  in 2023 and the generic 1 Jan composition date must not be treated as ETF
+  inception evidence.
+- STXID is present in `stock_returns_c`: 214 rows from 1 Dec 2025 through
+  14 Aug 2026. The actual ETF creation-date close is 4,517 cents and the 14 Aug
+  close is 4,630 cents. The targeted required-date check has zero missing
+  closes. The earlier STXID blocker was a Yahoo-provider gap/capped audit, not
+  a missing canonical stored close.
+- Safe next move: generate an insert-only ETF DRAFT ledger beginning 20 Mar
+  2026 from its unchanged five-leg composition and stored closes. Do not use
+  pre-creation legacy rows and do not expose DRAFT values to the MINT app.
+
+ETF DRAFT staging is implemented in
+`scripts/stage-etf-canonical-ledger.ts`. It is dry-run by default and refuses
+to overwrite any existing ETF canonical row. It requires exactly one unchanged
+five-leg composition, every JSE trading session from actual creation through
+the latest guarded publication, and five exact stored closes per session. It
+calculates 1D, 1W, WTD, 1M, 3M, YTD and SI from one NAV series. Set
+`APPLY_CANONICAL_LEDGER_DRAFT=1` only after reviewing the dry-run summary.
+
+First ETF dry run produced 100 fully priced JSE-session rows from 20 Mar through
+14 Aug and exactly reconciled the 14 Aug close to 237,139 cents. Its 14 Aug
+periods from the unified daily NAV series are: 1D -0.11456925%, 1W/WTD
+0.66518941%, 1M 0.74173828%, 3M 0.07258395%, and YTD/SI 12.05305461%.
+The guarded view's 1D 0.987565% and YTD 14.25746807% are not equivalent: the
+former spans the last available guarded publication rather than the previous
+trading-day close, while the latter inherits a legacy seed predating the
+strategy's 20 Mar creation. Keep the new calculation DRAFT until independent
+comparison, but treat this as a confirmed semantic defect in the old period
+calculator.
+
+Before inserting ETF DRAFT rows, run
+`scripts/verify-etf-stored-closes-yahoo.ts`. It compares the five exact stored
+JSE-session price series from 20 Mar through 14 Aug with Yahoo's independent
+daily chart series, reports missing dates and cent variances per security, and
+never writes to the database. A missing Yahoo series is evidence of provider
+unavailability, not permission to invent or replace a close.
+
+The 15 Aug independent-price attempt returned zero Yahoo 2026 points for all
+five ETF symbols. Both documented Railway IRESS history domains returned
+`Application not found`; the deployed OEMS API requires an authenticated staff
+session. Therefore independent provider verification is currently unavailable,
+not failed. ETF DRAFT rows must carry
+`independent_provider_check=UNAVAILABLE_2026_SERIES` and remain blocked from
+certification until a reviewed IRESS/export/workbook comparison is supplied.
+
+The ETF DRAFT apply completed on 15 Aug: 100 JSE-session rows were inserted
+from 20 Mar through 14 Aug. No public/effective return row was changed. Verify
+the persisted result with `scripts/verify-etf-canonical-ledger.ts`; it requires
+exact calendar coverage, DRAFT-only status, complete-value identity on every
+row, the independent-provider block on every row, a single evidence hash and a
+14 Aug complete value of 237,139 cents.
+
+Persisted verification passed: 100/100 JSE dates matched, 100/100
+complete-value identities passed, every row is DRAFT on
+`excel-static-lot-v1`, every row records the provider-unavailable block, and
+the latest seven period metrics equal the reviewed dry run. This completes ETF
+DRAFT construction; it does not authorize certification or public cutover.
