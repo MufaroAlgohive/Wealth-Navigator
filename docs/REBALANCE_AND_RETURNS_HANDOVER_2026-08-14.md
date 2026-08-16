@@ -951,6 +951,14 @@ provider variance, obtain an approved source for ETF Basket's quarantined STXID
 history, and obtain evidence approval for Yield Basket's delisted CLI history.
 No strategy should be promoted merely to make the audit screen green.
 
+Migration `20260816000001_repair_20260814_yahoo_closes.sql` prepares the exact
+provider correction for the two physical 14-August rows found by that audit:
+SYGEMF `3081 -> 3085` cents and STXNDQ `27630 -> 27583` cents. It checks the
+inspected row IDs, security IDs, symbols, date and old values before updating,
+verifies both new values inside the same transaction, and is idempotent. Run it
+before regenerating affected DRAFT ledgers. Applying the migration alone does
+not certify a row or switch the public app read path.
+
 ### Diversified and Multi-sector composition-only ledgers
 
 The two remaining strategies with no canonical history were audited across
