@@ -158,9 +158,12 @@ export default function StudioPage() {
             ) : filtered.map((c) => (
               <button key={`${c.id}:${c.familyMemberId || ""}`} onClick={() => openClient(c)} className={cn("flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left", selected?.id === c.id && selected?.familyMemberId === c.familyMemberId ? "bg-primary/10" : "hover:bg-accent/50")}>
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-bold text-primary-foreground">{initials(c.name)}</div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-foreground">{c.name}</div>
-                  <div className="truncate text-[11px] text-muted-foreground">{c.parentName ? <span className="mr-1 opacity-80">Managed by {c.parentName} · </span> : ""}{c.strategy || c.email}{c.isTest?" · UAT":""}</div>
+                <div className="min-w-0 flex-1 flex flex-col items-start text-left">
+                  <span className="w-full truncate text-sm font-medium text-foreground">{c.name}</span>
+                  {c.parentName && <span className="w-full truncate text-[11px] text-muted-foreground opacity-80">Managed by {c.parentName}</span>}
+                  <span className="w-full truncate text-[11px] text-muted-foreground" title={c.strategy || ""}>
+                    {c.email} {c.strategy ? `· ${c.strategy}` : ""} {c.isTest ? "· UAT" : ""}
+                  </span>
                 </div>
               </button>
             ))}
