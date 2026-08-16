@@ -1212,3 +1212,77 @@ divergence is counted as provider-rejected and skipped. The cron moved from
 `api/_lib/yahoo-close.js` contains the pure normalization/guard functions and
 `test/yahoo-eod-close.test.mjs` verifies ZAc, ZAR, exact-date and 100x rejection.
 All three Node tests pass and the full MINT Vite 7.3.3 production build passes.
+
+### 16 August MyGrowthFund cash-sleeve recovery
+
+The apparent fall from roughly R1.4k to R1,047 was traced to a valuation-rule
+error, not missing custody money and not market performance. The final 3 August
+rebalance reconciliation treated `rebalance_batch.min_investment_planned`
+(R1,038.00) as total model capital even though it represented only the
+replacement securities basket. It therefore published model CA of only R0.57.
+
+The immutable owner cash ledger proves the retained cash still exists. The
+standard one-lot owner, Siliziwe Mafika, has a closing MyGrowth residual of
+R361.91 and the latest `strategy_rebalance_cash_events_c` closing balance is
+the same R361.91. This is the post-fee cash sleeve: the first swap created
+R148.47, the first 3 August swap added R138.46, and the last swap added R74.98
+after the exhausted execution reserve left a R25.02 fee shortfall. The other
+standard-model economic values corroborate that no client money disappeared:
+
+| Owner | Securities | Residual cash | Liability | Effective value |
+| --- | ---: | ---: | ---: | ---: |
+| Siliziwe Mafika | R1,046.92 | R361.91 | R0.54 | R1,408.29 |
+| Ncumolwethu Damane | R1,148.42 | R261.03 | R0.54 | R1,408.91 |
+
+Ncumolwethu has one additional STXACW share funded from their residual, which
+explains the different securities/cash split while preserving nearly the same
+total. Owner residuals are the custody location of the strategy cash sleeve;
+they must not be deleted or debited merely because the public model displays
+the same cash per lot. Client effective NAV already uses securities + residual
+cash - liability and therefore does not add the model CA a second time.
+
+Migration `20260816000002_recover_mygrowth_model_cash.sql` is intentionally
+MyGrowth-only and fail-closed. It requires the exact erroneous rule
+(R1,037.43 securities + R0.57 CA), the exact final batch reconciliation, and
+matching R361.91 residual/cash-event evidence. It then corrects the active
+rule and reconciliation to R361.91 CA, changes only the strategy's static
+effective-date fallback to R1,399.34, and repairs guarded-publication value
+identities from 3 August onward without changing `chain_factor` or `ytd_pct`.
+That last condition prevents a false +34% daily return. No owner residual,
+execution reserve, wallet or holding is changed.
+
+At the repaired 14 August close, the intended public/purchase identity is:
+
+```text
+R1,046.92 current securities
++  R361.91 retained strategy cash
+= R1,408.83 current complete model value
+```
+
+The exact-close repair also changed 14 August SYGEMF from 3,081c to 3,085c and
+STXNDQ from 27,630c to 27,583c. MyGrowth's DRAFT model-only row was replayed to
+R1,047.49 while the rule still held the erroneous R0.57 CA; its formula audit
+passed across all 81 JSE sessions with zero identity failures. ETF Basket was
+replayed to R2,370.34. MINT Diversified Basket's DRAFT row was scoped and
+replayed to R2,526.44; no certified/public Diversified value was changed.
+
+The MINT adult and child purchase endpoints were then connected to the already
+migrated `record_strategy_purchase_with_model_cash` RPC. Both paths read the
+effective ACTIVE cash rule server-side, value one complete lot as current
+securities + model CA, derive whole-lot count from server-observed money, and
+write all holdings plus the owner's cash allocation atomically. The child path
+no longer trusts a client-supplied `units` value. The RPC stamps
+`transactions.strategy_id`, `strategy_model_lots`,
+`strategy_model_cash_cents` and `model_cash_allocated_at`, and increments the
+same owner/family residual used by effective client NAV. The 8% execution
+reserve remains separate in `transactions.buffer_cents` and is not counted as
+model CA.
+
+Seven focused adult basket regression tests pass, including a two-lot example
+with a R100-per-lot model cash sleeve, exact constituent scaling, stale-price
+reserve tolerance, underfunding rejection, inflated-client-input rejection and
+wallet rollback. Both changed API files pass `node --check`, and the full MINT
+Vite 7.3.6 production build succeeds. A separate older API test retains mocks
+for the superseded direct-holding insertion path and must be modernized before
+it can assert the new RPC response; it does not represent a production build
+failure.

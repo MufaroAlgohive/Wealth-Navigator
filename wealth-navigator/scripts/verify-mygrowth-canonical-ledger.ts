@@ -4,7 +4,7 @@ const STRATEGY_NAME = "MyGrowthFund";
 const EXPECTED_VERSION = "excel-multi-boundary-leg-pnl-v1";
 const EXPECTED_FIRST_DATE = "2026-04-20";
 const EXPECTED_LAST_DATE = "2026-08-14";
-const EXPECTED_LATEST_COMPLETE_CENTS = 104737;
+const EXPECTED_LATEST_COMPLETE_CENTS = 104749;
 const db = createRetailServiceRoleClient();
 
 async function rows<T>(
