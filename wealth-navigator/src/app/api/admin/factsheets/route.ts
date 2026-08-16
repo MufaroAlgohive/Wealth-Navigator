@@ -4,6 +4,7 @@ import { getAdminContext } from "@/lib/admin/rbac";
 import { buildCanonicalYtdSeries } from "@/lib/returns/canonical-index";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { strategyCashAssetFromCanonicalReturns } from "@/lib/strategy-cash-asset";
+import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
 
 /**
  * Factsheets (read-only). Gallery + single-strategy detail over strategies_c,
@@ -64,6 +65,7 @@ export async function GET(req: Request) {
       notice: "RETAIL database not configured.",
     });
   }
+  const liveScope = await loadRetailLiveScope(db);
 
   const securitiesFor = async (strategies: Array<{ holdings: unknown }>) => {
     const symbols = new Set<string>();
@@ -135,7 +137,7 @@ export async function GET(req: Request) {
     const id = url.searchParams.get("id") || "";
     if (!id) return NextResponse.json({ ok: false, error: "id required" }, { status: 400 });
     const { data: strategy } = await db.from("strategies_c").select("*").eq("id", id).maybeSingle();
-    if (!strategy) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
+    if (!strategy || liveScope.excludedStrategyIds.has(id)) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
     const { data: recentReturns } = await db
       .from("strategy_returns_effective_c")
       .select(
@@ -239,7 +241,7 @@ export async function GET(req: Request) {
         investors: {},
         notice: error.message,
       });
-    const rows = strategies ?? [];
+    const rows = (strategies ?? []).filter((strategy) => !liveScope.excludedStrategyIds.has(String(strategy.id)));
 
     // Recent returns series grouped by strategy (newest-first fetch → ascending series).
     const { data: ret } = await db
@@ -273,7 +275,7 @@ export async function GET(req: Request) {
       .select("strategy_id, user_id")
       .limit(5000);
     for (const c of (csr ?? []) as Array<{ strategy_id: string; user_id: string }>) {
-      if (!c.user_id || testIds.has(c.user_id)) continue;
+      if (!c.user_id || testIds.has(c.user_id) || liveScope.excludedStrategyIds.has(c.strategy_id)) continue;
       investors[c.strategy_id] = (investors[c.strategy_id] || 0) + 1;
     }
 
