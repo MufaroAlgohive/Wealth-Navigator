@@ -63,6 +63,7 @@ interface EquitiesUniverseResponse {
   migration?: string;
   error?: string;
 }
+interface ClientBookResponse { source: "retail-supabase" | "unavailable"; aum: number; investors: number; holdings: number; asOf: string | null; error?: string; }
 
 /** Strip the `.JO` exchange suffix for display (e.g. "NPN.JO" → "NPN"). */
 function bareSymbol(symbol: string): string {
@@ -151,6 +152,15 @@ export default function EquitiesPage() {
   // securities_c.asset_type) is wired. The BFF still surfaces the
   // cause-based reason when the portfolio migration hasn't been applied.
   const portfolioQ = usePortfolio(realDataOnly);
+  const clientBookQ = useQuery<ClientBookResponse>({
+    queryKey: ["bff-client-book"],
+    queryFn: async () => {
+      const response = await fetch("/api/client-book");
+      return (await response.json()) as ClientBookResponse;
+    },
+    enabled: realDataOnly,
+    ...queryOpts("live"),
+  });
 
   const totalAum = strategies.reduce((s, x) => s + x.aum, 0);
   const totalPnl = strategies.reduce((s, x) => s + x.dayPnl, 0);
@@ -158,10 +168,6 @@ export default function EquitiesPage() {
   // Real-data aggregation: sum the equity leg of /api/portfolio. The
   // BFF returns positions/accounts; in v1 we sum the open_pl + market_value
   // across all positions and count distinct accounts.
-  const realEquityAum = useMemo(() => {
-    if (portfolioQ.data?.source !== "supabase") return 0;
-    return (portfolioQ.data.positions ?? []).reduce((acc, p) => acc + (Number(p.market_value) || 0), 0);
-  }, [portfolioQ.data]);
   // Open P&L is null when positions aren't marked (CT test data — /api/portfolio
   // suppresses open_pl). Sum only the marked legs; if none are marked the P&L is
   // unknown (null → "—"), never a fabricated R0.00.
@@ -177,7 +183,6 @@ export default function EquitiesPage() {
   if (typeof window !== "undefined" && portfolioQ.data?.source === "supabase" && realEquityPnl.value == null && realEquityPnl.marked === 0) {
     console.warn("[equities] no marks yet — recent IRESS session did not include a price for any open position.");
   }
-  const realInvestors = (portfolioQ.data?.accounts ?? []).length;
 
   // Securities-universe search (Lonwabo: "all the securities here… you can just
   // search a particular security"). Filters the universe table by symbol / name / sector.
@@ -200,16 +205,16 @@ export default function EquitiesPage() {
 
       {realDataOnly ? (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          {portfolioQ.isLoading ? (
+          {portfolioQ.isLoading || clientBookQ.isLoading ? (
             [0, 1, 2, 3].map((n) => <KpiTileSkeleton key={`equity-kpi-${n}`} />)
           ) : portfolioQ.data?.source === "supabase" ? (
             <>
               <GlassKpi
-                label="Equity AUM"
-                dataSource="hybrid"
-                db="institutional"
-                value={formatZAR(realEquityAum)}
-                sub={`${(portfolioQ.data.positions ?? []).length} positions`}
+                label="Platform AUM"
+                dataSource="supabase"
+                db="retail"
+                value={clientBookQ.data?.source === "retail-supabase" ? formatZAR(clientBookQ.data.aum) : "â€”"}
+                sub={clientBookQ.data?.source === "retail-supabase" ? `${clientBookQ.data.holdings} LIVE holdings` : "Canonical LIVE AUM unavailable"}
               />
               <GlassKpi
                 label="Open P&L"
@@ -226,9 +231,9 @@ export default function EquitiesPage() {
               <GlassKpi
                 label="Investors"
                 dataSource="supabase"
-                db="institutional"
-                value={realInvestors.toString()}
-                sub={`${(portfolioQ.data.accounts ?? []).length} accounts`}
+                db="retail"
+                value={clientBookQ.data?.source === "retail-supabase" ? clientBookQ.data.investors.toString() : "â€”"}
+                sub="LIVE clients only"
               />
               <GlassKpi label="Pre-trade checks" value="On submit" sub="IRESS halt / borrow / non-tradeable at order time" accent="primary" />
             </>

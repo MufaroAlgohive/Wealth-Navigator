@@ -16,6 +16,7 @@ import {
 } from "@/lib/truth/calculations";
 import { fetchYahooTruthQuote, type YahooTruthQuote } from "@/lib/truth/yahoo-live";
 import { callWorker } from "@/lib/iress/worker-api";
+import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -165,7 +166,7 @@ async function listTruth(db: Db) {
       .order("as_of_date", { ascending: false })
       .limit(4000),
     canonicalLedgerRows(db),
-    testUsers(db),
+    loadRetailLiveScope(db),
   ]);
   if (error) throw new Error(error.message);
   const profileMap = new Map((profiles ?? []).map((row) => [text(row.id), row]));
@@ -178,7 +179,7 @@ async function listTruth(db: Db) {
     if (id) strategyReturnByDate.set(`${id}:${text(row.as_of_date).slice(0, 10)}`, row);
   }
   const positions = ((latest ?? []) as Row[])
-    .filter((row) => !excluded.has(text(row.user_id)) && num(row.basket_value_cents) > 0)
+    .filter((row) => !excluded.excludedUserIds.has(text(row.user_id)) && !excluded.excludedStrategyIds.has(text(row.strategy_id)) && num(row.basket_value_cents) > 0)
     .map((row) => {
       const profile = profileMap.get(text(row.user_id));
       const strategy = strategyMap.get(text(row.strategy_id));
@@ -207,7 +208,7 @@ async function listTruth(db: Db) {
     });
   return {
     positions,
-    strategies: (strategies ?? []).map((strategy) => {
+    strategies: (strategies ?? []).filter((strategy) => !excluded.excludedStrategyIds.has(text(strategy.id))).map((strategy) => {
       const model = latestStrategyReturn.get(text(strategy.id));
       return {
         id: strategy.id,
@@ -221,7 +222,7 @@ async function listTruth(db: Db) {
         modelAsOf: model?.as_of_date ?? null,
       };
     }),
-    ledger: ledgerRows.map((row) => ({
+    ledger: ledgerRows.filter((row) => !excluded.excludedStrategyIds.has(text(row.strategy_id))).map((row) => ({
       strategyId: text(row.strategy_id),
       strategy: strategyMap.get(text(row.strategy_id))?.short_name || strategyMap.get(text(row.strategy_id))?.name || text(row.strategy_id),
       strategyCreatedAt: strategyMap.get(text(row.strategy_id))?.created_at ?? null,

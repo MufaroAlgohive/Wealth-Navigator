@@ -15,6 +15,8 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/server";
 import { iressPriceOverlayEnabled } from "@/lib/iress/overlay-policy";
+import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
+import { isUatStrategy } from "@/lib/aum/retail-live-scope";
 
 const bare = (sym: string) => sym.replace(/\.(JO|JSE)$/i, "").toUpperCase();
 
@@ -78,6 +80,8 @@ interface StrategyRow {
   min_investment: number | null;
   updated_at: string | null;
   description?: string | null;
+  investor_environment?: string | null;
+  short_name?: string | null;
 }
 
 export async function listResearchStrategies(): Promise<{
@@ -90,10 +94,10 @@ export async function listResearchStrategies(): Promise<{
   const retail = createRetailServiceRoleClient();
   const { data, error } = await retail
     .from("strategies_c")
-    .select("id,name,benchmark_name,benchmark_symbol,status,holdings,min_investment")
+    .select("id,name,short_name,slug,investor_environment,benchmark_name,benchmark_symbol,status,holdings,min_investment")
     .order("name");
   if (error) throw error;
-  const strategies = ((data ?? []) as StrategyRow[]).map((s) => ({
+  const strategies = ((data ?? []) as StrategyRow[]).filter((s) => !isUatStrategy(s)).map((s) => ({
     id: s.id,
     name: s.name ?? "Strategy",
     benchmark: s.benchmark_name ?? s.benchmark_symbol ?? "—",
@@ -125,13 +129,14 @@ export async function listResearchStrategiesForSymbol(sym: string): Promise<{
   const retail = createRetailServiceRoleClient();
   const { data, error } = await retail
     .from("strategies_c")
-    .select("id,name,benchmark_name,benchmark_symbol,status,holdings,min_investment")
+    .select("id,name,short_name,slug,investor_environment,benchmark_name,benchmark_symbol,status,holdings,min_investment")
     .order("name");
   if (error) {
     return { strategies: [], source: "unavailable", reason: error.message };
   }
   const target = bare(sym);
   const strategies = ((data ?? []) as StrategyRow[])
+    .filter((s) => !isUatStrategy(s))
     .filter((s) => {
       const raw = parseHoldingsJson(s.holdings);
       return raw.some((h) => bare(String(h.symbol ?? h.ticker ?? "")) === target);
@@ -172,12 +177,12 @@ export async function loadResearchLab(
   const { data, error } = await retail
     .from("strategies_c")
     .select(
-      "id,name,slug,sector,provider_name,benchmark_name,benchmark_symbol,status,holdings,min_investment,updated_at,description",
+      "id,name,short_name,slug,investor_environment,sector,provider_name,benchmark_name,benchmark_symbol,status,holdings,min_investment,updated_at,description",
     )
     .eq("id", strategyId)
     .maybeSingle();
 
-  if (error || !data) {
+  if (error || !data || isUatStrategy(data as StrategyRow)) {
     return {
       source: "unavailable",
       reason: error?.message ?? "not_found",
@@ -216,28 +221,10 @@ export async function loadResearchLab(
 
   const { metrics, gaps } = buildFundamentals(tickers, secMap);
 
-  // Investor / AUM rollup from latest client_strategy_returns_c snapshot.
-  let investorCount = 0;
-  let aum = 0;
-  const { data: latestDate } = await retail
-    .from("client_strategy_returns_c")
-    .select("as_of_date")
-    .order("as_of_date", { ascending: false })
-    .limit(1);
-  const asOfDate = (latestDate?.[0]?.as_of_date as string | undefined) ?? row.updated_at;
-  if (asOfDate) {
-    const { data: returns } = await retail
-      .from("client_strategy_returns_c")
-      .select("user_id,basket_value")
-      .eq("strategy_id", strategyId)
-      .eq("as_of_date", asOfDate);
-    const users = new Set<string>();
-    for (const r of (returns ?? []) as Array<{ user_id?: string; basket_value?: number }>) {
-      if (r.user_id) users.add(r.user_id);
-      aum += Number(r.basket_value ?? 0) / 100;
-    }
-    investorCount = users.size;
-  }
+  const canonicalAum = await loadCanonicalRetailAum(retail);
+  const strategyAum = canonicalAum.byStrategy.get(strategyId);
+  const investorCount = strategyAum?.users.size ?? 0;
+  const aum = (strategyAum?.aumCents ?? 0) / 100;
 
   const asOf = row.updated_at
     ? new Date(row.updated_at).toLocaleDateString("en-ZA", {

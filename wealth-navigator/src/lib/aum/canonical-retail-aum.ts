@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
+
 type Holding = {
   user_id: string;
   family_member_id: string | null;
@@ -35,6 +37,19 @@ export type CanonicalStrategyAum = {
   holdingCount: number;
 };
 
+export type CanonicalPositionAum = {
+  key: string;
+  userId: string;
+  familyMemberId: string | null;
+  strategyId: string;
+  aumCents: number;
+  securitiesCents: number;
+  reserveCents: number;
+  residualCents: number;
+  consumedAumFeeCents: number;
+  holdingCount: number;
+};
+
 export type CanonicalRetailAum = {
   totalAumCents: number;
   totalConsumedAumFeeCents: number;
@@ -42,6 +57,7 @@ export type CanonicalRetailAum = {
   holdingCount: number;
   asOf: string;
   byStrategy: Map<string, CanonicalStrategyAum>;
+  byPosition: Map<string, CanonicalPositionAum>;
 };
 
 function cents(value: unknown): number {
@@ -86,7 +102,7 @@ export function aggregateCanonicalRetailAum(input: {
 
   const positions = new Map<
     string,
-    { userId: string; strategyId: string; securitiesCents: number; txIds: Set<string>; holdingCount: number }
+    { userId: string; familyMemberId: string | null; strategyId: string; securitiesCents: number; txIds: Set<string>; holdingCount: number }
   >();
   for (const holding of eligible) {
     const price = input.priceCentsBySecurityId.get(holding.security_id);
@@ -95,6 +111,7 @@ export function aggregateCanonicalRetailAum(input: {
     const key = ownerKey(holding.user_id, holding.family_member_id, holding.strategy_id);
     const position = positions.get(key) ?? {
       userId: holding.user_id,
+      familyMemberId: holding.family_member_id,
       strategyId: holding.strategy_id,
       securitiesCents: 0,
       txIds: new Set<string>(),
@@ -107,6 +124,7 @@ export function aggregateCanonicalRetailAum(input: {
   }
 
   const byStrategy = new Map<string, CanonicalStrategyAum>();
+  const byPosition = new Map<string, CanonicalPositionAum>();
   const investorIds = new Set<string>();
   let totalConsumedAumFeeCents = 0;
   for (const [key, position] of positions) {
@@ -121,6 +139,18 @@ export function aggregateCanonicalRetailAum(input: {
     const consumedAumFeeCents = feesByPosition.get(key) ?? 0;
     const aumCents = position.securitiesCents + reserveCents + residualCents - consumedAumFeeCents;
     if (aumCents < 0) throw new Error(`consumed AUM fees exceed position value for ${key}`);
+    byPosition.set(key, {
+      key,
+      userId: position.userId,
+      familyMemberId: position.familyMemberId,
+      strategyId: position.strategyId,
+      aumCents,
+      securitiesCents: position.securitiesCents,
+      reserveCents,
+      residualCents,
+      consumedAumFeeCents,
+      holdingCount: position.holdingCount,
+    });
     const aggregate = byStrategy.get(position.strategyId) ?? {
       aumCents: 0,
       securitiesCents: 0,
@@ -149,6 +179,7 @@ export function aggregateCanonicalRetailAum(input: {
     holdingCount: eligible.length,
     asOf: input.asOf,
     byStrategy,
+    byPosition,
   };
 }
 
@@ -163,16 +194,8 @@ async function required<T>(
 }
 
 export async function loadCanonicalRetailAum(db: SupabaseClient): Promise<CanonicalRetailAum> {
-  const [strategies, testProfiles, testWallets, holdings] = await Promise.all([
-    required<Array<{ id: string; investor_environment: string | null }>>(
-      "strategy classification",
-      db.from("strategies_c").select("id,investor_environment"),
-    ),
-    required<Array<{ id: string }>>("test profiles", db.from("profiles").select("id").eq("is_test", true)),
-    required<Array<{ user_id: string }>>(
-      "test wallets",
-      db.from("wallets").select("user_id").eq("status", "test"),
-    ),
+  const [liveScope, holdings] = await Promise.all([
+    loadRetailLiveScope(db),
     required<Holding[]>(
       "active holdings",
       db
@@ -182,15 +205,7 @@ export async function loadCanonicalRetailAum(db: SupabaseClient): Promise<Canoni
         .eq("trade_side", "BUY"),
     ),
   ]);
-  const excludedStrategyIds = new Set(
-    strategies
-      .filter((row) => String(row.investor_environment ?? "LIVE").toUpperCase() === "UAT")
-      .map((row) => row.id),
-  );
-  const excludedUserIds = new Set([
-    ...testProfiles.map((row) => row.id),
-    ...testWallets.map((row) => row.user_id),
-  ]);
+  const { excludedStrategyIds, excludedUserIds } = liveScope;
   const eligible = holdings.filter(
     (row) =>
       Boolean(row.user_id && row.strategy_id && row.security_id) &&

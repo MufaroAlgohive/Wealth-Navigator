@@ -4,6 +4,8 @@ import { isAdminRole } from "@/lib/admin/pages";
 import { getAdminContext } from "@/lib/admin/rbac";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
+import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
+import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
 
 /**
  * GET /api/admin/finance
@@ -25,21 +27,6 @@ import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
  */
 
 export const dynamic = "force-dynamic";
-
-interface Strategy {
-  id: string;
-  name?: string | null;
-  short_name?: string | null;
-  payload?: Record<string, unknown> | null;
-}
-
-interface StrategyReturnsRow {
-  user_id: string;
-  strategy_id: string;
-  basket_value: number | string | null;
-  as_of_date: string;
-  inception_pnl?: number | string | null;
-}
 
 interface AuditRow {
   id: string;
@@ -65,10 +52,6 @@ function monthKey(d: Date): string {
 function readNumber(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
-}
-
-function uniq<T>(arr: T[]): T[] {
-  return [...new Set(arr)];
 }
 
 export async function GET() {
@@ -97,59 +80,37 @@ export async function GET() {
 
   if (retail) {
     try {
-      const [stratsRes, returnsRes] = await Promise.all([
-        retail.from("strategies_c").select("id, name, short_name, payload"),
+      const [canonicalAum, liveScope, feesRes] = await Promise.all([
+        loadCanonicalRetailAum(retail),
+        loadRetailLiveScope(retail),
         retail
-          .from("client_strategy_returns_c")
-          .select("user_id, strategy_id, basket_value, as_of_date, inception_pnl")
+          .from("aum_fee_accrual_segments")
+          .select("user_id,strategy_id,accrued_fee_cents,segment_start_date,segment_end_date")
           // last 18 months keeps the chart readable without burning cycles.
-          .gte("as_of_date", new Date(Date.now() - 540 * 86_400_000).toISOString().slice(0, 10))
-          .order("as_of_date", { ascending: true })
+          .gte("segment_start_date", new Date(Date.now() - 540 * 86_400_000).toISOString().slice(0, 10))
+          .order("segment_start_date", { ascending: true })
           .limit(50_000),
       ]);
 
-      const strategies = (stratsRes.data ?? []) as Strategy[];
-      const returns = (returnsRes.data ?? []) as StrategyReturnsRow[];
-
-      const feePctById: Record<string, number> = {};
-      for (const s of strategies) {
-        const payload = s.payload ?? {};
-        const raw = payload.fee_pct ?? payload.management_fee_pct ?? payload.feePct;
-        const pct = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : 1.0;
-        feePctById[s.id] = Number.isFinite(pct) && pct > 0 ? pct : 1.0;
-      }
+      if (feesRes.error) throw new Error(`AUM fee ledger: ${feesRes.error.message}`);
+      platformAumCents = canonicalAum.totalAumCents;
+      aumActiveStrategies = canonicalAum.byStrategy.size;
 
       // Latest NAV per user/strategy — same convention `investors/data` uses.
-      const latestByUserStrategy = new Map<string, StrategyReturnsRow>();
-      for (const r of returns) {
-        const key = `${r.user_id}|${r.strategy_id}`;
-        const prev = latestByUserStrategy.get(key);
-        if (!prev || new Date(prev.as_of_date) < new Date(r.as_of_date)) {
-          latestByUserStrategy.set(key, r);
-        }
-      }
-
       // Monthly AUM-fee accrual in cents, per month over the rolling 12 months.
       const monthlyMap = new Map<string, number>();
       const now = new Date();
       const monthsBack = 12;
-      const startOfWindow = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (monthsBack - 1), 1));
-
-      for (const [, snap] of latestByUserStrategy) {
-        const aumCents = Math.round(readNumber(snap.basket_value));
-        if (aumCents <= 0) continue;
-        const feePct = feePctById[snap.strategy_id] ?? 1.0;
-        const monthlyCents = Math.max(0, Math.round((aumCents * feePct) / 12 / 100));
-        // Attribute the accrual to the as_of_date month.
-        const asOf = new Date(snap.as_of_date);
-        if (asOf >= startOfWindow) {
-          const k = monthKey(asOf);
-          monthlyMap.set(k, (monthlyMap.get(k) ?? 0) + monthlyCents);
-          aumMonthlyCents += monthlyCents;
-        }
-        aumTotalCents += monthlyCents;
-        platformAumCents += aumCents;
-        aumActiveStrategies += 1;
+      for (const fee of feesRes.data ?? []) {
+        if (
+          liveScope.excludedUserIds.has(String(fee.user_id)) ||
+          liveScope.excludedStrategyIds.has(String(fee.strategy_id))
+        ) continue;
+        const feeCents = Math.max(0, Math.round(readNumber(fee.accrued_fee_cents)));
+        const key = monthKey(new Date(String(fee.segment_start_date)));
+        monthlyMap.set(key, (monthlyMap.get(key) ?? 0) + feeCents);
+        aumTotalCents += feeCents;
+        if (key === monthKey(now)) aumMonthlyCents += feeCents;
       }
 
       // Build a 12-month series (fill missing months with zero) so the chart
@@ -236,5 +197,7 @@ export async function GET() {
       label: `${MONTH_LABELS[Number(m.month.slice(5, 7)) - 1]} ${m.month.slice(0, 4)}`,
     })),
     as_of_date: new Date().toISOString(),
+    aum_methodology: "CANONICAL_LIVE_RETAIL_AUM_V1",
+    fee_methodology: "STATIC_COST_BASIS_0_99_PERCENT_MONTHLY_V1",
   });
 }

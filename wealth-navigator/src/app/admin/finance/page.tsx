@@ -12,7 +12,8 @@ import { GlassKpi, GlassSection, PageCanvas } from "@/components/oems/primitives
  * /admin/finance — placeholder Finance tab.
  *
  * Mint OEM Finalisation Phase C7. Reads `/api/admin/finance`:
- *   - AUM fees (RETAIL `client_strategy_returns_c` × strategy fee_pct)
+ *   - LIVE retail AUM from the shared canonical calculator
+ *   - AUM fees from the persisted static-cost-basis accrual ledger
  *   - Day-1 P&L / slip (INSTITUTIONAL `oems_order_audit.result_payload`)
  *
  * Glass tokens (`GlassSection` + `GlassKpi` + `PageCanvas`) keep this
@@ -202,10 +203,15 @@ export default function FinancePage() {
             </AreaChart>
           </ResponsiveContainer>
         </div>
-        <p className="mt-3 text-[11px] text-muted-foreground">
+        <p className="hidden">
           AUM fees accrue against <code className="font-mono">client_strategy_returns_c.basket_value</code>×
           strategy <code className="font-mono">fee_pct</code>. Slip is the cumulative Day-1 P&L stamped by the
           broker-ingest worker on each filled audit row.
+        </p>
+        <p className="mt-3 text-[11px] text-muted-foreground">
+          Platform AUM uses the canonical LIVE holdings, unused reserve, residual and consumed-fee state.
+          Monthly fees are read from the static-cost-basis accrual ledger at 0.99% per annum divided by 12.
+          Slip is the cumulative Day-1 P&amp;L recorded by the broker-ingest worker.
         </p>
       </GlassSection>
 
