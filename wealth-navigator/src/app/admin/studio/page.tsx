@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
-interface Client { id: string; familyMemberId?: string | null; name: string; email: string | null; strategy: string | null; isTest?: boolean; }
+interface Client { id: string; familyMemberId?: string | null; name: string; parentName?: string | null; email: string | null; strategy: string | null; isTest?: boolean; }
 interface PortfolioHolding { id: string; symbol: string; name: string; logo_url: string | null; quantity: number; cost: number; live: number; marketValue: number; pnl: number; pnlPct:number; pending:boolean; strategyId:string|null; strategy: string | null; }
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status?:string|null; transaction_date: string | null; created_at?:string|null; }
 interface StrategyPreview {id:string;name:string;value:number;holdings:number}
@@ -61,11 +61,13 @@ export default function StudioPage() {
           if (!prof) continue;
           
           let displayName = `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email;
+          let parentName: string | null = null;
           if (g.familyMemberId) {
              const fam = famById.get(g.familyMemberId);
              if (fam) {
                 const famName = `${fam.first_name || ""} ${fam.last_name || ""}`.trim();
-                displayName = `${famName} (${displayName})`;
+                parentName = displayName;
+                displayName = famName;
              }
           }
           
@@ -73,6 +75,7 @@ export default function StudioPage() {
             id: g.userId,
             familyMemberId: g.familyMemberId,
             name: displayName,
+            parentName: parentName,
             email: prof.email,
             strategy: [...g.strategyIds].join(", ") || null,
             isTest: false
@@ -157,7 +160,7 @@ export default function StudioPage() {
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-bold text-primary-foreground">{initials(c.name)}</div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-foreground">{c.name}</div>
-                  <div className="truncate text-[11px] text-muted-foreground">{c.strategy || c.email}{c.isTest?" · UAT":""}</div>
+                  <div className="truncate text-[11px] text-muted-foreground">{c.parentName ? <span className="mr-1 opacity-80">Managed by {c.parentName} · </span> : ""}{c.strategy || c.email}{c.isTest?" · UAT":""}</div>
                 </div>
               </button>
             ))}
