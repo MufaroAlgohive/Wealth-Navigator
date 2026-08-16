@@ -195,7 +195,8 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                             <tr className="border-t border-border/30">
                               <td className="py-1.5 pr-3 font-mono text-[10px]">{m.order_id ?? "—"}</td>
                               <td className="max-w-[180px] truncate py-1.5 pr-3" title={m.client_account ?? ""}>
-                                {m.client_account ?? "—"}
+                                <div>{m.client_account ?? "—"}</div>
+                                {m.parentName && <div className="text-[9px] mt-0.5 opacity-80">Managed by {m.parentName}</div>}
                               </td>
                               <td className="py-1.5 pr-3 font-semibold">{m.symbol ?? "—"}</td>
                               <td className="py-1.5 pr-3">

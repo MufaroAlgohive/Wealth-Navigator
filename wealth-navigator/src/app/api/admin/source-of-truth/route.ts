@@ -127,6 +127,7 @@ async function listTruth(db: Db) {
   const [
     { data: latest, error },
     { data: profiles },
+    { data: families },
     { data: strategies },
     { data: strategyReturns },
     excluded,
@@ -137,6 +138,7 @@ async function listTruth(db: Db) {
         "user_id,family_member_id,strategy_id,as_of_date,basket_value_cents,securities_value_cents,residual_cash_cents,unused_reserve_cents,accrued_liability_cents,inception_pnl_cents,inception_pct,ytd_pct",
       ),
     db.from("profiles").select("id,first_name,last_name,email,mint_number,created_at"),
+    db.from("family_members").select("id,first_name,last_name,mint_number,primary_user_id,parent_id"),
     db.from("strategies_c").select("id,name,short_name,min_investment,status"),
     db
       .from("strategy_returns_effective_c")
@@ -149,6 +151,7 @@ async function listTruth(db: Db) {
   ]);
   if (error) throw new Error(error.message);
   const profileMap = new Map((profiles ?? []).map((row) => [text(row.id), row]));
+  const familyMap = new Map((families ?? []).map((row) => [text(row.id), row]));
   const strategyMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
   const latestStrategyReturn = new Map<string, Row>();
   for (const row of (strategyReturns ?? []) as Row[]) {
@@ -159,16 +162,25 @@ async function listTruth(db: Db) {
     .filter((row) => !excluded.has(text(row.user_id)) && num(row.basket_value_cents) > 0)
     .map((row) => {
       const profile = profileMap.get(text(row.user_id));
+      const family = familyMap.get(text(row.family_member_id));
       const strategy = strategyMap.get(text(row.strategy_id));
+      const parentId = text(family?.primary_user_id) || text(family?.parent_id);
+      const parentProfile = parentId ? profileMap.get(parentId) : null;
+      const parentName = parentProfile
+        ? [parentProfile.first_name, parentProfile.last_name].filter(Boolean).join(" ") || parentProfile.email
+        : null;
+
       return {
         key: ownerKey(row.user_id, row.family_member_id, row.strategy_id),
         userId: row.user_id,
         familyMemberId: row.family_member_id,
         strategyId: row.strategy_id,
-        client:
-          [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
-          profile?.email ||
-          text(row.user_id),
+        client: family
+          ? [family.first_name, family.last_name].filter(Boolean).join(" ")
+          : [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+            profile?.email ||
+            text(row.user_id),
+        parentName,
         email: profile?.email,
         mintNumber: profile?.mint_number,
         strategy: strategy?.short_name || strategy?.name || row.strategy_id,

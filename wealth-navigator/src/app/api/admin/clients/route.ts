@@ -231,19 +231,37 @@ export async function GET(req: Request) {
         if (linkedUserId) childProfileIds.add(linkedUserId);
       }
     }
-    const profileClients = rows.map((p) => ({
-      id: p.id,
-      name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email || p.id.slice(0, 8),
-      email: p.email,
-      mint_number: p.mint_number,
-      is_test: p.is_test,
-      created_at: p.created_at,
-      kyc: deriveKyc(obMap[p.id], raMap[p.id], packMap[p.id]),
-      bank_linked: !!raMap[p.id]?.bank_linked,
-      family_role: childProfileIds.has(String(p.id)) ? "child" : parentIds.has(String(p.id)) ? "parent" : "other",
-      family_member_id: null,
-      is_linked_child: childProfileIds.has(String(p.id)),
-    }));
+    const profileMap = new Map(rows.map((p) => [String(p.id), p]));
+    const getParentName = (parentId: string) => {
+      const p = profileMap.get(parentId);
+      if (!p) return undefined;
+      return `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email || p.id.slice(0, 8);
+    };
+
+    const profileClients = rows.map((p) => {
+      let managing_parent_name: string | undefined;
+      if (childProfileIds.has(String(p.id))) {
+        const member = familyRows.find((m) => String(m.linked_user_id) === String(p.id));
+        if (member) {
+          const parentId = String(member.primary_user_id || member.parent_id || "").trim();
+          if (parentId) managing_parent_name = getParentName(parentId);
+        }
+      }
+      return {
+        id: p.id,
+        name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email || p.id.slice(0, 8),
+        email: p.email,
+        mint_number: p.mint_number,
+        is_test: p.is_test,
+        created_at: p.created_at,
+        kyc: deriveKyc(obMap[p.id], raMap[p.id], packMap[p.id]),
+        bank_linked: !!raMap[p.id]?.bank_linked,
+        family_role: childProfileIds.has(String(p.id)) ? "child" : parentIds.has(String(p.id)) ? "parent" : "other",
+        family_member_id: null,
+        is_linked_child: childProfileIds.has(String(p.id)),
+        managing_parent_name,
+      };
+    });
     const unlinkedChildren = familyRows
       .filter((member) => String(member.relationship || "").trim().toLowerCase() === "child")
       .filter((member) => !String(member.linked_user_id || "").trim())
@@ -251,6 +269,7 @@ export async function GET(req: Request) {
         const familyMemberId = String(member.id || "");
         const firstName = String(member.first_name || "");
         const lastName = String(member.last_name || "");
+        const parentId = String(member.primary_user_id || member.parent_id || "").trim();
         return {
           id: `family:${familyMemberId}`,
           name: `${firstName} ${lastName}`.trim() || `Child ${familyMemberId.slice(0, 8)}`,
@@ -263,6 +282,7 @@ export async function GET(req: Request) {
           family_role: "child" as const,
           family_member_id: familyMemberId,
           is_linked_child: false,
+          managing_parent_name: parentId ? getParentName(parentId) : undefined,
         };
       });
     const clients = [...profileClients, ...unlinkedChildren];

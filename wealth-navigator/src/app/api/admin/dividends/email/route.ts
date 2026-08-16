@@ -454,7 +454,6 @@ async function handleEmailRequest(req: Request, method: string) {
       }
     }
 
-    // ── GET: Preview Email ──────────────────────────────────────────────
     if (method === 'GET') {
       const allClients = clientCodes.map(c => {
         const p = profileMap[c];
@@ -463,7 +462,9 @@ async function handleEmailRequest(req: Request, method: string) {
           first_name: p ? p.first_name : 'Unknown',
           email: p ? p.email : null,
           has_profile: !!p,
-          has_sent: sentCodes.includes(c)
+          has_sent: sentCodes.includes(c),
+          is_child: p ? !!p.is_child : false,
+          parent_name: p ? p.parent_name : null
         };
       });
 
