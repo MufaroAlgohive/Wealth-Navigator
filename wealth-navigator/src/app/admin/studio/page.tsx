@@ -40,8 +40,8 @@ export default function StudioPage() {
       fetch("/api/admin/investors/data").then((r) => r.json()).then((d) => {
         if (!d.ok) { setClients([]); return; }
         const strategyById = new Map<string, string>((d.strategies || []).map((s: any) => [String(s.id), String(s.name)]));
-        const profById = new Map((d.profiles || []).map((p: any) => [p.id, p]));
-        const famById = new Map((d.familyMembers || []).map((f: any) => [f.id, f]));
+        const profById = new Map<string, any>((d.profiles || []).map((p: any) => [p.id, p]));
+        const famById = new Map<string, any>((d.familyMembers || []).map((f: any) => [f.id, f]));
         
         const groups = new Map<string, { userId: string; familyMemberId: string | null; strategyIds: Set<string> }>();
         for (const h of (d.holdings || [])) {
