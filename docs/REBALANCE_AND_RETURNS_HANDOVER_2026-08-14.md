@@ -1366,3 +1366,11 @@ Latest 14-August DRAFT release candidates are:
 contains a disclosed provider defect, and writes a per-strategy certification
 mode/caveat. Test Strategy is always excluded. At this checkpoint the six rows
 families remain DRAFT pending explicit client-facing publication approval.
+
+The business owner subsequently approved that exact scope. At
+`2026-08-16T10:43:54.108Z`, Blended Focus, MINT Diversified Basket, MINT Famous
+Brands, MINT Multi-sector and UCT promoted 616/616 rows under `FULL_EVIDENCE`.
+At `2026-08-16T10:46:32.486Z`, ETF Basket promoted 100/100 rows under the
+approved STXID provider-scale waiver. Final read-back across all eight active
+non-test strategies found 932/932 rows `CERTIFIED` and zero DRAFT rows. Test
+Strategy was not read, rebuilt or promoted by this rollout.
