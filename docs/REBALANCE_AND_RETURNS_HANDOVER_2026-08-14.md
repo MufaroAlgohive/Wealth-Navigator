@@ -1313,3 +1313,56 @@ Future adult and child purchases use `record_strategy_purchase_with_model_cash`.
 ## Controlled activation
 
 `scripts/promote-canonical-ledger-scoped.mjs` is the explicit, named-strategy certification gate. It validates the complete-value identity, required return periods and non-empty leg evidence for every DRAFT row. Apply mode requires an accountable auth UUID, a specific reason and an explicit evidence waiver where a delisted provider gap is disclosed. It never promotes unrequested strategies.
+
+## 2026-08-16 full-family certification preparation
+
+MyGrowthFund and Yield Basket were promoted first through the scoped gate. The
+post-write audit confirmed 81/81 and 135/135 rows respectively as `CERTIFIED`,
+with zero remaining DRAFT rows. Yield's 92 unavailable CLI comparisons are
+stored as a disclosed delisted-provider gap; they are not represented as
+independent matches.
+
+Before promoting the rest of the family, the family gate was tightened to
+require all nine stored periods (`1D`, `1W`, `WTD`, `MTD`, `1M`, `3M`, `6M`,
+`YTD`, `SI`). This correctly stopped the first attempt because older rows from
+the static, ETF, single-boundary and composition-proxy writers did not yet
+contain MTD or 6M. Those four writers now calculate MTD from the previous
+calendar-month end and 6M from the prior six-month reference date using the
+same canonical metric function as the other periods. Their conflict checks
+also compare these metrics, so DRAFT-only replays are idempotent.
+
+The recurring daily writer in
+`src/lib/returns/publish-canonical-ledger-draft.ts` received the same MTD and 6M
+references. All six remaining DRAFT histories were rebuilt without changing
+their model values. A final eight-row replay covered 11-14 August for MINT
+Diversified Basket and MINT Multi-sector, which had been appended by the daily
+writer after their historical proxy rebuild. The strict family dry run then
+validated all 716 remaining rows with every period present, exact
+`complete = securities + continuity cash`, and non-empty leg evidence.
+
+The same-session Yahoo/workbook audit produced zero provider request errors,
+zero exact-price mismatches, zero valuation mismatches and zero formula
+failures for Blended Focus, MINT Diversified Basket, MINT Famous Brands, MINT
+Multi-sector and UCT. ETF Basket has zero confirmed mismatches and zero formula
+failures, but Yahoo's STXID series remains quarantined at a median scale ratio
+of `0.009980472987632893` across 14 overlaps. Its 100 ledger comparisons must
+therefore be certified only under the explicit
+`YAHOO_PROVIDER_SCALE_DIVERGENCE` waiver; no STXID values are rescaled or
+invented.
+
+Latest 14-August DRAFT release candidates are:
+
+| Strategy | Complete value | MTD | 1M | 6M | YTD |
+|---|---:|---:|---:|---:|---:|
+| Blended Focus | R5,003.62 | 0.42% | 1.37% | 0.13% | -1.03% |
+| ETF Basket | R2,370.34 | 1.91% | 0.70% | 12.00% | 12.00% |
+| MINT Diversified Basket | R2,526.44 | 0.06% | -2.64% | 6.75% | 7.67% |
+| MINT Famous Brands | R3,030.61 | -0.78% | -3.17% | 5.35% | 6.41% |
+| MINT Multi-sector | R2,426.47 | -2.22% | -0.66% | -11.07% | -11.07% |
+| UCT | R1,134.71 | 3.79% | 7.33% | 7.15% | 7.15% |
+
+`promote-canonical-ledger-family.mjs` now accepts an exact
+`CANONICAL_STRATEGY_NAMES` scope, requires a waiver only when that scope
+contains a disclosed provider defect, and writes a per-strategy certification
+mode/caveat. Test Strategy is always excluded. At this checkpoint the six rows
+families remain DRAFT pending explicit client-facing publication approval.

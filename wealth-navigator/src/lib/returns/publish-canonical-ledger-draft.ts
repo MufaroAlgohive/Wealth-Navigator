@@ -81,6 +81,12 @@ function previousWeekEnd(date: string) {
   return iso(value);
 }
 
+function previousMonthEnd(date: string) {
+  const value = new Date(`${date}T00:00:00.000Z`);
+  value.setUTCDate(0);
+  return iso(value);
+}
+
 export function parseModelHoldings(value: unknown): Holding[] {
   return aggregateHoldings(
     (Array.isArray(value) ? value : [])
@@ -587,8 +593,10 @@ export async function publishCanonicalLedgerDraft(
         "1D": addDays(asOf, -1),
         "1W": addDays(asOf, -7),
         WTD: previousWeekEnd(asOf),
+        MTD: previousMonthEnd(asOf),
         "1M": addMonths(asOf, -1),
         "3M": addMonths(asOf, -3),
+        "6M": addMonths(asOf, -6),
         YTD: `${Number(asOf.slice(0, 4)) - 1}-12-31`,
         SI: earliestDate,
       };
