@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 
-interface Client { id: string; name: string; email: string | null; strategy: string | null; isTest?: boolean; }
+interface Client { id: string; familyMemberId?: string | null; name: string; email: string | null; strategy: string | null; isTest?: boolean; }
 interface PortfolioHolding { id: string; symbol: string; name: string; logo_url: string | null; quantity: number; cost: number; live: number; marketValue: number; pnl: number; pnlPct:number; pending:boolean; strategyId:string|null; strategy: string | null; }
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status?:string|null; transaction_date: string | null; created_at?:string|null; }
 interface StrategyPreview {id:string;name:string;value:number;holdings:number}
@@ -40,21 +40,46 @@ export default function StudioPage() {
       fetch("/api/admin/investors/data").then((r) => r.json()).then((d) => {
         if (!d.ok) { setClients([]); return; }
         const strategyById = new Map<string, string>((d.strategies || []).map((s: any) => [String(s.id), String(s.name)]));
-        const strategyByUser = new Map<string, Set<string>>();
+        const profById = new Map((d.profiles || []).map((p: any) => [p.id, p]));
+        const famById = new Map((d.familyMembers || []).map((f: any) => [f.id, f]));
+        
+        const groups = new Map<string, { userId: string; familyMemberId: string | null; strategyIds: Set<string> }>();
         for (const h of (d.holdings || [])) {
           const id = h.user_id;
           if (!id) continue;
-          const set = strategyByUser.get(id) ?? new Set<string>();
-          if (h.strategy_id && strategyById.has(String(h.strategy_id))) set.add(strategyById.get(String(h.strategy_id))!);
-          strategyByUser.set(id, set);
+          const famId = h.family_member_id || null;
+          const key = `${id}:${famId || ""}`;
+          
+          const g = groups.get(key) || { userId: id, familyMemberId: famId, strategyIds: new Set<string>() };
+          if (h.strategy_id && strategyById.has(String(h.strategy_id))) g.strategyIds.add(strategyById.get(String(h.strategy_id))!);
+          groups.set(key, g);
         }
-        const mapped = (d.profiles || []).map((p: any) => ({
-          id: p.id,
-          name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email,
-          email: p.email,
-          strategy: [...(strategyByUser.get(p.id) ?? [])].join(", ") || null,
-          isTest: false // The data endpoint already excludes test accounts
-        })).sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)));
+
+        const mapped: Client[] = [];
+        for (const g of groups.values()) {
+          const prof = profById.get(g.userId);
+          if (!prof) continue;
+          
+          let displayName = `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email;
+          if (g.familyMemberId) {
+             const fam = famById.get(g.familyMemberId);
+             if (fam) {
+                const famName = `${fam.first_name || ""} ${fam.last_name || ""}`.trim();
+                displayName = `${famName} (${displayName})`;
+             }
+          }
+          
+          mapped.push({
+            id: g.userId,
+            familyMemberId: g.familyMemberId,
+            name: displayName,
+            email: prof.email,
+            strategy: [...g.strategyIds].join(", ") || null,
+            isTest: false
+          });
+        }
+        
+        mapped.sort((a, b) => String(a.name).localeCompare(String(b.name)));
         setClients(mapped);
       }).catch(() => setClients([]));
     } else {
@@ -66,7 +91,8 @@ export default function StudioPage() {
     setSelected(c);
     setPortfolio(null);
     setPortfolioError(null);
-    const d = await fetch(`/api/admin/studio?action=portfolio&user_id=${c.id}`).then((r) => r.json()).catch(() => ({ ok: false }));
+    const qs = `user_id=${c.id}${c.familyMemberId ? `&family_member_id=${c.familyMemberId}` : ""}`;
+    const d = await fetch(`/api/admin/studio?action=portfolio&${qs}`).then((r) => r.json()).catch(() => ({ ok: false }));
     if (d.ok) setPortfolio(d);else setPortfolioError(d.error||"Portfolio preview unavailable");
   };
 
@@ -127,7 +153,7 @@ export default function StudioPage() {
             ) : filtered.length === 0 ? (
               <p className="py-6 text-center text-xs text-muted-foreground">No clients.</p>
             ) : filtered.map((c) => (
-              <button key={c.id} onClick={() => openClient(c)} className={cn("flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left", selected?.id === c.id ? "bg-primary/10" : "hover:bg-accent/50")}>
+              <button key={`${c.id}:${c.familyMemberId || ""}`} onClick={() => openClient(c)} className={cn("flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left", selected?.id === c.id && selected?.familyMemberId === c.familyMemberId ? "bg-primary/10" : "hover:bg-accent/50")}>
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-bold text-primary-foreground">{initials(c.name)}</div>
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-foreground">{c.name}</div>
