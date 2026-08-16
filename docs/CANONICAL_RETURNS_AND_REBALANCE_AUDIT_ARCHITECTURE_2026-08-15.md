@@ -988,3 +988,26 @@ Promotion changes the displayed return values and chart series because the app t
 ## Pre-merge workbook review
 
 The Wealth Navigator branch preview exposes `Admin → Source of Truth → Ledger` while every canonical row is still DRAFT and invisible to the retail app. `Export Excel` downloads one worksheet per active strategy. Each dated row contains securities, continuity CA, formula-driven complete value, certification status, and the reference date, opening value, P/L, and formula-driven return for 1D, 1W, WTD, 1M, 3M, YTD, and SI. Excel recalculation is enabled so reviewers can inspect formulas and alter a copy without changing the database.
+
+## Exact strategy return-engine export — 2026-08-16
+
+The Ledger export now reproduces the approved `Yield-Basket-Returns-Engine-Ledger-Model.xlsx` design for whichever strategy tab is selected. It exports one strategy per workbook and keeps the original seven-tab audit flow:
+
+1. `00_Start_Here`
+2. `01_Master_Data`
+3. `05_Rebalance_Events`
+4. `06_Strategy_Ledger`
+5. `07_Public_Strategy_View`
+6. `Chart_Data`
+7. `13_Checks`
+
+The important correction is date coverage. `01_Master_Data`, `06_Strategy_Ledger`, and `Chart_Data` now contain every canonical row from the strategy's first legitimate market close on or after `strategies_c.created_at` through its latest available canonical close. A weekend or market-holiday creation date is stated separately and is not fabricated as a close.
+
+The workbook is an interactive OOXML model, not a values-only report. Complete value cells use `Securities + Cash` formulas; rolling one-month return cells reference the canonical one-month denominator row and the intervening external-flow range; the public view references the latest ledger row; chart cells reference ledger cells; and the checks sheet references the opening/closing ledger identities. Excel is instructed to recalculate formulas on open. Purple headers, yellow rebalance-boundary evidence, green formula cells, the narrow column sizing, and the line chart are retained from the approved Yield workbook.
+
+`GET /api/admin/source-of-truth` now also supplies:
+
+- `strategyCreatedAt` from `strategies_c.created_at`, used to state inception accurately; and
+- `currentAppOneMonthPct` from the same-date `strategy_returns_effective_c."1m_pct"`, used for the workbook's current-app comparison column.
+
+The export remains read-only with respect to the database. It neither certifies nor repairs a ledger and it does not change retail values. Focused workbook regression coverage verifies tab order, inception/latest rows, cell formulas, chart range expansion, and the style part. Production TypeScript and Next.js builds passed after this change.

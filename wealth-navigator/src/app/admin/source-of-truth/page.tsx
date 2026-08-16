@@ -78,11 +78,13 @@ type Strategy = {
 type LedgerRow = {
   strategyId: string;
   strategy: string;
+  strategyCreatedAt?: string | null;
   asOf: string;
   certificationStatus: string;
   securitiesCents: number;
   continuityCashCents: number;
   completeValueCents: number;
+  currentAppOneMonthPct?: number | null;
   legs: Array<Record<string, unknown>>;
   periods: Record<string, {
     return_pct?: number;
@@ -1166,6 +1168,31 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
   const unresolved = unresolvedSource.map(String);
   const periods = ["1D", "1W", "WTD", "1M", "3M", "YTD", "SI"];
 
+  const exportExactReturnEngineWorkbook = async () => {
+    if (!selectedStrategy) return;
+    const { buildStrategyReturnEngineWorkbook, strategyReturnEngineFilename } = await import(
+      "@/lib/returns/strategy-return-engine-workbook"
+    );
+    const strategyRows = rows
+      .filter((row) => row.strategyId === selectedStrategy.strategyId)
+      .sort((a, b) => a.asOf.localeCompare(b.asOf));
+    const bytes = await buildStrategyReturnEngineWorkbook({
+      strategyName: selectedStrategy.strategy,
+      strategyCreatedAt: selectedStrategy.strategyCreatedAt,
+      rows: strategyRows,
+    });
+    const workbookBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+    const blob = new Blob([workbookBuffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = strategyReturnEngineFilename(selectedStrategy.strategy);
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const exportCeoWorkbook = async () => {
     const ExcelJS = await import("exceljs");
     const book = new ExcelJS.Workbook();
@@ -1646,8 +1673,8 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">Database-backed model legs and all return ranges. This surface displays the stored canonical record; it never recalculates a return in the browser.</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button type="button" size="sm" variant="outline" onClick={() => void exportPublicStrategyWorkbook()}>
-              <Download className="mr-1.5 h-3.5 w-3.5" /> Export Excel
+            <Button type="button" size="sm" variant="outline" onClick={() => void exportExactReturnEngineWorkbook()}>
+              <Download className="mr-1.5 h-3.5 w-3.5" /> Export exact Excel
             </Button>
             {history.length > 1 && (
               <select
