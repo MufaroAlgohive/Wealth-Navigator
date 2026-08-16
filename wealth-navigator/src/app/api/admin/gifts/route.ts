@@ -133,6 +133,20 @@ export async function GET() {
       .filter((row) => text(row.beneficiary_type)?.toUpperCase() === "OTHER")
       .map((row) => row.beneficiary_ref),
   ]);
+  const familyIds = unique([
+    ...authorizationRows.map((row) => row.recipient_family_member_id),
+    ...registryRows
+      .filter((row) => text(row.beneficiary_type)?.toUpperCase() === "CHILD")
+      .map((row) => row.beneficiary_ref),
+  ]);
+  let familyRows: Row[] = [];
+  if (familyIds.length) {
+    const result = await db.from("family_members").select("id,first_name,last_name,mint_number,primary_user_id,parent_id").in("id", familyIds);
+    if (result.error) notices.push(`family_members: ${result.error.message}`);
+    else familyRows = (result.data ?? []) as Row[];
+  }
+  const familyById = byId(familyRows);
+
   let profileRows: Row[] = [];
   if (userIds.length) {
     const familyParentIds = familyRows.map(f => text(f.primary_user_id) || text(f.parent_id)).filter(Boolean) as string[];
@@ -161,20 +175,6 @@ export async function GET() {
     return Boolean(userId && (profileById.get(userId)?.is_test === true || testWalletUsers.has(userId)));
   };
   const environmentFor = (...ids: unknown[]) => (ids.some(isTestUser) ? "uat" : "live");
-
-  const familyIds = unique([
-    ...authorizationRows.map((row) => row.recipient_family_member_id),
-    ...registryRows
-      .filter((row) => text(row.beneficiary_type)?.toUpperCase() === "CHILD")
-      .map((row) => row.beneficiary_ref),
-  ]);
-  let familyRows: Row[] = [];
-  if (familyIds.length) {
-    const result = await db.from("family_members").select("id,first_name,last_name,mint_number,primary_user_id,parent_id").in("id", familyIds);
-    if (result.error) notices.push(`family_members: ${result.error.message}`);
-    else familyRows = (result.data ?? []) as Row[];
-  }
-  const familyById = byId(familyRows);
 
   const assetKeys = unique([
     ...itemRows.map((row) => row.isin),
