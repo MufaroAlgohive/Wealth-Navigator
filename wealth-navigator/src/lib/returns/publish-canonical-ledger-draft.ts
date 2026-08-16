@@ -136,6 +136,68 @@ export function canExtendCanonicalCheckpoint(status: string) {
   return status === "DRAFT" || status === "CERTIFIED";
 }
 
+export function appendDailyCertificationEvidence(
+  sourceEvidence: JsonRow,
+  input: {
+    asOf: string;
+    currentLegs: Array<{
+      ticker: string;
+      units: number;
+      close_cents: number;
+      price_as_of_date: string;
+      price_fetched_at: string;
+      source: string;
+    }>;
+    expectedHoldings: number;
+    securitiesValueCents: number;
+    continuityCashCents: number;
+    completeValueCents: number;
+  },
+) {
+  const priorPriceCoverage =
+    sourceEvidence.price_coverage &&
+    typeof sourceEvidence.price_coverage === "object" &&
+    !Array.isArray(sourceEvidence.price_coverage)
+      ? sourceEvidence.price_coverage
+      : {};
+  const priorReconciliation =
+    sourceEvidence.reconciliation &&
+    typeof sourceEvidence.reconciliation === "object" &&
+    !Array.isArray(sourceEvidence.reconciliation)
+      ? sourceEvidence.reconciliation
+      : {};
+  return {
+    ...sourceEvidence,
+    price_coverage: {
+      ...priorPriceCoverage,
+      latest_exact_close: {
+        as_of_date: input.asOf,
+        exact_close_required: true,
+        covered_holdings: input.currentLegs.length,
+        expected_holdings: input.expectedHoldings,
+        legs: input.currentLegs.map((leg) => ({
+          ticker: leg.ticker,
+          units: leg.units,
+          close_cents: leg.close_cents,
+          price_as_of_date: leg.price_as_of_date,
+          fetched_at: leg.price_fetched_at,
+          source: leg.source,
+        })),
+      },
+    },
+    reconciliation: {
+      ...priorReconciliation,
+      latest_daily_value_identity: {
+        as_of_date: input.asOf,
+        securities_value_cents: input.securitiesValueCents,
+        continuity_cash_cents: input.continuityCashCents,
+        complete_value_cents: input.completeValueCents,
+        equation_passed: input.completeValueCents === input.securitiesValueCents + input.continuityCashCents,
+      },
+    },
+  };
+}
+
 function isLegLedger(row: CanonicalRow) {
   return row.leg_snapshot.some(
     (leg) => leg.entry_date != null && leg.entry_price_cents != null && leg.ticker != null,
@@ -243,16 +305,18 @@ export function buildCanonicalInceptionLegs(
       sourceRef: "automatic_inception_exact_close",
     })),
     ...(continuityCashCents > 0
-      ? [{
-          ticker: "CASH",
-          leg: "Inception continuity cash",
-          units: 1,
-          entryDate: asOf,
-          entryPriceCents: continuityCashCents,
-          exitDate: null,
-          exitPriceCents: null,
-          sourceRef: "active_valuation_rule",
-        }]
+      ? [
+          {
+            ticker: "CASH",
+            leg: "Inception continuity cash",
+            units: 1,
+            entryDate: asOf,
+            entryPriceCents: continuityCashCents,
+            exitDate: null,
+            exitPriceCents: null,
+            sourceRef: "active_valuation_rule",
+          },
+        ]
       : []),
   ];
 }
@@ -414,7 +478,10 @@ export async function publishCanonicalLedgerDraft(
         skipped += 1;
         continue;
       }
-      if (existingCurrent?.certification_status !== undefined && existingCurrent.certification_status !== "DRAFT") {
+      if (
+        existingCurrent?.certification_status !== undefined &&
+        existingCurrent.certification_status !== "DRAFT"
+      ) {
         results.push({ strategy: strategy.name, action: "skipped", reason: "EXISTING_ROW_NOT_DRAFT", asOf });
         skipped += 1;
         continue;
@@ -448,9 +515,8 @@ export async function publishCanonicalLedgerDraft(
       let boundaryLegs: NormalizedLeg[] | null = null;
       let boundaryEvidence: JsonRow | null = null;
       if (
-        previous &&
-        !sameModelHoldings(priorHoldings, currentHoldings) ||
-        previous && continuityCashCents !== Number(previous.continuity_cash_cents)
+        (previous && !sameModelHoldings(priorHoldings, currentHoldings)) ||
+        (previous && continuityCashCents !== Number(previous.continuity_cash_cents))
       ) {
         const batches = await many<SettledBoundaryBatch>(
           "settled rebalance boundary",
@@ -531,7 +597,8 @@ export async function publishCanonicalLedgerDraft(
         boundaryEvidence = rebuilt.evidence;
       }
 
-      const metricLegs = boundaryLegs ?? (previous && isLegLedger(previous) ? normalizeLedgerLegs(previous) : null);
+      const metricLegs =
+        boundaryLegs ?? (previous && isLegLedger(previous) ? normalizeLedgerLegs(previous) : null);
       const tickers = [
         ...new Set([
           ...currentHoldings.map((holding) => holding.ticker),
@@ -579,7 +646,9 @@ export async function publishCanonicalLedgerDraft(
           ledger_version: DAILY_LEDGER_VERSION,
           certification_status: "DRAFT",
           source_evidence: bootstrapEvidence,
-          source_evidence_sha256: createHash("sha256").update(JSON.stringify(bootstrapEvidence)).digest("hex"),
+          source_evidence_sha256: createHash("sha256")
+            .update(JSON.stringify(bootstrapEvidence))
+            .digest("hex"),
           calculation_notes: {},
         }),
         as_of_date: asOf,
@@ -646,8 +715,8 @@ export async function publishCanonicalLedgerDraft(
         daily_writer: !previous
           ? "canonical-draft-auto-inception-v1"
           : boundaryEvidence
-          ? "canonical-draft-evidence-backed-boundary-v2"
-          : "canonical-draft-stable-composition-v1",
+            ? "canonical-draft-evidence-backed-boundary-v2"
+            : "canonical-draft-stable-composition-v1",
         report_mode: "DAILY_DRAFT_APPEND_ONLY",
         promotion_blocked: true,
       };
@@ -659,6 +728,16 @@ export async function publishCanonicalLedgerDraft(
           ...previous.source_evidence,
           daily_boundaries: [...priorBoundaries, boundaryEvidence],
         };
+      }
+      if (previous) {
+        current.source_evidence = appendDailyCertificationEvidence(current.source_evidence, {
+          asOf,
+          currentLegs,
+          expectedHoldings: currentHoldings.length,
+          securitiesValueCents,
+          continuityCashCents,
+          completeValueCents,
+        });
         current.source_evidence_sha256 = createHash("sha256")
           .update(JSON.stringify(current.source_evidence))
           .digest("hex");
@@ -666,7 +745,9 @@ export async function publishCanonicalLedgerDraft(
 
       if (apply) {
         const write = existingCurrent
-          ? db.from("strategy_canonical_daily_ledger_c").upsert(current, { onConflict: "strategy_id,as_of_date" })
+          ? db
+              .from("strategy_canonical_daily_ledger_c")
+              .upsert(current, { onConflict: "strategy_id,as_of_date" })
           : db.from("strategy_canonical_daily_ledger_c").insert(current);
         const { error } = await write;
         if (error) throw new Error(`DRAFT_INSERT_FAILED:${error.message}`);
