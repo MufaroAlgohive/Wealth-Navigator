@@ -156,11 +156,11 @@ async function listTruth(db: Db) {
         "user_id,family_member_id,strategy_id,as_of_date,basket_value_cents,securities_value_cents,residual_cash_cents,unused_reserve_cents,accrued_liability_cents,inception_pnl_cents,inception_pct,ytd_pct",
       ),
     db.from("profiles").select("id,first_name,last_name,email,mint_number,created_at"),
-    db.from("strategies_c").select("id,name,short_name,min_investment,status"),
+    db.from("strategies_c").select("id,name,short_name,min_investment,status,created_at"),
     db
       .from("strategy_returns_effective_c")
       .select(
-        "strategy_id,as_of_date,complete_value_cents,basket_value_cents,securities_value_cents,continuity_cash_cents",
+        'strategy_id,as_of_date,complete_value_cents,basket_value_cents,securities_value_cents,continuity_cash_cents,"1m_pct"',
       )
       .order("as_of_date", { ascending: false })
       .limit(4000),
@@ -171,9 +171,11 @@ async function listTruth(db: Db) {
   const profileMap = new Map((profiles ?? []).map((row) => [text(row.id), row]));
   const strategyMap = new Map((strategies ?? []).map((row) => [text(row.id), row]));
   const latestStrategyReturn = new Map<string, Row>();
+  const strategyReturnByDate = new Map<string, Row>();
   for (const row of (strategyReturns ?? []) as Row[]) {
     const id = text(row.strategy_id);
     if (id && !latestStrategyReturn.has(id)) latestStrategyReturn.set(id, row);
+    if (id) strategyReturnByDate.set(`${id}:${text(row.as_of_date).slice(0, 10)}`, row);
   }
   const positions = ((latest ?? []) as Row[])
     .filter((row) => !excluded.has(text(row.user_id)) && num(row.basket_value_cents) > 0)
@@ -222,11 +224,13 @@ async function listTruth(db: Db) {
     ledger: ledgerRows.map((row) => ({
       strategyId: text(row.strategy_id),
       strategy: strategyMap.get(text(row.strategy_id))?.short_name || strategyMap.get(text(row.strategy_id))?.name || text(row.strategy_id),
+      strategyCreatedAt: strategyMap.get(text(row.strategy_id))?.created_at ?? null,
       asOf: text(row.as_of_date),
       certificationStatus: text(row.certification_status),
       securitiesCents: num(row.securities_value_cents),
       continuityCashCents: num(row.continuity_cash_cents),
       completeValueCents: num(row.complete_value_cents),
+      currentAppOneMonthPct: strategyReturnByDate.get(`${text(row.strategy_id)}:${text(row.as_of_date).slice(0, 10)}`)?.["1m_pct"] ?? null,
       legs: Array.isArray(row.leg_snapshot) ? row.leg_snapshot : [],
       periods: row.period_metrics && typeof row.period_metrics === "object" ? row.period_metrics : {},
       evidence: row.source_evidence && typeof row.source_evidence === "object" ? row.source_evidence : {},
