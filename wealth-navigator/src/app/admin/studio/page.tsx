@@ -21,7 +21,7 @@ const initials = (name: string) => name.split(" ").map((w) => w[0]).join("").sli
 
 export default function StudioPage() {
   const [config, setConfig] = React.useState<{ dev: string; live: string }>({ dev: "", live: "" });
-  const [env, setEnv] = React.useState<"dev" | "live">("dev");
+  const [env, setEnv] = React.useState<"dev" | "live">("live");
   const [scope, setScope] = React.useState<"invested" | "all">("invested");
   const [clients, setClients] = React.useState<Client[] | null>(null);
   const [search, setSearch] = React.useState("");
@@ -31,12 +31,35 @@ export default function StudioPage() {
   const [portfolioError,setPortfolioError]=React.useState<string|null>(null);
 
   React.useEffect(() => {
-    fetch("/api/admin/studio?action=config").then((r) => r.json()).then((d) => {if(d.ok){const next={dev:d.dev||"",live:d.live||""};setConfig(next);if(!next.dev&&next.live)setEnv("live");}}).catch(() => {});
+    fetch("/api/admin/studio?action=config").then((r) => r.json()).then((d) => {if(d.ok){const next={dev:d.dev||"",live:d.live||""};setConfig(next);if(!next.live&&next.dev)setEnv("dev");}}).catch(() => {});
   }, []);
 
   React.useEffect(() => {
     setClients(null);
-    fetch(`/api/admin/studio?action=clients&scope=${scope}`).then((r) => r.json()).then((d) => setClients(d.ok ? d.clients || [] : [])).catch(() => setClients([]));
+    if (scope === "invested") {
+      fetch("/api/admin/investors/data").then((r) => r.json()).then((d) => {
+        if (!d.ok) { setClients([]); return; }
+        const strategyById = new Map<string, string>((d.strategies || []).map((s: any) => [String(s.id), String(s.name)]));
+        const strategyByUser = new Map<string, Set<string>>();
+        for (const h of (d.holdings || [])) {
+          const id = h.user_id;
+          if (!id) continue;
+          const set = strategyByUser.get(id) ?? new Set<string>();
+          if (h.strategy_id && strategyById.has(String(h.strategy_id))) set.add(strategyById.get(String(h.strategy_id))!);
+          strategyByUser.set(id, set);
+        }
+        const mapped = (d.profiles || []).map((p: any) => ({
+          id: p.id,
+          name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email,
+          email: p.email,
+          strategy: [...(strategyByUser.get(p.id) ?? [])].join(", ") || null,
+          isTest: false // The data endpoint already excludes test accounts
+        })).sort((a: any, b: any) => String(a.name).localeCompare(String(b.name)));
+        setClients(mapped);
+      }).catch(() => setClients([]));
+    } else {
+      fetch(`/api/admin/studio?action=clients&scope=all`).then((r) => r.json()).then((d) => setClients(d.ok ? d.clients || [] : [])).catch(() => setClients([]));
+    }
   }, [scope]);
 
   const openClient = async (c: Client) => {

@@ -20,20 +20,13 @@ export async function GET(req:Request) {
   let db;try{db=createRetailServiceRoleClient()}catch{return NextResponse.json({ok:false,error:"RETAIL database not configured"},{status:503})}
 
   if(action==="clients"){
-    const scope=url.searchParams.get("scope")==="all"?"all":"invested";
+    const scope=url.searchParams.get("scope")||"all";
     if(scope==="all"){
       const {data,error}=await db.from("profiles").select("id,first_name,last_name,email,mint_number,is_test").order("first_name").limit(5000);
       if(error)return NextResponse.json({ok:false,error:error.message},{status:500});
       return NextResponse.json({ok:true,clients:(data??[]).map(p=>({id:p.id,name:`${p.first_name||""} ${p.last_name||""}`.trim()||p.email,email:p.email,strategy:null,isTest:p.is_test===true}))});
     }
-    const {data:holds,error}=await db.from("stock_holdings_c").select("user_id,strategy_id,strategy_name_snapshot").eq("is_active",true).eq("trade_side","BUY").limit(10000);
-    if(error)return NextResponse.json({ok:false,error:error.message},{status:500});
-    const ids=[...new Set((holds??[]).map(h=>String(h.user_id||"")).filter(Boolean))];if(!ids.length)return NextResponse.json({ok:true,clients:[]});
-    const strategyByUser=new Map<string,Set<string>>();for(const h of holds??[]){const id=String(h.user_id||"");if(!id)continue;const set=strategyByUser.get(id)??new Set<string>();if(h.strategy_name_snapshot)set.add(String(h.strategy_name_snapshot));strategyByUser.set(id,set)}
-    const {data:profiles,error:profileError}=await db.from("profiles").select("id,first_name,last_name,email,mint_number,is_test").in("id",ids);
-    if(profileError)return NextResponse.json({ok:false,error:profileError.message},{status:500});
-    const clients=(profiles??[]).map(p=>({id:p.id,name:`${p.first_name||""} ${p.last_name||""}`.trim()||p.email,email:p.email,strategy:[...(strategyByUser.get(String(p.id))??[])].join(", ")||null,isTest:p.is_test===true})).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
-    return NextResponse.json({ok:true,clients});
+    return NextResponse.json({ok:true,clients:[]});
   }
 
   if(action==="portfolio"){
