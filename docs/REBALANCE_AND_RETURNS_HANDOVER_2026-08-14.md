@@ -1286,3 +1286,30 @@ Vite 7.3.6 production build succeeds. A separate older API test retains mocks
 for the superseded direct-holding insertion path and must be modernized before
 it can assert the new RPC response; it does not represent a production build
 failure.
+# 2026-08-16 final retail-read and MyGrowth cash rollout
+
+## Verified database position
+
+- MyGrowthFund canonical DRAFT ledger was rebuilt from 2026-04-20 through 2026-08-14 after the reviewed 2026-08-03 rebalance cash evidence was recovered.
+- The latest audited model lot is R1,408.83: R1,046.92 securities plus R361.91 continuity cash.
+- The R361.91 cash begins at the effective rebalance boundary, not at the repair date. This preserves the historical capital bridge and avoids a false current-day chart spike.
+- MyGrowthFund passed 324/324 independent price checks, 81/81 complete-value checks and every formula check.
+- Yield Basket passed all formula checks and all available provider comparisons. Its 92 missing checks are exclusively CLI, whose post-delisting provider series is unavailable; this is disclosed rather than presented as an independent match.
+
+## Retail application contract
+
+The fees2 application now routes public strategy value, period return and chart reads through the authenticated `/api/returns/approved` endpoint. That endpoint overlays only `CERTIFIED` rows from `strategy_canonical_daily_ledger_c`; DRAFT rows remain invisible. Cards, factsheets, gifting and child strategy surfaces share this read contract.
+
+The displayed strategy lot is:
+
+```text
+complete_value_cents = securities_value_cents + continuity_cash_cents
+```
+
+The 8% execution reserve is not part of the displayed strategy value and is charged separately at checkout. Holdings weights on the factsheet are scaled to the securities share of complete value, then the continuity-cash holding is added, so the displayed composition remains 100%.
+
+Future adult and child purchases use `record_strategy_purchase_with_model_cash`. It atomically records the whole model basket and its active `strategy_valuation_rules_c.continuity_cash_per_lot_cents` allocation on the same transaction. Missing or invalid model-cash rules fail closed.
+
+## Controlled activation
+
+`scripts/promote-canonical-ledger-scoped.mjs` is the explicit, named-strategy certification gate. It validates the complete-value identity, required return periods and non-empty leg evidence for every DRAFT row. Apply mode requires an accountable auth UUID, a specific reason and an explicit evidence waiver where a delisted provider gap is disclosed. It never promotes unrequested strategies.
