@@ -1379,10 +1379,22 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
 
       const view = book.addWorksheet(publicName, { pageSetup: { orientation: "portrait", fitToWidth: 1, fitToHeight: 1 } });
       view.mergeCells("A1:B1");
-      view.getCell("A1").value = `PUBLIC STRATEGY VIEW - ${current.strategy.toUpperCase()}`;
+      view.getCell("A1").value = "PUBLIC STRATEGY VIEW - WHAT THE STRATEGY PAGE SHOULD SHOW";
       view.getCell("A1").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
       view.getCell("A1").font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
       view.getCell("A1").alignment = { horizontal: "left", vertical: "middle" };
+      const creationDate = String(strategyHistory[0]?.evidence?.strategy_created_at ?? strategyHistory[0]?.asOf ?? current.asOf).slice(0, 10);
+      const firstCloseDate = strategyHistory[0]?.asOf ?? current.asOf;
+      view.getCell("A2").value = "Inception_to_Latest_Coverage";
+      view.getCell("B2").value = {
+        formula: `TEXT(DATE(${creationDate.slice(0, 4)},${Number(creationDate.slice(5, 7))},${Number(creationDate.slice(8, 10))}),"dd-mmm-yyyy")&" to "&TEXT(MAX(${`'${supportName.replaceAll("'", "''")}'`}!$A$2:$A$${dailyLastRow}),"dd-mmm-yyyy")`,
+        result: `${creationDate} to ${current.asOf}`,
+      };
+      view.getCell("C2").value = creationDate === firstCloseDate
+        ? "Daily market-close history begins on the strategy creation date and continues to the latest available close."
+        : `Created ${creationDate}; the first legitimate market close is ${firstCloseDate} because the creation date was not a trading day.`;
+      for (let column = 1; column <= 3; column += 1) view.getCell(2, column).alignment = { vertical: "top", wrapText: true };
+      view.getRow(2).height = 32.1;
       view.getRow(3).values = ["Metric", "Formula / Value", "Why it matters"];
       const supportRef = `'${supportName.replaceAll("'", "''")}'`;
       const completeColumn = tickers.length + 4;
@@ -1417,6 +1429,7 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
       view.getCell("A13").value = "Public strategy returns";
       view.getCell("A13").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
       view.getCell("A13").font = { bold: true, color: { argb: "FFFFFFFF" } };
+      view.getCell("A14").fill = { type: "pattern", pattern: "solid", fgColor: { argb: purple } };
       view.getRow(15).values = ["Period", "Benchmark_Value", "Numerator_Value", "P/L", "Return"];
       ["1W", "WTD", "1M", "3M", "YTD", "SI"].forEach((period, index) => {
         const row = 16 + index;
@@ -1464,6 +1477,16 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
           cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
         });
       });
+      view.getCell("A10").fill = { type: "pattern", pattern: "solid", fgColor: { argb: grey } };
+      view.getCell("A10").font = { bold: true };
+      view.getCell("A10").alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      for (let column = 1; column <= 15; column += 1) {
+        const returnCell = view.getCell(16, column);
+        returnCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: grey } };
+        returnCell.font = { bold: true };
+        returnCell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+        view.getCell(23, column).fill = { type: "pattern", pattern: "solid", fgColor: { argb: grey } };
+      }
       for (let row = 4; row <= 11; row += 1) for (let column = 1; column <= 3; column += 1) view.getCell(row, column).alignment = { vertical: "top", wrapText: true };
       view.getColumn(1).width = 40.42578125;
       for (let column = 2; column <= Math.max(8, changeColumn); column += 1) view.getColumn(column).width = column === changeColumn ? 70 : 40.42578125;
