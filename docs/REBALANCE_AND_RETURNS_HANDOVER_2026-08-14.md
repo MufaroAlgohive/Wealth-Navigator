@@ -925,6 +925,32 @@ failures are recorded as unavailable evidence, never interpreted as matching
 prices. MyGrowth therefore remains DRAFT until a reviewed IRESS export, working
 provider endpoint or other approved independent price file reproduces it.
 
+### 16 August provider refresh and MyGrowth chart correction
+
+The family certification audit was rerun read-only against Retail and Yahoo on
+16 August 2026. Yahoo returned the 2026 histories successfully with no provider
+request errors. Blended Focus, MINT Famous Brands, MINT Multi-sector and UCT
+passed price, valuation and formula verification exactly. MyGrowthFund retained
+all 81 inception-to-14-August DRAFT rows and zero formula failures; its only
+independent difference was the 14-August SYGEMF close, where the stored value is
+4 cents per share below Yahoo. Across three model units this is a 12-cent basket
+variance. This is disclosed evidence, not a rebalance discontinuity, and no
+price or public return was overwritten by the audit.
+
+The Source of Truth chart previously plotted raw `complete_value_cents`. That
+field is an accounting snapshot of the current open basket and can legitimately
+drop when capital is returned to owners during a rebalance; plotting it across
+boundaries made MyGrowth look as if it suffered a market loss. The chart now
+plots the stored `SI.return_pct` leg-P/L series as an index starting at 100. It
+does not recalculate returns in the browser and does not affect public app
+values. MyGrowth therefore displays its reviewed 1.8835008744% performance
+without hiding the separate current-basket value of R1,047.37.
+
+Remaining release gates are explicit: resolve or approve the 12-cent MyGrowth
+provider variance, obtain an approved source for ETF Basket's quarantined STXID
+history, and obtain evidence approval for Yield Basket's delisted CLI history.
+No strategy should be promoted merely to make the audit screen green.
+
 ### Diversified and Multi-sector composition-only ledgers
 
 The two remaining strategies with no canonical history were audited across
