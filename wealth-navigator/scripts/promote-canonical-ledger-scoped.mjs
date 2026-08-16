@@ -18,7 +18,7 @@ if (apply && reason.length < 20) throw new Error("apply requires a specific CANO
 
 const db = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 const workbookSha = "bde94581727f9a08232ec5e80f2672bde3a1ef73c733309ec8723fe78bcaa301";
-const requiredPeriods = ["1D", "1W", "WTD", "1M", "3M", "YTD", "SI"];
+const requiredPeriods = ["1D", "1W", "WTD", "MTD", "1M", "3M", "6M", "YTD", "SI"];
 const disclosedProviderGaps = new Map([
   ["Yield Basket", { ticker: "CLI", missingPoints: 92, reason: "JSE_DELISTED_PROVIDER_SERIES_UNAVAILABLE" }],
 ]);

@@ -71,6 +71,11 @@ function previousWeekEnd(date: string): string {
   return iso(value);
 }
 
+function previousMonthEnd(date: string): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), 0)).toISOString().slice(0, 10);
+}
+
 function bare(symbol: string): string {
   return symbol
     .trim()
@@ -196,12 +201,13 @@ const [compositions, batches, reconciliations, publications, existingRows] = awa
     continuity_cash_cents: number;
     complete_value_cents: number;
     source_evidence_sha256: string | null;
+    period_metrics: Record<string, { return_pct?: number | null }>;
   }>(
     "existing canonical rows",
     db
       .from("strategy_canonical_daily_ledger_c")
       .select(
-        "as_of_date,ledger_version,certification_status,securities_value_cents,continuity_cash_cents,complete_value_cents,source_evidence_sha256",
+        "as_of_date,ledger_version,certification_status,securities_value_cents,continuity_cash_cents,complete_value_cents,source_evidence_sha256,period_metrics",
       )
       .eq("strategy_id", strategy.id),
   ),
@@ -582,8 +588,10 @@ const ledgerRows = navRows.map((current, index) => ({
     "1D": metric(index, addDays(current.date, -1)),
     "1W": metric(index, addDays(current.date, -7)),
     WTD: metric(index, previousWeekEnd(current.date)),
+    MTD: metric(index, previousMonthEnd(current.date)),
     "1M": metric(index, addMonths(current.date, -1)),
     "3M": metric(index, addMonths(current.date, -3)),
+    "6M": metric(index, addMonths(current.date, -6)),
     YTD: metric(index, `${Number(current.date.slice(0, 4)) - 1}-12-31`),
     SI: metric(index, inceptionDate),
   },
@@ -618,7 +626,9 @@ const conflicts = existingRows.flatMap((existing) => {
     existing.source_evidence_sha256 === sourceEvidenceHash &&
     Number(existing.securities_value_cents) === computed.securities_value_cents &&
     Number(existing.continuity_cash_cents) === computed.continuity_cash_cents &&
-    Number(existing.complete_value_cents) === computed.complete_value_cents;
+    Number(existing.complete_value_cents) === computed.complete_value_cents &&
+    Number(existing.period_metrics?.MTD?.return_pct) === Number(computed.period_metrics.MTD.return_pct) &&
+    Number(existing.period_metrics?.["6M"]?.return_pct) === Number(computed.period_metrics["6M"].return_pct);
   return matches
     ? []
     : [

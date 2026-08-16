@@ -1298,7 +1298,7 @@ failure.
 
 ## Retail application contract
 
-The fees2 application now routes public strategy value, period return and chart reads through the authenticated `/api/returns/approved` endpoint. That endpoint overlays only `CERTIFIED` rows from `strategy_canonical_daily_ledger_c`; DRAFT rows remain invisible. Cards, factsheets, gifting and child strategy surfaces share this read contract.
+The fees2 application now routes public strategy value, period return and chart reads through the authenticated `/api/returns/approved` endpoint. That endpoint overlays only `CERTIFIED` rows from `strategy_canonical_daily_ledger_c`; DRAFT rows remain invisible. Cards, factsheets, gifting and child strategy surfaces share this read contract. The stored period set now includes 1D, 1W, WTD, MTD, 1M, 3M, 6M, YTD and since-inception, so MTD no longer falls back to the legacy publication.
 
 The displayed strategy lot is:
 
