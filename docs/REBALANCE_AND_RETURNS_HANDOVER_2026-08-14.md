@@ -925,6 +925,40 @@ failures are recorded as unavailable evidence, never interpreted as matching
 prices. MyGrowth therefore remains DRAFT until a reviewed IRESS export, working
 provider endpoint or other approved independent price file reproduces it.
 
+### 16 August provider refresh and MyGrowth chart correction
+
+The family certification audit was rerun read-only against Retail and Yahoo on
+16 August 2026. Yahoo returned the 2026 histories successfully with no provider
+request errors. Blended Focus, MINT Famous Brands, MINT Multi-sector and UCT
+passed price, valuation and formula verification exactly. MyGrowthFund retained
+all 81 inception-to-14-August DRAFT rows and zero formula failures; its only
+independent difference was the 14-August SYGEMF close, where the stored value is
+4 cents per share below Yahoo. Across three model units this is a 12-cent basket
+variance. This is disclosed evidence, not a rebalance discontinuity, and no
+price or public return was overwritten by the audit.
+
+The Source of Truth chart previously plotted raw `complete_value_cents`. That
+field is an accounting snapshot of the current open basket and can legitimately
+drop when capital is returned to owners during a rebalance; plotting it across
+boundaries made MyGrowth look as if it suffered a market loss. The chart now
+plots the stored `SI.return_pct` leg-P/L series as an index starting at 100. It
+does not recalculate returns in the browser and does not affect public app
+values. MyGrowth therefore displays its reviewed 1.8835008744% performance
+without hiding the separate current-basket value of R1,047.37.
+
+Remaining release gates are explicit: resolve or approve the 12-cent MyGrowth
+provider variance, obtain an approved source for ETF Basket's quarantined STXID
+history, and obtain evidence approval for Yield Basket's delisted CLI history.
+No strategy should be promoted merely to make the audit screen green.
+
+Migration `20260816000001_repair_20260814_yahoo_closes.sql` prepares the exact
+provider correction for the two physical 14-August rows found by that audit:
+SYGEMF `3081 -> 3085` cents and STXNDQ `27630 -> 27583` cents. It checks the
+inspected row IDs, security IDs, symbols, date and old values before updating,
+verifies both new values inside the same transaction, and is idempotent. Run it
+before regenerating affected DRAFT ledgers. Applying the migration alone does
+not certify a row or switch the public app read path.
+
 ### Diversified and Multi-sector composition-only ledgers
 
 The two remaining strategies with no canonical history were audited across
@@ -1178,3 +1212,165 @@ divergence is counted as provider-rejected and skipped. The cron moved from
 `api/_lib/yahoo-close.js` contains the pure normalization/guard functions and
 `test/yahoo-eod-close.test.mjs` verifies ZAc, ZAR, exact-date and 100x rejection.
 All three Node tests pass and the full MINT Vite 7.3.3 production build passes.
+
+### 16 August MyGrowthFund cash-sleeve recovery
+
+The apparent fall from roughly R1.4k to R1,047 was traced to a valuation-rule
+error, not missing custody money and not market performance. The final 3 August
+rebalance reconciliation treated `rebalance_batch.min_investment_planned`
+(R1,038.00) as total model capital even though it represented only the
+replacement securities basket. It therefore published model CA of only R0.57.
+
+The immutable owner cash ledger proves the retained cash still exists. The
+standard one-lot owner, Siliziwe Mafika, has a closing MyGrowth residual of
+R361.91 and the latest `strategy_rebalance_cash_events_c` closing balance is
+the same R361.91. This is the post-fee cash sleeve: the first swap created
+R148.47, the first 3 August swap added R138.46, and the last swap added R74.98
+after the exhausted execution reserve left a R25.02 fee shortfall. The other
+standard-model economic values corroborate that no client money disappeared:
+
+| Owner | Securities | Residual cash | Liability | Effective value |
+| --- | ---: | ---: | ---: | ---: |
+| Siliziwe Mafika | R1,046.92 | R361.91 | R0.54 | R1,408.29 |
+| Ncumolwethu Damane | R1,148.42 | R261.03 | R0.54 | R1,408.91 |
+
+Ncumolwethu has one additional STXACW share funded from their residual, which
+explains the different securities/cash split while preserving nearly the same
+total. Owner residuals are the custody location of the strategy cash sleeve;
+they must not be deleted or debited merely because the public model displays
+the same cash per lot. Client effective NAV already uses securities + residual
+cash - liability and therefore does not add the model CA a second time.
+
+Migration `20260816000002_recover_mygrowth_model_cash.sql` is intentionally
+MyGrowth-only and fail-closed. It requires the exact erroneous rule
+(R1,037.43 securities + R0.57 CA), the exact final batch reconciliation, and
+matching R361.91 residual/cash-event evidence. It then corrects the active
+rule and reconciliation to R361.91 CA, changes only the strategy's static
+effective-date fallback to R1,399.34, and repairs guarded-publication value
+identities from 3 August onward without changing `chain_factor` or `ytd_pct`.
+That last condition prevents a false +34% daily return. No owner residual,
+execution reserve, wallet or holding is changed.
+
+At the repaired 14 August close, the intended public/purchase identity is:
+
+```text
+R1,046.92 current securities
++  R361.91 retained strategy cash
+= R1,408.83 current complete model value
+```
+
+The exact-close repair also changed 14 August SYGEMF from 3,081c to 3,085c and
+STXNDQ from 27,630c to 27,583c. MyGrowth's DRAFT model-only row was replayed to
+R1,047.49 while the rule still held the erroneous R0.57 CA; its formula audit
+passed across all 81 JSE sessions with zero identity failures. ETF Basket was
+replayed to R2,370.34. MINT Diversified Basket's DRAFT row was scoped and
+replayed to R2,526.44; no certified/public Diversified value was changed.
+
+The MINT adult and child purchase endpoints were then connected to the already
+migrated `record_strategy_purchase_with_model_cash` RPC. Both paths read the
+effective ACTIVE cash rule server-side, value one complete lot as current
+securities + model CA, derive whole-lot count from server-observed money, and
+write all holdings plus the owner's cash allocation atomically. The child path
+no longer trusts a client-supplied `units` value. The RPC stamps
+`transactions.strategy_id`, `strategy_model_lots`,
+`strategy_model_cash_cents` and `model_cash_allocated_at`, and increments the
+same owner/family residual used by effective client NAV. The 8% execution
+reserve remains separate in `transactions.buffer_cents` and is not counted as
+model CA.
+
+Seven focused adult basket regression tests pass, including a two-lot example
+with a R100-per-lot model cash sleeve, exact constituent scaling, stale-price
+reserve tolerance, underfunding rejection, inflated-client-input rejection and
+wallet rollback. Both changed API files pass `node --check`, and the full MINT
+Vite 7.3.6 production build succeeds. A separate older API test retains mocks
+for the superseded direct-holding insertion path and must be modernized before
+it can assert the new RPC response; it does not represent a production build
+failure.
+# 2026-08-16 final retail-read and MyGrowth cash rollout
+
+## Verified database position
+
+- MyGrowthFund canonical DRAFT ledger was rebuilt from 2026-04-20 through 2026-08-14 after the reviewed 2026-08-03 rebalance cash evidence was recovered.
+- The latest audited model lot is R1,408.83: R1,046.92 securities plus R361.91 continuity cash.
+- The R361.91 cash begins at the effective rebalance boundary, not at the repair date. This preserves the historical capital bridge and avoids a false current-day chart spike.
+- MyGrowthFund passed 324/324 independent price checks, 81/81 complete-value checks and every formula check.
+- Yield Basket passed all formula checks and all available provider comparisons. Its 92 missing checks are exclusively CLI, whose post-delisting provider series is unavailable; this is disclosed rather than presented as an independent match.
+
+## Retail application contract
+
+The fees2 application now routes public strategy value, period return and chart reads through the authenticated `/api/returns/approved` endpoint. That endpoint overlays only `CERTIFIED` rows from `strategy_canonical_daily_ledger_c`; DRAFT rows remain invisible. Cards, factsheets, gifting and child strategy surfaces share this read contract. The stored period set now includes 1D, 1W, WTD, MTD, 1M, 3M, 6M, YTD and since-inception, so MTD no longer falls back to the legacy publication.
+
+The displayed strategy lot is:
+
+```text
+complete_value_cents = securities_value_cents + continuity_cash_cents
+```
+
+The 8% execution reserve is not part of the displayed strategy value and is charged separately at checkout. Holdings weights on the factsheet are scaled to the securities share of complete value, then the continuity-cash holding is added, so the displayed composition remains 100%.
+
+Future adult and child purchases use `record_strategy_purchase_with_model_cash`. It atomically records the whole model basket and its active `strategy_valuation_rules_c.continuity_cash_per_lot_cents` allocation on the same transaction. Missing or invalid model-cash rules fail closed.
+
+## Controlled activation
+
+`scripts/promote-canonical-ledger-scoped.mjs` is the explicit, named-strategy certification gate. It validates the complete-value identity, required return periods and non-empty leg evidence for every DRAFT row. Apply mode requires an accountable auth UUID, a specific reason and an explicit evidence waiver where a delisted provider gap is disclosed. It never promotes unrequested strategies.
+
+## 2026-08-16 full-family certification preparation
+
+MyGrowthFund and Yield Basket were promoted first through the scoped gate. The
+post-write audit confirmed 81/81 and 135/135 rows respectively as `CERTIFIED`,
+with zero remaining DRAFT rows. Yield's 92 unavailable CLI comparisons are
+stored as a disclosed delisted-provider gap; they are not represented as
+independent matches.
+
+Before promoting the rest of the family, the family gate was tightened to
+require all nine stored periods (`1D`, `1W`, `WTD`, `MTD`, `1M`, `3M`, `6M`,
+`YTD`, `SI`). This correctly stopped the first attempt because older rows from
+the static, ETF, single-boundary and composition-proxy writers did not yet
+contain MTD or 6M. Those four writers now calculate MTD from the previous
+calendar-month end and 6M from the prior six-month reference date using the
+same canonical metric function as the other periods. Their conflict checks
+also compare these metrics, so DRAFT-only replays are idempotent.
+
+The recurring daily writer in
+`src/lib/returns/publish-canonical-ledger-draft.ts` received the same MTD and 6M
+references. All six remaining DRAFT histories were rebuilt without changing
+their model values. A final eight-row replay covered 11-14 August for MINT
+Diversified Basket and MINT Multi-sector, which had been appended by the daily
+writer after their historical proxy rebuild. The strict family dry run then
+validated all 716 remaining rows with every period present, exact
+`complete = securities + continuity cash`, and non-empty leg evidence.
+
+The same-session Yahoo/workbook audit produced zero provider request errors,
+zero exact-price mismatches, zero valuation mismatches and zero formula
+failures for Blended Focus, MINT Diversified Basket, MINT Famous Brands, MINT
+Multi-sector and UCT. ETF Basket has zero confirmed mismatches and zero formula
+failures, but Yahoo's STXID series remains quarantined at a median scale ratio
+of `0.009980472987632893` across 14 overlaps. Its 100 ledger comparisons must
+therefore be certified only under the explicit
+`YAHOO_PROVIDER_SCALE_DIVERGENCE` waiver; no STXID values are rescaled or
+invented.
+
+Latest 14-August DRAFT release candidates are:
+
+| Strategy | Complete value | MTD | 1M | 6M | YTD |
+|---|---:|---:|---:|---:|---:|
+| Blended Focus | R5,003.62 | 0.42% | 1.37% | 0.13% | -1.03% |
+| ETF Basket | R2,370.34 | 1.91% | 0.70% | 12.00% | 12.00% |
+| MINT Diversified Basket | R2,526.44 | 0.06% | -2.64% | 6.75% | 7.67% |
+| MINT Famous Brands | R3,030.61 | -0.78% | -3.17% | 5.35% | 6.41% |
+| MINT Multi-sector | R2,426.47 | -2.22% | -0.66% | -11.07% | -11.07% |
+| UCT | R1,134.71 | 3.79% | 7.33% | 7.15% | 7.15% |
+
+`promote-canonical-ledger-family.mjs` now accepts an exact
+`CANONICAL_STRATEGY_NAMES` scope, requires a waiver only when that scope
+contains a disclosed provider defect, and writes a per-strategy certification
+mode/caveat. Test Strategy is always excluded. At this checkpoint the six rows
+families remain DRAFT pending explicit client-facing publication approval.
+
+The business owner subsequently approved that exact scope. At
+`2026-08-16T10:43:54.108Z`, Blended Focus, MINT Diversified Basket, MINT Famous
+Brands, MINT Multi-sector and UCT promoted 616/616 rows under `FULL_EVIDENCE`.
+At `2026-08-16T10:46:32.486Z`, ETF Basket promoted 100/100 rows under the
+approved STXID provider-scale waiver. Final read-back across all eight active
+non-test strategies found 932/932 rows `CERTIFIED` and zero DRAFT rows. Test
+Strategy was not read, rebuilt or promoted by this rollout.

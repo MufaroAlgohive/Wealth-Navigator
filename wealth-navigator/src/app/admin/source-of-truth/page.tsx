@@ -1151,12 +1151,17 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
   );
   const selected = history.find((row) => row.asOf === selectedAsOf) ?? history[0] ?? selectedStrategy;
   const chartRows = useMemo(
-    () => [...history].reverse().map((row) => ({
-      date: row.asOf,
-      complete: row.completeValueCents / 100,
-      securities: row.securitiesCents / 100,
-      cash: row.continuityCashCents / 100,
-    })),
+    () => [...history]
+      .reverse()
+      .map((row) => {
+        const returnPct = Number(row.periods.SI?.return_pct);
+        return {
+          date: row.asOf,
+          returnPct,
+          index: Number.isFinite(returnPct) ? 100 * (1 + returnPct / 100) : null,
+        };
+      })
+      .filter((row) => row.index != null),
     [history],
   );
   const status = selected?.certificationStatus === "CERTIFIED" ? "ok" : "warning";
@@ -1708,8 +1713,8 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
       <div className="border-b border-white/10 p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div>
-            <div className="text-sm font-semibold">Daily complete-value ledger</div>
-            <div className="mt-1 text-xs text-muted-foreground">Stored database rows only · no browser-side return reconstruction</div>
+            <div className="text-sm font-semibold">Daily canonical performance</div>
+            <div className="mt-1 text-xs text-muted-foreground">Stored since-inception leg P/L return · indexed to 100 · rebalance cash flows excluded</div>
           </div>
           <span className="rounded-full border border-white/10 bg-black/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{history.length} closes</span>
         </div>
@@ -1718,16 +1723,25 @@ function LedgerWorkbook({ rows, loading }: { rows: LedgerRow[]; loading: boolean
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={chartRows} margin={{ top: 10, right: 12, left: 4, bottom: 0 }}>
                 <defs>
-                  <linearGradient id="canonicalLedgerValue" x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id="canonicalLedgerPerformance" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.42} />
                     <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.02} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,.06)" vertical={false} />
                 <XAxis dataKey="date" tick={{ fill: "#9ca3af", fontSize: 10 }} axisLine={false} tickLine={false} minTickGap={24} />
-                <YAxis tick={{ fill: "#9ca3af", fontSize: 10 }} axisLine={false} tickLine={false} width={56} tickFormatter={(value) => `R${Number(value).toLocaleString("en-ZA", { maximumFractionDigits: 0 })}`} />
-                <Tooltip formatter={(value) => [`R${Number(value).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, "Complete value"]} labelFormatter={(label) => `Close ${label}`} />
-                <Area type="monotone" dataKey="complete" stroke="#a78bfa" strokeWidth={2} fill="url(#canonicalLedgerValue)" dot={{ r: 2, fill: "#c4b5fd" }} activeDot={{ r: 4 }} />
+                <YAxis tick={{ fill: "#9ca3af", fontSize: 10 }} axisLine={false} tickLine={false} width={56} tickFormatter={(value) => Number(value).toFixed(1)} />
+                <Tooltip
+                  formatter={(value, name, item) => name === "index"
+                    ? [
+                        `${Number(value).toFixed(4)} (${Number(item.payload.returnPct) >= 0 ? "+" : ""}${Number(item.payload.returnPct).toFixed(4)}%)`,
+                        "Performance index",
+                      ]
+                    : [value, name]}
+                  labelFormatter={(label) => `Close ${label}`}
+                />
+                <ReferenceLine y={100} stroke="rgba(255,255,255,.25)" strokeDasharray="4 4" />
+                <Area type="monotone" dataKey="index" stroke="#a78bfa" strokeWidth={2} fill="url(#canonicalLedgerPerformance)" dot={{ r: 2, fill: "#c4b5fd" }} activeDot={{ r: 4 }} />
               </AreaChart>
             </ResponsiveContainer>
           </div>

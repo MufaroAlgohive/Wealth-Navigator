@@ -4,6 +4,7 @@ const result = await publishCanonicalLedgerDraft({
   asOfDate: process.env.CANONICAL_LEDGER_AS_OF?.trim() || undefined,
   apply: process.env.APPLY_CANONICAL_LEDGER_DRAFT === "1",
   replaceExistingDraft: process.env.REPLACE_EXISTING_CANONICAL_DRAFT === "1",
+  strategyName: process.env.CANONICAL_LEDGER_STRATEGY_NAME?.trim() || undefined,
 });
 
 console.log(JSON.stringify(result, null, 2));

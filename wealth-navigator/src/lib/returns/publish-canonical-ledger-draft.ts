@@ -81,6 +81,12 @@ function previousWeekEnd(date: string) {
   return iso(value);
 }
 
+function previousMonthEnd(date: string) {
+  const value = new Date(`${date}T00:00:00.000Z`);
+  value.setUTCDate(0);
+  return iso(value);
+}
+
 export function parseModelHoldings(value: unknown): Holding[] {
   return aggregateHoldings(
     (Array.isArray(value) ? value : [])
@@ -326,7 +332,12 @@ function legMetric(
 }
 
 export async function publishCanonicalLedgerDraft(
-  options: { asOfDate?: string; apply?: boolean; replaceExistingDraft?: boolean } = {},
+  options: {
+    asOfDate?: string;
+    apply?: boolean;
+    replaceExistingDraft?: boolean;
+    strategyName?: string;
+  } = {},
 ): Promise<CanonicalDraftPublishResult> {
   const asOf = options.asOfDate ?? new Date().toISOString().slice(0, 10);
   const apply = options.apply === true;
@@ -348,11 +359,13 @@ export async function publishCanonicalLedgerDraft(
     return { ok: true, asOf, apply, summary: empty, results: [], note: "not a JSE trading day" };
   }
 
-  const strategyResult = await db
+  let strategyQuery = db
     .from("strategies_c")
     .select("id,name,status")
     .eq("status", "active")
     .neq("name", "Test Strategy");
+  if (options.strategyName) strategyQuery = strategyQuery.eq("name", options.strategyName);
+  const strategyResult = await strategyQuery;
   if (strategyResult.error)
     return { ok: false, asOf, apply, summary: empty, results: [], note: strategyResult.error.message };
   const strategies = strategyResult.data ?? [];
@@ -580,8 +593,10 @@ export async function publishCanonicalLedgerDraft(
         "1D": addDays(asOf, -1),
         "1W": addDays(asOf, -7),
         WTD: previousWeekEnd(asOf),
+        MTD: previousMonthEnd(asOf),
         "1M": addMonths(asOf, -1),
         "3M": addMonths(asOf, -3),
+        "6M": addMonths(asOf, -6),
         YTD: `${Number(asOf.slice(0, 4)) - 1}-12-31`,
         SI: earliestDate,
       };

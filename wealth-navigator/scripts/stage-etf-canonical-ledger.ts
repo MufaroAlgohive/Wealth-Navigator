@@ -35,6 +35,12 @@ function previousWeekEnd(date: string): string {
   return iso(value);
 }
 
+function previousMonthEnd(date: string): string {
+  const value = new Date(`${date}T00:00:00.000Z`);
+  value.setUTCDate(0);
+  return iso(value);
+}
+
 function bare(symbol: string): string {
   return symbol.trim().toUpperCase().replace(/\.(JO|JSE)$/i, "");
 }
@@ -84,7 +90,7 @@ const [compositions, publications, existingRows] = await Promise.all([
     "existing ETF canonical rows",
     db
       .from("strategy_canonical_daily_ledger_c")
-      .select("as_of_date, certification_status, ledger_version, securities_value_cents, continuity_cash_cents, complete_value_cents, source_evidence_sha256")
+      .select("as_of_date, certification_status, ledger_version, securities_value_cents, continuity_cash_cents, complete_value_cents, period_metrics, source_evidence_sha256")
       .eq("strategy_id", strategy.id),
   ),
 ]);
@@ -187,8 +193,10 @@ const ledgerRows = navRows.map((current, index) => {
     "1D": metric(index, addDays(current.date, -1)),
     "1W": metric(index, addDays(current.date, -7)),
     WTD: metric(index, previousWeekEnd(current.date)),
+    MTD: metric(index, previousMonthEnd(current.date)),
     "1M": metric(index, addMonths(current.date, -1)),
     "3M": metric(index, addMonths(current.date, -3)),
+    "6M": metric(index, addMonths(current.date, -6)),
     YTD: metric(index, previousYearEnd),
     SI: metric(index, startDate),
   };
@@ -256,7 +264,9 @@ const conflicts = existingRows.flatMap((existing) => {
     existing.source_evidence_sha256 === computed.source_evidence_sha256 &&
     Number(existing.securities_value_cents) === computed.securities_value_cents &&
     Number(existing.continuity_cash_cents) === computed.continuity_cash_cents &&
-    Number(existing.complete_value_cents) === computed.complete_value_cents;
+    Number(existing.complete_value_cents) === computed.complete_value_cents &&
+    Number(existing.period_metrics?.MTD?.return_pct) === Number(computed.period_metrics.MTD.return_pct) &&
+    Number(existing.period_metrics?.["6M"]?.return_pct) === Number(computed.period_metrics["6M"].return_pct);
   return matches ? [] : [{ date: existing.as_of_date, reason: "stored checkpoint disagrees with rebuilt ETF NAV", certification_status: existing.certification_status }];
 });
 const protectedConflicts = conflicts.filter((conflict) => conflict.certification_status !== "DRAFT");
