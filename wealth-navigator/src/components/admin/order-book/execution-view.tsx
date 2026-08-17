@@ -1752,23 +1752,16 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
       toast.error(SEND_TO_MARKET_LOCKED_MESSAGE);
       return;
     }
-    // Step-up re-authentication. Releasing to the broker is irreversible from
-    // here, so the operator re-enters their own password; the server accepts it
-    // only from a Master ★ account (see lib/admin/step-up.ts). Prompting via
-    // window.prompt keeps the credential out of component state and out of any
-    // re-render — it exists only for the duration of this one request.
-    const adminPassword = window.prompt(
-      `Send ${parkedCount} parked order${parkedCount !== 1 ? "s" : ""} to market.\n\n` +
-        "This is irreversible. Re-enter your own password to confirm — only Master ★ accounts can release.",
-    );
-    if (adminPassword == null || adminPassword === "") return;
-
+    // Password re-entry was removed 2026-08-17 at the user's request. The
+    // server (lib/admin/step-up.ts) still requires a Master ★ account —
+    // releasing to the broker is still irreversible, just no longer gated on
+    // re-proving your own credential first.
     setReleasing(true);
     try {
       const res = await fetch("/api/admin/orderbook/release-to-market", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ admin_password: adminPassword }),
+        body: JSON.stringify({}),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
