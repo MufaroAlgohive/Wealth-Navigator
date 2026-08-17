@@ -74,7 +74,7 @@ async function loadRetailStrategies(
   // Stage 1 — every read here is independent; run them concurrently. The
   // previous fully-sequential chain (9 round trips) multiplied the pegged
   // DB's per-query latency into a page-blocking wait.
-  const [stratRes, testProfileRows, testWalletRows, clientHoldingsRes, residualRes, strategyReturnRes, canonicalAum] = await Promise.all([
+  const [stratRes, testProfileRows, testWalletRows, clientHoldingsRes, residualRes, strategyReturnRes, canonicalAum, certifiedLedgerRes] = await Promise.all([
     retail
       .from("strategies_c")
       .select(
@@ -98,6 +98,19 @@ async function loadRetailStrategies(
           .select('strategy_id,ytd_pct,"1d_pct",continuity_cash_cents,securities_value_cents')
       : Promise.resolve({ data: [], error: null }),
     wantCore ? loadCanonicalRetailAum(retail) : Promise.resolve(null),
+    // CERTIFIED canonical ledger — same authority MINT's /api/returns/approved
+    // already prefers. strategy_returns_effective_latest_c is the pre-certification
+    // "guarded" chain; for a strategy with a certified history it can be
+    // materially stale (e.g. Yield Basket's guarded YTD sat near 17% after the
+    // certified re-derivation settled at ~6.7% for the same date). Ordered desc
+    // and de-duped to the latest row per strategy below.
+    wantCore
+      ? retail
+          .from("strategy_canonical_daily_ledger_c")
+          .select("strategy_id,as_of_date,period_metrics,continuity_cash_cents,securities_value_cents,complete_value_cents")
+          .eq("certification_status", "CERTIFIED")
+          .order("as_of_date", { ascending: false })
+      : Promise.resolve({ data: [], error: null }),
   ]);
   const { data: stratData, error: stratErr } = stratRes;
   if (stratErr) throw stratErr;
@@ -295,6 +308,37 @@ async function loadRetailStrategies(
       if (continuityCash > 0 && strategyValue > 0) {
         cashPctByStrategy.set(k, (continuityCash / strategyValue) * 100);
       }
+    }
+  }
+  // Overlay the CERTIFIED canonical row where one exists — same "certified
+  // wins over guarded" rule as MINT's /api/returns/approved. Only the FIRST
+  // (latest, since certifiedLedgerRes is ordered desc) row per strategy is
+  // applied; later dates for the same strategy are ignored, not re-summed.
+  const { data: certifiedRows, error: certifiedErr } = certifiedLedgerRes as {
+    data: Array<{
+      strategy_id: string;
+      period_metrics: Record<string, { return_pct?: number | null }> | null;
+      continuity_cash_cents: number | null;
+      securities_value_cents: number | null;
+      complete_value_cents: number | null;
+    }> | null;
+    error: unknown;
+  };
+  if (!certifiedErr) {
+    const seenCertified = new Set<string>();
+    for (const r of certifiedRows ?? []) {
+      const k = String(r.strategy_id ?? "");
+      if (!k || seenCertified.has(k)) continue;
+      seenCertified.add(k);
+      const metrics = r.period_metrics ?? {};
+      const certifiedYtd = metrics.YTD?.return_pct;
+      const certifiedDay1 = metrics["1D"]?.return_pct;
+      if (certifiedYtd != null && Number.isFinite(Number(certifiedYtd))) ytdByStrategy.set(k, Number(certifiedYtd));
+      if (certifiedDay1 != null && Number.isFinite(Number(certifiedDay1))) day1PctByStrategy.set(k, Number(certifiedDay1));
+      const continuityCash = toNumber(r.continuity_cash_cents);
+      const securitiesValue = toNumber(r.securities_value_cents);
+      const strategyValue = continuityCash + securitiesValue;
+      if (continuityCash > 0 && strategyValue > 0) cashPctByStrategy.set(k, (continuityCash / strategyValue) * 100);
     }
   }
 
