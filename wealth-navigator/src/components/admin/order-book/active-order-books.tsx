@@ -66,6 +66,30 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
       return next;
     });
 
+  const [sending, setSending] = React.useState<Record<string, boolean>>({});
+  const sendConfirmation = async (book: OrderBookSummary) => {
+    const key = book.archive_id ?? String(book.sequence);
+    setSending((p) => ({ ...p, [key]: true }));
+    try {
+      const res = await fetch("/api/admin/orderbook/send-confirmation", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ book_id: book.archive_id ?? String(book.sequence) }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok === false) {
+        toast.error(body.error ?? `Send Confirmation failed (${res.status})`);
+        return;
+      }
+      toast.success(`Confirmation sent for ${book.title ?? `Order Book ${book.sequence}`}`);
+      await refresh?.();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Send Confirmation failed");
+    } finally {
+      setSending((p) => ({ ...p, [key]: false }));
+    }
+  };
+
   const [closing, setClosing] = React.useState<Record<string, boolean>>({});
   const moveToClosed = async (book: OrderBookSummary) => {
     const key = book.archive_id ?? String(book.sequence);
@@ -153,6 +177,15 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                     <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                       {b.filled_count}/{b.total_count} filled
                     </span>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      disabled={!!sending[bookKey]}
+                      onClick={() => void sendConfirmation(b)}
+                      title="Sends trade confirmation emails to clients and updates holding dates."
+                    >
+                      {sending[bookKey] ? "Sending…" : "Send Confirmation"}
+                    </Button>
                     <Button
                       variant="secondary"
                       size="sm"
