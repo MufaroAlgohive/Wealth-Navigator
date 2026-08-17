@@ -20,25 +20,21 @@ export async function GET(req:Request) {
   let db;try{db=createRetailServiceRoleClient()}catch{return NextResponse.json({ok:false,error:"RETAIL database not configured"},{status:503})}
 
   if(action==="clients"){
-    const scope=url.searchParams.get("scope")==="all"?"all":"invested";
+    const scope=url.searchParams.get("scope")||"all";
     if(scope==="all"){
       const {data,error}=await db.from("profiles").select("id,first_name,last_name,email,mint_number,is_test").order("first_name").limit(5000);
       if(error)return NextResponse.json({ok:false,error:error.message},{status:500});
       return NextResponse.json({ok:true,clients:(data??[]).map(p=>({id:p.id,name:`${p.first_name||""} ${p.last_name||""}`.trim()||p.email,email:p.email,strategy:null,isTest:p.is_test===true}))});
     }
-    const {data:holds,error}=await db.from("stock_holdings_c").select("user_id,strategy_id,strategy_name_snapshot").eq("is_active",true).eq("trade_side","BUY").limit(10000);
-    if(error)return NextResponse.json({ok:false,error:error.message},{status:500});
-    const ids=[...new Set((holds??[]).map(h=>String(h.user_id||"")).filter(Boolean))];if(!ids.length)return NextResponse.json({ok:true,clients:[]});
-    const strategyByUser=new Map<string,Set<string>>();for(const h of holds??[]){const id=String(h.user_id||"");if(!id)continue;const set=strategyByUser.get(id)??new Set<string>();if(h.strategy_name_snapshot)set.add(String(h.strategy_name_snapshot));strategyByUser.set(id,set)}
-    const {data:profiles,error:profileError}=await db.from("profiles").select("id,first_name,last_name,email,mint_number,is_test").in("id",ids);
-    if(profileError)return NextResponse.json({ok:false,error:profileError.message},{status:500});
-    const clients=(profiles??[]).map(p=>({id:p.id,name:`${p.first_name||""} ${p.last_name||""}`.trim()||p.email,email:p.email,strategy:[...(strategyByUser.get(String(p.id))??[])].join(", ")||null,isTest:p.is_test===true})).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
-    return NextResponse.json({ok:true,clients});
+    return NextResponse.json({ok:true,clients:[]});
   }
 
   if(action==="portfolio"){
     const userId=url.searchParams.get("user_id")||"";if(!userId)return NextResponse.json({ok:false,error:"user_id required"},{status:400});
-    const {data:holds,error}=await db.from("stock_holdings_c").select("id,security_id,quantity,avg_fill,Expected_fill,strategy_id,strategy_name_snapshot,transaction_id").eq("user_id",userId).eq("is_active",true).eq("trade_side","BUY");
+    const familyMemberId=url.searchParams.get("family_member_id")||null;
+    let holdsQuery=db.from("stock_holdings_c").select("id,security_id,quantity,avg_fill,Expected_fill,strategy_id,strategy_name_snapshot,transaction_id").eq("user_id",userId).eq("is_active",true).eq("trade_side","BUY");
+    if(familyMemberId) holdsQuery=holdsQuery.eq("family_member_id",familyMemberId);else holdsQuery=holdsQuery.is("family_member_id",null);
+    const {data:holds,error}=await holdsQuery;
     if(error)return NextResponse.json({ok:false,error:error.message},{status:500});
     const secIds=[...new Set((holds??[]).map(h=>h.security_id).filter(Boolean))],secMap:Record<string,{symbol:string;name:string|null;logo_url:string|null;last_price:number|null}>={},intradayMap=new Map<string,number>();
     if(secIds.length){const [{data:securities},{data:intraday}]=await Promise.all([db.from("securities_c").select("id,symbol,name,logo_url,last_price").in("id",secIds),db.from("stock_intraday_c").select("security_id,current_price,timestamp").in("security_id",secIds).order("timestamp",{ascending:false}).limit(5000)]);for(const security of securities??[])secMap[String(security.id)]=security as never;for(const row of intraday??[]){const id=String(row.security_id);if(!intradayMap.has(id)&&Number(row.current_price)>0)intradayMap.set(id,Number(row.current_price)/100)}}
@@ -46,10 +42,15 @@ export async function GET(req:Request) {
     // Realised P&L on closed lots (rebalance sells etc.) — without this, totalPnl
     // only reflects currently-held positions and hides a booked loss/gain, same
     // class of bug as the MINT client-app "Unrealized PnL shown as total" fix.
-    const {data:closed}=await db.from("stock_holdings_c").select("avg_fill,avg_exit,quantity").eq("user_id",userId).eq("is_active",false);
+    // Scoped by family_member_id the same way holdsQuery/txQuery are above.
+    let closedQuery=db.from("stock_holdings_c").select("avg_fill,avg_exit,quantity").eq("user_id",userId).eq("is_active",false);
+    closedQuery=familyMemberId?closedQuery.eq("family_member_id",familyMemberId):closedQuery.is("family_member_id",null);
+    const {data:closed}=await closedQuery;
     const realizedTotal=(closed??[]).reduce((sum,c)=>{const fill=Number(c.avg_fill)||0,exit=Number(c.avg_exit)||0,qty=Number(c.quantity)||0;return fill&&exit&&qty?sum+((exit-fill)/100)*qty:sum},0);
     const totalValue=holdings.reduce((sum,h)=>sum+h.marketValue,0),totalPnl=holdings.reduce((sum,h)=>sum+h.pnl,0)+realizedTotal,invested=totalValue-totalPnl;
-    const {data:transactions}=await db.from("transactions").select("id,name,description,amount,direction,status,transaction_date,created_at").eq("user_id",userId).order("created_at",{ascending:false}).limit(6);
+    let txQuery=db.from("transactions").select("id,name,description,amount,direction,status,transaction_date,created_at").eq("user_id",userId).order("created_at",{ascending:false}).limit(6);
+    if(familyMemberId) txQuery=txQuery.eq("family_member_id",familyMemberId);else txQuery=txQuery.is("family_member_id",null);
+    const {data:transactions}=await txQuery;
     const strategyMap=new Map<string,{id:string;name:string;value:number;holdings:number}>();for(const h of holdings){if(!h.strategyId)continue;const id=String(h.strategyId),item=strategyMap.get(id)??{id,name:String(h.strategy||"Strategy"),value:0,holdings:0};if(!h.pending)item.value+=h.marketValue;item.holdings+=1;strategyMap.set(id,item)}
     return NextResponse.json({ok:true,holdings,transactions:(transactions??[]).map(t=>({...t,amount:(Number(t.amount)||0)/100})),totalValue,totalPnl,pnlPct:invested>0?(totalPnl/invested)*100:0,strategyCount:strategyMap.size,strategies:[...strategyMap.values()],units:{money:"ZAR",sourcePrices:"ZAc normalized once on server"}});
   }

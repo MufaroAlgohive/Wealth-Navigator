@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
+import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
 
 /**
  * Investor analytics data. Ports `/api/investors/data` — a read-only
@@ -27,13 +29,31 @@ export async function GET() {
     return NextResponse.json({ ok: true, holdings: [], strategies: [], stratHist: [], profiles: [], secMeta: [], secLive: [], txns: [], familyMembers: [], residuals: [], closedHoldings: [], notice: "RETAIL database not configured." });
   }
 
+  let canonicalAum;
+  let liveScope;
+  try {
+    [canonicalAum, liveScope] = await Promise.all([
+      loadCanonicalRetailAum(db),
+      loadRetailLiveScope(db),
+    ]);
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: `Canonical LIVE AUM unavailable: ${error instanceof Error ? error.message : String(error)}` },
+      { status: 503 },
+    );
+  }
+
   // Active BUY holdings (cost basis source).
   const { data: holdingsRaw } = await db
     .from("stock_holdings_c")
     .select("user_id, family_member_id, security_id, strategy_id, quantity, avg_fill, Expected_fill, market_value, created_at, transaction_id")
     .eq("is_active", true)
     .eq("trade_side", "BUY");
-  let holdings = holdingsRaw ?? [];
+  let holdings = (holdingsRaw ?? []).filter(
+    (holding) =>
+      !liveScope.excludedUserIds.has(holding.user_id) &&
+      (!holding.strategy_id || !liveScope.excludedStrategyIds.has(holding.strategy_id)),
+  );
 
   // Exclude test accounts — dual classifier: profiles.is_test OR
   // wallets.status='test' (some test accounts are flagged only on the wallet).
@@ -99,5 +119,34 @@ export async function GET() {
   for (const [sid, cents] of Object.entries(intraById)) if (!returnsIds.has(sid)) secLive.push({ security_id: sid, current_price: cents });
 
   void inList;
-  return NextResponse.json({ ok: true, holdings, strategies, stratHist, profiles, secMeta, secLive, txns, familyMembers, residuals, closedHoldings });
+  const canonicalPositions = [...canonicalAum.byPosition.values()].map((position) => ({
+    key: position.key,
+    user_id: position.userId,
+    family_member_id: position.familyMemberId,
+    strategy_id: position.strategyId,
+    aum_cents: position.aumCents,
+    securities_cents: position.securitiesCents,
+    reserve_cents: position.reserveCents,
+    residual_cents: position.residualCents,
+    consumed_aum_fee_cents: position.consumedAumFeeCents,
+  }));
+  return NextResponse.json({
+    ok: true,
+    holdings,
+    strategies: strategies.filter((strategy) => !liveScope.excludedStrategyIds.has(strategy.id)),
+    stratHist,
+    profiles,
+    secMeta,
+    secLive,
+    txns,
+    familyMembers,
+    residuals,
+    closedHoldings,
+    canonicalPositions,
+    canonicalSummary: {
+      total_aum_cents: canonicalAum.totalAumCents,
+      investor_count: canonicalAum.investorCount,
+      as_of: canonicalAum.asOf,
+    },
+  });
 }

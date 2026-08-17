@@ -21,7 +21,8 @@ interface SecLive { security_id: string; current_price: number | null; }
 interface Txn { id: string; user_id: string; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_cents: number | null; buffer_consumed_cents: number | null; }
 interface Residual { user_id: string; family_member_id?: string | null; strategy_id?: string | null; balance_cents: number | null; }
 interface Strategy { id: string; name: string; short_name: string | null; }
-interface Payload { holdings: Holding[]; strategies: Strategy[]; profiles: Profile[]; familyMembers: FamilyMember[]; secMeta: SecMeta[]; secLive: SecLive[]; txns: Txn[]; residuals: Residual[]; closedHoldings: ClosedHolding[]; stratHist: NavRow[]; }
+interface CanonicalPosition { user_id: string; family_member_id: string | null; strategy_id: string; aum_cents: number; securities_cents: number; reserve_cents: number; residual_cents: number; consumed_aum_fee_cents: number; }
+interface Payload { holdings: Holding[]; strategies: Strategy[]; profiles: Profile[]; familyMembers: FamilyMember[]; secMeta: SecMeta[]; secLive: SecLive[]; txns: Txn[]; residuals: Residual[]; closedHoldings: ClosedHolding[]; stratHist: NavRow[]; canonicalPositions?: CanonicalPosition[]; canonicalSummary?: { total_aum_cents: number; investor_count: number; as_of: string }; }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const PIE = ["#7c5cff", "#22c55e", "#f59e0b", "#38bdf8", "#ec4899", "#ef4444", "#a3a3a3", "#14b8a6", "#eab308", "#8b5cf6"];
@@ -143,6 +144,7 @@ export default function InvestorsPage() {
     const familyById = new Map((data.familyMembers || []).map((member) => [member.id, member]));
     const strategyById = new Map((data.strategies || []).map((s) => [s.id, s]));
     const scope = (user: string, family?: string | null, strategy?: string | null) => `${user}:${family || ""}:${strategy || ""}`;
+    const canonicalByScope = new Map((data.canonicalPositions || []).map((row) => [scope(row.user_id, row.family_member_id, row.strategy_id), row]));
     const residualByUser: Record<string, number> = {};
     for (const r of data.residuals) { const key=scope(r.user_id,r.family_member_id,r.strategy_id);residualByUser[key]=(residualByUser[key]||0)+(Number(r.balance_cents)||0); }
     const realizedByUser: Record<string, number> = {};
@@ -187,15 +189,17 @@ export default function InvestorsPage() {
         const v = (bysecurity[h.security_id] ||= { securityId: h.security_id, symbol: meta?.symbol || "—", name: meta?.name || meta?.symbol || "—", sector: meta?.sector || "Other", qty: 0, priceCents: live, costCents: costCentsPerShare(h), valueCents: 0, investedCents: 0, pnlCents: 0 });
         v.qty += qty; v.valueCents += mv; v.investedCents += inv; v.pnlCents = v.valueCents - v.investedCents;
       }
-      const residualCents = residualByUser[key] || 0;
-      const bufferCents = bufferByUser[key] || 0;
+      const canonical = strategyId ? canonicalByScope.get(key) : undefined;
+      const residualCents = canonical?.residual_cents ?? residualByUser[key] ?? 0;
+      const bufferCents = canonical?.reserve_cents ?? bufferByUser[key] ?? 0;
       const realizedCents = realizedByUser[key] || 0;
       /* Value = positions + cash (residual + reserve). The buffer is
          contributed cash, not a gain, so P&L excludes it; Invested is
          derived (value − P&L = cost basis + buffer) so Invested + P&L =
          Value — identical to MyMintAdmin's investors.html and dashboard. */
-      const valueCents = currentCents + residualCents + bufferCents;
-      const pnlCents = currentCents - investedCents + realizedCents;
+      currentCents = canonical?.securities_cents ?? currentCents;
+      const valueCents = canonical?.aum_cents ?? currentCents + residualCents + bufferCents;
+      const pnlCents = currentCents - investedCents + realizedCents - (canonical?.consumed_aum_fee_cents ?? 0);
       const investedStableCents = valueCents - pnlCents;
       const navKey=scope(userId,familyMemberId,strategyId);
       const canonicalRows = navByUser[navKey] || [];
@@ -230,13 +234,13 @@ export default function InvestorsPage() {
   }, [data]);
 
   const kpi = React.useMemo(() => {
-    const aum = investors.reduce((s, i) => s + i.valueCents, 0);
+    const aum = data?.canonicalSummary?.total_aum_cents ?? investors.reduce((s, i) => s + i.valueCents, 0);
     const invested = investors.reduce((s, i) => s + i.investedCents, 0);
     const pnl = investors.reduce((s, i) => s + i.pnlCents, 0);
     const avgRet = investors.length ? investors.reduce((s, i) => s + i.retPct, 0) / investors.length : 0;
     const sorted = [...investors].filter((i) => i.investedCents > 0).sort((a, b) => b.retPct - a.retPct);
     return { aum, invested, pnl, avgRet, best: sorted[0] || null, worst: sorted[sorted.length - 1] || null };
-  }, [investors]);
+  }, [data?.canonicalSummary?.total_aum_cents, investors]);
 
   const filtered = investors.filter((i) => (bookType === "strategies" ? !!i.strategyId : !i.strategyId) && (!search.trim() || `${i.name} ${i.parentName || ""} ${i.email} ${i.strategy || ""}`.toLowerCase().includes(search.toLowerCase())));
   const listRows = bookType === "strategies" ? groupStrategyInvestors(filtered, selId) : filtered.map((i) => ({ ...i, ownerKey: ownerKeyOf(i), selectedKey: i.key, strategies: [i], groupCount: 1 }));

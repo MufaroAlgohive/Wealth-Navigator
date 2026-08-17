@@ -46,6 +46,11 @@ describe("aggregateCanonicalRetailAum", () => {
       consumedAumFeeCents: 10,
       aumCents: 620,
     });
+    expect(result.byPosition.get("u1||s1")).toMatchObject({
+      userId: "u1",
+      strategyId: "s1",
+      aumCents: 620,
+    });
   });
 
   it("excludes test owners and UAT strategies on independent axes", () => {

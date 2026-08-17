@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
+import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +69,19 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const userId = url.searchParams.get("user_id");
+  let canonicalAum;
+  let liveScope;
+  try {
+    [canonicalAum, liveScope] = await Promise.all([
+      loadCanonicalRetailAum(db),
+      loadRetailLiveScope(db),
+    ]);
+  } catch (error) {
+    return NextResponse.json(
+      { ok: false, error: `Canonical LIVE AUM unavailable: ${error instanceof Error ? error.message : String(error)}` },
+      { status: 503 },
+    );
+  }
 
   if (!userId) {
     const [
@@ -94,7 +109,7 @@ export async function GET(req: Request) {
     const { data: returns } = asOf
       ? await db
           .from("client_strategy_returns_c")
-          .select("user_id,basket_value,ytd_pnl")
+          .select("user_id,strategy_id,basket_value,ytd_pnl")
           .eq("as_of_date", asOf)
       : { data: [] };
     const ob = new Map(
@@ -102,14 +117,19 @@ export async function GET(req: Request) {
     );
     const ra = new Map((required ?? []).map((row) => [String(row.user_id), row as Record<string, unknown>]));
     const money = new Map<string, { aumCents: number; ytdPnlCents: number }>();
+    for (const position of canonicalAum.byPosition.values()) {
+      const current = money.get(position.userId) ?? { aumCents: 0, ytdPnlCents: 0 };
+      current.aumCents += position.aumCents;
+      money.set(position.userId, current);
+    }
     for (const row of returns ?? []) {
       const id = String(row.user_id);
+      if (liveScope.excludedUserIds.has(id) || liveScope.excludedStrategyIds.has(String(row.strategy_id))) continue;
       const current = money.get(id) ?? { aumCents: 0, ytdPnlCents: 0 };
-      current.aumCents += Number(row.basket_value) || 0;
       current.ytdPnlCents += Number(row.ytd_pnl) || 0;
       money.set(id, current);
     }
-    const clients = (profiles ?? []).map((profile) => {
+    const clients = (profiles ?? []).filter((profile) => !liveScope.excludedUserIds.has(String(profile.id))).map((profile) => {
       const id = String(profile.id);
       const m = money.get(id) ?? { aumCents: 0, ytdPnlCents: 0 };
       return {
@@ -122,7 +142,11 @@ export async function GET(req: Request) {
         ytdPct: m.aumCents ? (m.ytdPnlCents / (m.aumCents - m.ytdPnlCents || m.aumCents)) * 100 : null,
       };
     });
-    return NextResponse.json({ ok: true, source: "retail-supabase", asOf: asOf ?? null, clients });
+    return NextResponse.json({ ok: true, source: "canonical-live-retail-aum", asOf: canonicalAum.asOf, clients });
+  }
+
+  if (liveScope.excludedUserIds.has(userId)) {
+    return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
   }
 
   const [{ data: profile }, { data: onboarding }, { data: required }, { data: pack }, { data: family }] =
