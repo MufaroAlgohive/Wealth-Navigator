@@ -307,6 +307,16 @@ export async function bringUpMintSessionFromEnv(options?: {
   applicationId?: string;
   applicationLabel?: string;
   node?: string;
+  /**
+   * Send `SessionNumberToKick=<n>` on the FIRST `IRESSSessionStart` (no 25008
+   * wait). Use `-1` to evict any prior session for the same login — this is
+   * the deploy-time seat-recovery switch the worker uses on every push so the
+   * new container doesn't 25008-loop against the old container's stale session.
+   * When set, `kickLikeSessions` defaults to `true` unless explicitly false.
+   */
+  sessionNumberToKick?: number;
+  kickLikeSessions?: boolean;
+  /** Retry 25008 with SessionNumberToKick=-1 (first boot / orphan recovery). */
   forceKickOn25008?: boolean;
 }) {
   const creds = getIressCredentialsFromEnv();

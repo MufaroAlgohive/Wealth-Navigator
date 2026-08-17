@@ -133,7 +133,8 @@ export interface WorkerEnv {
    */
   newsMaxRows: number;
   /**
-   * `IRESS_RESET_ON_BOOT=1` — deploy-time seat-recovery switch (2026-08-17).
+   * `IRESS_RESET_ON_BOOT=1` — deploy-time seat-recovery switch, **ON BY DEFAULT**
+   * (2026-08-17, flipped-to-on after the recurring `DFM@Mint` seat-stuck pattern).
    *
    * On every push to `main`, the new container races the old container for the
    * single IRESS license seat. The old container's SIGTERM handler runs
@@ -142,21 +143,22 @@ export interface WorkerEnv {
    * roundtrip lands, both containers 25008 and the seat is leaked for up
    * to 2 hours.
    *
-   * Setting `IRESS_RESET_ON_BOOT=1` makes the new worker:
-   *   1. Treat its OWN `worker_session_metadata` row as stale on boot (force
+   * With `IRESS_RESET_ON_BOOT` ON (default), the new worker:
+   *   1. Treats its OWN `worker_session_metadata` row as stale on boot (force
    *      `persistedSessionIsStale()=true` by nulling `iress_session_key` +
    *      `expires_at` before reading).
-   *   2. Send `SessionNumberToKick=-1` on the **first** `IRESSSessionStart`
+   *   2. Sends `SessionNumberToKick=-1` on the **first** `IRESSSessionStart`
    *      (not just on the 25008 retry) so it claims the seat before the old
    *      replica can settle back into it.
    *
-   * Use it ONLY for deploys where the prior replica is known to be stuck
-   * (i.e. operator has confirmed a deploy happened and the new worker is
-   * 25008-looping). Leave it OFF in the resting state — the auto-kick
-   * latch in `session.ts` already handles first-boot/orphan recovery
-   * without operator input, and a standing-on `IRESS_RESET_ON_BOOT=1`
-   * would evict any live IRESS Chrome/CT/terminal session Charles may
-   * have open under `DFM@Mint`.
+   * KNOWN SIDE EFFECT: a deploy WILL kick any other live `DFM@Mint` session,
+   * including Charles's IRESS Chrome / CT terminal if he has it open during a
+   * prod deploy. The trade-off is intentional — deploy reliability beats
+   * Charles's local IRESS view during the ~2 minute Railway blue-green swap.
+   * Charles reconnects Chrome after the deploy settles; Railway logs show a
+   * single successful `[mint-iress] IRESSSessionStart ok` within ~10s of boot.
+   *
+   * To DISABLE (not recommended): set `IRESS_RESET_ON_BOOT=0` on Railway.
    */
   resetOnBoot: boolean;
 }
@@ -366,6 +368,6 @@ export function loadWorkerEnv(): WorkerEnv {
     // not kick live IRESS clients (Charles's Chrome / CT terminal) every
     // restart. Operator flips this on for one deploy cycle when the new
     // worker is 25008-looping against an orphan from the prior replica.
-    resetOnBoot: parseBool(process.env.IRESS_RESET_ON_BOOT, false),
+    resetOnBoot: parseBool(process.env.IRESS_RESET_ON_BOOT, true),
   };
 }
