@@ -418,6 +418,90 @@ export async function GET(req: Request) {
     });
   }
 
+  if (action === "holdings") {
+    // Powers client-studio.tsx's "Holdings" tab + P&L KPI. Previously unhandled
+    // (fell through to "Unknown action", so the tab silently always showed
+    // R0.00 for every client) — wired up here alongside the realised-P&L fix
+    // for the same "unrealised shown as total" bug found on this page's KPI.
+    const userId = url.searchParams.get("user_id") || "";
+    if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
+    const { data: children } = await db.from("family_members").select("id").or(`primary_user_id.eq.${userId},parent_id.eq.${userId}`);
+    const familyMemberIds = (children ?? []).map((c) => c.id as string);
+    const [{ data: ownHolds }, { data: childHolds }, { data: ownClosed }, { data: childClosed }] = await Promise.all([
+      db.from("stock_holdings_c").select("security_id, strategy_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot").eq("user_id", userId).is("family_member_id", null).eq("is_active", true).eq("trade_side", "BUY"),
+      familyMemberIds.length
+        ? db.from("stock_holdings_c").select("security_id, strategy_id, quantity, avg_fill, Expected_fill, strategy_name_snapshot, family_member_id").in("family_member_id", familyMemberIds).eq("is_active", true).eq("trade_side", "BUY")
+        : Promise.resolve({ data: [] }),
+      db.from("stock_holdings_c").select("avg_fill, avg_exit, quantity").eq("user_id", userId).is("family_member_id", null).eq("is_active", false),
+      familyMemberIds.length
+        ? db.from("stock_holdings_c").select("avg_fill, avg_exit, quantity").in("family_member_id", familyMemberIds).eq("is_active", false)
+        : Promise.resolve({ data: [] }),
+    ]);
+    const holds = [...(ownHolds ?? []), ...(childHolds ?? [])];
+    const closed = [...(ownClosed ?? []), ...(childClosed ?? [])];
+    const realizedCents = Math.round((closed).reduce((sum, c) => {
+      const fill = Number(c.avg_fill) || 0, exit = Number(c.avg_exit) || 0, qty = Number(c.quantity) || 0;
+      return fill && exit && qty ? sum + (exit - fill) * qty : sum;
+    }, 0));
+    const secIds = [...new Set(holds.map((h) => h.security_id).filter(Boolean))];
+    const strategyIds = [...new Set(holds.map((h) => h.strategy_id).filter(Boolean))];
+    const secMap: Record<string, { symbol: string; name: string | null; sector: string | null; last_price: number | null }> = {};
+    const strategyMap = new Map<string, string>();
+    const intradayMap = new Map<string, number>();
+    if (secIds.length) {
+      const [{ data: secs }, { data: intraday }] = await Promise.all([
+        db.from("securities_c").select("id, symbol, name, sector, last_price").in("id", secIds),
+        db.from("stock_intraday_c").select("security_id,current_price,timestamp").in("security_id", secIds).order("timestamp", { ascending: false }).limit(5000),
+      ]);
+      for (const s of secs ?? []) secMap[s.id as string] = s as never;
+      for (const quote of intraday ?? []) {
+        const securityId = String(quote.security_id);
+        if (!intradayMap.has(securityId) && Number(quote.current_price) > 0) intradayMap.set(securityId, Number(quote.current_price));
+      }
+    }
+    if (strategyIds.length) {
+      const { data: strategies } = await db.from("strategies_c").select("id,name").in("id", strategyIds);
+      for (const strategy of strategies ?? []) strategyMap.set(String(strategy.id), String(strategy.name || ""));
+    }
+    const holdings = holds.map((h) => {
+      const sec = secMap[h.security_id as string];
+      const qty = Number(h.quantity) || 0;
+      const costCents = costCentsPerShare(h);
+      const priceCents = intradayMap.get(String(h.security_id)) ?? (sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) : costCents);
+      const valueCents = qty * priceCents;
+      const investedCents = qty * costCents;
+      return {
+        symbol: sec?.symbol ?? "—",
+        name: sec?.name ?? "—",
+        sector: sec?.sector ?? null,
+        qty,
+        valueCents,
+        investedCents,
+        pnlCents: valueCents - investedCents,
+        strategy: (h as { strategy_name_snapshot?: string | null }).strategy_name_snapshot ?? strategyMap.get(String(h.strategy_id)) ?? null,
+        family_member_id: (h as { family_member_id?: string | null }).family_member_id ?? null,
+      };
+    }).sort((a, b) => b.valueCents - a.valueCents);
+    const allocationsBySector = new Map<string, number>();
+    for (const h of holdings) {
+      const key = h.sector || "Other";
+      allocationsBySector.set(key, (allocationsBySector.get(key) || 0) + h.valueCents);
+    }
+    const allocations = [...allocationsBySector.entries()].map(([sector, valueCents]) => ({ sector, valueCents }));
+    return NextResponse.json({ ok: true, holdings, allocations, realizedCents });
+  }
+
+  if (action === "cash") {
+    const userId = url.searchParams.get("user_id") || "";
+    if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });
+    const [{ data: wallet }, { data: recent }] = await Promise.all([
+      db.from("wallets").select("balance").eq("user_id", userId).maybeSingle(),
+      db.from("transactions").select("id, name, description, amount, direction, status, transaction_date, broker_fee_cents, isin_fee_cents, transaction_fee_cents").eq("user_id", userId).order("transaction_date", { ascending: false }).limit(10),
+    ]);
+    const cashCents = Math.round(Number(wallet?.balance || 0) * 100);
+    return NextResponse.json({ ok: true, cashCents, recent: recent ?? [] });
+  }
+
   if (action === "sumsub") {
     const userId = url.searchParams.get("user_id") || "";
     if (!userId) return NextResponse.json({ ok: false, error: "user_id required" }, { status: 400 });

@@ -96,7 +96,7 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
                       <th className="py-1 pr-3 text-right">Avg fill</th>
                       <th className="py-1 pr-3 text-right">Expected fill</th>
                       <th className="py-1 pr-3 text-right">Market value</th>
-                      <th className="py-1 text-right">Client PnL</th>
+                      <th className="py-1 text-right">Position PnL (unrealised)</th>
                     </tr>
                   </thead>
                   <tbody>
