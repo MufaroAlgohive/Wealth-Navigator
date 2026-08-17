@@ -39,7 +39,15 @@ export async function GET(req:Request) {
     const secIds=[...new Set((holds??[]).map(h=>h.security_id).filter(Boolean))],secMap:Record<string,{symbol:string;name:string|null;logo_url:string|null;last_price:number|null}>={},intradayMap=new Map<string,number>();
     if(secIds.length){const [{data:securities},{data:intraday}]=await Promise.all([db.from("securities_c").select("id,symbol,name,logo_url,last_price").in("id",secIds),db.from("stock_intraday_c").select("security_id,current_price,timestamp").in("security_id",secIds).order("timestamp",{ascending:false}).limit(5000)]);for(const security of securities??[])secMap[String(security.id)]=security as never;for(const row of intraday??[]){const id=String(row.security_id);if(!intradayMap.has(id)&&Number(row.current_price)>0)intradayMap.set(id,Number(row.current_price)/100)}}
     const holdings=(holds??[]).map(h=>{const security=secMap[String(h.security_id)],quantity=Number(h.quantity)||0,avgRands=(Number(h.avg_fill)||0)/100,expected=Number(h.Expected_fill)||0,lastPrice=Number(security?.last_price)||0,cost=expected>0?(avgRands>0&&expected>avgRands*5?expected/100:expected):avgRands,live=intradayMap.get(String(h.security_id))??(lastPrice>0?lastPrice/100:cost),marketValue=quantity*live,costTotal=quantity*cost;return{id:h.id,symbol:security?.symbol??"—",name:security?.name??security?.symbol??"—",logo_url:security?.logo_url??null,quantity,cost,live,marketValue,pnl:marketValue-costTotal,pnlPct:costTotal>0?((marketValue-costTotal)/costTotal)*100:0,pending:!(Number(h.avg_fill)>0),strategyId:h.strategy_id,strategy:h.strategy_name_snapshot??null}}).sort((a,b)=>b.marketValue-a.marketValue);
-    const totalValue=holdings.reduce((sum,h)=>sum+h.marketValue,0),totalPnl=holdings.reduce((sum,h)=>sum+h.pnl,0),invested=totalValue-totalPnl;
+    // Realised P&L on closed lots (rebalance sells etc.) — without this, totalPnl
+    // only reflects currently-held positions and hides a booked loss/gain, same
+    // class of bug as the MINT client-app "Unrealized PnL shown as total" fix.
+    // Scoped by family_member_id the same way holdsQuery/txQuery are above.
+    let closedQuery=db.from("stock_holdings_c").select("avg_fill,avg_exit,quantity").eq("user_id",userId).eq("is_active",false);
+    closedQuery=familyMemberId?closedQuery.eq("family_member_id",familyMemberId):closedQuery.is("family_member_id",null);
+    const {data:closed}=await closedQuery;
+    const realizedTotal=(closed??[]).reduce((sum,c)=>{const fill=Number(c.avg_fill)||0,exit=Number(c.avg_exit)||0,qty=Number(c.quantity)||0;return fill&&exit&&qty?sum+((exit-fill)/100)*qty:sum},0);
+    const totalValue=holdings.reduce((sum,h)=>sum+h.marketValue,0),totalPnl=holdings.reduce((sum,h)=>sum+h.pnl,0)+realizedTotal,invested=totalValue-totalPnl;
     let txQuery=db.from("transactions").select("id,name,description,amount,direction,status,transaction_date,created_at").eq("user_id",userId).order("created_at",{ascending:false}).limit(6);
     if(familyMemberId) txQuery=txQuery.eq("family_member_id",familyMemberId);else txQuery=txQuery.is("family_member_id",null);
     const {data:transactions}=await txQuery;

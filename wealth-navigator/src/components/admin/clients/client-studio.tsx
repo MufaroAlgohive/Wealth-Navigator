@@ -80,6 +80,7 @@ interface AccrualResponse {
 interface HoldPayload {
   holdings: Holding[];
   allocations: { sector: string; valueCents: number }[];
+  realizedCents: number;
 }
 
 const R = (cents: number) =>
@@ -150,7 +151,11 @@ export function ClientStudio({ userId, onClose: _onClose }: ClientStudioProps) {
   // across tabs).
   const totalValueCents = (holdings?.holdings ?? []).reduce((acc, h) => acc + h.valueCents, 0);
   const totalInvestedCents = (holdings?.holdings ?? []).reduce((acc, h) => acc + h.investedCents, 0);
-  const totalPnlCents = totalValueCents - totalInvestedCents;
+  // True total = unrealised (current holdings) + realised (closed lots from past
+  // sells/rebalances) — unrealised-only silently hides a booked loss. See
+  // docs/CLIENT_PERSONAL_RETURN_SINGLE_TRUTH.md.
+  const realizedCents = holdings?.realizedCents ?? 0;
+  const totalPnlCents = totalValueCents - totalInvestedCents + realizedCents;
   const cashCents = cash?.cashCents ?? 0;
   const name =
     str(
