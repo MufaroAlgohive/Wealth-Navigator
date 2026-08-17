@@ -410,6 +410,7 @@ export interface OrderBookMember {
   id: string;
   order_id: string | null;
   client_account: string | null;
+  parentName?: string | null;
   symbol: string | null;
   side: string;
   qty: number;

@@ -518,7 +518,6 @@ function HoldingsTable({ holdings, total, top }: { holdings: HoldingView[]; tota
               <tr key={h.securityId} className="border-b border-border/40 last:border-b-0">
                 <td className="px-3 py-2">
                   <div className="text-[12px] font-semibold text-foreground">{h.symbol}</div>
-                  {parentName && <div className="text-[9px] text-muted-foreground">Managed by {parentName}</div>}
                 </td>
                 <td className="px-3 py-2 text-[12px] text-muted-foreground">{h.sector}</td>
                 <td className="px-3 py-2 text-[12px] text-foreground">{h.qty}</td>
