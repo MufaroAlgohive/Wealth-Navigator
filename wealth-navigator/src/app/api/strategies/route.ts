@@ -293,6 +293,11 @@ async function loadRetailStrategies(
   const ytdByStrategy = new Map<string, number>();
   const day1PctByStrategy = new Map<string, number>();
   const cashPctByStrategy = new Map<string, number>();
+  // Certified per-lot complete value (securities + continuity cash) — the
+  // authoritative "what does one lot of this strategy actually cost" figure.
+  // Overrides the manual holdings-price sum used for `minValue`, which only
+  // summed securities and never added the strategy's own cash sleeve.
+  const completeValueRandsByStrategy = new Map<string, number>();
   const { data: strategyReturnRows, error: strategyReturnErr } = strategyReturnRes as { data: Array<Record<string, unknown>> | null; error: unknown };
   if (!strategyReturnErr) {
     for (const r of (strategyReturnRows ?? []) as Array<Record<string, unknown>>) {
@@ -339,6 +344,8 @@ async function loadRetailStrategies(
       const securitiesValue = toNumber(r.securities_value_cents);
       const strategyValue = continuityCash + securitiesValue;
       if (continuityCash > 0 && strategyValue > 0) cashPctByStrategy.set(k, (continuityCash / strategyValue) * 100);
+      const completeValue = toNumber(r.complete_value_cents);
+      if (completeValue > 0) completeValueRandsByStrategy.set(k, completeValue / 100);
     }
   }
 
@@ -367,13 +374,19 @@ async function loadRetailStrategies(
       const row = holding as Record<string, unknown>;
       return String(row.ticker ?? row.symbol ?? "");
     }).map((symbol) => symbol.replace(/\.JO$/i, "").toUpperCase()).filter(Boolean) : [];
-    const minValue = Array.isArray(s.holdings) ? s.holdings.reduce((total, holding) => {
+    // Manual fallback: securities only, live-priced, from the model's own
+    // holdings — used only when no certified per-lot value exists yet.
+    const minValueFromHoldings = Array.isArray(s.holdings) ? s.holdings.reduce((total, holding) => {
       const row = typeof holding === "object" && holding ? holding as Record<string, unknown> : {};
       const symbol = String(typeof holding === "string" ? holding : row.ticker ?? row.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
       const units = Number(row.shares ?? row.quantity ?? row.units ?? 1);
       const price = securityBySymbol.get(symbol)?.priceR;
       return total + (price != null && Number.isFinite(units) ? price * units : 0);
     }, 0) : 0;
+    // Prefer the CERTIFIED canonical complete value (securities + continuity
+    // cash) — the manual sum above never included the strategy's cash sleeve,
+    // understating "Min value" by exactly the CA the strategy is holding.
+    const minValue = completeValueRandsByStrategy.get(s.id) ?? minValueFromHoldings;
     return {
       id: s.id,
       name: s.name ?? s.slug ?? "Strategy",
