@@ -3,21 +3,22 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, ClipboardList, Search, X } from "lucide-react";
+import { CalendarDays, ChevronDown, ClipboardList, Search, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { GlassBadge, GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { NumberCell } from "@/components/oems/primitives/number-cell";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { ConfirmDestructive } from "@/components/oems/confirm-destructive";
+import { Calendar } from "@/components/ui/calendar";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useIress } from "@/lib/iress/provider";
 import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
-import { formatTime } from "@/lib/format";
+import { formatDate, formatTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import {
   filterBlotterOrders,
@@ -35,12 +36,34 @@ const STATUS_FILTERS: Array<{ key: BlotterStatusFilter; label: string }> = [
   { key: "REJECTED", label: "Rejected" },
 ];
 
+const DATE_PRESETS: Array<{ mode: BlotterDateMode; label: string }> = [
+  { mode: "TODAY", label: "Today" },
+  { mode: "YESTERDAY", label: "Yesterday" },
+  { mode: "WEEK", label: "7 days" },
+  { mode: "MONTH", label: "This month" },
+  { mode: "ALL", label: "All" },
+];
+
+function parseIsoDate(value: string): Date | undefined {
+  const [y, m, d] = value.split("-").map(Number);
+  if (!y || !m || !d) return undefined;
+  return new Date(y, m - 1, d);
+}
+
+function toIsoDate(date: Date): string {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
 export default function BlotterPage() {
   const { data, client } = useIress();
   const realDataOnly = isRealDataOnlyClient();
   const qc = useQueryClient();
   const [statuses, setStatuses] = useState<Set<BlotterStatusFilter>>(new Set());
-  const [dateMode, setDateMode] = useState<BlotterDateMode>("ALL");
+  const [dateMode, setDateMode] = useState<BlotterDateMode>("TODAY");
   const [dateValue, setDateValue] = useState("");
   const [q, setQ] = useState("");
   const [scope, setScope] = useState<BlotterScope>("LIVE");
@@ -226,37 +249,62 @@ export default function BlotterPage() {
             );
           })}
         </div>
-        <div className="glass-inset flex h-9 items-center gap-1 p-1">
-          <CalendarDays className="ml-1.5 h-3.5 w-3.5 text-muted-foreground" />
-          <Select
-            value={dateMode}
-            onValueChange={(value) => {
-              setDateMode(value as BlotterDateMode);
-              setDateValue("");
-            }}
-          >
-            <SelectTrigger className="h-7 w-[86px] border-0 bg-transparent px-2 text-[11px] shadow-none">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">Any date</SelectItem>
-              <SelectItem value="TODAY">Today</SelectItem>
-              <SelectItem value="DATE">Date</SelectItem>
-              <SelectItem value="MONTH">Month</SelectItem>
-              <SelectItem value="YEAR">Year</SelectItem>
-            </SelectContent>
-          </Select>
-          {dateMode !== "ALL" && dateMode !== "TODAY" && (
-            <Input
-              type={dateMode === "DATE" ? "date" : dateMode === "MONTH" ? "month" : "number"}
-              min={dateMode === "YEAR" ? "2000" : undefined}
-              max={dateMode === "YEAR" ? "2100" : undefined}
-              value={dateValue}
-              onChange={(event) => setDateValue(event.target.value)}
-              placeholder={dateMode === "YEAR" ? "YYYY" : undefined}
-              className="h-7 w-[132px] border-0 bg-transparent px-2 text-[11px] shadow-none"
-            />
-          )}
+        <div className="glass-inset flex h-9 items-center gap-0.5 p-1">
+          <CalendarDays className="ml-1.5 mr-0.5 h-3.5 w-3.5 text-muted-foreground" />
+          {DATE_PRESETS.map((preset) => {
+            const active = dateMode === preset.mode;
+            return (
+              <button
+                key={preset.mode}
+                type="button"
+                aria-pressed={active}
+                onClick={() => {
+                  setDateMode(preset.mode);
+                  setDateValue("");
+                }}
+                className={cn(
+                  "h-7 rounded-md px-2.5 text-[11px] transition-colors",
+                  active
+                    ? "bg-foreground/10 text-foreground hover:bg-foreground/15"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+          <span className="mx-1 h-4 w-px bg-[hsl(var(--glass-border))]" aria-hidden="true" />
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className={cn(
+                  "h-7 gap-1.5 rounded-md px-2.5 text-[11px] shadow-none",
+                  dateMode === "DATE"
+                    ? "bg-primary/15 text-primary hover:bg-primary/20"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {dateMode === "DATE" && dateValue ? formatDate(parseIsoDate(dateValue) ?? new Date()) : "Custom date"}
+                <ChevronDown className="h-3 w-3 opacity-60" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-auto p-1.5">
+              <Calendar
+                mode="single"
+                selected={dateMode === "DATE" && dateValue ? parseIsoDate(dateValue) : undefined}
+                onSelect={(day) => {
+                  if (!day) return;
+                  setDateMode("DATE");
+                  setDateValue(toIsoDate(day));
+                }}
+                disabled={{ after: new Date() }}
+                autoFocus
+              />
+            </PopoverContent>
+          </Popover>
         </div>
         {(statuses.size > 0 || dateMode !== "ALL") && (
           <Button
@@ -265,7 +313,7 @@ export default function BlotterPage() {
             size="sm"
             onClick={() => {
               setStatuses(new Set());
-              setDateMode("ALL");
+              setDateMode("TODAY");
               setDateValue("");
             }}
             className="h-8 gap-1 px-2 text-[10.5px] text-muted-foreground"

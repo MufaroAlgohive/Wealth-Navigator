@@ -70,4 +70,19 @@ describe("OEM blotter filters", () => {
     expect(matchesBlotterDate(Date.now(), "TODAY", "")).toBe(true);
     expect(matchesBlotterDate(Date.now() - 48 * 60 * 60 * 1000, "TODAY", "")).toBe(false);
   });
+
+  it("supports Yesterday and rolling 7-day presets", () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(10, 15, 0, 0);
+    expect(matchesBlotterDate(yesterday.getTime(), "YESTERDAY", "")).toBe(true);
+    expect(matchesBlotterDate(Date.now(), "YESTERDAY", "")).toBe(false);
+
+    const fourDaysAgo = new Date();
+    fourDaysAgo.setDate(fourDaysAgo.getDate() - 4);
+    const eightDaysAgo = new Date();
+    eightDaysAgo.setDate(eightDaysAgo.getDate() - 8);
+    expect(matchesBlotterDate(fourDaysAgo.getTime(), "WEEK", "")).toBe(true);
+    expect(matchesBlotterDate(eightDaysAgo.getTime(), "WEEK", "")).toBe(false);
+  });
 });

@@ -1,7 +1,7 @@
 import type { Order, OrderState } from "@/types/iress";
 
 export type BlotterStatusFilter = "WORKING" | "FILLED" | "CANCELLED" | "REJECTED";
-export type BlotterDateMode = "ALL" | "TODAY" | "DATE" | "MONTH" | "YEAR";
+export type BlotterDateMode = "ALL" | "TODAY" | "YESTERDAY" | "WEEK" | "MONTH" | "DATE" | "YEAR";
 export type BlotterScope = "LIVE" | "UAT";
 
 function auditRowIsUat(
@@ -63,20 +63,24 @@ export function matchesBlotterStatus(state: OrderState, selected: ReadonlySet<Bl
 export function matchesBlotterDate(ts: number, mode: BlotterDateMode, value: string): boolean {
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return false;
-  const day = [
-    date.getFullYear(),
-    String(date.getMonth() + 1).padStart(2, "0"),
-    String(date.getDate()).padStart(2, "0"),
+  const iso = (d: Date) => [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, "0"),
+    String(d.getDate()).padStart(2, "0"),
   ].join("-");
+  const day = iso(date);
   if (mode === "ALL") return true;
-  if (mode === "TODAY") {
-    const now = new Date();
-    const today = [
-      now.getFullYear(),
-      String(now.getMonth() + 1).padStart(2, "0"),
-      String(now.getDate()).padStart(2, "0"),
-    ].join("-");
-    return day === today;
+  if (mode === "TODAY") return day === iso(new Date());
+  if (mode === "YESTERDAY") {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    return day === iso(yesterday);
+  }
+  if (mode === "WEEK") {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - 6);
+    return ts >= start.getTime();
   }
   if (!value) return true;
   if (mode === "DATE") return day === value;
