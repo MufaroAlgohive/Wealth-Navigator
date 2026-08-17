@@ -132,6 +132,33 @@ export interface WorkerEnv {
    * up to a 5-page cap.
    */
   newsMaxRows: number;
+  /**
+   * `IRESS_RESET_ON_BOOT=1` — deploy-time seat-recovery switch (2026-08-17).
+   *
+   * On every push to `main`, the new container races the old container for the
+   * single IRESS license seat. The old container's SIGTERM handler runs
+   * `tearDown` (best-effort) but Railway's grace window is short — if the new
+   * container hits `IRESSSessionStart` before the old `ServiceSessionEnd`
+   * roundtrip lands, both containers 25008 and the seat is leaked for up
+   * to 2 hours.
+   *
+   * Setting `IRESS_RESET_ON_BOOT=1` makes the new worker:
+   *   1. Treat its OWN `worker_session_metadata` row as stale on boot (force
+   *      `persistedSessionIsStale()=true` by nulling `iress_session_key` +
+   *      `expires_at` before reading).
+   *   2. Send `SessionNumberToKick=-1` on the **first** `IRESSSessionStart`
+   *      (not just on the 25008 retry) so it claims the seat before the old
+   *      replica can settle back into it.
+   *
+   * Use it ONLY for deploys where the prior replica is known to be stuck
+   * (i.e. operator has confirmed a deploy happened and the new worker is
+   * 25008-looping). Leave it OFF in the resting state — the auto-kick
+   * latch in `session.ts` already handles first-boot/orphan recovery
+   * without operator input, and a standing-on `IRESS_RESET_ON_BOOT=1`
+   * would evict any live IRESS Chrome/CT/terminal session Charles may
+   * have open under `DFM@Mint`.
+   */
+  resetOnBoot: boolean;
 }
 
 /* OrderFilter. We do NOT have an authoritative meaning for these values. This
@@ -335,5 +362,10 @@ export function loadWorkerEnv(): WorkerEnv {
     // day's window with Count=1000, so the legacy 500 cap silently
     // truncated. Paging kicks in above the per-page size.
     newsMaxRows: Math.max(500, Number(process.env.IRESS_NEWS_MAX_ROWS ?? "2000") || 2000),
+    // Deploy-time seat-recovery. Default OFF so a long-running worker does
+    // not kick live IRESS clients (Charles's Chrome / CT terminal) every
+    // restart. Operator flips this on for one deploy cycle when the new
+    // worker is 25008-looping against an orphan from the prior replica.
+    resetOnBoot: parseBool(process.env.IRESS_RESET_ON_BOOT, false),
   };
 }
