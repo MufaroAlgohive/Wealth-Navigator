@@ -64,6 +64,15 @@ export interface WorkerSessionDeps {
   supabase: WorkerSupabase | null;
   allowWrites: boolean;
   dryRun: boolean;
+  /**
+   * `IRESS_RESET_ON_BOOT=1` deploy-time switch (2026-08-17). Forces the
+   * session manager to treat its own `worker_session_metadata` row as stale
+   * on boot AND to send `SessionNumberToKick=-1` on the FIRST
+   * `IRESSSessionStart` (not just on 25008 retry). Used to break the
+   * "Railway restart → 25008 thrash" cycle when the prior replica is
+   * leaked on the IRESS server.
+   */
+  resetOnBoot?: boolean;
 }
 
 function newStickyApplicationId(node: string): string {
@@ -267,6 +276,49 @@ async function clearPersistedApplicationId(deps: WorkerSessionDeps): Promise<voi
   }
 }
 
+/**
+ * `IRESS_RESET_ON_BOOT=1` helper. Wipe the persisted `iress_session_key` +
+ * `expires_at` for this `worker_id` BEFORE the boot-time read so
+ * `persistedSessionIsStale()` returns true and the auto-kick path fires
+ * even if the prior replica's SIGTERM handler never got to stamp
+ * `shutdown: true`.
+ *
+ * NOT gated on dryRun / allowWrites — same rationale as
+ * `persistStickyApplicationId` (worker_session_metadata is worker's own
+ * bookkeeping, suppressing it costs licence seats).
+ */
+async function resetPersistedSessionForBoot(deps: WorkerSessionDeps): Promise<void> {
+  if (!deps.supabase) {
+    console.warn(
+      "[iress-ingest] IRESS_RESET_ON_BOOT=1 but no Supabase client — cannot wipe row, will still kick on first attempt.",
+    );
+    return;
+  }
+  try {
+    const { error } = await deps.supabase
+      .from("worker_session_metadata")
+      .update({
+        iress_session_key: null,
+        expires_at: new Date().toISOString(),
+        metadata: { shutdown: true, resetOnBoot: true },
+        updated_at: new Date().toISOString(),
+      })
+      .eq("worker_id", deps.workerId);
+    if (error) {
+      console.warn(
+        `[iress-ingest] resetPersistedSessionForBoot failed: ${error.message} — proceeding with first-attempt kick anyway.`,
+      );
+      return;
+    }
+    console.warn(
+      `[iress-ingest] IRESS_RESET_ON_BOOT=1 — wiped worker_session_metadata for ${deps.workerId} before IRESSSessionStart`,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[iress-ingest] resetPersistedSessionForBoot threw: ${msg}`);
+  }
+}
+
 function hashForLog(value: string): string {
   return redactSessionKeyForLog(value);
 }
@@ -426,6 +478,16 @@ export class WorkerSessionManager {
   }
 
   private async startSession(): Promise<WorkerMintSession> {
+    // `IRESS_RESET_ON_BOOT=1` (deploy-time seat recovery, 2026-08-17) — wipe
+    // our own `worker_session_metadata` row BEFORE the boot-time read so
+    // `persistedSessionIsStale()` returns true even if the prior replica's
+    // SIGTERM handler never stamped `shutdown: true`. Also unlocks the
+    // first-attempt kick below. Operator-controlled; do NOT keep this set
+    // permanently — it would evict Charles's live IRESS Chrome / CT
+    // terminal sessions on every restart.
+    if (this.deps.resetOnBoot) {
+      await resetPersistedSessionForBoot(this.deps);
+    }
     const persisted = await readPersistedApplicationId(this.deps.supabase, this.deps.workerId);
     if (persisted?.iress_session_key && persistedSessionIsStale(persisted)) {
       await this.purgeStaleWireSession(persisted);
@@ -440,12 +502,23 @@ export class WorkerSessionManager {
     // `firstBootOrOrphan` flips back to false the moment we attempt a
     // kick for the first time, even if the persisted row was sticky.
     const shouldAutoKick = firstBootOrOrphan && !this.autoKickAttempted;
+    // `IRESS_RESET_ON_BOOT=1` overrides the auto-kick's "wait for 25008" path:
+    // send `SessionNumberToKick=-1` on the FIRST `IRESSSessionStart` so the
+    // new container claims the seat before the old orphan can settle back
+    // into it. Without this, the new worker waits for a 25008 it cannot
+    // always produce (Railway's blue-green swap may not overlap wires) and
+    // stalls in the 30-min backoff instead of evicting the orphan
+    // immediately.
+    const kickOnFirstAttempt = this.deps.resetOnBoot
+      ? { sessionNumberToKick: -1 as const, kickLikeSessions: true }
+      : undefined;
     try {
       const { iressSession, serviceKeys } = await bringUpMintSessionFromEnv({
         applicationId,
         applicationLabel: this.deps.applicationLabel,
         node: this.deps.node,
         forceKickOn25008: shouldAutoKick,
+        ...(kickOnFirstAttempt ?? {}),
       });
       if (shouldAutoKick) this.autoKickAttempted = true;
       this.licenseBackoffUntil = 0;

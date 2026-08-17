@@ -59,6 +59,12 @@ const sessions = new WorkerSessionManager({
   supabase: null, // bound after the live client is built
   allowWrites: env.allowWrites,
   dryRun: env.dryRun,
+  // Deploy-time seat recovery (2026-08-17). Off by default so a
+  // long-running worker does NOT kick live IRESS Chrome/CT/terminal
+  // sessions on every restart. Operator flips this on for ONE deploy
+  // cycle when the new worker is 25008-looping against an orphan from
+  // the prior replica — see `IRESS_RESET_ON_BOOT` doc in env.ts.
+  resetOnBoot: env.resetOnBoot,
 });
 // 3-DB topology (docs/DB_TOPOLOGY_DECISION.md): trading book + analytics +
 // worker ops on the INSTITUTIONAL prod (nnwz…); the live retail price feed
