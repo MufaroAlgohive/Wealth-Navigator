@@ -42,6 +42,72 @@ interface ReturnRow {
   source_kind: string | null;
 }
 
+type CertifiedOverlay = Partial<
+  Pick<ReturnRow, "ytd_pct" | "1d_pct" | "5d_pct" | "1m_pct" | "mtd_pct" | "6m_pct" | "basket_value" | "complete_value_cents" | "continuity_cash_cents" | "securities_value_cents" | "source_kind">
+>;
+
+/**
+ * CERTIFIED canonical ledger overlay, matched by (strategy_id, as_of_date).
+ * strategy_returns_effective_c is the pre-certification "guarded" chain —
+ * confirmed live (see file header) to disagree with the certified figure,
+ * sometimes by an opposite sign. Same "certified wins" rule as
+ * /api/strategies, /api/admin/dashboard and MINT's /api/returns/approved.
+ */
+async function loadCertifiedOverlay(
+  db: NonNullable<ReturnType<typeof createRetailServiceRoleClient>>,
+  strategyIds: string[],
+): Promise<Map<string, CertifiedOverlay>> {
+  const map = new Map<string, CertifiedOverlay>();
+  if (!strategyIds.length) return map;
+  const { data } = await db
+    .from("strategy_canonical_daily_ledger_c")
+    .select("strategy_id,as_of_date,period_metrics,complete_value_cents,continuity_cash_cents,securities_value_cents")
+    .eq("certification_status", "CERTIFIED")
+    .in("strategy_id", strategyIds);
+  for (const r of (data ?? []) as Array<{
+    strategy_id: string;
+    as_of_date: string;
+    period_metrics: Record<string, { return_pct?: number | null }> | null;
+    complete_value_cents: number | null;
+    continuity_cash_cents: number | null;
+    securities_value_cents: number | null;
+  }>) {
+    const metrics = r.period_metrics ?? {};
+    const pick = (key: string) => {
+      const v = metrics[key]?.return_pct;
+      return v != null && Number.isFinite(Number(v)) ? Number(v) : undefined;
+    };
+    map.set(`${r.strategy_id}|${r.as_of_date}`, {
+      ytd_pct: pick("YTD"),
+      "1d_pct": pick("1D"),
+      "5d_pct": pick("1W"),
+      "1m_pct": pick("1M"),
+      mtd_pct: pick("MTD"),
+      "6m_pct": pick("6M"),
+      basket_value: r.complete_value_cents ?? undefined,
+      complete_value_cents: r.complete_value_cents ?? undefined,
+      continuity_cash_cents: r.continuity_cash_cents ?? undefined,
+      securities_value_cents: r.securities_value_cents ?? undefined,
+      source_kind: "CERTIFIED_CANONICAL_LEDGER",
+    });
+  }
+  return map;
+}
+
+/** Only overwrites fields the certified row actually has a value for. */
+function applyCertifiedOverlay(rows: ReturnRow[], overlay: Map<string, CertifiedOverlay>): ReturnRow[] {
+  if (!overlay.size) return rows;
+  return rows.map((r) => {
+    const cert = overlay.get(`${r.strategy_id}|${r.as_of_date}`);
+    if (!cert) return r;
+    const merged: ReturnRow = { ...r };
+    for (const [key, value] of Object.entries(cert)) {
+      if (value !== undefined) (merged as unknown as Record<string, unknown>)[key] = value;
+    }
+    return merged;
+  });
+}
+
 export async function GET(req: Request) {
   const auth = await getAdminContext();
   if (auth.status === "no-session")
@@ -149,7 +215,8 @@ export async function GET(req: Request) {
       // oldest 800 rows and made MyGrowthFund stop at 10 Jul instead of 30 Jul.
       .order("as_of_date", { ascending: false })
       .limit(800);
-    const returns = [...(recentReturns ?? [])].reverse();
+    const certifiedOverlay = await loadCertifiedOverlay(db, [id]);
+    const returns = applyCertifiedOverlay([...(recentReturns ?? [])].reverse() as ReturnRow[], certifiedOverlay);
     const securities = await securitiesFor([strategy]);
     const testIds = await testUserIds();
     const { data: clientRows } = await db
@@ -251,8 +318,10 @@ export async function GET(req: Request) {
       )
       .order("as_of_date", { ascending: false })
       .limit(4000);
+    const certifiedOverlay = await loadCertifiedOverlay(db, rows.map((s) => String(s.id)));
+    const overlaidRet = applyCertifiedOverlay((ret ?? []) as ReturnRow[], certifiedOverlay);
     const groupedReturns: Record<string, ReturnRow[]> = {};
-    for (const r of (ret ?? []) as ReturnRow[]) {
+    for (const r of overlaidRet) {
       const rowsForStrategy = groupedReturns[r.strategy_id] ?? [];
       rowsForStrategy.push(r);
       groupedReturns[r.strategy_id] = rowsForStrategy;
