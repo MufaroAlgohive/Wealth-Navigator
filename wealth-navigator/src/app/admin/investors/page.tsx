@@ -15,7 +15,7 @@ interface Holding { user_id: string; family_member_id: string | null; security_i
 interface ClosedHolding { user_id: string; family_member_id?: string | null; strategy_id?: string | null; quantity: number; avg_fill: number | null; avg_exit: number | null; }
 interface NavRow { user_id: string; family_member_id?: string | null; strategy_id?: string | null; as_of_date: string; basket_value: number | null; ytd_pct: number | null; inception_pct: number | null; inception_pnl: number | null; "1d_pct"?: number | null; }
 interface Profile { id: string; first_name: string | null; last_name: string | null; email: string | null; mint_number: string | null; computershare_number: string | null; }
-interface FamilyMember { id: string; first_name: string | null; last_name: string | null; computershare_number: string | null; }
+interface FamilyMember { id: string; first_name: string | null; last_name: string | null; computershare_number: string | null; primary_user_id?: string | null; parent_id?: string | null; }
 interface SecMeta { id: string; symbol: string; name: string | null; sector: string | null; logo_url: string | null; }
 interface SecLive { security_id: string; current_price: number | null; }
 interface Txn { id: string; user_id: string; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_cents: number | null; buffer_consumed_cents: number | null; }
@@ -219,7 +219,9 @@ export default function InvestorsPage() {
       const canonicalRetPct = latestNav?.inception_pct ?? latestNav?.ytd_pct;
       const prof = profById.get(userId);
       const familyMember = familyMemberId ? familyById.get(familyMemberId) : null;
-      const parentName = familyMember && prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0,8) : null;
+      const parentId = familyMember?.primary_user_id || familyMember?.parent_id;
+      const parentProf = parentId ? profById.get(parentId) : prof;
+      const parentName = familyMember && parentProf ? `${parentProf.first_name || ""} ${parentProf.last_name || ""}`.trim() || parentProf.email || (parentId ? parentId.slice(0,8) : null) : null;
       const displayName = familyMember ? `${familyMember.first_name || ""} ${familyMember.last_name || ""}`.trim() || `Child ${familyMemberId?.slice(0,8)}` : prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0,8) : userId.slice(0,8);
       out.push({
         key,userId,familyMemberId,strategyId,strategy:strategyId?(strategyById.get(strategyId)?.short_name||strategyById.get(strategyId)?.name||"Strategy"):null, name:displayName,parentName,
@@ -514,7 +516,10 @@ function HoldingsTable({ holdings, total, top }: { holdings: HoldingView[]; tota
           {rows.length === 0 ? <tr><td colSpan={6} className="px-3 py-8 text-center text-xs text-muted-foreground">No holdings.</td></tr>
             : rows.map((h) => (
               <tr key={h.securityId} className="border-b border-border/40 last:border-b-0">
-                <td className="px-3 py-2 text-[12px] font-semibold text-foreground">{h.symbol}</td>
+                <td className="px-3 py-2">
+                  <div className="text-[12px] font-semibold text-foreground">{h.symbol}</div>
+                  {parentName && <div className="text-[9px] text-muted-foreground">Managed by {parentName}</div>}
+                </td>
                 <td className="px-3 py-2 text-[12px] text-muted-foreground">{h.sector}</td>
                 <td className="px-3 py-2 text-[12px] text-foreground">{h.qty}</td>
                 <td className="px-3 py-2 text-[12px] text-foreground">{R(h.valueCents)}</td>

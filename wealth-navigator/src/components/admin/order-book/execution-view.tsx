@@ -60,6 +60,7 @@ export interface ExecutionRow {
   // /api/admin/orderbook/cancel.
   client_account: string;
   broker_account: string | null;
+  parentName?: string | null;
   ts: string;
   /** Broker-observation time (audit updated_at) for optimistic-override reconciliation. */
   updated_at?: string;
@@ -715,7 +716,8 @@ function GroupRow({
         </td>
         <td className="px-2 py-1 text-[12px] font-semibold text-foreground whitespace-nowrap">{r.symbol}</td>
         <td className="px-2 py-1 text-[11px] text-muted-foreground whitespace-nowrap">
-          {r.client_account || "—"}
+          <div>{r.client_account || "—"}</div>
+          {r.parentName && <div className="text-[9px] mt-0.5 opacity-80">Managed by {r.parentName}</div>}
         </td>
         <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">{fmtQty(r.qty)}</td>
         <td className="px-2 py-1 text-[12px] font-medium text-foreground whitespace-nowrap">

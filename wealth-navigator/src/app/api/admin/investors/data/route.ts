@@ -79,12 +79,12 @@ export async function GET() {
 
   const [strategies, profiles, secMeta, secReturns, secIntraday, txns, familyMembers, residuals, closedHoldings, stratHist] = await Promise.all([
     db.from("strategies_c").select("id, name, short_name, description, risk_level, sector").then((r) => r.data ?? []),
-    userIds.length ? db.from("profiles").select("id, first_name, last_name, email, mint_number, computershare_number").in("id", userIds).then((r) => r.data ?? []) : [],
+    userIds.length ? db.from("profiles").select("id, first_name, last_name, email, mint_number, computershare_number").in("id", [...new Set([...userIds, ...famIds.length ? (await db.from("family_members").select("primary_user_id, parent_id").in("id", famIds)).data?.flatMap(f => [f.primary_user_id, f.parent_id]).filter(Boolean) as string[] : []])]).then((r) => r.data ?? []) : [],
     secIds.length ? db.from("securities_c").select("id, symbol, name, sector, logo_url").in("id", secIds).then((r) => r.data ?? []) : [],
     secIds.length ? db.from("stock_returns_c").select("security_id, symbol, current_price, ytd_pct, as_of_date").in("security_id", secIds).order("as_of_date", { ascending: false }).then((r) => r.data ?? []) : [],
     secIds.length ? db.from("stock_intraday_c").select("security_id, current_price, timestamp").in("security_id", secIds).order("timestamp", { ascending: false }).then((r) => r.data ?? []) : [],
     userIds.length ? db.from("transactions").select("id, user_id, family_member_id, amount, direction, name, description, status, transaction_date, broker_fee_cents, isin_fee_cents, transaction_fee_cents, base_amount_cents, buffer_cents, buffer_consumed_cents").in("user_id", userIds).order("transaction_date", { ascending: false }).then((r) => r.data ?? []) : [],
-    famIds.length ? db.from("family_members").select("id, first_name, last_name, computershare_number").in("id", famIds).then((r) => r.data ?? []) : [],
+    famIds.length ? db.from("family_members").select("id, first_name, last_name, computershare_number, primary_user_id, parent_id").in("id", famIds).then((r) => r.data ?? []) : [],
     userIds.length ? db.from("strategy_rebalance_residuals").select("user_id, strategy_id, family_member_id, balance_cents").in("user_id", userIds).then((r) => r.data ?? []) : [],
     userIds.length ? db.from("stock_holdings_c").select("user_id, family_member_id, strategy_id, quantity, avg_fill, avg_exit").eq("is_active", false).in("user_id", userIds).then((r) => r.data ?? []) : [],
     userIds.length

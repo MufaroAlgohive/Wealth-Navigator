@@ -518,12 +518,17 @@ export default function DividendsPage() {
                                 selectedUserCode === c.client_code && "bg-primary/10"
                               )}
                             >
-                              <div>
-                                <div className="text-sm font-semibold text-foreground">
-                                  {c.first_name}
+                                <div>
+                                  <div className="text-sm font-semibold text-foreground">
+                                    {c.first_name}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">{c.client_code}</div>
+                                  {c.is_child && c.parent_name && (
+                                    <div className="mt-0.5 text-[10px] text-foreground opacity-80">
+                                      Managed by {c.parent_name}
+                                    </div>
+                                  )}
                                 </div>
-                                <div className="text-xs text-muted-foreground">{c.client_code}</div>
-                              </div>
                               {c.has_sent && (
                                 <CheckCircle2 className="h-4 w-4 text-green-500" />
                               )}

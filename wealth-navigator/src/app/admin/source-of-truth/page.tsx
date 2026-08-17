@@ -51,6 +51,7 @@ type Position = {
   familyMemberId?: string;
   strategyId: string;
   client: string;
+  parentName?: string | null;
   email?: string;
   mintNumber?: string;
   strategy: string;
@@ -191,6 +192,7 @@ type TruthPosition = {
   strategyId: string;
   strategy: string;
   familyMemberId?: string;
+  parentName?: string | null;
   asOf?: string;
   holdings: LiveHolding[];
   securitiesCents: number;
@@ -990,7 +992,8 @@ export default function SourceOfTruthPage() {
                     <tr key={row.key} className="border-b border-white/5 hover:bg-white/[0.025]">
                       <td className="p-3">
                         <div className="font-medium">{row.client}</div>
-                        <div className="text-muted-foreground">
+                        {row.parentName && <div className="text-[9px] mt-0.5 opacity-80">Managed by {row.parentName}</div>}
+                        <div className="text-muted-foreground mt-0.5">
                           {row.strategy} · {row.mintNumber || row.email}
                         </div>
                       </td>

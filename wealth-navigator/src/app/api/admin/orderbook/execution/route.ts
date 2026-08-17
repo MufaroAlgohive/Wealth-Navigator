@@ -80,6 +80,7 @@ interface ExecutionRow {
   // surfaced as `broker_account` for clarity).
   client_account: string;
   broker_account: string | null;
+  parentName?: string | null;
   ts: string;
   /** Broker-observation time (audit updated_at) for optimistic-override reconciliation. */
   updated_at?: string;
@@ -462,6 +463,60 @@ export async function GET(req: Request) {
       }
     }
   }
+
+  const payloadOwnerIds = new Set<string>();
+  const payloadFamilyIds = new Set<string>();
+  for (const r of all) {
+    const p = r.payload ?? {};
+    if (p.user_id) payloadOwnerIds.add(String(p.user_id));
+    if (p.family_member_id) payloadFamilyIds.add(String(p.family_member_id));
+  }
+  
+  const profileMap = new Map<string, { first_name: string | null; last_name: string | null; email: string | null }>();
+  const familyParentIdMap = new Map<string, string>();
+  const childProfileToParentIdMap = new Map<string, string>();
+
+  if (payloadOwnerIds.size > 0 || payloadFamilyIds.size > 0) {
+    try {
+      const retail = createRetailServiceRoleClient();
+      const fetchProfilesIds = new Set<string>(Array.from(payloadOwnerIds));
+      
+      const { data: family } = await retail.from("family_members").select("id, primary_user_id, parent_id, linked_user_id, relationship");
+      for (const f of family ?? []) {
+        const parentId = String(f.primary_user_id || f.parent_id || "").trim();
+        if (!parentId) continue;
+
+        // managed child
+        if (payloadFamilyIds.has(String(f.id))) {
+          familyParentIdMap.set(String(f.id), parentId);
+          fetchProfilesIds.add(parentId);
+        }
+
+        // linked child profile
+        const linkedId = String(f.linked_user_id || "").trim();
+        if (linkedId && String(f.relationship || "").trim().toLowerCase() === "child" && payloadOwnerIds.has(linkedId)) {
+          childProfileToParentIdMap.set(linkedId, parentId);
+          fetchProfilesIds.add(parentId);
+        }
+      }
+
+      if (fetchProfilesIds.size > 0) {
+        const { data: profiles } = await retail.from("profiles").select("id, first_name, last_name, email").in("id", Array.from(fetchProfilesIds));
+        for (const p of profiles ?? []) {
+          profileMap.set(String(p.id), p);
+        }
+      }
+    } catch {
+      // Ignore DB errors, parent names simply won't be resolved
+    }
+  }
+  
+  const getParentName = (parentId: string) => {
+    const p = profileMap.get(parentId);
+    if (!p) return null;
+    return `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.email || null;
+  };
+
   const filtered = scope == null
     ? sourceFiltered
     : sourceFiltered.filter((r) => {
@@ -472,6 +527,21 @@ export async function GET(req: Request) {
         return scope === "uat" ? isUat : !isUat;
       });
 
-  const rows = filtered.map(mapRow);
+  const rows = filtered.map((r) => {
+    const row = mapRow(r);
+    const p = r.payload ?? {};
+    let parentName: string | null = null;
+    
+    const fmId = String(p.family_member_id ?? "");
+    const ownerId = String(p.user_id ?? "");
+
+    if (fmId && familyParentIdMap.has(fmId)) {
+       parentName = getParentName(familyParentIdMap.get(fmId)!);
+    } else if (ownerId && childProfileToParentIdMap.has(ownerId)) {
+       parentName = getParentName(childProfileToParentIdMap.get(ownerId)!);
+    }
+
+    return { ...row, parentName };
+  });
   return NextResponse.json({ ok: true, rows, count: rows.length });
 }
