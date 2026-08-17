@@ -42,7 +42,7 @@ export async function GET() {
     });
   }
 
-  const [allStrategies, usersCount, reqActions, stockReturns, stratReturns] = await Promise.all([
+  const [allStrategies, usersCount, reqActions, stockReturns, stratReturns, certifiedRows] = await Promise.all([
     db
       .from("strategies_c")
       .select(
@@ -68,6 +68,18 @@ export async function GET() {
       .select("*")
       .order("as_of_date", { ascending: false })
       .limit(3000)
+      .then((r) => r.data ?? []),
+    // CERTIFIED canonical ledger — strategies_returns_c above is the raw,
+    // pre-certification table (not even the guarded "effective" view). For a
+    // certified strategy this can be materially stale (verified: Yield
+    // Basket's raw YTD read ~16.87% against a certified ~6.68% for the same
+    // date). Overlaid onto strategyReturns/featured below, same "certified
+    // wins over guarded" rule as /api/strategies and /api/returns/approved.
+    db
+      .from("strategy_canonical_daily_ledger_c")
+      .select("strategy_id,as_of_date,period_metrics,complete_value_cents")
+      .eq("certification_status", "CERTIFIED")
+      .order("as_of_date", { ascending: false })
       .then((r) => r.data ?? []),
   ]);
 
@@ -95,6 +107,29 @@ export async function GET() {
 
   const stratById = new Map(strategies.map((s) => [s.id, s]));
   const assetReturns = latestBy(stockReturns as Record<string, unknown>[], "symbol");
+
+  // Latest CERTIFIED row per strategy (certifiedRows is ordered desc, so the
+  // first one seen per strategy_id is the latest). Same "5D reads 1W" mapping
+  // /api/returns/approved already uses — the canonical ledger doesn't publish
+  // a literal 5-trading-day figure, 1W is its closest equivalent.
+  const certifiedByStrategy = new Map<string, Record<string, unknown>>();
+  for (const r of certifiedRows as Array<{ strategy_id: string; period_metrics: Record<string, { return_pct?: number | null }> | null; complete_value_cents: number | null }>) {
+    const k = String(r.strategy_id ?? "");
+    if (!k || certifiedByStrategy.has(k)) continue;
+    const metrics = r.period_metrics ?? {};
+    const pick = (key: string) => {
+      const v = metrics[key]?.return_pct;
+      return v != null && Number.isFinite(Number(v)) ? Number(v) : undefined;
+    };
+    certifiedByStrategy.set(k, {
+      "1d_pct": pick("1D"),
+      "5d_pct": pick("1W"),
+      "1m_pct": pick("1M"),
+      "6m_pct": pick("6M"),
+      ytd_pct: pick("YTD"),
+      basket_value: r.complete_value_cents ?? undefined,
+    });
+  }
   const strategyReturns: Record<string, unknown>[] = latestBy(
     stratReturns as Record<string, unknown>[],
     "strategy_id",
@@ -102,10 +137,19 @@ export async function GET() {
     // Drop return rows belonging to a strategy this viewer can't see, so a
     // hidden UAT strategy doesn't reappear as an unnamed line on the chart.
     .filter((r) => visibleStrategyIds.has(String(r.strategy_id)))
-    .map((r) => ({
-      ...r,
-      name: (stratById.get(r.strategy_id as string)?.name as string) || (r.strategy_id as string),
-    }));
+    .map((r) => {
+      const certified = certifiedByStrategy.get(String(r.strategy_id)) ?? {};
+      // Only overwrite fields the certified row actually has a value for —
+      // undefined entries fall through to the raw strategies_returns_c value.
+      const merged: Record<string, unknown> = { ...r };
+      for (const [key, value] of Object.entries(certified)) {
+        if (value !== undefined) merged[key] = value;
+      }
+      return {
+        ...merged,
+        name: (stratById.get(r.strategy_id as string)?.name as string) || (r.strategy_id as string),
+      };
+    });
 
   const featured = strategies
     .filter((s) => s.is_featured)
