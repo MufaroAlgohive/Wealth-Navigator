@@ -848,7 +848,7 @@ function WishlistCard({ wishlist }: { wishlist: WishlistRecord }) {
                 <AssetLogo logoUrl={item.logoUrl} label={item.symbol || item.name} size={24} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-semibold">{item.symbol || item.name} · {item.name}</p>
-                  <p className="text-muted-foreground">{item.filledQuantity}/{item.targetQuantity} units · {item.contributionCount} gifts</p>
+                  <p className="text-muted-foreground">{item.filledQuantity}/{item.targetQuantity} shares · {item.contributionCount} gifts</p>
                 </div>
                 <span className="ml-2 flex-shrink-0 whitespace-nowrap font-mono">{formatMoney(item.contributedRands)}</span>
               </div>
