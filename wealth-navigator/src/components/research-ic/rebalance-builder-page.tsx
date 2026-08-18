@@ -1625,7 +1625,9 @@ function FeeProceedsBreakdown({
   const sellTickers = [...new Set(sellLines.map((l) => l.symbol))];
 
   const buyLines = investors.flatMap((inv) => inv.lines.filter((l) => l.side === "buy"));
-  const showBuyCard = proceedsMode === "reinvest" && buyLines.length > 0;
+  // A buy-only rebalance (no sells) has proceedsMode === null — the card must
+  // still show, it just isn't funded by reinvested sale proceeds.
+  const showBuyCard = buyLines.length > 0;
   const buyBrokerage = investors.reduce((s, inv) => s + (inv.buyBrokerageCents || 0), 0);
   const buyCustody = investors.reduce((s, inv) => s + (inv.buyCustodyCents || 0), 0);
   const grossCost = buyLines.reduce((s, l) => s + l.valueCents, 0);
@@ -1692,22 +1694,24 @@ function FeeProceedsBreakdown({
           ) : null}
         </div>
       ) : null}
-      <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
-        <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
-          <Info className="h-3.5 w-3.5 text-primary" /> Sell Execution
-          <span className="font-normal text-muted-foreground">· {sellTickers.join(", ") || "—"}</span>
-        </div>
-        <div className="space-y-2">
-          <BridgeRow label="Total Shares to Sell" value={totalSharesToSell.toLocaleString()} />
-          <BridgeRow label="Price per Share" value={centsToR(avgSellPriceCents)} />
-          <BridgeRow label="Gross Proceeds" value={centsToR(grossProceeds)} />
-          <BridgeRow label={`Brokerage (${feeRate.toFixed(1)}%)`} value={centsToR(sellBrokerage)} deduct />
-          <BridgeRow label={`Off-Custody Fee (x${sellInvestorCount})`} value={centsToR(sellCustody)} deduct />
-          <div className="border-t border-[hsl(var(--glass-border))] pt-2">
-            <BridgeRow label="Net Proceeds" value={centsToR(netProceeds)} bold />
+      {sellLines.length > 0 ? (
+        <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
+          <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold">
+            <Info className="h-3.5 w-3.5 text-primary" /> Sell Execution
+            <span className="font-normal text-muted-foreground">· {sellTickers.join(", ") || "—"}</span>
+          </div>
+          <div className="space-y-2">
+            <BridgeRow label="Total Shares to Sell" value={totalSharesToSell.toLocaleString()} />
+            <BridgeRow label="Price per Share" value={centsToR(avgSellPriceCents)} />
+            <BridgeRow label="Gross Proceeds" value={centsToR(grossProceeds)} />
+            <BridgeRow label={`Brokerage (${feeRate.toFixed(1)}%)`} value={centsToR(sellBrokerage)} deduct />
+            <BridgeRow label={`Off-Custody Fee (x${sellInvestorCount})`} value={centsToR(sellCustody)} deduct />
+            <div className="border-t border-[hsl(var(--glass-border))] pt-2">
+              <BridgeRow label="Net Proceeds" value={centsToR(netProceeds)} bold />
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
 
       {showBuyCard ? (
         <div className="rounded-xl border border-[hsl(var(--glass-border))] p-4">
