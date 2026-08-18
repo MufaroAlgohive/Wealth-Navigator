@@ -52,7 +52,31 @@ export async function GET(req:Request) {
     if(familyMemberId) txQuery=txQuery.eq("family_member_id",familyMemberId);else txQuery=txQuery.is("family_member_id",null);
     const {data:transactions}=await txQuery;
     const strategyMap=new Map<string,{id:string;name:string;value:number;holdings:number}>();for(const h of holdings){if(!h.strategyId)continue;const id=String(h.strategyId),item=strategyMap.get(id)??{id,name:String(h.strategy||"Strategy"),value:0,holdings:0};if(!h.pending)item.value+=h.marketValue;item.holdings+=1;strategyMap.set(id,item)}
-    return NextResponse.json({ok:true,holdings,transactions:(transactions??[]).map(t=>({...t,amount:(Number(t.amount)||0)/100})),totalValue,totalPnl,pnlPct:invested>0?(totalPnl/invested)*100:0,strategyCount:strategyMap.size,strategies:[...strategyMap.values()],units:{money:"ZAR",sourcePrices:"ZAc normalized once on server"}});
+
+    // Cash asset + canonical return%. Positions-only market value/naive P&L
+    // ratio above matches what stock_holdings_c alone can tell us, but it
+    // omits the cash sleeve (residual + reserve) entirely and re-derives a
+    // return% that disagrees with the rest of OEM (e.g. Investors page showed
+    // -4.15%/-2.52% for the same client from two naive calcs before both were
+    // pointed at this same guarded view). client_strategy_returns_effective_latest_c
+    // is the shared per-client contract (client-book, overall-portfolio,
+    // wm/clients, investors already read it) — latest row per strategy, cash
+    // included, canonical inception/YTD return.
+    let cashCents=0,canonicalWeightedPct=0,canonicalWeight=0;
+    try{
+      let retQuery=db.from("client_strategy_returns_effective_latest_c").select("strategy_id,basket_value_cents,residual_cash_cents,unused_reserve_cents,inception_pct,ytd_pct").eq("user_id",userId);
+      retQuery=familyMemberId?retQuery.eq("family_member_id",familyMemberId):retQuery.is("family_member_id",null);
+      const {data:effRows}=await retQuery;
+      for(const r of (effRows??[]) as Array<{strategy_id:string;basket_value_cents:number|null;residual_cash_cents:number|null;unused_reserve_cents:number|null;inception_pct:number|null;ytd_pct:number|null}>){
+        cashCents+=(Number(r.residual_cash_cents)||0)+(Number(r.unused_reserve_cents)||0);
+        const retPct=r.inception_pct!=null?Number(r.inception_pct):(r.ytd_pct!=null?Number(r.ytd_pct):null);
+        const weight=Number(r.basket_value_cents)||0;
+        if(retPct!=null&&Number.isFinite(retPct)&&weight>0){canonicalWeightedPct+=retPct*weight;canonicalWeight+=weight}
+      }
+    }catch{/* cash/return overlay is best-effort; positions-only figures below still render */}
+    const cashRands=cashCents/100,totalValueWithCash=totalValue+cashRands;
+    const pnlPct=canonicalWeight>0?canonicalWeightedPct/canonicalWeight:(invested>0?(totalPnl/invested)*100:0);
+    return NextResponse.json({ok:true,holdings,transactions:(transactions??[]).map(t=>({...t,amount:(Number(t.amount)||0)/100})),totalValue:totalValueWithCash,cash:cashRands,totalPnl,pnlPct,strategyCount:strategyMap.size,strategies:[...strategyMap.values()],units:{money:"ZAR",sourcePrices:"ZAc normalized once on server"}});
   }
   return NextResponse.json({ok:false,error:`Unknown action: ${action}`},{status:400});
 }

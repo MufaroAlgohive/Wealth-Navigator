@@ -100,18 +100,68 @@ async function loadCertifiedOverlay(
   return map;
 }
 
-/** Only overwrites fields the certified row actually has a value for. */
-function applyCertifiedOverlay(rows: ReturnRow[], overlay: Map<string, CertifiedOverlay>): ReturnRow[] {
+/**
+ * Merges certified rows into the guarded series AND drops any guarded-only
+ * date for a strategy that has certified coverage at all. Only overlaying
+ * matching dates (the previous behaviour) left every date the certifier
+ * hadn't reached yet on the guarded chain right next to certified dates on
+ * the same line — two different calculation methodologies stitched together,
+ * which is exactly what produced the spiky/jagged chart shape reported live
+ * (MINT's own /api/returns/approved.js already avoids this the same way: a
+ * certified strategy's guarded-only dates are dropped, not shown). Any
+ * certified date missing from the guarded fetch (certifier ahead of the
+ * publisher) is appended too, so a healthy certified point is never hidden.
+ */
+function applyCertifiedOverlay(
+  rows: ReturnRow[],
+  overlay: Map<string, CertifiedOverlay>,
+  order: "asc" | "desc" = "asc",
+): ReturnRow[] {
   if (!overlay.size) return rows;
-  return rows.map((r) => {
-    const cert = overlay.get(`${r.strategy_id}|${r.as_of_date}`);
-    if (!cert) return r;
-    const merged: ReturnRow = { ...r };
-    for (const [key, value] of Object.entries(cert)) {
-      if (value !== undefined) (merged as unknown as Record<string, unknown>)[key] = value;
-    }
-    return merged;
-  });
+  const certifiedStrategyIds = new Set<string>();
+  const certifiedDates = new Set<string>();
+  for (const key of overlay.keys()) {
+    const sep = key.indexOf("|");
+    certifiedStrategyIds.add(key.slice(0, sep));
+    certifiedDates.add(key);
+  }
+  const merged = rows
+    .filter((r) => !certifiedStrategyIds.has(r.strategy_id) || certifiedDates.has(`${r.strategy_id}|${r.as_of_date}`))
+    .map((r) => {
+      const cert = overlay.get(`${r.strategy_id}|${r.as_of_date}`);
+      if (!cert) return r;
+      const out: ReturnRow = { ...r };
+      for (const [key, value] of Object.entries(cert)) {
+        if (value !== undefined) (out as unknown as Record<string, unknown>)[key] = value;
+      }
+      certifiedDates.delete(`${r.strategy_id}|${r.as_of_date}`);
+      return out;
+    });
+  for (const key of certifiedDates) {
+    const sep = key.indexOf("|");
+    const strategy_id = key.slice(0, sep);
+    const as_of_date = key.slice(sep + 1);
+    const cert = overlay.get(key)!;
+    merged.push({
+      strategy_id,
+      as_of_date,
+      ytd_pct: cert.ytd_pct ?? null,
+      all_pct: cert.all_pct ?? null,
+      "1d_pct": cert["1d_pct"] ?? null,
+      "5d_pct": cert["5d_pct"] ?? null,
+      "1m_pct": cert["1m_pct"] ?? null,
+      mtd_pct: cert.mtd_pct ?? null,
+      "6m_pct": cert["6m_pct"] ?? null,
+      "1y_pct": null,
+      basket_value: cert.basket_value ?? null,
+      complete_value_cents: cert.complete_value_cents ?? null,
+      continuity_cash_cents: cert.continuity_cash_cents ?? null,
+      securities_value_cents: cert.securities_value_cents ?? null,
+      source_kind: cert.source_kind ?? "CERTIFIED_CANONICAL_LEDGER",
+    });
+  }
+  const dir = order === "asc" ? 1 : -1;
+  return merged.sort((a, b) => (a.as_of_date < b.as_of_date ? -dir : a.as_of_date > b.as_of_date ? dir : 0));
 }
 
 export async function GET(req: Request) {
@@ -222,7 +272,7 @@ export async function GET(req: Request) {
       .order("as_of_date", { ascending: false })
       .limit(800);
     const certifiedOverlay = await loadCertifiedOverlay(db, [id]);
-    const returns = applyCertifiedOverlay([...(recentReturns ?? [])].reverse() as ReturnRow[], certifiedOverlay);
+    const returns = applyCertifiedOverlay([...(recentReturns ?? [])].reverse() as ReturnRow[], certifiedOverlay, "asc");
     const securities = await securitiesFor([strategy]);
     const testIds = await testUserIds();
     const { data: clientRows } = await db
@@ -325,7 +375,7 @@ export async function GET(req: Request) {
       .order("as_of_date", { ascending: false })
       .limit(4000);
     const certifiedOverlay = await loadCertifiedOverlay(db, rows.map((s) => String(s.id)));
-    const overlaidRet = applyCertifiedOverlay((ret ?? []) as ReturnRow[], certifiedOverlay);
+    const overlaidRet = applyCertifiedOverlay((ret ?? []) as ReturnRow[], certifiedOverlay, "desc");
     const groupedReturns: Record<string, ReturnRow[]> = {};
     for (const r of overlaidRet) {
       const rowsForStrategy = groupedReturns[r.strategy_id] ?? [];
