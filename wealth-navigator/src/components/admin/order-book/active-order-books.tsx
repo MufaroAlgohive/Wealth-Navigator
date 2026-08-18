@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { usePolling } from "@/lib/hooks/use-polling";
 import { cn } from "@/lib/cn";
 import { CrmOrderBreakdown } from "./crm-order-breakdown";
-import type { OrderBookSummary } from "./execution-view";
+import type { OrderBookMember, OrderBookSummary } from "./execution-view";
 
 interface OrderBooksPayload {
   ok: boolean;
