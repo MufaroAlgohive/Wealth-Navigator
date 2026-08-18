@@ -84,6 +84,11 @@ export interface BookMember {
     }>;
     allocations: Array<{
       id: string;
+      /** stock_holdings_c.id for this allocation, when the snapshot carries
+       * one — null for legacy rows recorded before sourceId was captured.
+       * Send Confirm needs the real id; `id` above falls back to a synthetic
+       * string when sourceId is missing, which must never be sent to the API. */
+      source_id: string | null;
       name: string;
       account_id: string | null;
       reference: string | null;
@@ -189,6 +194,7 @@ function crmMember(row: Record<string, unknown>, index: number, bookId: string):
   }));
   const allocations = bndRows.map((allocation, allocationIndex) => ({
     id: str(allocation.sourceId) ?? `${sourceId}-allocation-${allocationIndex}`,
+    source_id: str(allocation.sourceId),
     name: str(allocation.clientNameFull) ?? str(allocation.clientName) ?? "Unknown client",
     account_id: str(allocation.clientAccountId),
     reference: str(allocation.bndReference),
