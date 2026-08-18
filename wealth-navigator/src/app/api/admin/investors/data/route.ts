@@ -55,21 +55,13 @@ export async function GET() {
       (!holding.strategy_id || !liveScope.excludedStrategyIds.has(holding.strategy_id)),
   );
 
-  // Exclude test accounts — dual classifier: profiles.is_test OR
-  // wallets.status='test' (some test accounts are flagged only on the wallet).
-  try {
-    const [{ data: testRows }, { data: testWallets }] = await Promise.all([
-      db.from("profiles").select("id").eq("is_test", true),
-      db.from("wallets").select("user_id").eq("status", "test"),
-    ]);
-    const testIds = new Set([
-      ...(testRows ?? []).map((r) => r.id),
-      ...(testWallets ?? []).map((w) => w.user_id).filter(Boolean),
-    ]);
-    if (testIds.size) holdings = holdings.filter((h) => !testIds.has(h.user_id));
-  } catch {
-    /* is_test absent */
-  }
+  // Test-account exclusion already happened above via liveScope.excludedUserIds
+  // (loadRetailLiveScope dual-classifies on profiles.is_test OR
+  // wallets.status='test'). This used to re-run the same two queries and
+  // filter again here -- a second, independently-maintained copy of the same
+  // check sitting right next to the shared one, exactly the drift risk that
+  // makes two implementations quietly disagree later. Removed; holdings is
+  // already correctly scoped.
 
   const userIds = [...new Set(holdings.map((h) => h.user_id).filter(Boolean))];
   const secIds = [...new Set(holdings.map((h) => h.security_id).filter(Boolean))];
