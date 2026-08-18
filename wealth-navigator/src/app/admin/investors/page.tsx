@@ -110,6 +110,20 @@ function groupStrategyInvestors(rows: Investor[], selectedKey: string | null): I
     const valueCents = ordered.reduce((sum, item) => sum + item.valueCents, 0);
     const investedCents = ordered.reduce((sum, item) => sum + item.investedCents, 0);
     const pnlCents = ordered.reduce((sum, item) => sum + item.pnlCents, 0);
+    // Was a naive pnlCents/investedCents ratio recomputed from the summed
+    // cents -- which discarded each strategy's own canonicalRetPct (the
+    // published/certified return) even for the common case of ONE strategy,
+    // where this "group" is really just that single row re-wrapped. Result:
+    // the sidebar (built from this function) and the detail panel (which
+    // reads the row's own retPct directly) showed two different numbers for
+    // the same investor -- e.g. Ncumolwethu showed -2.52% here vs -4.15% in
+    // the detail panel, for the exact same MyGrowthFund position. Now a
+    // value-weighted average of each strategy's own (already-correct)
+    // retPct, which reduces to that single retPct unchanged when there's
+    // only one strategy.
+    const retPct = valueCents > 0
+      ? ordered.reduce((sum, item) => sum + item.retPct * item.valueCents, 0) / valueCents
+      : (investedCents > 0 ? (pnlCents / investedCents) * 100 : 0);
     return {
       ...selected,
       key: ownerKey,
@@ -120,7 +134,7 @@ function groupStrategyInvestors(rows: Investor[], selectedKey: string | null): I
       valueCents,
       investedCents,
       pnlCents,
-      retPct: investedCents > 0 ? (pnlCents / investedCents) * 100 : 0,
+      retPct,
     };
   }).filter((group): group is InvestorGroup => group !== null).sort((a, b) => b.valueCents - a.valueCents);
 }
