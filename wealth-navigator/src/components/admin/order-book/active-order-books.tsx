@@ -71,12 +71,21 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
     const key = member.id;
     setSending((p) => ({ ...p, [key]: true }));
     try {
+      // CRM-sourced members carry id="crm-${sourceId}" (see order-books/
+      // route.ts's crmMember()), where sourceId IS stock_holdings_c.id. The
+      // API needs that raw id to find the order at all -- member.order_id
+      // for a CRM row is a display-only settlement reference (e.g.
+      // "BND-20260727-4001") that was never written to oems_order_audit, so
+      // sending only that 404'd for every CRM order.
+      const isCrm = book.origin === "crm";
       const res = await fetch("/api/admin/orderbook/send-confirmation", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           order_id: member.order_id || member.id,
-          book_id: book.archive_id ?? String(book.sequence)
+          book_id: book.archive_id ?? String(book.sequence),
+          origin: book.origin ?? "oem",
+          ...(isCrm ? { source_ids: [member.id.replace(/^crm-/, "")] } : {}),
         }),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
@@ -271,7 +280,7 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                             {m.crm_details ? (
                               <tr>
                                 <td colSpan={14} className="p-0">
-                                  <CrmOrderBreakdown member={m} />
+                                  <CrmOrderBreakdown member={m} bookId={b.archive_id ?? String(b.sequence)} />
                                 </td>
                               </tr>
                             ) : null}
