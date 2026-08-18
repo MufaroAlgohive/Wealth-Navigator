@@ -67,21 +67,24 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
     });
 
   const [sending, setSending] = React.useState<Record<string, boolean>>({});
-  const sendConfirmation = async (book: OrderBookSummary) => {
-    const key = book.archive_id ?? String(book.sequence);
+  const sendConfirmation = async (member: OrderBookMember, book: OrderBookSummary) => {
+    const key = member.id;
     setSending((p) => ({ ...p, [key]: true }));
     try {
       const res = await fetch("/api/admin/orderbook/send-confirmation", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ book_id: book.archive_id ?? String(book.sequence) }),
+        body: JSON.stringify({ 
+          order_id: member.order_id || member.id,
+          book_id: book.archive_id ?? String(book.sequence)
+        }),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || body.ok === false) {
         toast.error(body.error ?? `Send Confirmation failed (${res.status})`);
         return;
       }
-      toast.success(`Confirmation sent for ${book.title ?? `Order Book ${book.sequence}`}`);
+      toast.success(`Confirmation sent for order ${member.order_id ?? member.id}`);
       await refresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Send Confirmation failed");
@@ -178,15 +181,6 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                       {b.filled_count}/{b.total_count} filled
                     </span>
                     <Button
-                      variant="default"
-                      size="sm"
-                      disabled={!!sending[bookKey]}
-                      onClick={() => void sendConfirmation(b)}
-                      title="Sends trade confirmation emails to clients and updates holding dates."
-                    >
-                      {sending[bookKey] ? "Sending…" : "Send Confirmation"}
-                    </Button>
-                    <Button
                       variant="secondary"
                       size="sm"
                       disabled={!!closing[bookKey]}
@@ -220,6 +214,7 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                             <th className="py-1 pr-3 font-semibold">Venue</th>
                             <th className="py-1 pr-3 font-semibold">State</th>
                             <th className="py-1 pr-3 font-semibold">Filled at</th>
+                            <th className="py-1 pr-3 font-semibold text-right">Action</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -256,10 +251,26 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                                 </Badge>
                               </td>
                               <td className="py-1.5 pr-3 text-muted-foreground">{fmtReleasedAt(m.filled_at ?? "")}</td>
+                              <td className="py-1.5 pr-3 text-right">
+                                {m.status === "filled" ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-6 text-[10px]"
+                                    disabled={!!sending[m.id]}
+                                    onClick={() => void sendConfirmation(m, b)}
+                                    title="Sends trade confirmation emails to client."
+                                  >
+                                    {sending[m.id] ? "Sending…" : "Send Confirm"}
+                                  </Button>
+                                ) : (
+                                  <span className="text-[10px] text-muted-foreground">—</span>
+                                )}
+                              </td>
                             </tr>
                             {m.crm_details ? (
                               <tr>
-                                <td colSpan={13} className="p-0">
+                                <td colSpan={14} className="p-0">
                                   <CrmOrderBreakdown member={m} />
                                 </td>
                               </tr>
