@@ -43,7 +43,7 @@ interface ReturnRow {
 }
 
 type CertifiedOverlay = Partial<
-  Pick<ReturnRow, "ytd_pct" | "1d_pct" | "5d_pct" | "1m_pct" | "mtd_pct" | "6m_pct" | "basket_value" | "complete_value_cents" | "continuity_cash_cents" | "securities_value_cents" | "source_kind">
+  Pick<ReturnRow, "ytd_pct" | "all_pct" | "1d_pct" | "5d_pct" | "1m_pct" | "mtd_pct" | "6m_pct" | "basket_value" | "complete_value_cents" | "continuity_cash_cents" | "securities_value_cents" | "source_kind">
 >;
 
 /**
@@ -79,6 +79,12 @@ async function loadCertifiedOverlay(
     };
     map.set(`${r.strategy_id}|${r.as_of_date}`, {
       ytd_pct: pick("YTD"),
+      // "SI" (since-inception) is the certified ledger's equivalent of the
+      // legacy schema's all_pct. buildCanonicalPeriodSeries (canonical-index.ts)
+      // uses all_pct to build the 3M/6M/1Y/ALL chart ranges -- YTD alone was
+      // fixed by ytd_pct above, but every OTHER range was still silently
+      // reading the stale guarded chain until this field was added.
+      all_pct: pick("SI"),
       "1d_pct": pick("1D"),
       "5d_pct": pick("1W"),
       "1m_pct": pick("1M"),
