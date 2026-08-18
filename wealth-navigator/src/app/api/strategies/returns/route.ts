@@ -74,13 +74,32 @@ export async function GET() {
     return Response.json({ source: "unavailable", range: null, benchmark: null, strategies: [] });
   }
   const db = createRetailServiceRoleClient();
-  const [returnsRes, stratRes] = await Promise.all([
+  const [returnsRes, stratRes, certifiedRes] = await Promise.all([
     db
       .from("strategy_returns_effective_c")
       .select("strategy_id, as_of_date, basket_value_cents")
       .order("as_of_date", { ascending: true })
       .limit(6000),
     db.from("strategies_c").select("id, name, investor_environment"),
+    // CERTIFIED canonical ledger. Plotting raw basket_value_cents directly
+    // (as the fallback above does) reproduces the exact "rebalance cliff"
+    // this whole certification programme exists to remove -- a rebalance can
+    // legitimately drop raw basket value while true performance is
+    // continuous. Per strategy with certified history, this endpoint now
+    // replaces the WHOLE series with an index built from the certified SI
+    // (since-inception) return_pct at each date -- 100 * (1 + SI/100) --
+    // which is leg-P&L continuity-preserving by construction (same
+    // methodology independently hand-verified against Yahoo and by manual
+    // reconstruction of Yield Basket's YTD figure). Verified: every
+    // certified strategy's canonical history already spans its full
+    // existing basket_value_cents range from actual inception, so no
+    // splicing between a pre-certification and certified segment is needed.
+    db
+      .from("strategy_canonical_daily_ledger_c")
+      .select("strategy_id, as_of_date, period_metrics")
+      .eq("certification_status", "CERTIFIED")
+      .order("as_of_date", { ascending: true })
+      .limit(6000),
   ]);
   if (returnsRes.error) {
     return Response.json(
@@ -133,11 +152,34 @@ export async function GET() {
     if (t > maxT) maxT = t;
   }
 
+  // Certified index per strategy: 100 * (1 + SI_return_pct / 100) at each
+  // certified date. Only strategies with at least 2 certified points get the
+  // index treatment below; anything else keeps the raw basket_value fallback.
+  const certifiedPtsBySid = new Map<string, Pt[]>();
+  for (const r of (certifiedRes.data ?? []) as Array<{
+    strategy_id: string;
+    as_of_date: string | null;
+    period_metrics: Record<string, { return_pct?: number | null }> | null;
+  }>) {
+    if (!r.strategy_id || !r.as_of_date) continue;
+    const siPct = r.period_metrics?.SI?.return_pct;
+    if (siPct == null || !Number.isFinite(Number(siPct))) continue;
+    const t = new Date(r.as_of_date).getTime();
+    if (!Number.isFinite(t)) continue;
+    let arr = certifiedPtsBySid.get(r.strategy_id);
+    if (!arr) {
+      arr = [];
+      certifiedPtsBySid.set(r.strategy_id, arr);
+    }
+    arr.push({ t, v: 100 * (1 + Number(siPct) / 100) });
+  }
+
   const strategies: SeriesOut[] = [];
   for (const [sid, pts] of bySid) {
     const name = nameById.get(sid);
     if (!name || pts.length < 2) continue;
-    strategies.push({ id: sid, name, points: pts });
+    const certifiedPts = certifiedPtsBySid.get(sid);
+    strategies.push({ id: sid, name, points: certifiedPts && certifiedPts.length >= 2 ? certifiedPts : pts });
   }
   strategies.sort((a, b) => a.name.localeCompare(b.name));
 
