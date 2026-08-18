@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
+import { isUatStrategy } from "@/lib/aum/retail-live-scope";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
@@ -419,14 +420,34 @@ export async function GET(req?: Request) {
       })) });
     }
     const retail = createRetailServiceRoleClient();
-    const [{ data: testProfiles }, { data: testWallets }] = await Promise.all([
+    const [{ data: testProfiles }, { data: testWallets }, { data: strategyRows }] = await Promise.all([
       retail.from("profiles").select("id").eq("is_test", true),
       retail.from("wallets").select("user_id").eq("status", "test"),
+      retail.from("strategies_c").select("id,investor_environment,name,short_name,slug,status"),
     ]);
     const testUserIds = new Set<string>([
       ...(testProfiles ?? []).map((row) => String((row as { id: string }).id)).filter(Boolean),
       ...(testWallets ?? []).map((row) => String((row as { user_id: string }).user_id)).filter(Boolean),
     ]);
+    // This legacy CRM snapshot shape carries a strategy NAME (row.strategyName),
+    // never a strategy_id, so the shared loadRetailLiveScope()'s id-keyed Set
+    // can't be reused directly here. Previously this route only checked
+    // whether every owner on the book was a test USER -- a UAT-flagged
+    // strategy traded by a non-test user showed as CRM_LIVE regardless. Build
+    // a name-keyed equivalent from the same isUatStrategy() classifier.
+    const uatStrategyNames = new Set<string>();
+    for (const row of (strategyRows ?? []) as Array<{
+      id: string;
+      investor_environment: string | null;
+      name: string | null;
+      short_name: string | null;
+      slug: string | null;
+      status: string | null;
+    }>) {
+      if (!isUatStrategy(row)) continue;
+      if (row.name) uatStrategyNames.add(row.name.trim().toUpperCase());
+      if (row.short_name) uatStrategyNames.add(row.short_name.trim().toUpperCase());
+    }
     const crmResult = await retail
       .from("orderbook_email_runs")
       .select("run_date,status,sent_at,error_message,created_at,updated_at,sequence_number,title,date_label,snapshot_rows,closed_at,closed_by")
@@ -455,7 +476,12 @@ export async function GET(req?: Request) {
           ? row.snapshot_rows.filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
           : [];
         const owners = snapshotRows.flatMap(crmOwnerIds);
-        const isUat = owners.length > 0 && owners.every((ownerId) => testUserIds.has(ownerId));
+        const isUatByOwners = owners.length > 0 && owners.every((ownerId) => testUserIds.has(ownerId));
+        const isUatByStrategy = snapshotRows.some((item) => {
+          const name = str(item.strategyName) ?? str(item.instrumentName);
+          return name != null && uatStrategyNames.has(name.trim().toUpperCase());
+        });
+        const isUat = isUatByOwners || isUatByStrategy;
         const crmSource = isUat ? "CRM_UAT" : "CRM_LIVE";
         const members = snapshotRows.map((item, index) => crmMember(item, index, archiveId));
         const filledCount = members.filter((member) => member.status === "filled").length;

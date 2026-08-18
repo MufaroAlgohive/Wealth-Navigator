@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext, isAdminRole, can } from "@/lib/admin/rbac";
+import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
 import { createAnonServerClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { getApplicantByExternalId, getApplicantById, sumsubConfigured } from "@/lib/admin/sumsub";
 
@@ -286,7 +287,15 @@ export async function GET(req: Request) {
         };
       });
     const clients = [...profileClients, ...unlinkedChildren];
+    // stats is a "number of users" figure (KYC roster counts) -- test
+    // accounts were previously counted in it with no exclusion at all (the
+    // dual profiles.is_test / wallets.status='test' classifier used
+    // everywhere else in this app was never applied here). The full `clients`
+    // list still includes test accounts (each row already carries is_test) so
+    // an admin can find and manage them; only the headline counts exclude them.
+    const { excludedUserIds } = await loadRetailLiveScope(db);
     const stats = profileClients.reduce((counts, client) => {
+      if (client.is_test === true || excludedUserIds.has(client.id)) return counts;
       counts.total += 1;
       if (client.kyc === "verified") counts.completed += 1;
       else if (client.kyc === "pending" || client.kyc === "resubmission_required") counts.pending += 1;

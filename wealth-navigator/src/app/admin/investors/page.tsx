@@ -229,7 +229,29 @@ export default function InvestorsPage() {
         investedCents: investedStableCents, currentCents, residualCents, bufferCents, realizedCents, valueCents, pnlCents,
         retPct: canonicalRetPct != null ? Number(canonicalRetPct) : (investedStableCents > 0 ? (pnlCents / investedStableCents) * 100 : 0),
         ytdPct: latestNav?.ytd_pct ?? null, inceptionPct: latestNav?.inception_pct ?? null,
-        nav, holdings: Object.values(bysecurity).sort((a, b) => b.valueCents - a.valueCents), txns: txnByUser[userId] || [],
+        nav,
+        // Cash (residual + reserve) is part of the client's holding, not a
+        // footnote below it -- shown here as its own block/row exactly like a
+        // security, so the holdings table's Weight column actually sums to
+        // ~100% of `valueCents` instead of only accounting for securities.
+        holdings: [
+          ...Object.values(bysecurity).sort((a, b) => b.valueCents - a.valueCents),
+          ...(residualCents + bufferCents > 0
+            ? [{
+                securityId: "__cash__",
+                symbol: "CA",
+                name: "Cash (residual + reserve)",
+                sector: "Cash",
+                qty: 0,
+                priceCents: 0,
+                costCents: 0,
+                valueCents: residualCents + bufferCents,
+                investedCents: residualCents + bufferCents,
+                pnlCents: 0,
+              }]
+            : []),
+        ],
+        txns: txnByUser[userId] || [],
       });
     }
     return out.sort((a, b) => b.valueCents - a.valueCents);
@@ -377,7 +399,7 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
             </div>
           )}
 
-          <HoldingsTable holdings={inv.holdings} total={inv.currentCents} top={5} />
+          <HoldingsTable holdings={inv.holdings} total={inv.valueCents} top={5} />
         </TabsContent>
 
         <TabsContent value="risk">
@@ -405,7 +427,7 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
               </div>
             </div>
           )}
-          <HoldingsTable holdings={inv.holdings} total={inv.currentCents} />
+          <HoldingsTable holdings={inv.holdings} total={inv.valueCents} />
         </TabsContent>
 
         <TabsContent value="transactions" className="space-y-4">

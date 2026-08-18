@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext, isAdminRole } from "@/lib/admin/rbac";
+import { isUatStrategy, type StrategyScopeRow } from "@/lib/aum/retail-live-scope";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -174,7 +175,12 @@ export async function GET() {
     const userId = text(id);
     return Boolean(userId && (profileById.get(userId)?.is_test === true || testWalletUsers.has(userId)));
   };
-  const environmentFor = (...ids: unknown[]) => (ids.some(isTestUser) ? "uat" : "live");
+  // Was user-only: a UAT-flagged strategy gifted between two non-test users
+  // showed as "live" regardless. uatStrategyIds is populated below once
+  // strategyRows is fetched with the columns isUatStrategy() needs.
+  const uatStrategyIds = new Set<string>();
+  const environmentFor = (strategyId: unknown, ...ids: unknown[]) =>
+    (strategyId != null && uatStrategyIds.has(text(strategyId) ?? "")) || ids.some(isTestUser) ? "uat" : "live";
 
   const assetKeys = unique([
     ...itemRows.map((row) => row.isin),
@@ -184,12 +190,18 @@ export async function GET() {
   const securityRows: Row[] = [];
   if (assetKeys.length) {
     const [strategies, securitiesById, securitiesByIsin, securitiesBySymbol] = await Promise.all([
-      db.from("strategies_c").select("id,name,short_name,holdings,icon_url,image_url").in("id", assetKeys),
+      db.from("strategies_c").select("id,name,short_name,holdings,icon_url,image_url,investor_environment,slug,status").in("id", assetKeys),
       db.from("securities_c").select("id,isin,symbol,name,logo_url").in("id", assetKeys),
       db.from("securities_c").select("id,isin,symbol,name,logo_url").in("isin", assetKeys),
       db.from("securities_c").select("id,isin,symbol,name,logo_url").in("symbol", assetKeys),
     ]);
     if (!strategies.error) strategyRows = (strategies.data ?? []) as Row[];
+    for (const row of strategyRows) {
+      if (isUatStrategy(row as unknown as StrategyScopeRow)) {
+        const rowId = text(row.id);
+        if (rowId) uatStrategyIds.add(rowId);
+      }
+    }
     if (!securitiesById.error) securityRows.push(...((securitiesById.data ?? []) as Row[]));
     if (!securitiesByIsin.error) securityRows.push(...((securitiesByIsin.data ?? []) as Row[]));
     if (!securitiesBySymbol.error) securityRows.push(...((securitiesBySymbol.data ?? []) as Row[]));
@@ -319,7 +331,7 @@ export async function GET() {
         recipientHoldingId: text(row.recipient_holding_id),
         claimId: linkedClaimId,
       },
-      environment: environmentFor(row.gifter_user_id, row.recipient_user_id),
+      environment: environmentFor(strategy?.id, row.gifter_user_id, row.recipient_user_id),
       execution: {
         reachedOrderBook: Boolean(row.oems_order_audit_id || row.oems_order_id),
         state: row.oems_order_audit_id || row.oems_order_id ? status : status === "authorized" ? "awaiting_forward" : "not_routed",
@@ -447,7 +459,7 @@ export async function GET() {
           fillReference: null,
           recipientHoldingId: text(row.holding_id),
         },
-        environment: environmentFor(row.sender_user_id, row.recipient_user_id),
+        environment: environmentFor(row.strategy_id, row.sender_user_id, row.recipient_user_id),
         execution,
         events: [],
       };
@@ -500,6 +512,12 @@ export async function GET() {
         };
       });
     const relatedUserIds = [creatorId, beneficiaryType === "OTHER" ? beneficiaryId : null];
+    // A registry can list several items across different strategies; if any
+    // one of them is UAT the whole wishlist is flagged uat, same fail-closed
+    // direction as everywhere else in this file.
+    const registryUatItem = itemRows
+      .filter((item) => text(item.gift_event_id) === id)
+      .find((item) => uatStrategyIds.has(text(item.isin) ?? ""));
     const creatorProfile = profileById.get(creatorId || "");
     return {
       id,
@@ -522,7 +540,7 @@ export async function GET() {
       eventDate: text(registry.event_date),
       expiresAt: text(registry.expiry_at),
       createdAt: text(registry.created_at),
-      environment: environmentFor(...relatedUserIds),
+      environment: environmentFor(registryUatItem ? text(registryUatItem.isin) : null, ...relatedUserIds),
       itemCount: items.length,
       contributionCount: items.reduce((sum, item) => sum + item.contributionCount, 0),
       contributedRands: items.reduce((sum, item) => sum + item.contributedRands, 0),
