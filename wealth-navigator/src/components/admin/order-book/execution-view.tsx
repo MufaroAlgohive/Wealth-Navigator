@@ -451,6 +451,9 @@ export interface OrderBookMember {
     }>;
     allocations: Array<{
       id: string;
+      /** stock_holdings_c.id for this allocation, when the snapshot carries
+       * one — null for legacy rows recorded before sourceId was captured. */
+      source_id: string | null;
       name: string;
       account_id: string | null;
       reference: string | null;

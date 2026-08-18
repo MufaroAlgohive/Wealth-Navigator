@@ -26,8 +26,14 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
   const [investorError, setInvestorError] = React.useState<string | null>(null);
   const [sending, setSending] = React.useState<Record<string, boolean>>({});
 
-  const sendConfirmation = async (investorId: string, investorName: string) => {
-    setSending((p) => ({ ...p, [investorId]: true }));
+  // key is the investor.id or allocation.id (a UI key, not necessarily a
+  // stock_holdings_c.id) so the two tables' loading states never collide.
+  const sendConfirmation = async (key: string, sourceIds: string[], label: string) => {
+    if (sourceIds.length === 0) {
+      toast.error(`No holding id captured for ${label} — cannot confirm.`);
+      return;
+    }
+    setSending((p) => ({ ...p, [key]: true }));
     try {
       const res = await fetch("/api/admin/orderbook/send-confirmation", {
         method: "POST",
@@ -35,7 +41,8 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
         body: JSON.stringify({
           order_id: member.order_id || member.id,
           book_id: bookId,
-          investor_id: investorId,
+          origin: "crm",
+          source_ids: sourceIds,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
@@ -43,11 +50,11 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
         toast.error(body.error ?? `Send Confirmation failed (${res.status})`);
         return;
       }
-      toast.success(`Confirmation sent for ${investorName}`);
+      toast.success(`Confirmation sent for ${label}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Send Confirmation failed");
     } finally {
-      setSending((p) => ({ ...p, [investorId]: false }));
+      setSending((p) => ({ ...p, [key]: false }));
     }
   };
 
@@ -203,9 +210,13 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
                             variant="outline"
                             size="sm"
                             className="h-6 text-[10px]"
-                            disabled={isSending}
-                            onClick={() => void sendConfirmation(investor.id, investor.name)}
-                            title="Sends trade confirmation emails to this client."
+                            disabled={isSending || investor.source_ids.length === 0}
+                            onClick={() => void sendConfirmation(investor.id, investor.source_ids, investor.name)}
+                            title={
+                              investor.source_ids.length === 0
+                                ? "No holding ids captured for this investor."
+                                : "Sends trade confirmation emails to this client."
+                            }
                           >
                             {isSending ? "Sending…" : "Send Confirm"}
                           </Button>
@@ -236,11 +247,14 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
                   <th className="py-1 pr-3 text-right">Market value</th>
                   <th className="py-1 pr-3">Order time</th>
                   <th className="py-1 pr-3">Instruction</th>
-                  <th className="py-1">Settlement ref</th>
+                  <th className="py-1 pr-3">Settlement ref</th>
+                  <th className="py-1 text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {details.allocations.map((allocation) => (
+                {details.allocations.map((allocation) => {
+                  const isSending = !!sending[allocation.id];
+                  return (
                   <tr key={allocation.id} className="border-t border-border/30">
                     <td className="py-1.5 pr-3 font-medium">{allocation.name}</td>
                     <td className="py-1.5 pr-3">{allocation.account_id ?? "—"}</td>
@@ -249,9 +263,31 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
                     <td className="py-1.5 pr-3 text-right tabular-nums">{money(allocation.market_value_rands)}</td>
                     <td className="py-1.5 pr-3">{allocation.timestamp ?? "—"}</td>
                     <td className="py-1.5 pr-3">{allocation.instruction_type ?? "Market"}</td>
-                    <td className="py-1.5">{allocation.settlement_ref ?? "—"}</td>
+                    <td className="py-1.5 pr-3">{allocation.settlement_ref ?? "—"}</td>
+                    <td className="py-1.5 text-right">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-6 text-[10px]"
+                        disabled={isSending || !allocation.source_id}
+                        onClick={() =>
+                          void sendConfirmation(
+                            allocation.id,
+                            allocation.source_id ? [allocation.source_id] : [],
+                            allocation.name,
+                          )
+                        }
+                        title={
+                          allocation.source_id
+                            ? "Sends trade confirmation emails to this client."
+                            : "No holding id captured for this allocation."
+                        }
+                      >
+                        {isSending ? "Sending…" : "Send Confirm"}
+                      </Button>
+                    </td>
                   </tr>
-                ))}
+                );})}
               </tbody>
             </table>
           </div>
