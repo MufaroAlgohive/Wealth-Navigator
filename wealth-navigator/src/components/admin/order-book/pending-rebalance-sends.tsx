@@ -5,8 +5,10 @@ import * as React from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useAdmin } from "@/lib/admin/context";
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
+import { MasterSendConfirmDialog } from "./master-send-confirm-dialog";
 
 /**
  * A rebalance's IC approval (`ic_approved`) is a pure decision — nothing has
@@ -72,6 +74,10 @@ function summarizeChanges(lines: ProposedLine[]): string {
 }
 
 export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "uat" }) {
+  // Same tier the server checks in lib/admin/step-up.ts ("dev" does not satisfy
+  // it there, so it must not here either).
+  const { ctx } = useAdmin();
+  const isMaster = ctx.approverTier === "master";
   const [bookingId, setBookingId] = React.useState<string | null>(null);
   const [cancellingId, setCancellingId] = React.useState<string | null>(null);
   const [releasingId, setReleasingId] = React.useState<string | null>(null);
@@ -289,6 +295,12 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                 onRelease={() => releaseToOrderBook(r.id)}
                 completing={completingId === r.id}
                 onRetrySettlement={scope === "uat" ? () => retryUatSettlement(r.id) : undefined}
+                // Mirrors release-to-orderbook/route.ts, which only applies the
+                // master step-up when the request is NOT uat-scoped. Demanding
+                // master on a UAT release here would block something the server
+                // would have happily allowed.
+                requiresMaster={scope !== "uat"}
+                isMaster={isMaster}
               />
             ))
           )}
@@ -306,6 +318,8 @@ function BookedRebalanceRow({
   onRelease,
   completing,
   onRetrySettlement,
+  requiresMaster,
+  isMaster,
 }: {
   r: RebalanceRequestRow;
   open: boolean;
@@ -314,6 +328,9 @@ function BookedRebalanceRow({
   onRelease: () => Promise<void>;
   completing: boolean;
   onRetrySettlement?: () => Promise<void>;
+  /** false for UAT-scoped requests, which the server releases without step-up. */
+  requiresMaster: boolean;
+  isMaster: boolean;
 }) {
   const ordersQuery = usePolling<{ orders?: BookedOrder[] }>(`/api/rebalance/requests/${r.id}/orders`, {
     interval: open ? 10_000 : 60_000,
@@ -324,13 +341,19 @@ function BookedRebalanceRow({
   const released = orders.length > 0 && stillParked.length === 0;
   const allFilled = orders.length > 0 && orders.every((o) => o.status === "filled");
 
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+
   // onRelease only refreshes the parent's request list — this row's own
   // order table polls separately (up to 10s while expanded) and wouldn't
   // otherwise reflect the release for a few seconds, making a successful
   // click look like it did nothing and inviting a second one.
   async function handleRelease() {
-    await onRelease();
-    await ordersQuery.refresh();
+    try {
+      await onRelease();
+      await ordersQuery.refresh();
+    } finally {
+      setConfirmOpen(false);
+    }
   }
 
   return (
@@ -352,7 +375,17 @@ function BookedRebalanceRow({
             {r.executed_at ? new Date(r.executed_at).toLocaleString("en-ZA") : "—"}
           </span>
           {!released && stillParked.length > 0 ? (
-            <Button type="button" size="sm" onClick={handleRelease} disabled={releasing}>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => setConfirmOpen(true)}
+              disabled={releasing}
+              title={
+                requiresMaster && !isMaster
+                  ? "Only a Master ★ account can send orders to the order book."
+                  : "Release this rebalance's parked orders into the order book."
+              }
+            >
               {releasing ? (
                 <>
                   <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Sending...
@@ -403,6 +436,26 @@ function BookedRebalanceRow({
           )}
         </div>
       ) : null}
+
+      <MasterSendConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        // A UAT release needs no master tier server-side, so never show the
+        // "master required" refusal for one — pass true to go straight to the
+        // ordinary are-you-sure.
+        isMaster={!requiresMaster || isMaster}
+        title={`${stillParked.length} parked order${stillParked.length === 1 ? "" : "s"} from this rebalance will be released into the order book.`}
+        summary={
+          <>
+            Rebalance · <span className="font-mono font-semibold">{r.strategy_id}</span> ·{" "}
+            <span className="font-semibold">{stillParked.length}</span> order
+            {stillParked.length === 1 ? "" : "s"} → order book
+          </>
+        }
+        confirmLabel="Yes, execute order"
+        pending={releasing}
+        onConfirm={() => void handleRelease()}
+      />
     </div>
   );
 }
