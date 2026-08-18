@@ -24,7 +24,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
-type Party = { id: string | null; name: string | null; email: string | null; kind?: string; mintNumber?: string | null };
+type Party = { id: string | null; name: string | null; email: string | null; kind?: string; mintNumber?: string | null; parentName?: string | null; };
 type Asset = {
   type: string;
   key: string | null;
@@ -296,7 +296,8 @@ function PartyCell({ party }: { party: Party }) {
   return (
     <div className="min-w-0">
       <p className="truncate text-[11px] font-semibold">{party.name || "Unknown"}</p>
-      <p className="truncate text-[9px] text-muted-foreground">
+      {party.parentName && <div className="text-[9px] mt-0.5 opacity-80">Managed by {party.parentName}</div>}
+      <p className="truncate text-[9px] text-muted-foreground mt-0.5">
         {party.mintNumber || party.email || party.id || "No identifier"}
       </p>
     </div>

@@ -37,6 +37,7 @@ interface CancelledRow {
   qty: number;
   strategy: string | null;
   client_account: string | null;
+  parentName?: string | null;
   sent_by: string | null;
   updated_at: string | null;
   source: string;
@@ -128,7 +129,10 @@ export function CancelledOrders() {
                 <td className={td}><Badge variant={r.side === "SELL" ? "destructive" : "success"}>{r.side}</Badge></td>
                 <td className={td}>{r.qty}</td>
                 <td className={td}>{r.strategy ?? "—"}</td>
-                <td className={td}>{r.client_account ?? "—"}</td>
+                <td className={td}>
+                  <div>{r.client_account ?? "—"}</div>
+                  {r.parentName && <div className="text-[9px] mt-0.5 opacity-80">Managed by {r.parentName}</div>}
+                </td>
                 <td className={td}>{r.sent_by ?? "—"}</td>
                 <td className={`${td} text-muted-foreground`}>{fmtDate(r.updated_at)}</td>
                 <td className={td}>

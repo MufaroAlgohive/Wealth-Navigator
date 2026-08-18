@@ -134,14 +134,30 @@ export async function GET() {
       .filter((row) => text(row.beneficiary_type)?.toUpperCase() === "OTHER")
       .map((row) => row.beneficiary_ref),
   ]);
+  const familyIds = unique([
+    ...authorizationRows.map((row) => row.recipient_family_member_id),
+    ...registryRows
+      .filter((row) => text(row.beneficiary_type)?.toUpperCase() === "CHILD")
+      .map((row) => row.beneficiary_ref),
+  ]);
+  let familyRows: Row[] = [];
+  if (familyIds.length) {
+    const result = await db.from("family_members").select("id,first_name,last_name,mint_number,primary_user_id,parent_id").in("id", familyIds);
+    if (result.error) notices.push(`family_members: ${result.error.message}`);
+    else familyRows = (result.data ?? []) as Row[];
+  }
+  const familyById = byId(familyRows);
+
   let profileRows: Row[] = [];
   if (userIds.length) {
+    const familyParentIds = familyRows.map(f => text(f.primary_user_id) || text(f.parent_id)).filter(Boolean) as string[];
+    const allUserIds = unique([...userIds, ...familyParentIds]);
     const result = await db
       .from("profiles")
       .select("id,email,first_name,last_name,mint_number,is_test")
-      .in("id", userIds);
+      .in("id", allUserIds);
     if (result.error) {
-      const fallback = await db.from("profiles").select("id,email,first_name,last_name").in("id", userIds);
+      const fallback = await db.from("profiles").select("id,email,first_name,last_name").in("id", allUserIds);
       if (fallback.error) notices.push(`profiles: ${fallback.error.message}`);
       else profileRows = (fallback.data ?? []) as Row[];
     } else profileRows = (result.data ?? []) as Row[];
@@ -165,20 +181,6 @@ export async function GET() {
   const uatStrategyIds = new Set<string>();
   const environmentFor = (strategyId: unknown, ...ids: unknown[]) =>
     (strategyId != null && uatStrategyIds.has(text(strategyId) ?? "")) || ids.some(isTestUser) ? "uat" : "live";
-
-  const familyIds = unique([
-    ...authorizationRows.map((row) => row.recipient_family_member_id),
-    ...registryRows
-      .filter((row) => text(row.beneficiary_type)?.toUpperCase() === "CHILD")
-      .map((row) => row.beneficiary_ref),
-  ]);
-  let familyRows: Row[] = [];
-  if (familyIds.length) {
-    const result = await db.from("family_members").select("id,first_name,last_name,mint_number").in("id", familyIds);
-    if (result.error) notices.push(`family_members: ${result.error.message}`);
-    else familyRows = (result.data ?? []) as Row[];
-  }
-  const familyById = byId(familyRows);
 
   const assetKeys = unique([
     ...itemRows.map((row) => row.isin),
@@ -259,6 +261,9 @@ export async function GET() {
         ? "delivered"
         : status;
     const holdings = Array.isArray(strategy?.holdings) ? strategy.holdings : [];
+    const parentId = text(family?.primary_user_id) || text(family?.parent_id);
+    const parentName = parentId ? profileName(profileById.get(parentId)) : null;
+
     return {
       id: `authorization:${id}`,
       recordId: id,
@@ -275,6 +280,7 @@ export async function GET() {
         name: profileName(recipientProfile, row.recipient_display_name) || profileName(family),
         email: text(recipientProfile?.email),
         kind: row.recipient_family_member_id ? "child" : "client",
+        parentName,
       },
       asset: {
         type: text(item?.instrument_type)?.toLowerCase() || (strategy ? "basket" : "security"),
