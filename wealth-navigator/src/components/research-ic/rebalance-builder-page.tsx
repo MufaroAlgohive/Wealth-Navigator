@@ -979,7 +979,7 @@ export function RebalanceBuilderPage({
                   <input
                     value={addShares}
                     onChange={(e) => setAddShares(e.target.value)}
-                    placeholder="Units"
+                    placeholder="Shares"
                     inputMode="numeric"
                     className={cn(
                       "w-20 rounded-md border bg-[hsl(var(--foreground)/0.03)] px-2 py-1 text-sm outline-none",
@@ -1036,7 +1036,7 @@ export function RebalanceBuilderPage({
                   <tr className="border-b border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.025)] text-left text-[9px] uppercase tracking-wider text-muted-foreground">
                     <th className="px-5 py-2 font-medium">Ticker</th>
                     <th className="px-3 py-2 font-medium">Name</th>
-                    <th className="px-3 py-2 text-right font-medium">Units</th>
+                    <th className="px-3 py-2 text-right font-medium">Shares</th>
                     <th className="px-3 py-2 text-right font-medium">Price</th>
                     <th className="px-3 py-2 text-right font-medium">Weight</th>
                     <th className="px-5 py-2 text-right font-medium">Edit</th>
@@ -1067,7 +1067,7 @@ export function RebalanceBuilderPage({
                           isEditing && "bg-primary/[0.12] shadow-[inset_3px_0_0_hsl(var(--primary))]",
                           !isChanged && "hover:bg-[hsl(var(--foreground)/0.025)]",
                         )}
-                        title={isChanged ? `Edit ${h.ticker} ${a}` : "Adjust units first to edit this holding"}
+                        title={isChanged ? `Edit ${h.ticker} ${a}` : "Adjust shares first to edit this holding"}
                       >
                         <td className="px-5 py-2 font-mono font-semibold text-foreground">{h.ticker}</td>
                         <td className="px-3 py-2 text-foreground/85">{h.name}</td>
@@ -1183,7 +1183,7 @@ export function RebalanceBuilderPage({
                         <th className="px-3 py-2 font-medium">Name</th>
                         <th className="px-3 py-2 text-right font-medium">Current</th>
                         <th className="px-3 py-2 text-right font-medium">Proposed</th>
-                        <th className="px-3 py-2 text-right font-medium">Δ units</th>
+                        <th className="px-3 py-2 text-right font-medium">Δ shares</th>
                         <th className="px-3 py-2 font-medium">Action</th>
                         <th className="px-3 py-2 font-medium">Research</th>
                         <th className="px-5 py-2 font-medium">Rationale</th>
@@ -1371,7 +1371,7 @@ export function RebalanceBuilderPage({
                 <div className="grid gap-px bg-[hsl(var(--glass-border))] lg:grid-cols-2">
                   <div className="space-y-3 bg-[hsl(var(--card))] p-4">
                     <div className="flex items-center gap-3 text-[11px] uppercase tracking-wide text-muted-foreground">
-                      <span>Units per basket</span>
+                      <span>Shares per basket</span>
                       <span className="font-mono text-base font-semibold normal-case text-foreground">
                         {baseUnits}
                       </span>
@@ -1388,7 +1388,7 @@ export function RebalanceBuilderPage({
                         type="button"
                         onClick={() => setShares(editingSymbol, -1)}
                         className="flex h-9 w-9 items-center justify-center rounded-md border border-[hsl(var(--glass-border))] text-lg hover:bg-[hsl(var(--foreground)/0.05)]"
-                        aria-label="Reduce units"
+                        aria-label="Reduce shares"
                       >
                         −
                       </button>
@@ -1399,17 +1399,17 @@ export function RebalanceBuilderPage({
                         value={holding.shares}
                         onChange={(e) => setAbsoluteShares(editingSymbol, Number(e.target.value) || 0)}
                         className="h-9 min-w-0 flex-1 rounded-md border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.03)] px-3 text-center font-mono text-sm outline-none focus:border-primary/50"
-                        aria-label="Units per basket"
+                        aria-label="Shares per basket"
                       />
                       <button
                         type="button"
                         onClick={() => setShares(editingSymbol, +1)}
                         className="flex h-9 w-9 items-center justify-center rounded-md border border-[hsl(var(--glass-border))] text-lg hover:bg-[hsl(var(--foreground)/0.05)]"
-                        aria-label="Increase units"
+                        aria-label="Increase shares"
                       >
                         +
                       </button>
-                      <span className="text-[11px] text-muted-foreground">units per basket</span>
+                      <span className="text-[11px] text-muted-foreground">shares per basket</span>
                     </div>
                     <div className="rounded-lg border border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-3 py-2 text-[11px]">
                       <div className="flex justify-between gap-4">

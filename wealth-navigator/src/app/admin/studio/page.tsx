@@ -13,7 +13,7 @@ interface Client { id: string; familyMemberId?: string | null; name: string; par
 interface PortfolioHolding { id: string; symbol: string; name: string; logo_url: string | null; quantity: number; cost: number; live: number; marketValue: number; pnl: number; pnlPct:number; pending:boolean; strategyId:string|null; strategy: string | null; }
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status?:string|null; transaction_date: string | null; created_at?:string|null; }
 interface StrategyPreview {id:string;name:string;value:number;holdings:number}
-interface Portfolio { holdings: PortfolioHolding[]; transactions: Txn[]; totalValue: number; totalPnl: number; pnlPct: number; strategyCount: number; strategies:StrategyPreview[];units?:{money:string;sourcePrices:string}; }
+interface Portfolio { holdings: PortfolioHolding[]; transactions: Txn[]; totalValue: number; cash?: number; totalPnl: number; pnlPct: number; strategyCount: number; strategies:StrategyPreview[];units?:{money:string;sourcePrices:string}; }
 
 const ZAR = (n: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", minimumFractionDigits: 2 }).format(Number(n || 0));
 const pnlCls = (n: number) => (n >= 0 ? "text-success" : "text-destructive");
@@ -188,7 +188,8 @@ export default function StudioPage() {
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-bold text-foreground">{ZAR(portfolio.totalValue)}</div>
-                  <div className="mt-0.5 flex items-center justify-end gap-2 text-[11px] text-muted-foreground"><span>Live positions · ZAR</span><DataSourceBadge source="hybrid" db="retail" /></div>
+                  <div className="mt-0.5 flex items-center justify-end gap-2 text-[11px] text-muted-foreground"><span>Positions + cash · ZAR</span><DataSourceBadge source="hybrid" db="retail" /></div>
+                  {!!portfolio.cash && <div className="mt-0.5 text-[10px] text-muted-foreground">incl. {ZAR(portfolio.cash)} cash</div>}
                 </div>
               </div>
 
