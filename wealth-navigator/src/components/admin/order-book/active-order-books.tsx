@@ -88,12 +88,30 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
           ...(isCrm ? { source_ids: [member.id.replace(/^crm-/, "")] } : {}),
         }),
       });
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        clients_emailed?: number;
+        desk_emailed?: number;
+        email_notice?: string | null;
+      };
       if (!res.ok || body.ok === false) {
         toast.error(body.error ?? `Send Confirmation failed (${res.status})`);
         return;
       }
-      toast.success(`Confirmation sent for order ${member.order_id ?? member.id}`);
+      // Report what actually went out. This used to always claim success even
+      // though the endpoint sent nothing at all, which is how "I sent it but
+      // they never got it" went unnoticed.
+      const clients = body.clients_emailed ?? 0;
+      const desk = body.desk_emailed ?? 0;
+      if (clients === 0 && desk === 0) {
+        toast.warning(`Confirmation recorded, but no email was sent${body.email_notice ? ` — ${body.email_notice}` : "."}`);
+      } else {
+        toast.success(
+          `Confirmation sent — ${clients} client${clients === 1 ? "" : "s"}, ${desk} desk recipient${desk === 1 ? "" : "s"}.`,
+        );
+        if (body.email_notice) toast.warning(body.email_notice);
+      }
       await refresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Send Confirmation failed");

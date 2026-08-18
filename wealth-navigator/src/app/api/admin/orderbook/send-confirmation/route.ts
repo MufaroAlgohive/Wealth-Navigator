@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
+import { buildTradeConfirmationHtml, sendEmail } from "@/lib/admin/email";
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { isUatEnv } from "@/lib/oems/uat-scope";
@@ -34,9 +35,11 @@ import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } f
  *  1. Stamp confirmation metadata (who / when) onto the source row.
  *  2. Update RETAIL `stock_holdings_c.Fill_date` to today for the affected
  *     holding(s) so client P&L start date = execution date.
- *  3. Log the confirmation email intent (Resend dispatch is deferred; we
- *     `console.info` for the moment and surface `email: "logged"` in the
- *     response).
+ *  3. Actually send the confirmation emails — the client gets the standard
+ *     trade-confirmation template, the desk gets a summary. This was
+ *     previously a `console.info` stub ("Resend dispatch deferred") that
+ *     returned `email: "logged"`, so despite the button's tooltip nothing
+ *     was ever delivered to anyone. See dispatchConfirmationEmails below.
  *
  * Body (oem):  { order_id: string, book_id: string }
  * Body (crm):  { order_id: string, book_id: string, origin: "crm", source_ids: string[] }
@@ -104,22 +107,34 @@ function openRetail(): SupabaseClient | null {
   }
 }
 
+interface EligibleHolding {
+  id: string;
+  user_id: string;
+  security_id: string | null;
+  quantity: number | null;
+  avg_fill: number | null;
+  Expected_fill: number | null;
+}
+
 /** Bulk Fill_date update shared by both origins' holding-update step, with
- * the same UAT real-client protection both paths need. */
+ * the same UAT real-client protection both paths need. Returns the rows that
+ * actually passed the guard so the caller can email exactly that set — the
+ * confirmation email and the Fill_date write must never disagree about which
+ * clients were touched. */
 async function updateHoldingsFillDate(
   retail: SupabaseClient,
   ids: string[],
   today: string,
-): Promise<{ updated: number; notice: string | null }> {
-  if (ids.length === 0) return { updated: 0, notice: "No holding ids provided — Fill_date unchanged." };
+): Promise<{ updated: number; notice: string | null; eligible: EligibleHolding[] }> {
+  if (ids.length === 0) return { updated: 0, notice: "No holding ids provided — Fill_date unchanged.", eligible: [] };
   const { data: holds, error: holdsErr } = await retail
     .from("stock_holdings_c")
-    .select("id, user_id")
+    .select("id, user_id, security_id, quantity, avg_fill, Expected_fill")
     .in("id", ids)
     .eq("is_active", true);
-  if (holdsErr) return { updated: 0, notice: `stock_holdings_c read failed: ${holdsErr.message}` };
+  if (holdsErr) return { updated: 0, notice: `stock_holdings_c read failed: ${holdsErr.message}`, eligible: [] };
 
-  let holdingRows = (holds ?? []) as Array<{ id: string; user_id: string }>;
+  let holdingRows = (holds ?? []) as EligibleHolding[];
   let protectedReal = 0;
   if (isUatEnv() && holdingRows.length > 0) {
     const ownerIds = [...new Set(holdingRows.map((h) => h.user_id).filter(Boolean))];
@@ -139,6 +154,7 @@ async function updateHoldingsFillDate(
         protectedReal > 0
           ? `No test holdings matched${protectedSuffix} — Fill_date unchanged.`
           : "No matching stock_holdings_c rows — Fill_date unchanged.",
+      eligible: [],
     };
   }
 
@@ -150,11 +166,131 @@ async function updateHoldingsFillDate(
       holdingRows.map((h) => h.id),
     )
     .eq("is_active", true);
-  if (upErr) return { updated: 0, notice: `Fill_date update failed: ${upErr.message}` };
+  if (upErr) return { updated: 0, notice: `Fill_date update failed: ${upErr.message}`, eligible: [] };
   return {
     updated: count ?? holdingRows.length,
     notice: protectedSuffix ? `Fill_date updated for test holdings only${protectedSuffix}.` : null,
+    eligible: holdingRows,
   };
+}
+
+/**
+ * Actually dispatches the confirmation emails this endpoint has always
+ * claimed to send. Until now it only `console.info`'d the intent ("Resend
+ * dispatch deferred"), so the button's own tooltip ("Sends trade
+ * confirmation emails to client") was untrue and nobody — client or desk —
+ * ever received anything.
+ *
+ * Two audiences:
+ *  - the CLIENT who owns each affected holding, using the existing
+ *    buildTradeConfirmationHtml template (already used by the
+ *    trade_confirmation Supabase webhook, so the two paths look identical
+ *    in the client's inbox).
+ *  - the DESK, one summary to every admin_team member with
+ *    permissions.notifications.csv_exports — the same recipient rule
+ *    close-book already uses, so there is one place to manage who is on
+ *    the trade-notification list rather than two competing ones.
+ *
+ * `eligible` has already passed the UAT real-client guard in
+ * updateHoldingsFillDate, so during UAT this can only ever reach test
+ * accounts. Never throws: a mail failure must not roll back a
+ * confirmation that has already stamped Fill_date.
+ */
+async function dispatchConfirmationEmails(
+  retail: SupabaseClient,
+  eligible: EligibleHolding[],
+  context: { orderId: string; bookId: string; actorEmail: string },
+): Promise<{ clientsEmailed: number; deskEmailed: number; notice: string | null }> {
+  if (eligible.length === 0) return { clientsEmailed: 0, deskEmailed: 0, notice: null };
+  const problems: string[] = [];
+
+  const ownerIds = [...new Set(eligible.map((h) => h.user_id).filter(Boolean))];
+  const securityIds = [...new Set(eligible.map((h) => h.security_id).filter(Boolean))] as string[];
+  const [{ data: profiles }, { data: securities }, { data: team }] = await Promise.all([
+    ownerIds.length
+      ? retail.from("profiles").select("id, email, first_name").in("id", ownerIds)
+      : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
+    securityIds.length
+      ? retail.from("securities_c").select("id, symbol, name").in("id", securityIds)
+      : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
+    retail.from("admin_team").select("email, permissions"),
+  ]);
+  const profileById = new Map((profiles ?? []).map((p) => [String(p.id), p as { email?: string; first_name?: string }]));
+  const securityById = new Map((securities ?? []).map((s) => [String(s.id), s as { symbol?: string; name?: string }]));
+
+  let clientsEmailed = 0;
+  const lines: string[] = [];
+  for (const holding of eligible) {
+    const profile = profileById.get(holding.user_id);
+    const security = holding.security_id ? securityById.get(holding.security_id) : undefined;
+    const symbol = security?.symbol ?? "";
+    const name = security?.name ?? symbol ?? "Instrument";
+    const quantity = Number(holding.quantity) || 0;
+    // avg_fill is CENTS (broker fill); Expected_fill is already RANDS. Same
+    // convention the trade_confirmation webhook uses -- keep them identical
+    // so the two senders can never quote a client different prices.
+    const priceRands = holding.avg_fill ? Number(holding.avg_fill) / 100 : Number(holding.Expected_fill) || 0;
+    lines.push(
+      `<tr><td style="padding:4px 12px 4px 0">${profile?.email ?? holding.user_id}</td><td style="padding:4px 12px 4px 0">${name}${symbol ? ` (${symbol})` : ""}</td><td style="padding:4px 12px 4px 0;text-align:right">${quantity}</td><td style="padding:4px 0;text-align:right">R ${priceRands.toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>`,
+    );
+    if (!profile?.email) {
+      problems.push(`no email on file for owner ${holding.user_id}`);
+      continue;
+    }
+    try {
+      await sendEmail({
+        to: profile.email,
+        subject: `Trade confirmed${symbol ? ` — ${symbol}` : ""}`,
+        html: buildTradeConfirmationHtml({
+          firstName: profile.first_name,
+          symbol,
+          name,
+          quantity,
+          price: priceRands,
+        }),
+        emailType: "trade_confirmation",
+        source: "orderbook-send-confirmation",
+        metadata: { holding_id: holding.id, user_id: holding.user_id, order_id: context.orderId, book_id: context.bookId },
+      });
+      clientsEmailed += 1;
+    } catch (e) {
+      problems.push(`client ${profile.email}: ${(e as Error).message}`);
+    }
+  }
+
+  // Desk copy — same recipient rule as close-book's CSV export.
+  let deskEmailed = 0;
+  const deskRecipients = ((team ?? []) as Array<{ email: string | null; permissions: Record<string, unknown> | null }>)
+    .filter((r) => {
+      const notifs = (r.permissions?.notifications ?? {}) as Record<string, unknown>;
+      return !!r.email && notifs.csv_exports === true;
+    })
+    .map((r) => r.email as string);
+  if (deskRecipients.length === 0) {
+    problems.push("no desk recipients have notifications.csv_exports enabled");
+  } else {
+    try {
+      await sendEmail({
+        to: deskRecipients,
+        subject: `Trade confirmation sent — order ${context.orderId}`,
+        html: `<div style="font-family:sans-serif;font-size:13px;color:#111">
+  <p><strong>${clientsEmailed}</strong> client confirmation${clientsEmailed === 1 ? "" : "s"} dispatched for order <strong>${context.orderId}</strong> (book ${context.bookId}) by ${context.actorEmail}.</p>
+  <table style="border-collapse:collapse;font-size:12px">
+    <tr style="text-align:left;color:#666"><th style="padding:4px 12px 4px 0">Client</th><th style="padding:4px 12px 4px 0">Instrument</th><th style="padding:4px 12px 4px 0;text-align:right">Qty</th><th style="padding:4px 0;text-align:right">Fill</th></tr>
+    ${lines.join("\n    ")}
+  </table>
+</div>`,
+        emailType: "trade_confirmation_desk",
+        source: "orderbook-send-confirmation",
+        metadata: { order_id: context.orderId, book_id: context.bookId, client_count: clientsEmailed },
+      });
+      deskEmailed = deskRecipients.length;
+    } catch (e) {
+      problems.push(`desk: ${(e as Error).message}`);
+    }
+  }
+
+  return { clientsEmailed, deskEmailed, notice: problems.length ? problems.join("; ") : null };
 }
 
 /**
@@ -256,11 +392,17 @@ async function handleCrmConfirmation(
   // investor scoping).
   const rowSourceId = typeof row.sourceId === "string" ? row.sourceId : null;
   const idsToUpdate = sourceIds.length > 0 ? sourceIds : rowSourceId ? [rowSourceId] : [];
-  const { updated: holdingsUpdated, notice: holdingsNotice } = await updateHoldingsFillDate(retail, idsToUpdate, today);
+  const {
+    updated: holdingsUpdated,
+    notice: holdingsNotice,
+    eligible,
+  } = await updateHoldingsFillDate(retail, idsToUpdate, today);
+
+  const mail = await dispatchConfirmationEmails(retail, eligible, { orderId, bookId, actorEmail });
 
   // eslint-disable-next-line no-console
   console.info(
-    `[orderbook/send-confirmation] CRM order=${orderId} book=${bookId} source_ids=${idsToUpdate.join(",")} confirmation_dispatched by=${actorEmail} at=${now}`,
+    `[orderbook/send-confirmation] CRM order=${orderId} book=${bookId} source_ids=${idsToUpdate.join(",")} clients_emailed=${mail.clientsEmailed} desk_emailed=${mail.deskEmailed} by=${actorEmail} at=${now}`,
   );
 
   return NextResponse.json({
@@ -270,7 +412,10 @@ async function handleCrmConfirmation(
     holdings_updated: holdingsUpdated,
     holdings_notice: holdingsNotice,
     confirmation_sent_at: now,
-    email: "logged",
+    clients_emailed: mail.clientsEmailed,
+    desk_emailed: mail.deskEmailed,
+    email_notice: mail.notice,
+    email: mail.clientsEmailed > 0 || mail.deskEmailed > 0 ? "sent" : "not_sent",
   });
 }
 
@@ -380,6 +525,7 @@ export async function POST(req: Request) {
   // Update RETAIL `stock_holdings_c.Fill_date` so client P&L start = today.
   let holdingsUpdated = 0;
   let holdingsNotice: string | null = null;
+  let eligible: EligibleHolding[] = [];
   const retail = openRetail();
   if (retail && bookId) {
     try {
@@ -411,6 +557,7 @@ export async function POST(req: Request) {
           const ids = ((holds ?? []) as Holding[]).map((h) => h.id);
           const result = await updateHoldingsFillDate(retail, ids, today);
           holdingsUpdated = result.updated;
+          eligible = result.eligible;
           holdingsNotice = result.notice ?? (ids.length === 0 ? "No stock_holdings_c rows matched the order — Fill_date unchanged." : null);
         }
       }
@@ -425,10 +572,17 @@ export async function POST(req: Request) {
     }
   }
 
-  // Email intent is logged for now (Resend dispatch deferred).
+  const mail = retail
+    ? await dispatchConfirmationEmails(retail, eligible, {
+        orderId,
+        bookId,
+        actorEmail: auth.ctx.email ?? "",
+      })
+    : { clientsEmailed: 0, deskEmailed: 0, notice: "RETAIL database not configured — no emails sent." };
+
   // eslint-disable-next-line no-console
   console.info(
-    `[orderbook/send-confirmation] order=${orderId} book=${bookId} confirmation_dispatched by=${auth.ctx.email} at=${now}`,
+    `[orderbook/send-confirmation] order=${orderId} book=${bookId} clients_emailed=${mail.clientsEmailed} desk_emailed=${mail.deskEmailed} by=${auth.ctx.email} at=${now}`,
   );
 
   return NextResponse.json({
@@ -438,6 +592,9 @@ export async function POST(req: Request) {
     holdings_updated: holdingsUpdated,
     holdings_notice: holdingsNotice,
     confirmation_sent_at: now,
-    email: "logged",
+    clients_emailed: mail.clientsEmailed,
+    desk_emailed: mail.deskEmailed,
+    email_notice: mail.notice,
+    email: mail.clientsEmailed > 0 || mail.deskEmailed > 0 ? "sent" : "not_sent",
   });
 }
