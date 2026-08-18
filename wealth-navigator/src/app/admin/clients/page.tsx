@@ -15,7 +15,7 @@ import { buildMandatePdfReport } from "@/lib/pdf/mandate";
 type Kyc = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
 type KycFilter = "all" | Kyc;
 type FamilyFilter = "all" | "parent" | "child";
-interface ClientRow { id: string; name: string; email: string | null; mint_number: string | null; is_test: boolean | null; kyc: Kyc; bank_linked: boolean; family_role: "parent" | "child" | "other"; family_member_id?: string | null; is_linked_child?: boolean; }
+interface ClientRow { id: string; name: string; email: string | null; mint_number: string | null; is_test: boolean | null; kyc: Kyc; bank_linked: boolean; family_role: "parent" | "child" | "other"; family_member_id?: string | null; is_linked_child?: boolean; managing_parent_name?: string; }
 interface Holding { symbol: string; name: string; qty: number; valueCents: number; pnlCents: number; strategy: string | null; purchaseValueCents?: number | null; }
 interface Txn { id: string; name: string | null; description: string | null; amount: number; direction: string; status: string | null; transaction_date: string | null; }
 interface ClientDocument { id: string; name: string; fileType: string; addedDate: string | null; url: string; source: "experian" | "sumsub" | "signed"; }
@@ -298,6 +298,7 @@ export default function ClientsPage() {
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-chart-5 text-[11px] font-bold text-primary-foreground">{initials(c.name)}</div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5"><span className="truncate text-sm font-medium text-foreground">{c.name}</span>{c.is_test && <span className="rounded bg-muted px-1 text-[9px] text-muted-foreground">TEST</span>}{c.family_role === "child" && <span className="rounded bg-primary/10 px-1 text-[9px] text-primary">{c.is_linked_child ? "CHILD PROFILE" : "MANAGED CHILD"}</span>}</div>
+                    {c.managing_parent_name && <div className="truncate text-[10px] text-muted-foreground mt-0.5">Managed by {c.managing_parent_name}</div>}
                     <div className="truncate text-[11px] text-muted-foreground">{c.mint_number || c.email}</div>
                   </div>
                   <span title={kycLabel(c.kyc)} className={cn("rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase", kycCls(c.kyc))}>{c.kyc === "not_initiated" ? "N" : c.kyc === "resubmission_required" ? "R!" : c.kyc[0]}</span>
