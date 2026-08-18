@@ -98,7 +98,7 @@ export async function GET(req: Request) {
       db.from("user_onboarding").select("user_id,kyc_status,sumsub_review_answer,sumsub_review_status"),
       db.from("required_actions").select("user_id,kyc_verified,kyc_needs_resubmission,bank_linked"),
       db
-        .from("client_strategy_returns_c")
+        .from("client_strategy_returns_effective_c")
         .select("as_of_date")
         .order("as_of_date", { ascending: false })
         .limit(1),
@@ -106,10 +106,14 @@ export async function GET(req: Request) {
     if (profileError) return NextResponse.json({ ok: false, error: profileError.message }, { status: 500 });
 
     const asOf = latestDate?.[0]?.as_of_date as string | undefined;
+    // Was client_strategy_returns_c (raw). The guarded view has no cents-pnl
+    // column, only pct, so ytdPnlCents below is backed out from pct x the
+    // row's own basket value -- same technique /api/client-book and
+    // /api/overall-portfolio already use for this exact table.
     const { data: returns } = asOf
       ? await db
-          .from("client_strategy_returns_c")
-          .select("user_id,strategy_id,basket_value,ytd_pnl")
+          .from("client_strategy_returns_effective_c")
+          .select("user_id,strategy_id,basket_value_cents,ytd_pct")
           .eq("as_of_date", asOf)
       : { data: [] };
     const ob = new Map(
@@ -126,7 +130,9 @@ export async function GET(req: Request) {
       const id = String(row.user_id);
       if (liveScope.excludedUserIds.has(id) || liveScope.excludedStrategyIds.has(String(row.strategy_id))) continue;
       const current = money.get(id) ?? { aumCents: 0, ytdPnlCents: 0 };
-      current.ytdPnlCents += Number(row.ytd_pnl) || 0;
+      const basketCents = Number(row.basket_value_cents) || 0;
+      const ytdPct = row.ytd_pct != null && Number.isFinite(Number(row.ytd_pct)) ? Number(row.ytd_pct) : null;
+      current.ytdPnlCents += ytdPct != null ? basketCents - basketCents / (1 + ytdPct / 100) : 0;
       money.set(id, current);
     }
     const clients = (profiles ?? []).filter((profile) => !liveScope.excludedUserIds.has(String(profile.id))).map((profile) => {
@@ -216,10 +222,15 @@ export async function GET(req: Request) {
     strategyIds.length
       ? db.from("strategies_c").select("id,name,short_name").in("id", strategyIds)
       : Promise.resolve({ data: [] }),
+    // Was client_strategy_returns_c (raw). Aliased back to the raw table's
+    // column names so the response shape (and whatever reads strategyReturns
+    // downstream) doesn't need to change.
     strategyIds.length
       ? db
-          .from("client_strategy_returns_c")
-          .select("user_id,strategy_id,as_of_date,basket_value,1d_pct,5d_pct,1m_pct,ytd_pct,inception_pct,inception_pnl")
+          .from("client_strategy_returns_effective_c")
+          .select(
+            "user_id,strategy_id,as_of_date,basket_value:basket_value_cents,1d_pct,5d_pct,1m_pct,ytd_pct,inception_pct,inception_pnl:inception_pnl_cents",
+          )
           .in("user_id", linkedUserIds)
           .in("strategy_id", strategyIds)
           .order("as_of_date", { ascending: true })

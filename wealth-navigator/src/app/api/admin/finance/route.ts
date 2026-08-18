@@ -13,8 +13,11 @@ import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
  * Mint OEM Finalisation Phase C7 — placeholder Finance aggregation for
  * the `/admin/finance` tab. Reads:
  *
- *   - RETAIL `client_strategy_returns_c` → basket_value × strategy fee_pct
- *     to surface AUM fees (the same math `investors/data` uses internally).
+ *   - RETAIL `aum_fee_accrual_segments` + the shared canonical AUM helper
+ *     (loadCanonicalRetailAum) to surface AUM fees. This comment previously
+ *     said client_strategy_returns_c x fee_pct — that described an earlier
+ *     version; the code below has not queried that table directly for some
+ *     time, corrected here so the comment stops misleading the next reader.
  *   - INSTITUTIONAL `oems_order_audit.result_payload->dayOnePnlCents` →
  *     Day-1 P&L / slip totals across all filled orders.
  *
