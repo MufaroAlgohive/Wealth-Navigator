@@ -76,29 +76,26 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const orderId = typeof body.order_id === "string" ? body.order_id.trim() : "";
   const bookId = typeof body.book_id === "string" ? body.book_id.trim() : "";
-  if (!bookId) return NextResponse.json({ ok: false, error: "book_id is required" }, { status: 400 });
+
+  if (!orderId) {
+    return NextResponse.json({ ok: false, error: "order_id is required" }, { status: 400 });
+  }
 
   const institutional = openInstitutional();
   if (!institutional) {
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
   }
 
-  // Pull the audit rows for THIS book. Scope to the book AT THE DB LEVEL
-  // (payload.book_id / payload.strategy / order_id) BEFORE the 500-row window so
-  // the "100% filled" gate below sees the COMPLETE book, not the newest 500 rows
-  // across ALL books. On a busy shared audit table the un-scoped scan could
-  // truncate this book's rows out of the window, letting a not-fully-filled book
-  // pass the fill gate and then stamp real client Fill_date. Mirrors the DB-level
-  // scoping in /api/admin/orderbook/execution; the JS filter below stays as
-  // defense-in-depth. PostgREST filters jsonb via the `->>` text accessor.
-  const v = bookId.replace(/[\\"]/g, ""); // neutralise PostgREST filter metachars
+  // Pull the audit row for this order_id
+  const v = orderId.replace(/[\\"]/g, ""); // neutralise PostgREST filter metachars
   const { data: rows, error: rowsErr } = await institutional
     .from("oems_order_audit")
     .select("id, order_id, symbol, quantity, status, payload, result_payload")
-    .or(`payload->>book_id.eq."${v}",payload->>strategy.eq."${v}",order_id.eq."${v}"`)
+    .eq("order_id", v)
     .order("updated_at", { ascending: false })
-    .limit(500);
+    .limit(1);
 
   if (rowsErr) {
     if (isSupabaseSchemaMissing(rowsErr)) {
@@ -114,29 +111,19 @@ export async function POST(req: Request) {
   }
 
   const all = (rows ?? []) as AuditRow[];
-  const bookRows = all.filter((r) => {
-    const p = r.payload ?? {};
-    return (
-      r.order_id === bookId ||
-      (typeof p.book_id === "string" && p.book_id === bookId) ||
-      (typeof p.strategy === "string" && p.strategy === bookId)
-    );
-  });
-
-  if (bookRows.length === 0) {
+  const orderRow = all[0];
+  if (!orderRow) {
     return NextResponse.json(
-      { ok: false, error: `No execution rows found for book_id "${bookId}".` },
+      { ok: false, error: `No execution row found for order_id "${orderId}".` },
       { status: 404 },
     );
   }
 
-  const notFilled = bookRows.filter((r) => r.status !== "filled");
-  if (notFilled.length > 0) {
+  if (orderRow.status !== "filled") {
     return NextResponse.json(
       {
         ok: false,
-        error: `Book is not 100% filled. ${notFilled.length} of ${bookRows.length} execution rows still working.`,
-        unfilled: notFilled.map((r) => ({ order_id: r.order_id, symbol: r.symbol, status: r.status })),
+        error: `Order is not filled. Current status is ${orderRow.status}.`,
       },
       { status: 409 },
     );
@@ -145,102 +132,117 @@ export async function POST(req: Request) {
   const now = new Date().toISOString();
   const today = now.slice(0, 10);
 
-  // Stamp confirmation metadata onto every audit row.
-  const updates = await Promise.all(
-    bookRows.map((r) =>
-      institutional
-        .from("oems_order_audit")
-        .update({
-          result_payload: {
-            ...r.result_payload,
-            confirmation_sent_at: now,
-            confirmation_sent_by: auth.ctx.email,
-          },
-          updated_at: now,
-        })
-        .eq("id", r.id),
-    ),
-  );
-  const failed = updates.find((u) => u.error);
-  if (failed?.error) {
-    return NextResponse.json({ ok: false, error: failed.error.message }, { status: 500 });
+  // Stamp confirmation metadata onto the audit row.
+  const { error: updateErr } = await institutional
+    .from("oems_order_audit")
+    .update({
+      result_payload: {
+        ...orderRow.result_payload,
+        confirmation_sent_at: now,
+        confirmation_sent_by: auth.ctx.email,
+      },
+      updated_at: now,
+    })
+    .eq("id", orderRow.id);
+
+  if (updateErr) {
+    return NextResponse.json({ ok: false, error: updateErr.message }, { status: 500 });
   }
 
   // Update RETAIL `stock_holdings_c.Fill_date` so client P&L start = today.
   let holdingsUpdated = 0;
   let holdingsNotice: string | null = null;
   const retail = openRetail();
-  if (retail) {
+  if (retail && bookId) {
     try {
-      const { data: holds, error: holdsErr } = await retail
-        .from("stock_holdings_c")
-        .select("id, user_id, security_id, strategy_name_snapshot")
-        .eq("strategy_name_snapshot", bookId)
-        .eq("is_active", true);
+      // stock_holdings_c.security_id is a UUID FK into securities_c.id, never
+      // the ticker string oems_order_audit.symbol carries (e.g. "NED.JO") --
+      // comparing them directly can never match a row. Resolve the ticker to
+      // its securities_c.id first, the same join every other reader in this
+      // repo does (see api/admin/studio, api/admin/orderbook/execution).
+      const { data: security, error: secErr } = await retail
+        .from("securities_c")
+        .select("id")
+        .eq("symbol", orderRow.symbol)
+        .maybeSingle();
 
-      if (holdsErr) {
-        holdingsNotice = `stock_holdings_c read failed: ${holdsErr.message}`;
+      if (secErr) {
+        holdingsNotice = `securities_c lookup failed: ${secErr.message}`;
+      } else if (!security) {
+        holdingsNotice = `No securities_c row for symbol "${orderRow.symbol}" — Fill_date unchanged.`;
       } else {
-        let holdingRows = (holds ?? []) as Holding[];
-        // CLIENT-DATA GUARD (UAT phase): Fill_date is a real-money field (it sets
-        // the client P&L start date). During the UAT phase never mutate a real
-        // (is_test != true) client's holding — restrict the write to test
-        // clients and report how many real holdings were protected. Inert once
-        // the deployment is confidently on prod (isUatEnv() === false).
-        let protectedReal = 0;
-        if (isUatEnv() && holdingRows.length > 0) {
-          const ownerIds = [...new Set(holdingRows.map((h) => h.user_id).filter(Boolean))];
-          const { data: testRows } = await retail
-            .from("profiles")
-            .select("id")
-            .eq("is_test", true)
-            .in("id", ownerIds);
-          const testIds = new Set((testRows ?? []).map((r) => r.id as string));
-          const before = holdingRows.length;
-          holdingRows = holdingRows.filter((h) => testIds.has(h.user_id));
-          protectedReal = before - holdingRows.length;
-        }
-        const protectedSuffix =
-          protectedReal > 0
-            ? ` (${protectedReal} real client holding(s) protected — not touched during UAT)`
-            : "";
-        if (holdingRows.length > 0) {
-          const { error: upErr, count } = await retail
-            .from("stock_holdings_c")
-            .update({ Fill_date: today })
-            .in(
-              "id",
-              holdingRows.map((h) => h.id),
-            )
-            .eq("is_active", true);
-          if (upErr) holdingsNotice = `Fill_date update failed: ${upErr.message}`;
-          else {
-            holdingsUpdated = count ?? holdingRows.length;
-            if (protectedSuffix) holdingsNotice = `Fill_date updated for test holdings only${protectedSuffix}.`;
-          }
-        } else if (protectedReal > 0) {
-          holdingsNotice = `No test holdings in this book${protectedSuffix} — Fill_date unchanged.`;
+        // Find the specific holding for this order by using both bookId and symbol
+        const { data: holds, error: holdsErr } = await retail
+          .from("stock_holdings_c")
+          .select("id, user_id, security_id, strategy_name_snapshot")
+          .eq("strategy_name_snapshot", bookId)
+          .eq("security_id", security.id) // only update the symbol for this order
+          .eq("is_active", true);
+
+        if (holdsErr) {
+          holdingsNotice = `stock_holdings_c read failed: ${holdsErr.message}`;
         } else {
-          holdingsNotice = "No stock_holdings_c rows matched the book — Fill_date unchanged.";
+          let holdingRows = (holds ?? []) as Holding[];
+
+          let protectedReal = 0;
+          if (isUatEnv() && holdingRows.length > 0) {
+            const ownerIds = [...new Set(holdingRows.map((h) => h.user_id).filter(Boolean))];
+            const { data: testRows } = await retail
+              .from("profiles")
+              .select("id")
+              .eq("is_test", true)
+              .in("id", ownerIds);
+            const testIds = new Set((testRows ?? []).map((r) => r.id as string));
+            const before = holdingRows.length;
+            holdingRows = holdingRows.filter((h) => testIds.has(h.user_id));
+            protectedReal = before - holdingRows.length;
+          }
+          const protectedSuffix =
+            protectedReal > 0
+              ? ` (${protectedReal} real client holding(s) protected — not touched during UAT)`
+              : "";
+          if (holdingRows.length > 0) {
+            const { error: upErr, count } = await retail
+              .from("stock_holdings_c")
+              .update({ Fill_date: today })
+              .in(
+                "id",
+                holdingRows.map((h) => h.id),
+              )
+              .eq("is_active", true);
+            if (upErr) holdingsNotice = `Fill_date update failed: ${upErr.message}`;
+            else {
+              holdingsUpdated = count ?? holdingRows.length;
+              if (protectedSuffix) holdingsNotice = `Fill_date updated for test holdings only${protectedSuffix}.`;
+            }
+          } else if (protectedReal > 0) {
+            holdingsNotice = `No test holdings matched${protectedSuffix} — Fill_date unchanged.`;
+          } else {
+            holdingsNotice = "No stock_holdings_c rows matched the order — Fill_date unchanged.";
+          }
         }
       }
     } catch (e) {
       holdingsNotice = `RETAIL holdings update failed: ${(e as Error).message}`;
     }
   } else {
-    holdingsNotice = "RETAIL database not configured — Fill_date unchanged.";
+    if (!bookId) {
+      holdingsNotice = "No bookId provided — Fill_date unchanged.";
+    } else {
+      holdingsNotice = "RETAIL database not configured — Fill_date unchanged.";
+    }
   }
 
   // Email intent is logged for now (Resend dispatch deferred).
   // eslint-disable-next-line no-console
   console.info(
-    `[orderbook/send-confirmation] book=${bookId} confirmation_dispatched by=${auth.ctx.email} at=${now} client_count=${bookRows.length}`,
+    `[orderbook/send-confirmation] order=${orderId} book=${bookId} confirmation_dispatched by=${auth.ctx.email} at=${now}`,
   );
 
   return NextResponse.json({
     ok: true,
+    order_id: orderId,
     book_id: bookId,
-    confirmed_count: bookRows.length,
     holdings_updated: holdingsUpdated,
     holdings_notice: holdingsNotice,
     confirmation_sent_at: now,
