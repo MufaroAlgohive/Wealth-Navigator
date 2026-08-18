@@ -247,6 +247,7 @@ async function dispatchConfirmationEmails(
           name,
           quantity,
           price: priceRands,
+          orderId: context.orderId,
         }),
         emailType: "trade_confirmation",
         source: "orderbook-send-confirmation",
