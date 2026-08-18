@@ -9,8 +9,15 @@
  * axes (a test account can hold a LIVE strategy, and vice versa).
  *
  * AUM and counts come from the shared canonical holdings-based calculation.
- * The latest `client_strategy_returns_c` snapshot remains the source for the
- * separate day/YTD P&L fields until the client return chain is certified.
+ * Day/YTD P&L read the GUARDED `client_strategy_returns_effective_c` view
+ * (same personal-return contract MINT's /api/returns/approved and this repo's
+ * own factsheets route already use), not the raw `client_strategy_returns_c`
+ * table. There is no CERTIFIED table at the per-client level yet -- only
+ * strategy-level performance has reached that stage
+ * (`strategy_canonical_daily_ledger_c`); personal/owner P&L is a distinct
+ * concern (it reflects each investor's own cash-flow timing) and must not be
+ * replaced by model-strategy performance, so this stays on the guarded view
+ * rather than being pointed at the strategy canonical ledger.
  *
  * All money values are RANDS (numbers — `basket_value`, `1d_pnl`, `ytd_pnl` are
  * the user's portion in Rands). `source: "retail-supabase"` lets the UI badge
@@ -27,9 +34,16 @@ interface ClientStrategyReturnRow {
   user_id: string;
   strategy_id: string;
   as_of_date: string;
-  basket_value: number | null;
-  "1d_pnl": number | null;
-  ytd_pnl: number | null;
+  basket_value_cents: number | null;
+  "1d_pct": number | null;
+  ytd_pct: number | null;
+}
+
+/** P&L in cents implied by a stored pct against the CURRENT basket value —
+ * same formula useUserStrategies.js already uses for this exact backing-out. */
+function pnlCentsFromPct(basketValueCents: number, pct: number | null): number {
+  if (pct == null || !Number.isFinite(pct)) return 0;
+  return basketValueCents - basketValueCents / (1 + pct / 100);
 }
 
 interface ClientBookResponse {
@@ -44,10 +58,7 @@ interface ClientBookResponse {
   error?: string;
 }
 
-// NOTE: the retail column is `family_member` (not `..._id`) and we don't use it,
-// so it's omitted — selecting a non-existent column fails the whole query and
-// blanks the AUM tile. basket_value / 1d_pnl / ytd_pnl are integer CENTS.
-const RETURNS_SELECT = 'user_id,strategy_id,as_of_date,basket_value,"1d_pnl","ytd_pnl"';
+const RETURNS_SELECT = 'user_id,strategy_id,as_of_date,basket_value_cents,"1d_pct","ytd_pct"';
 
 function num(value: number | null | undefined): number {
   const n = Number(value);
@@ -95,7 +106,7 @@ export async function GET() {
 
   // 1. Latest snapshot date in the book.
   const { data: latestRows, error: latestError } = await supabase
-    .from("client_strategy_returns_c")
+    .from("client_strategy_returns_effective_c")
     .select("as_of_date")
     .order("as_of_date", { ascending: false })
     .limit(1);
@@ -143,7 +154,7 @@ export async function GET() {
   // test account can hold a LIVE strategy (a tester buying MyGrowthFund) and
   // a real client can appear against a UAT strategy.
   const [{ data: rows, error: rowsError }, stratRes, testProfileRes, testWalletRes] = await Promise.all([
-    supabase.from("client_strategy_returns_c").select(RETURNS_SELECT).eq("as_of_date", asOf),
+    supabase.from("client_strategy_returns_effective_c").select(RETURNS_SELECT).eq("as_of_date", asOf),
     supabase.from("strategies_c").select("id, investor_environment"),
     supabase.from("profiles").select("id").eq("is_test", true),
     supabase.from("wallets").select("user_id").eq("status", "test"),
@@ -218,11 +229,14 @@ export async function GET() {
   }
 
   // 3. Aggregate P&L only. AUM and counts come from the canonical helper.
+  // The effective view stores pct, not a cents P&L column, so back out cents
+  // from the CURRENT basket value the same way useUserStrategies.js does.
   let dayPnl = 0;
   let ytdPnl = 0;
   for (const r of returns) {
-    dayPnl += num(r["1d_pnl"]);
-    ytdPnl += num(r.ytd_pnl);
+    const basketValueCents = num(r.basket_value_cents);
+    dayPnl += pnlCentsFromPct(basketValueCents, r["1d_pct"]);
+    ytdPnl += pnlCentsFromPct(basketValueCents, r.ytd_pct);
   }
 
   // basket_value / 1d_pnl / ytd_pnl are integer CENTS in retail (they match the

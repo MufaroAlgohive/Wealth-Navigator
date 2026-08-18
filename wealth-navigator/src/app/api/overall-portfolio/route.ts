@@ -36,9 +36,16 @@ interface ClientStrategyReturnRow {
   user_id: string;
   strategy_id: string;
   as_of_date: string;
-  basket_value: number | null;
-  "1d_pnl": number | null;
-  ytd_pnl: number | null;
+  basket_value_cents: number | null;
+  "1d_pct": number | null;
+  ytd_pct: number | null;
+}
+
+/** P&L in Rands implied by a stored pct against the CURRENT basket value —
+ * same back-out formula useUserStrategies.js and /api/client-book use. */
+function pnlRandsFromPct(basketRands: number, pct: number | null): number {
+  if (pct == null || !Number.isFinite(pct)) return 0;
+  return basketRands - basketRands / (1 + pct / 100);
 }
 
 interface StrategyRow {
@@ -75,7 +82,7 @@ function investorName(p: ProfileRow): string {
   return p.id.slice(0, 8);
 }
 
-const RETURNS_SELECT = 'user_id,strategy_id,as_of_date,basket_value,"1d_pnl","ytd_pnl"';
+const RETURNS_SELECT = 'user_id,strategy_id,as_of_date,basket_value_cents,"1d_pct","ytd_pct"';
 
 interface AggregateEnvelope {
   source: "retail-supabase" | "unavailable";
@@ -146,7 +153,7 @@ async function buildAggregate(
   profileMap: Map<string, ProfileRow>,
 ): Promise<AggregateEnvelope> {
   const { data: latestRows, error: latestError } = await supabase
-    .from("client_strategy_returns_c")
+    .from("client_strategy_returns_effective_c")
     .select("as_of_date")
     .order("as_of_date", { ascending: false })
     .limit(1);
@@ -181,7 +188,7 @@ async function buildAggregate(
     };
   }
   const { data: rows, error: rowsError } = await supabase
-    .from("client_strategy_returns_c")
+    .from("client_strategy_returns_effective_c")
     .select(RETURNS_SELECT)
     .eq("as_of_date", asOf);
   if (rowsError) {
@@ -209,9 +216,9 @@ async function buildAggregate(
     if (!strategyMap.has(r.strategy_id)) continue;
     const profile = profileMap.get(r.user_id);
     if (profile?.is_test === true) continue;
-    const basket = num(r.basket_value) / 100;
-    const day = num(r["1d_pnl"]) / 100;
-    const ytd = num(r["ytd_pnl"]) / 100;
+    const basket = num(r.basket_value_cents) / 100;
+    const day = pnlRandsFromPct(basket, r["1d_pct"]);
+    const ytd = pnlRandsFromPct(basket, r.ytd_pct);
     total += basket;
     dayPnl += day;
     ytdPnl += ytd;
@@ -296,7 +303,7 @@ async function buildPerInvestor(
   const yearStart = new Date(today.getFullYear(), 0, 1);
 
   const { data: snapRows, error: snapError } = await supabase
-    .from("client_strategy_returns_c")
+    .from("client_strategy_returns_effective_c")
     .select(RETURNS_SELECT)
     .eq("user_id", investorId);
   if (snapError) {
@@ -325,19 +332,18 @@ async function buildPerInvestor(
   }
   const strategies = [...byStrategy.values()]
     .map((r) => {
-      const basket = num(r.basket_value) / 100;
-      const day = num(r["1d_pnl"]) / 100;
-      const ytd = num(r["ytd_pnl"]) / 100;
-      const basketRef = basket - day; // yest's basket from today's - 1d
+      const basket = num(r.basket_value_cents) / 100;
+      const dayPct = r["1d_pct"] != null && Number.isFinite(Number(r["1d_pct"])) ? Number(r["1d_pct"]) : null;
+      const ytdPct = r.ytd_pct != null && Number.isFinite(Number(r.ytd_pct)) ? Number(r.ytd_pct) : null;
       return {
         strategyId: r.strategy_id,
         strategyName: strategyMap.get(r.strategy_id) ?? r.strategy_id,
         basketValue: basket,
-        dayPnl: day,
+        dayPnl: pnlRandsFromPct(basket, dayPct),
         mtdPnl: null,
-        ytdPnl: ytd,
-        dayPct: basketRef > 0 ? (day / basketRef) * 100 : null,
-        ytdPct: basket - ytd > 0 ? (ytd / (basket - ytd)) * 100 : null,
+        ytdPnl: pnlRandsFromPct(basket, ytdPct),
+        dayPct,
+        ytdPct,
       };
     })
     .sort((a, b) => b.basketValue - a.basketValue);
@@ -355,8 +361,15 @@ async function buildPerInvestor(
   //    rows), the LAST month (≈ 22 trading days), and year-to-date, all
   //    rebalanced to their respective start dates. We approximate the longer
   //    windows from the same underlying series.
+  // Was strategies_returns_c, the raw legacy table (not even the guarded
+  // view) -- same class of gap as the aggregate P&L above. Reads the guarded
+  // strategy-level view here rather than the certified canonical ledger: this
+  // chart sums basket_value ACROSS the investor's several strategies into one
+  // series, which the certified SI-index (a per-strategy 100-based index, not
+  // a Rand figure) can't be summed into meaningfully without a proper
+  // per-strategy currency rebase this approximation was never designed to do.
   const { data: histRaw } = await supabase
-    .from("strategies_returns_c")
+    .from("strategy_returns_effective_c")
     .select("strategy_id, as_of_date, basket_value")
     .in("strategy_id", strategies.length > 0 ? strategies.map((s) => s.strategyId) : ["__none__"])
     .order("as_of_date", { ascending: true });

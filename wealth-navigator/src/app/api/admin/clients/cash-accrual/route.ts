@@ -8,8 +8,9 @@ import { createRetailServiceRoleClient } from "@/lib/supabase/server";
  *
  * Phase B5 - renders the AUM-fee accrual curve per investor so the Client
  * Studio pop-up can show "cash reacting/deducting as AUM accrues". Reads
- * `client_strategy_returns_c` (RETAIL) snapshots; computes the per-month
- * fee deduction and a cumulative accrued total in cents.
+ * `client_strategy_returns_effective_c` (RETAIL, guarded personal-return
+ * view -- was the raw client_strategy_returns_c table) snapshots; computes
+ * the per-month fee deduction and a cumulative accrued total in cents.
  *
  * Formula (monthly):
  *   fee_cents = applicable_month_end_basket_cents * annual_fee_pct / 12
@@ -138,9 +139,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "RETAIL database not configured" }, { status: 503 });
   }
 
+  // Was client_strategy_returns_c (raw). Aliased so the rest of this file's
+  // basket_value references don't need to change.
   const { data: snapshots } = await db
-    .from("client_strategy_returns_c")
-    .select("user_id, strategy_id, as_of_date, basket_value")
+    .from("client_strategy_returns_effective_c")
+    .select("user_id, strategy_id, as_of_date, basket_value:basket_value_cents")
     .eq("user_id", userId)
     .order("as_of_date", { ascending: true });
 
