@@ -66,32 +66,7 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
       return next;
     });
 
-  const [sending, setSending] = React.useState<Record<string, boolean>>({});
-  const sendConfirmation = async (member: OrderBookMember, book: OrderBookSummary) => {
-    const key = member.id;
-    setSending((p) => ({ ...p, [key]: true }));
-    try {
-      const res = await fetch("/api/admin/orderbook/send-confirmation", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ 
-          order_id: member.order_id || member.id,
-          book_id: book.archive_id ?? String(book.sequence)
-        }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-      if (!res.ok || body.ok === false) {
-        toast.error(body.error ?? `Send Confirmation failed (${res.status})`);
-        return;
-      }
-      toast.success(`Confirmation sent for order ${member.order_id ?? member.id}`);
-      await refresh?.();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Send Confirmation failed");
-    } finally {
-      setSending((p) => ({ ...p, [key]: false }));
-    }
-  };
+
 
   const [closing, setClosing] = React.useState<Record<string, boolean>>({});
   const moveToClosed = async (book: OrderBookSummary) => {
@@ -253,17 +228,6 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                               <td className="py-1.5 pr-3 text-muted-foreground">{fmtReleasedAt(m.filled_at ?? "")}</td>
                               <td className="py-1.5 pr-3 text-right">
                                 {m.status === "filled" ? (
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-6 text-[10px]"
-                                    disabled={!!sending[m.id]}
-                                    onClick={() => void sendConfirmation(m, b)}
-                                    title="Sends trade confirmation emails to client."
-                                  >
-                                    {sending[m.id] ? "Sending…" : "Send Confirm"}
-                                  </Button>
-                                ) : (
                                   <span className="text-[10px] text-muted-foreground">—</span>
                                 )}
                               </td>
@@ -271,7 +235,7 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                             {m.crm_details ? (
                               <tr>
                                 <td colSpan={14} className="p-0">
-                                  <CrmOrderBreakdown member={m} />
+                                  <CrmOrderBreakdown member={m} bookId={b.archive_id ?? String(b.sequence)} />
                                 </td>
                               </tr>
                             ) : null}

@@ -198,7 +198,7 @@ export function ClosedBooks({ sources }: { sources?: string[] } = {}) {
                             {m.crm_details ? (
                               <tr>
                                 <td colSpan={7} className="p-0">
-                                  <CrmOrderBreakdown member={m} />
+                                  <CrmOrderBreakdown member={m} bookId={b.archive_id ?? String(b.sequence)} />
                                 </td>
                               </tr>
                             ) : null}

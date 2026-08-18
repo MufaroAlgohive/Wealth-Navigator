@@ -78,6 +78,7 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   const orderId = typeof body.order_id === "string" ? body.order_id.trim() : "";
   const bookId = typeof body.book_id === "string" ? body.book_id.trim() : "";
+  const investorId = typeof body.investor_id === "string" ? body.investor_id.trim() : "";
 
   if (!orderId) {
     return NextResponse.json({ ok: false, error: "order_id is required" }, { status: 400 });
@@ -156,13 +157,18 @@ export async function POST(req: Request) {
   const retail = openRetail();
   if (retail && bookId) {
     try {
-      // Find the specific holding for this order by using both bookId and symbol
-      const { data: holds, error: holdsErr } = await retail
+      let query = retail
         .from("stock_holdings_c")
         .select("id, user_id, security_id, strategy_name_snapshot")
         .eq("strategy_name_snapshot", bookId)
         .eq("security_id", orderRow.symbol) // only update the symbol for this order
         .eq("is_active", true);
+
+      if (investorId) {
+        query = query.eq("user_id", investorId);
+      }
+
+      const { data: holds, error: holdsErr } = await query;
 
       if (holdsErr) {
         holdingsNotice = `stock_holdings_c read failed: ${holdsErr.message}`;
@@ -220,13 +226,14 @@ export async function POST(req: Request) {
   // Email intent is logged for now (Resend dispatch deferred).
   // eslint-disable-next-line no-console
   console.info(
-    `[orderbook/send-confirmation] order=${orderId} book=${bookId} confirmation_dispatched by=${auth.ctx.email} at=${now}`,
+    `[orderbook/send-confirmation] order=${orderId} book=${bookId} investor=${investorId || "ALL"} confirmation_dispatched by=${auth.ctx.email} at=${now}`,
   );
 
   return NextResponse.json({
     ok: true,
     order_id: orderId,
     book_id: bookId,
+    investor_id: investorId,
     holdings_updated: holdingsUpdated,
     holdings_notice: holdingsNotice,
     confirmation_sent_at: now,

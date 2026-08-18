@@ -3,6 +3,8 @@
 import * as React from "react";
 
 import { cn } from "@/lib/cn";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import type { OrderBookMember } from "./execution-view";
 
 type CrmHolding = NonNullable<OrderBookMember["crm_details"]>["holdings"][number];
@@ -16,12 +18,39 @@ const money = (value: number | null) =>
         minimumFractionDigits: 2,
       }).format(value);
 
-export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
+export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember; bookId: string }) {
   const details = member.crm_details;
   const [selectedInvestorId, setSelectedInvestorId] = React.useState<string | null>(null);
   const [investorHoldings, setInvestorHoldings] = React.useState<CrmHolding[] | null>(null);
   const [investorLoading, setInvestorLoading] = React.useState(false);
   const [investorError, setInvestorError] = React.useState<string | null>(null);
+  const [sending, setSending] = React.useState<Record<string, boolean>>({});
+
+  const sendConfirmation = async (investorId: string, investorName: string) => {
+    setSending((p) => ({ ...p, [investorId]: true }));
+    try {
+      const res = await fetch("/api/admin/orderbook/send-confirmation", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          order_id: member.order_id || member.id,
+          book_id: bookId,
+          investor_id: investorId,
+        }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok === false) {
+        toast.error(body.error ?? `Send Confirmation failed (${res.status})`);
+        return;
+      }
+      toast.success(`Confirmation sent for ${investorName}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Send Confirmation failed");
+    } finally {
+      setSending((p) => ({ ...p, [investorId]: false }));
+    }
+  };
+
   if (!details) return null;
   const selectedInvestor =
     details.investors.find((investor) => investor.id === selectedInvestorId) ?? null;
@@ -133,12 +162,14 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
                       <th className="py-1 pr-3">Account</th>
                       <th className="py-1 pr-3">Owner</th>
                       <th className="py-1 pr-3 text-right">Holdings</th>
-                      <th className="py-1 text-right">Market value</th>
+                      <th className="py-1 pr-3 text-right">Market value</th>
+                      <th className="py-1 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {details.investors.map((investor) => {
                       const selected = investor.id === selectedInvestorId;
+                      const isSending = !!sending[investor.id];
                       return (
                       <tr
                         key={investor.id}
@@ -166,7 +197,19 @@ export function CrmOrderBreakdown({ member }: { member: OrderBookMember }) {
                           {investor.family_relationship ?? "Primary"}
                         </td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{investor.holdings_count}</td>
-                        <td className="py-1.5 text-right tabular-nums">{money(investor.market_value_rands)}</td>
+                        <td className="py-1.5 pr-3 text-right tabular-nums">{money(investor.market_value_rands)}</td>
+                        <td className="py-1.5 text-right">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-[10px]"
+                            disabled={isSending}
+                            onClick={() => void sendConfirmation(investor.id, investor.name)}
+                            title="Sends trade confirmation emails to this client."
+                          >
+                            {isSending ? "Sending…" : "Send Confirm"}
+                          </Button>
+                        </td>
                       </tr>
                     )})}
                   </tbody>
