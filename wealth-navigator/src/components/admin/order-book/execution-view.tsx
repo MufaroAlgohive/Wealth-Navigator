@@ -41,12 +41,14 @@ import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge"
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useAdmin } from "@/lib/admin/context";
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
 import { allowsMarketRelease, allowsUatSelfFill } from "@/lib/oems/orderbook-lane-actions";
 import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 import { isAmendable, isAwaitingBrokerAck, isCancellable } from "./format";
 import { type InvestorAgg, InvestorFilterTable } from "./investor-filter-table";
+import { MasterSendConfirmDialog } from "./master-send-confirm-dialog";
 
 export interface ExecutionRow {
   id: string;
@@ -1747,6 +1749,22 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
   // the new state (no manual refetch needed).
   const parkedCount = React.useMemo(() => rows.filter((r) => r.state === "PARKED").length, [rows]);
   const [releasing, setReleasing] = React.useState(false);
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+  // Mirrors the server's own gate exactly (lib/admin/step-up.ts requires
+  // approverTier === "master"; note "dev" does NOT satisfy it there, so it must
+  // not satisfy it here either or the dialog would promise something the API
+  // then refuses).
+  const { ctx } = useAdmin();
+  const isMaster = ctx.approverTier === "master";
+
+  const openReleaseConfirm = () => {
+    if (SEND_TO_MARKET_LOCKED) {
+      toast.error(SEND_TO_MARKET_LOCKED_MESSAGE);
+      return;
+    }
+    setConfirmOpen(true);
+  };
+
   const handleRelease = async () => {
     if (SEND_TO_MARKET_LOCKED) {
       toast.error(SEND_TO_MARKET_LOCKED_MESSAGE);
@@ -1755,7 +1773,8 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     // Password re-entry was removed 2026-08-17 at the user's request. The
     // server (lib/admin/step-up.ts) still requires a Master ★ account —
     // releasing to the broker is still irreversible, just no longer gated on
-    // re-proving your own credential first.
+    // re-proving your own credential first. The confirm dialog above is a
+    // client-side courtesy over that same rule, never a replacement for it.
     setReleasing(true);
     try {
       const res = await fetch("/api/admin/orderbook/release-to-market", {
@@ -1783,6 +1802,10 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
       toast.error(e instanceof Error ? e.message : "Send to Market failed.");
     } finally {
       setReleasing(false);
+      // Close on every path, success or failure. The outcome is already
+      // reported by the toasts above, and leaving the modal up after a failed
+      // release invites a second click on orders that may have partly gone out.
+      setConfirmOpen(false);
     }
   };
 
@@ -1860,11 +1883,13 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
               variant="secondary"
               size="sm"
               disabled={SEND_TO_MARKET_LOCKED || parkedCount === 0 || releasing}
-              onClick={() => void handleRelease()}
+              onClick={openReleaseConfirm}
               title={
                 SEND_TO_MARKET_LOCKED
                   ? SEND_TO_MARKET_LOCKED_MESSAGE
-                  : "Release every parked mint client-order to the worker/IRESS."
+                  : isMaster
+                    ? "Release every parked mint client-order to the worker/IRESS."
+                    : "Only a Master ★ account can send orders to market."
               }
             >
               <SendHorizontal className="h-3.5 w-3.5" />
@@ -1880,6 +1905,22 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
           </Button>
         </div>
       </div>
+
+      <MasterSendConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        isMaster={isMaster}
+        title={`${parkedCount} parked order${parkedCount === 1 ? "" : "s"} will be released to the broker.`}
+        summary={
+          <>
+            Order Book <span className="font-mono font-semibold">:{String(liveBookSequence).padStart(2, "0")}</span> ·{" "}
+            <span className="font-semibold">{parkedCount}</span> parked order{parkedCount === 1 ? "" : "s"} → market
+          </>
+        }
+        confirmLabel="Yes, execute order"
+        pending={releasing}
+        onConfirm={() => void handleRelease()}
+      />
 
       {hasNotice && (
         <div className="border-b border-warning/30 bg-warning/5 px-4 py-2 text-[11px] text-warning">
