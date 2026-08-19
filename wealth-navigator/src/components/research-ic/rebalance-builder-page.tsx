@@ -353,12 +353,26 @@ export function RebalanceBuilderPage({
   // Research gate: every changed name needs a research note (meeting rule:
   // "we can't rebalance to anything we don't have research of"). Institutional
   // research_note_c only; no client data.
+  //
+  // A pure SELL (shares decreased or the position exited entirely) is
+  // deliberately exempt — the rule is about justifying what we're buying
+  // INTO, not clearing out a position we already held. sellDirectionTickers
+  // tracks this alongside changedTickers so the gate below can skip them.
   const changedTickers: string[] = [];
+  const sellDirectionTickers = new Set<string>();
   for (const w of working) {
     const b = baseByKey.get(keyOf(w));
-    if (!b || b.shares !== w.shares) changedTickers.push(keyOf(w));
+    if (!b || b.shares !== w.shares) {
+      changedTickers.push(keyOf(w));
+      if (b && w.shares < b.shares) sellDirectionTickers.add(keyOf(w));
+    }
   }
-  for (const b of baseline) if (!workByKey.has(keyOf(b))) changedTickers.push(keyOf(b));
+  for (const b of baseline) {
+    if (!workByKey.has(keyOf(b))) {
+      changedTickers.push(keyOf(b));
+      sellDirectionTickers.add(keyOf(b)); // fully exited — a sell, not a buy
+    }
+  }
   const notesQ = useQuery<{
     notes?: Array<{ id: string; symbol: string; status: string; updated_at?: string }>;
   }>({
@@ -370,7 +384,7 @@ export function RebalanceBuilderPage({
   // AME.JO), while the rebalance model uses bare symbols (AME). Keep the
   // research gate on the same canonical key as the basket.
   const notedSymbols = new Set((notesQ.data?.notes ?? []).map((nte) => bare(String(nte.symbol))));
-  const missingResearch = changedTickers.filter((t) => !notedSymbols.has(t));
+  const missingResearch = changedTickers.filter((t) => !sellDirectionTickers.has(t) && !notedSymbols.has(t));
   // On a real (non-test) strategy, don't just block submit on missing research
   // -- don't even offer the instrument as a buy target. Submitting without
   // research was previously only caught at the very end (submitToIc), which
@@ -541,7 +555,7 @@ export function RebalanceBuilderPage({
   //  • basket-level: a SELL action requires at least one BUY action and at least
   //    one ADD/INCREASE with shares>0 — otherwise the cash can't land anywhere
   const rationalesMissing = changedTickers.filter(
-    (t) => !noteBySymbol.has(t) && !(rationaleBySymbol[t] ?? "").trim(),
+    (t) => !sellDirectionTickers.has(t) && !noteBySymbol.has(t) && !(rationaleBySymbol[t] ?? "").trim(),
   );
   const sellActions = proposedComposition.filter((p) => p.action === "remove" || p.action === "decrease");
   const buyActions = proposedComposition.filter(
