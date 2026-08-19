@@ -621,6 +621,9 @@ interface OrderActions {
   openAmend: (row: ExecutionRow) => void;
   closeAmend: (auditId: string) => void;
   submitAmend: (row: ExecutionRow) => void;
+  retryInFlight: Record<string, boolean>;
+  retryError: Record<string, string>;
+  handleRetry: (row: ExecutionRow) => void;
 }
 
 /**
@@ -677,6 +680,9 @@ function GroupRow({
     openAmend,
     closeAmend,
     submitAmend,
+    retryInFlight,
+    retryError,
+    handleRetry,
   } = actions;
 
   return (
@@ -889,16 +895,34 @@ function GroupRow({
                 <Loader2 className="h-2.5 w-2.5 animate-spin" />
                 awaiting ack
               </span>
+            ) : r.state === "REJECTED" || r.state === "FAILED" ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={!!retryInFlight[r.id]}
+                onClick={() => void handleRetry(r)}
+                className="h-6 px-2 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"
+                title={`Park a fresh copy of this order (same symbol/qty/client) — you'll release it yourself via Send to Market. Original ${r.state === "REJECTED" ? "rejection" : "failure"} stays on record.`}
+              >
+                {retryInFlight[r.id] ? (
+                  <>
+                    <Loader2 className="mr-1 h-2.5 w-2.5 animate-spin" />
+                    retrying…
+                  </>
+                ) : (
+                  "Retry"
+                )}
+              </Button>
             ) : !allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) || TERMINAL_STATES.has(r.state) ? (
               <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
             ) : null}
           </div>
-          {fillError[r.id] || cancelError[r.id] ? (
+          {fillError[r.id] || cancelError[r.id] || retryError[r.id] ? (
             <span
               className="text-[9px] text-destructive"
-              title={fillError[r.id] || cancelError[r.id] || undefined}
+              title={fillError[r.id] || cancelError[r.id] || retryError[r.id] || undefined}
             >
-              {fillError[r.id] || cancelError[r.id]}
+              {fillError[r.id] || cancelError[r.id] || retryError[r.id]}
             </span>
           ) : null}
         </td>
@@ -1615,6 +1639,36 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     }
   }, []);
 
+  // Retry — a REJECTED/FAILED order previously had no recourse at all: it
+  // sat terminal with no action available. Parks a fresh audit row with the
+  // same symbol/side/qty/client via /api/admin/orderbook/retry (same
+  // zero-broker-contact path client-order/route.ts uses) and lets the desk
+  // release it themselves — never auto-resent to the broker.
+  const [retryInFlight, setRetryInFlight] = React.useState<Record<string, boolean>>({});
+  const [retryError, setRetryError] = React.useState<Record<string, string>>({});
+  const handleRetry = React.useCallback(async (row: ExecutionRow) => {
+    const auditId = row.id;
+    setRetryInFlight((p) => ({ ...p, [auditId]: true }));
+    setRetryError((p) => ({ ...p, [auditId]: "" }));
+    try {
+      const res = await fetch("/api/admin/orderbook/retry", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ order_audit_id: auditId }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok === false) {
+        setRetryError((p) => ({ ...p, [auditId]: body.error ?? `Retry returned ${res.status}` }));
+      }
+      // On success the new PARKED row appears on the next poll — no
+      // optimistic override here since it's a distinct row, not this one.
+    } catch (err) {
+      setRetryError((p) => ({ ...p, [auditId]: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setRetryInFlight((p) => ({ ...p, [auditId]: false }));
+    }
+  }, []);
+
   const [amendOpen, setAmendOpen] = React.useState<Record<string, boolean>>({});
   const [amendForm, setAmendForm] = React.useState<
     Record<string, { priceRands: string; volume: string; tif: "DAY" | "GTC" | "IOC" | "FOK" }>
@@ -1746,6 +1800,9 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     openAmend,
     closeAmend,
     submitAmend,
+    retryInFlight,
+    retryError,
+    handleRetry,
   };
 
   // "Send to Market (N)" — releases parked mint client-orders. Ported from
