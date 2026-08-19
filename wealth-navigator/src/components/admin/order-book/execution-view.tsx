@@ -33,7 +33,7 @@
  * the tab is hidden.
  */
 
-import { ChevronRight, Loader2, Pencil, Radio, SendHorizontal } from "lucide-react";
+import { ChevronRight, FileSpreadsheet, Loader2, Pencil, Radio, SendHorizontal } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
@@ -250,6 +250,28 @@ function fmtTs(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return `${d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })} ${d.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+/** CSV-quote a field the way the CRM's toCsvContent() always has: every field
+ *  wrapped in double quotes, internal quotes doubled. */
+const csvField = (v: unknown): string => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+/** Same 3-column broker-ticket shape as MyMintAdmin's orderbook CSV export
+ *  (Buy/sell, Equity code, Nominal) — one row, this order only, exchange
+ *  suffix stripped off the ticker same as the CRM does. */
+function exportRowCsv(row: ExecutionRow) {
+  const ticker = String(row.symbol || "").replace(/\.(JO|JSE)$/i, "").trim();
+  const header = ["Buy/sell", "Equity code", "Nominal"].map(csvField).join(",");
+  const line = [row.side, ticker, row.qty].map(csvField).join(",");
+  const blob = new Blob([`${header}\n${line}`], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `order-${row.order_id || row.id}-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function slipColor(slipCents: number | null): string {
@@ -921,6 +943,15 @@ function GroupRow({
             ) : !allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) || TERMINAL_STATES.has(r.state) ? (
               <span className="text-[10px] uppercase tracking-wider text-muted-foreground">—</span>
             ) : null}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => exportRowCsv(r)}
+              className="h-6 w-6 p-0 text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] hover:text-foreground"
+              title="Export this order as CSV (Buy/sell, Equity code, Nominal — same shape as the CRM's orderbook export)."
+            >
+              <FileSpreadsheet className="h-3.5 w-3.5" />
+            </Button>
           </div>
           {fillError[r.id] || cancelError[r.id] || retryError[r.id] ? (
             <span
