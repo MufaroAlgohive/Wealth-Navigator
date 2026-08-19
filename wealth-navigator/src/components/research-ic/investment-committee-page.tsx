@@ -792,22 +792,43 @@ function CompositionTable({ rows }: { rows: ProposedHolding[] }) {
 
 function useTransition(kind: "note" | "rebalance") {
   const [busy, setBusy] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
   const go = async (id: string, to_status: string, onChanged: () => void, reason?: string) => {
     setBusy(to_status);
+    setError(null);
     try {
       const url =
         kind === "note" ? `/api/research/notes/${id}/transition` : `/api/rebalance/requests/${id}/transition`;
-      await fetch(url, {
+      const r = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ to_status, reason }),
       });
+      // Approve/Reject used to fire-and-forget here — a 403 (permission),
+      // 409 (illegal transition / committee majority not reached) or 500
+      // came back with the click looking like it worked (busy state
+      // cleared, list silently re-fetched to the SAME state) and no
+      // indication anything failed. That's how an "approved" rebalance can
+      // sit at pending forever with nobody the wiser. Check the response
+      // like useVote's cast() already does.
+      if (!r.ok) {
+        const body = (await r.json().catch(() => ({}))) as { error?: string };
+        setError(body.error ?? `Action failed (${r.status}).`);
+        return;
+      }
+      const body = (await r.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (body.ok === false) {
+        setError(body.error ?? "Action failed.");
+        return;
+      }
       onChanged();
+    } catch {
+      setError("Could not complete this action. Please try again.");
     } finally {
       setBusy(null);
     }
   };
-  return { busy, go };
+  return { busy, error, go };
 }
 
 /** Cast / revise an IC vote on a rebalance proposal. */
@@ -859,7 +880,7 @@ function RebalanceAgendaItem({
   pills: MemberPill[];
   onChanged: () => void;
 }) {
-  const { busy, go } = useTransition("rebalance");
+  const { busy, error: transitionError, go } = useTransition("rebalance");
   const noteTransition = useTransition("note");
   const vote = useVote();
   const [open, setOpen] = React.useState(false);
@@ -1050,6 +1071,9 @@ function RebalanceAgendaItem({
       </div>
       {myVote && <p className="-mt-2 mb-3 text-[10px] text-up">Your {myVote.toUpperCase()} vote is recorded and locked.</p>}
       {vote.error && <p className="-mt-2 mb-3 text-xs text-down">{vote.error}</p>}
+      {(transitionError || noteTransition.error) && (
+        <p className="-mt-2 mb-3 text-xs text-down">{transitionError || noteTransition.error}</p>
+      )}
 
       {/* Majority-vote gate — a proposal is promoted to the order-book lane once
           YES votes reach the strict-majority threshold (≥ 2 of 3 by default). */}
