@@ -853,8 +853,11 @@ function GroupRow({
         <td className="px-2 py-1 whitespace-nowrap">
           {/* All actions for this row sit on one horizontal line — a row's
               height must never exceed a single button's height. Any error
-              text drops onto its own thin line below, only when present. */}
-          <div className="flex flex-wrap items-center gap-1">
+              text drops onto its own thin line below, only when present.
+              flex-nowrap, not flex-wrap: the table already scrolls
+              horizontally, so an extra action button should widen the row,
+              never wrap it onto a second line and grow every row's height. */}
+          <div className="flex flex-nowrap items-center gap-1">
             {/* Fill (UAT) — self-fill in the OEM, never sent to the broker. Shown
                 for UAT-lane orders that aren't terminal. See handleFillUat. */}
             {allowsUatSelfFill(uatScope ? "uat" : undefined, r.source) && !TERMINAL_STATES.has(r.state) ? (
