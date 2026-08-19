@@ -14,6 +14,7 @@ export default async function Page({
     <RebalanceBuilderPage
       perms={s.perms}
       viewerEmail={s.viewerEmail}
+      isMaster={s.isMaster}
       initialStrategyId={sp.strategy}
       initialStrategyName={sp.name}
     />
