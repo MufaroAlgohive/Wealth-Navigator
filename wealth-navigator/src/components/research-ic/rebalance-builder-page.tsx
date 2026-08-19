@@ -151,20 +151,11 @@ function bare(sym: string): string {
 export function RebalanceBuilderPage({
   perms,
   viewerEmail,
-  isMaster,
   initialStrategyId,
   initialStrategyName,
 }: {
   perms: ResearchPerms;
   viewerEmail: string | null;
-  // Rebalances no longer route through committee voting (product decision,
-  // 2026-08-19) — a Master ★ account commits straight to executed. Resolved
-  // server-side (resolveResearchSession -> ResearchSession.isMaster) and
-  // passed down as a plain prop, NOT via useAdmin()/<AdminProvider> — that
-  // provider is never mounted under /oems (see research-ic/server.ts's
-  // docstring); calling the hook here throws "must be used within
-  // AdminProvider" on every render of this page.
-  isMaster: boolean;
   initialStrategyId?: string;
   initialStrategyName?: string;
 }) {
@@ -833,11 +824,6 @@ export function RebalanceBuilderPage({
             totals: impactQ.data.totals,
             investors: impactQ.data.investors,
           },
-          // Master ★ commits straight to executed — no committee vote, no
-          // separate approve/release click. The server re-verifies the tier
-          // itself (requireMasterPassword); this is just what decides which
-          // path to ask for.
-          direct_execute: isMaster,
         }),
       });
       const json = (await res.json().catch(() => ({}))) as {
@@ -1545,7 +1531,6 @@ export function RebalanceBuilderPage({
 
       <TradeSequencePanel
         mode={stage}
-        isMaster={isMaster}
         enabled={!!strategyId}
         loading={impactQ.isFetching}
         data={impactQ.data}
@@ -2816,7 +2801,6 @@ function SingleClientRebalancePanel({
 
 function TradeSequencePanel({
   mode,
-  isMaster,
   enabled,
   loading,
   data,
@@ -2855,9 +2839,6 @@ function TradeSequencePanel({
   onApplyBufferChange,
 }: {
   mode: "compose" | "execute";
-  /** Passed down from RebalanceBuilderPage's server-resolved isMaster —
-   *  see that component's prop docs for why this isn't useAdmin(). */
-  isMaster: boolean;
   enabled: boolean;
   loading: boolean;
   data: ImpactResponse | undefined;
@@ -3434,9 +3415,7 @@ function TradeSequencePanel({
                   {commitDisabled
                     ? commitTitle
                     : isExecute
-                      ? isMaster
-                        ? "Executes immediately — parked/booked straight onto the Rebalance tab. No committee review, no separate release click."
-                        : "Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet."
+                      ? "Executes immediately — parked/booked straight onto the Rebalance tab. No committee review, no separate release click."
                       : "Continue to pick each leg's buy instrument and review the full fee bridge before this is sent to the IC."}
                 </div>
               </div>
@@ -3460,12 +3439,8 @@ function TradeSequencePanel({
                   <Send className="h-3.5 w-3.5" />
                   {isExecute
                     ? submitting
-                      ? isMaster
-                        ? "Executing…"
-                        : "Committing…"
-                      : isMaster
-                        ? "Commit & send to Rebalance tab"
-                        : "Commit trade sequence"
+                      ? "Executing…"
+                      : "Commit & send to Rebalance tab"
                     : "Continue to trade sequence →"}
                 </button>
               </div>
