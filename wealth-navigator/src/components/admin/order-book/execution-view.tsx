@@ -52,6 +52,11 @@ import { MasterSendConfirmDialog } from "./master-send-confirm-dialog";
 
 export interface ExecutionRow {
   id: string;
+  // The rebalance_request_c.id this order was booked from, null for orders
+  // not sourced from a rebalance. Cancelling a PARKED order that has this
+  // set does NOT revert that rebalance's status back from "executed" — the
+  // Cancel button warns before proceeding on such a row (see handleCancel).
+  rebalance_request_id?: string | null;
   // 2026-07-23: CRM-style order-book number (see release-to-market/route.ts,
   // which stamps this onto every row released together in one "Send to
   // Market" click) — null until the row has been released at least once.
@@ -1573,6 +1578,20 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     // ever sends it anywhere; important now that real (allowlisted)
     // production accounts can park orders too, not just test accounts.
     if (row.state === "PARKED") {
+      // This order came from a rebalance — cancelling it is a pure local
+      // status flip on THIS order only. The parent rebalance stays
+      // "executed" regardless (that transition never reverts), so the
+      // client this order was for silently ends up without the shares the
+      // rebalance record says they got. Make that explicit before it
+      // happens rather than after.
+      if (row.rebalance_request_id) {
+        const proceed = window.confirm(
+          `This order came from rebalance ${row.rebalance_request_id.slice(0, 8)} for ${row.client_account}. ` +
+            "Cancelling it will NOT undo that rebalance or notify anyone — the rebalance record will still say " +
+            "\"executed\" even though this client won't receive the shares. Cancel anyway?",
+        );
+        if (!proceed) return;
+      }
       setCancelInFlight((p) => ({ ...p, [auditId]: true }));
       setCancelError((p) => ({ ...p, [auditId]: "" }));
       overrideAppliedAtRef.current[auditId] = Date.now();

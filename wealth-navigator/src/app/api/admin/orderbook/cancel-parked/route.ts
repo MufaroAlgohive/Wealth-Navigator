@@ -59,7 +59,7 @@ export async function POST(req: Request) {
 
   const { data: row, error: readErr } = await db
     .from("oems_order_audit")
-    .select("id, status")
+    .select("id, status, payload, result_payload")
     .eq("id", auditId)
     .maybeSingle();
   if (readErr) {
@@ -78,13 +78,34 @@ export async function POST(req: Request) {
     );
   }
 
+  // A rebalance-sourced order's parent request stays "executed" regardless
+  // of what happens to the individual orders it spawned — that transition
+  // never reverts, so there's nothing to "undo" here. Best this route can do
+  // is make the cancellation traceable: anyone auditing the rebalance later
+  // (querying rebalance_request_id) can see this order was explicitly killed
+  // rather than assuming a gap in stock_holdings_c means a missed fill.
+  const payload = (row.payload ?? {}) as Record<string, unknown>;
+  const rebalanceRequestId = typeof payload.rebalance_request_id === "string" ? payload.rebalance_request_id : null;
+  const resultPayload = (row.result_payload ?? {}) as Record<string, unknown>;
+
   const { error: updErr } = await db
     .from("oems_order_audit")
-    .update({ status: "cancelled", updated_at: new Date().toISOString() })
+    .update({
+      status: "cancelled",
+      updated_at: new Date().toISOString(),
+      result_payload: rebalanceRequestId
+        ? {
+            ...resultPayload,
+            cancelled_from_rebalance_request_id: rebalanceRequestId,
+            cancelled_by: auth.ctx.email,
+            cancelled_at: new Date().toISOString(),
+          }
+        : resultPayload,
+    })
     .eq("id", auditId);
   if (updErr) {
     return NextResponse.json({ ok: false, error: updErr.message }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, status: "cancelled" });
+  return NextResponse.json({ ok: true, status: "cancelled", rebalance_request_id: rebalanceRequestId });
 }
