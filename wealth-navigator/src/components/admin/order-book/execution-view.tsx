@@ -279,7 +279,7 @@ function exportRowCsv(row: ExecutionRow) {
  *  MyMintAdmin's broker-fills uploader uses so a code like "DIB" matches
  *  this app's "DIB.JO" and vice versa. */
 const normalizeFillTicker = (t: unknown): string =>
-  String(t ?? "").trim().toUpperCase().replace(/\s+/g, "").split(".")[0];
+  String(t ?? "").trim().toUpperCase().replace(/\s+/g, "").split(".")[0] ?? "";
 
 interface ParsedFillRow {
   side: string;
