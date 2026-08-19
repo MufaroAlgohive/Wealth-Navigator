@@ -2258,10 +2258,12 @@ function CombinedStepView({
   sellLegs,
   increaseLegs,
   onNext,
+  onBack,
 }: {
   sellLegs: Array<Extract<Leg, { kind: "sell" }>>;
   increaseLegs: Array<Extract<Leg, { kind: "increase" }>>;
   onNext: () => void;
+  onBack: () => void;
 }) {
   const totalSellNetCents = sellLegs.reduce((s, l) => s + l.breakdown.netCents, 0);
   const totalBuyCostCents = increaseLegs.reduce((s, l) => s + l.breakdown.totalCostCents, 0);
@@ -2319,7 +2321,14 @@ function CombinedStepView({
           {centsToR(netCents)}
         </span>
       </div>
-      <div className="flex items-center justify-end border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
+      <div className="flex items-center justify-end gap-2 border-t border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.018)] px-5 py-4">
+        <button
+          type="button"
+          onClick={onBack}
+          className="rounded-lg border border-[hsl(var(--glass-border))] px-4 py-2 text-xs font-medium hover:bg-[hsl(var(--foreground)/0.05)]"
+        >
+          ← Back to editing
+        </button>
         <button
           type="button"
           onClick={onNext}
@@ -2972,6 +2981,7 @@ function TradeSequencePanel({
         <CombinedStepView
           sellLegs={combinedSellLegs}
           increaseLegs={standaloneIncreaseLegs}
+          onBack={onBack}
           onNext={() => onNextLeg(0)}
         />
       ) : null}
