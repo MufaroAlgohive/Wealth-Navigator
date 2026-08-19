@@ -25,7 +25,6 @@ import Link from "next/link";
 import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
-import { useAdmin } from "@/lib/admin/context";
 import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
 import { ActionBadge, moneyR, rebalanceCodeMap, rebalanceDisplayLabel, useQuotes, weightPct } from "./ui";
@@ -152,22 +151,25 @@ function bare(sym: string): string {
 export function RebalanceBuilderPage({
   perms,
   viewerEmail,
+  isMaster,
   initialStrategyId,
   initialStrategyName,
 }: {
   perms: ResearchPerms;
   viewerEmail: string | null;
+  // Rebalances no longer route through committee voting (product decision,
+  // 2026-08-19) — a Master ★ account commits straight to executed. Resolved
+  // server-side (resolveResearchSession -> ResearchSession.isMaster) and
+  // passed down as a plain prop, NOT via useAdmin()/<AdminProvider> — that
+  // provider is never mounted under /oems (see research-ic/server.ts's
+  // docstring); calling the hook here throws "must be used within
+  // AdminProvider" on every render of this page.
+  isMaster: boolean;
   initialStrategyId?: string;
   initialStrategyName?: string;
 }) {
   void viewerEmail;
   const qc = useQueryClient();
-  // Rebalances no longer route through committee voting (product decision,
-  // 2026-08-19) — a Master ★ account commits straight to executed. Mirrors
-  // the server's own gate (requireMasterPassword) exactly, same as every
-  // other real-money action in this app.
-  const { ctx } = useAdmin();
-  const isMaster = ctx.approverTier === "master";
 
   // Real strategy catalogue (for the dropdown).
   const strategiesQ = useQuery<{
@@ -1543,6 +1545,7 @@ export function RebalanceBuilderPage({
 
       <TradeSequencePanel
         mode={stage}
+        isMaster={isMaster}
         enabled={!!strategyId}
         loading={impactQ.isFetching}
         data={impactQ.data}
@@ -2813,6 +2816,7 @@ function SingleClientRebalancePanel({
 
 function TradeSequencePanel({
   mode,
+  isMaster,
   enabled,
   loading,
   data,
@@ -2851,6 +2855,9 @@ function TradeSequencePanel({
   onApplyBufferChange,
 }: {
   mode: "compose" | "execute";
+  /** Passed down from RebalanceBuilderPage's server-resolved isMaster —
+   *  see that component's prop docs for why this isn't useAdmin(). */
+  isMaster: boolean;
   enabled: boolean;
   loading: boolean;
   data: ImpactResponse | undefined;
@@ -2900,8 +2907,6 @@ function TradeSequencePanel({
   const investors = data?.investors ?? [];
   const totals = data?.totals ?? null;
   const cashOk = totals?.cashOk ?? true;
-  const { ctx } = useAdmin();
-  const isMaster = ctx.approverTier === "master";
   const [residualView, setResidualView] = React.useState(false);
   const [expandedUserId, setExpandedUserId] = React.useState<string | null>(null);
   const scopeLabel =
