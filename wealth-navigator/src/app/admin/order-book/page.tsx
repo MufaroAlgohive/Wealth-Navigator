@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { ActiveOrderBooks } from "@/components/admin/order-book/active-order-books";
@@ -14,10 +15,51 @@ import { UatOrderTicket } from "@/components/admin/order-book/uat-order-ticket";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+const VALID_TABS = new Set(["active", "closed", "rebalances", "strate-bir", "cancelled", "uat-testing"]);
+
 export default function OrderBookPage() {
-  const [tab, setTab] = React.useState("active");
+  // Deep-linkable via ?tab=rebalances&env=uat — this page's tab used to be
+  // pure component state with no URL sync at all, so there was no way to
+  // hand someone (or a success banner elsewhere in the app) a link straight
+  // to a specific tab; they had to land on Active Orderbook and click over
+  // manually every time. Read the initial values from the URL, and push any
+  // change back into it so switching tabs here is itself shareable/
+  // bookmarkable, not just the deep-link-in case.
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialTab = searchParams.get("tab");
+  const initialEnv = searchParams.get("env");
+  const [tab, setTabState] = React.useState(initialTab && VALID_TABS.has(initialTab) ? initialTab : "active");
   const [uatRefresh, setUatRefresh] = React.useState(0);
-  const [activeEnvironment, setActiveEnvironment] = React.useState<"live" | "uat">("live");
+  const [activeEnvironment, setActiveEnvironmentState] = React.useState<"live" | "uat">(
+    initialEnv === "uat" ? "uat" : "live",
+  );
+
+  const pushParams = React.useCallback(
+    (next: Record<string, string>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(next)) params.set(key, value);
+      router.replace(`?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+  const setTab = React.useCallback(
+    (next: string) => {
+      setTabState(next);
+      pushParams({ tab: next });
+    },
+    [pushParams],
+  );
+  const setActiveEnvironment = React.useCallback(
+    (next: "live" | "uat" | ((current: "live" | "uat") => "live" | "uat")) => {
+      setActiveEnvironmentState((current) => {
+        const resolved = typeof next === "function" ? next(current) : next;
+        pushParams({ env: resolved });
+        return resolved;
+      });
+    },
+    [pushParams],
+  );
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4">
