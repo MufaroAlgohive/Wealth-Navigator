@@ -13,6 +13,11 @@ export interface ResearchSession {
   viewerEmail: string | null;
   viewerName: string | null;
   canSeeUat: boolean;
+  /** `approverTier === "master"` — mirrors the server's own step-up gate
+   *  (lib/admin/step-up.ts) exactly. Resolved here, not via useAdmin()/
+   *  <AdminProvider>, for the same reason every other field on this session
+   *  is: that provider isn't mounted under /oems (see this file's docstring). */
+  isMaster: boolean;
   perms: ResearchPerms;
 }
 
@@ -30,7 +35,7 @@ export async function resolveResearchSession(): Promise<ResearchSession> {
   if (res.status !== "ok") {
     // Design-preview / local fallback (mirrors the /oems/(banking) group layout):
     // render the surface fully. The API still 401s an unauthenticated mutation.
-    return { viewerEmail: null, viewerName: "Design Preview", canSeeUat: true, perms: FULL };
+    return { viewerEmail: null, viewerName: "Design Preview", canSeeUat: true, isMaster: true, perms: FULL };
   }
   const ctx = res.ctx;
   const b = (v: boolean | "pending" | "direct") => v === true || v === "direct";
@@ -43,6 +48,7 @@ export async function resolveResearchSession(): Promise<ResearchSession> {
     viewerEmail: ctx.email,
     viewerName: ctx.fullName ?? ctx.email,
     canSeeUat: canSeeUatSurfaces(ctx),
+    isMaster: ctx.approverTier === "master",
     perms: {
       createNote: isAdmin || b(can(ctx, "research-lab", "create_research_note")),
       approveNote: isAdmin || b(can(ctx, "research-lab", "approve_note")),
