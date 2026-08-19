@@ -222,6 +222,11 @@ export function RebalanceBuilderPage({
   const [error, setError] = React.useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = React.useState<string | null>(null);
   const proposedBasketRef = React.useRef<HTMLDivElement | null>(null);
+  // Where the submitted-proposal banners' "View proposed basket" button
+  // actually scrolls to — the ProposalsList section below, not
+  // proposedBasketRef (that's the compose-stage EDITOR panel, which is back
+  // to 0-pending by the time either banner shows, since submit resets it).
+  const proposalsListRef = React.useRef<HTMLDivElement | null>(null);
   // Auto-expanded right after a successful Submit to IC, so the just-raised
   // proposal is immediately visible instead of hidden behind the list's
   // default-collapsed state.
@@ -896,7 +901,7 @@ export function RebalanceBuilderPage({
           <span>{submitSuccess}</span>
           <button
             type="button"
-            onClick={() => proposedBasketRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+            onClick={() => proposalsListRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
             className="shrink-0 rounded-md border border-[hsl(var(--up)/0.4)] px-2 py-0.5 text-[11px] font-medium hover:bg-[hsl(var(--up)/0.12)]"
           >
             View proposed basket
@@ -914,7 +919,7 @@ export function RebalanceBuilderPage({
           </span>
           <button
             type="button"
-            onClick={() => proposedBasketRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+            onClick={() => proposalsListRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
             className="shrink-0 rounded-md border border-primary/40 px-2 py-0.5 text-[11px] font-medium hover:bg-primary/10"
           >
             View proposed basket
@@ -1554,13 +1559,15 @@ export function RebalanceBuilderPage({
         onApplyBufferChange={setApplyBuffer}
       />
 
-      <ProposalsList
-        pushingId={pushingId}
-        setPushingId={setPushingId}
-        canPush={perms.pushRebalance}
-        open={proposalsOpen}
-        onOpenChange={setProposalsOpen}
-      />
+      <div ref={proposalsListRef}>
+        <ProposalsList
+          pushingId={pushingId}
+          setPushingId={setPushingId}
+          canPush={perms.pushRebalance}
+          open={proposalsOpen}
+          onOpenChange={setProposalsOpen}
+        />
+      </div>
     </ResearchLabCanvas>
   );
 }
