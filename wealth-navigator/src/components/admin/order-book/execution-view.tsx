@@ -33,7 +33,7 @@
  * the tab is hidden.
  */
 
-import { ChevronRight, FileSpreadsheet, Loader2, Pencil, Radio, SendHorizontal, Upload } from "lucide-react";
+import { ChevronRight, FileSpreadsheet, Loader2, Pencil, Radio, SendHorizontal } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
@@ -942,7 +942,7 @@ function GroupRow({
                   className="rounded p-0.5 text-muted-foreground hover:bg-[hsl(var(--foreground)/0.08)] hover:text-foreground"
                   title="Emergency manual fill — upload a broker fill sheet (xlsx/xls/csv) for when IRESS is down. Requires Master ★."
                 >
-                  <Upload className="h-3 w-3" />
+                  <Pencil className="h-3 w-3" />
                 </button>
               </>
             ) : null}
