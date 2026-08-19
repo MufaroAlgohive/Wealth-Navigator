@@ -33,9 +33,10 @@
  * the tab is hidden.
  */
 
-import { ChevronRight, FileSpreadsheet, Loader2, Pencil, Radio, SendHorizontal } from "lucide-react";
+import { ChevronRight, FileSpreadsheet, Loader2, Pencil, Radio, SendHorizontal, Upload } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
 
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { Badge } from "@/components/ui/badge";
@@ -272,6 +273,73 @@ function exportRowCsv(row: ExecutionRow) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+/** Bare ticker, exchange suffix stripped, uppercased — same normalisation
+ *  MyMintAdmin's broker-fills uploader uses so a code like "DIB" matches
+ *  this app's "DIB.JO" and vice versa. */
+const normalizeFillTicker = (t: unknown): string =>
+  String(t ?? "").trim().toUpperCase().replace(/\s+/g, "").split(".")[0];
+
+interface ParsedFillRow {
+  side: string;
+  code: string;
+  nominal: number | null;
+  priceCents: number;
+}
+
+/** Parses a broker fill workbook (.xlsx/.xls/.csv) into [{ side, code,
+ *  nominal, priceCents }] — same flexible header-detection MyMintAdmin's
+ *  broker-fills uploader uses: scans the first 15 rows for one containing
+ *  both a price-like column and a code/equity/ticker/symbol-like column,
+ *  case-insensitive substring match, tolerant of whatever else the broker's
+ *  sheet calls its other columns. */
+async function parseFillWorkbook(file: File): Promise<ParsedFillRow[]> {
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: "array" });
+  const ws = wb.Sheets[wb.SheetNames[0] ?? ""];
+  if (!ws) throw new Error("The workbook has no sheets.");
+  const grid = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, blankrows: false, defval: "" });
+  if (!grid.length) throw new Error("The sheet is empty.");
+
+  const findCol = (cells: string[], ...needles: string[]) =>
+    cells.findIndex((c) => needles.some((n) => c.toLowerCase().includes(n)));
+
+  let headerIdx = -1;
+  let cols: { side: number; code: number; nominal: number; price: number } | null = null;
+  for (let i = 0; i < Math.min(grid.length, 15); i++) {
+    const cells = (grid[i] ?? []).map((c) => String(c ?? ""));
+    const priceCol = findCol(cells, "price");
+    const codeCol = findCol(cells, "code", "equity", "ticker", "symbol");
+    if (priceCol !== -1 && codeCol !== -1) {
+      headerIdx = i;
+      cols = {
+        side: findCol(cells, "buy", "sell", "side"),
+        code: codeCol,
+        nominal: findCol(cells, "nominal", "qty", "quantity", "shares"),
+        price: priceCol,
+      };
+      break;
+    }
+  }
+  if (headerIdx === -1 || !cols) {
+    throw new Error("Could not find the column headers (need at least an Equity Code and a Price column).");
+  }
+
+  const out: ParsedFillRow[] = [];
+  for (let i = headerIdx + 1; i < grid.length; i++) {
+    const r = (grid[i] ?? []) as unknown[];
+    const code = normalizeFillTicker(r[cols.code]);
+    if (!code) continue;
+    const priceCents = Math.round(Number(String(r[cols.price] ?? "").replace(/[^0-9.-]/g, "")));
+    if (!Number.isFinite(priceCents) || priceCents <= 0) continue;
+    const nominalRaw =
+      cols.nominal !== -1 ? Number(String(r[cols.nominal] ?? "").replace(/[^0-9.-]/g, "")) : Number.NaN;
+    const side = cols.side !== -1 ? String(r[cols.side] ?? "").trim().toUpperCase() : "";
+    out.push({ side, code, nominal: Number.isFinite(nominalRaw) ? nominalRaw : null, priceCents });
+  }
+  if (!out.length) throw new Error("No priced securities found in the sheet.");
+  return out;
 }
 
 function slipColor(slipCents: number | null): string {
@@ -712,6 +780,66 @@ function GroupRow({
     handleRetry,
   } = actions;
 
+  // Emergency manual fill — for when IRESS itself is down and there is a
+  // real broker confirmation for this order but nothing left to poll it.
+  // Same Master ★ gate as Send to Market (mirrored client-side here as a
+  // courtesy; the server — manual-fill/route.ts via requireMasterPassword —
+  // is the actual boundary, not this check).
+  const { ctx } = useAdmin();
+  const isMaster = ctx.approverTier === "master";
+  const manualFillInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [manualFillMatch, setManualFillMatch] = React.useState<{
+    priceCents: number;
+    nominal: number | null;
+    side: string;
+  } | null>(null);
+  const [manualFillDialogOpen, setManualFillDialogOpen] = React.useState(false);
+  const [manualFillPending, setManualFillPending] = React.useState(false);
+  const [manualFillErr, setManualFillErr] = React.useState("");
+
+  const handleManualFillFile = async (file: File) => {
+    setManualFillErr("");
+    try {
+      const rows = await parseFillWorkbook(file);
+      const code = normalizeFillTicker(r.symbol);
+      const match = rows.find((row) => row.code === code);
+      if (!match) {
+        setManualFillErr(`No price found for ${code} in that file.`);
+        return;
+      }
+      setManualFillMatch({ priceCents: match.priceCents, nominal: match.nominal, side: match.side });
+      setManualFillDialogOpen(true);
+    } catch (err) {
+      setManualFillErr(err instanceof Error ? err.message : "Could not read that file.");
+    }
+  };
+
+  const confirmManualFill = async () => {
+    if (!manualFillMatch) return;
+    setManualFillPending(true);
+    try {
+      const res = await fetch("/api/admin/orderbook/manual-fill", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ order_audit_id: r.id, fill_price_cents: manualFillMatch.priceCents }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || body.ok === false) {
+        const msg = body.error ?? `Fill failed (${res.status}).`;
+        setManualFillErr(msg);
+        toast.error(msg);
+        return;
+      }
+      toast.success(`Filled ${r.symbol} at ${fmtMoney(manualFillMatch.priceCents / 100)}.`);
+      setManualFillDialogOpen(false);
+      setManualFillMatch(null);
+    } catch (err) {
+      setManualFillErr(err instanceof Error ? err.message : "Manual fill failed.");
+    } finally {
+      setManualFillPending(false);
+    }
+  };
+
   return (
     <React.Fragment key={`grp:${groupKey}`}>
       <tr className={cn("border-b border-border/40 hover:bg-accent/10", childCount > 0 && "bg-accent/5")}>
@@ -793,7 +921,33 @@ function GroupRow({
           </div>
         </td>
         <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
-          {r.filled > 0 && r.avg_fill_price ? fmtMoney(r.avg_fill_price) : "—"}
+          <span className="inline-flex items-center gap-1">
+            {r.filled > 0 && r.avg_fill_price ? fmtMoney(r.avg_fill_price) : "—"}
+            {!TERMINAL_STATES.has(r.state) ? (
+              <>
+                <input
+                  ref={manualFillInputRef}
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (file) void handleManualFillFile(file);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => manualFillInputRef.current?.click()}
+                  className="rounded p-0.5 text-muted-foreground hover:bg-[hsl(var(--foreground)/0.08)] hover:text-foreground"
+                  title="Emergency manual fill — upload a broker fill sheet (xlsx/xls/csv) for when IRESS is down. Requires Master ★."
+                >
+                  <Upload className="h-3 w-3" />
+                </button>
+              </>
+            ) : null}
+          </span>
+          {manualFillErr ? <div className="text-[9px] text-destructive">{manualFillErr}</div> : null}
         </td>
         <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
           {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
@@ -1184,6 +1338,44 @@ function GroupRow({
           </td>
         </tr>
       ) : null}
+      <MasterSendConfirmDialog
+        open={manualFillDialogOpen}
+        onOpenChange={(next) => {
+          setManualFillDialogOpen(next);
+          if (!next) setManualFillMatch(null);
+        }}
+        isMaster={isMaster}
+        title={`Fill ${r.client_account} at ${manualFillMatch ? fmtMoney(manualFillMatch.priceCents / 100) : "—"} for ${r.symbol}?`}
+        description="This does NOT go to the broker — it writes the fill directly into this client's holdings and wallet, exactly as if IRESS had reported it, and cannot be undone from this system."
+        nonMasterDescription="Only a Master ★ account can apply an emergency manual fill. Your account does not hold that approver tier, so this cannot be applied from here."
+        summary={
+          manualFillMatch ? (
+            <div className="space-y-1">
+              <div>
+                {r.side} {r.qty.toLocaleString()} {r.symbol} @ {fmtMoney(manualFillMatch.priceCents / 100)}
+              </div>
+              {manualFillMatch.nominal != null && manualFillMatch.nominal !== r.qty ? (
+                <div className="text-warning">
+                  File shows {manualFillMatch.nominal.toLocaleString()} — order is {r.qty.toLocaleString()}. Filling
+                  the order's own quantity regardless.
+                </div>
+              ) : null}
+              {manualFillMatch.side && manualFillMatch.side !== r.side ? (
+                <div className="text-warning">
+                  File says {manualFillMatch.side}, order is {r.side}.
+                </div>
+              ) : null}
+              <div className="text-muted-foreground">
+                No broker confirmation behind this — settled exactly like a real IRESS fill, straight into this
+                client&apos;s holdings and wallet.
+              </div>
+            </div>
+          ) : null
+        }
+        confirmLabel="Yes, fill this order"
+        pending={manualFillPending}
+        onConfirm={() => void confirmManualFill()}
+      />
     </React.Fragment>
   );
 }

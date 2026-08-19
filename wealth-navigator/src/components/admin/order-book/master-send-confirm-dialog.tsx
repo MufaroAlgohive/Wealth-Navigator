@@ -35,10 +35,12 @@ export function MasterSendConfirmDialog({
   onOpenChange,
   isMaster,
   title,
+  description = "This is sent straight to the broker and cannot be undone from this system.",
   summary,
   confirmLabel = "Yes, execute order",
   pending = false,
   onConfirm,
+  nonMasterDescription = "Only a Master ★ account can send orders to the market. Your account does not hold that approver tier, so this release cannot be started from here.",
 }: {
   open: boolean;
   onOpenChange: (next: boolean) => void;
@@ -46,11 +48,18 @@ export function MasterSendConfirmDialog({
   isMaster: boolean;
   /** What is about to be sent, e.g. "Send 12 parked orders to market". */
   title: string;
+  /** Trailing sentence after `title` in the master-branch description.
+   *  Defaults to the broker-release wording — override for an action that
+   *  isn't a broker send (e.g. a manual fill, which is the OPPOSITE case). */
+  description?: string;
   /** One line of specifics so the approver can sanity-check before saying yes. */
   summary?: React.ReactNode;
   confirmLabel?: string;
   pending?: boolean;
   onConfirm: () => void;
+  /** Body text shown to a non-master viewer. Defaults to the broker-release
+   *  wording — override for an action that isn't "send to market". */
+  nonMasterDescription?: string;
 }) {
   // Never let a pending release be dismissed out from under itself — the request
   // is already in flight and closing would strand the spinner state.
@@ -70,7 +79,7 @@ export function MasterSendConfirmDialog({
               </div>
               <DialogTitle>Are you sure you want to execute this order?</DialogTitle>
               <DialogDescription>
-                {title} This is sent straight to the broker and cannot be undone from this system.
+                {title} {description}
               </DialogDescription>
             </DialogHeader>
             {summary ? (
@@ -101,10 +110,7 @@ export function MasterSendConfirmDialog({
                 <ShieldAlert className="h-4.5 w-4.5 text-destructive" />
               </div>
               <DialogTitle>Master approval required</DialogTitle>
-              <DialogDescription>
-                Only a Master ★ account can send orders to the market. Your account does not hold that
-                approver tier, so this release cannot be started from here.
-              </DialogDescription>
+              <DialogDescription>{nonMasterDescription}</DialogDescription>
             </DialogHeader>
             <div className="rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
               Ask a master approver to review and release it. Nothing has been sent.
