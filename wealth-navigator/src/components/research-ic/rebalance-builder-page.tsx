@@ -25,6 +25,7 @@ import Link from "next/link";
 import * as React from "react";
 
 import { GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
+import { useAdmin } from "@/lib/admin/context";
 import { cn } from "@/lib/cn";
 import type { CompAction, ProposedHolding, RebalanceRequest, ResearchPerms } from "./types";
 import { ActionBadge, moneyR, rebalanceCodeMap, rebalanceDisplayLabel, useQuotes, weightPct } from "./ui";
@@ -161,6 +162,12 @@ export function RebalanceBuilderPage({
 }) {
   void viewerEmail;
   const qc = useQueryClient();
+  // Rebalances no longer route through committee voting (product decision,
+  // 2026-08-19) — a Master ★ account commits straight to executed. Mirrors
+  // the server's own gate (requireMasterPassword) exactly, same as every
+  // other real-money action in this app.
+  const { ctx } = useAdmin();
+  const isMaster = ctx.approverTier === "master";
 
   // Real strategy catalogue (for the dropdown).
   const strategiesQ = useQuery<{
@@ -221,6 +228,13 @@ export function RebalanceBuilderPage({
   const [pushingId, setPushingId] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = React.useState<string | null>(null);
+  // Whether the request that just produced submitSuccess landed straight at
+  // "executed" (Master direct-commit) — decides whether the banner's action
+  // button is a scroll to this page's own Proposals list (nothing to see on
+  // the actual order book yet) or a real link to where the booked orders now
+  // live. A banner that says "sent to the Rebalance tab" with no way to
+  // actually get there is the thing this distinction exists to avoid.
+  const [submitExecuted, setSubmitExecuted] = React.useState(false);
   const proposedBasketRef = React.useRef<HTMLDivElement | null>(null);
   // Where the submitted-proposal banners' "View proposed basket" button
   // actually scrolls to — the ProposalsList section below, not
@@ -758,6 +772,7 @@ export function RebalanceBuilderPage({
   async function submitToIc() {
     setError(null);
     setSubmitSuccess(null);
+    setSubmitExecuted(false);
     // Gates — short-circuit before opening the network tab.
     if (changes === 0) {
       setError("Make at least one increase, decrease, add, or removal before sending a rebalance to the IC.");
@@ -816,16 +831,28 @@ export function RebalanceBuilderPage({
             totals: impactQ.data.totals,
             investors: impactQ.data.investors,
           },
+          // Master ★ commits straight to executed — no committee vote, no
+          // separate approve/release click. The server re-verifies the tier
+          // itself (requireMasterPassword); this is just what decides which
+          // path to ask for.
+          direct_execute: isMaster,
         }),
       });
-      const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      const json = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        request?: { status?: string };
+      };
       if (!res.ok || !json.ok) {
         setError(json.error ?? `Submit failed (${res.status}).`);
         return;
       }
       await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+      setSubmitExecuted(json.request?.status === "executed");
       setSubmitSuccess(
-        `Trade sequence created and sent to the ${isTestStrategy ? "UAT" : "LIVE"} Investment Committee. No market order has been sent.`,
+        json.request?.status === "executed"
+          ? "Trade sequence executed — sent straight to the Rebalance tab. No committee review."
+          : `Trade sequence created and sent to the ${isTestStrategy ? "UAT" : "LIVE"} Investment Committee. No market order has been sent.`,
       );
       setProposalsOpen(true);
       // Proposal raised — return the page to a clean slate instead of leaving
@@ -913,13 +940,22 @@ export function RebalanceBuilderPage({
       {submitSuccess && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.1)] px-3 py-2 text-xs text-up">
           <span>{submitSuccess}</span>
-          <button
-            type="button"
-            onClick={() => proposalsListRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
-            className="shrink-0 rounded-md border border-[hsl(var(--up)/0.4)] px-2 py-0.5 text-[11px] font-medium hover:bg-[hsl(var(--up)/0.12)]"
-          >
-            View proposed basket
-          </button>
+          {submitExecuted ? (
+            <Link
+              href={`/admin/order-book?tab=rebalances&env=${isTestStrategy ? "uat" : "live"}`}
+              className="shrink-0 rounded-md border border-[hsl(var(--up)/0.4)] px-2 py-0.5 text-[11px] font-medium hover:bg-[hsl(var(--up)/0.12)]"
+            >
+              Go to Rebalance tab →
+            </Link>
+          ) : (
+            <button
+              type="button"
+              onClick={() => proposalsListRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+              className="shrink-0 rounded-md border border-[hsl(var(--up)/0.4)] px-2 py-0.5 text-[11px] font-medium hover:bg-[hsl(var(--up)/0.12)]"
+            >
+              View proposed basket
+            </button>
+          )}
         </div>
       )}
 
@@ -2864,6 +2900,8 @@ function TradeSequencePanel({
   const investors = data?.investors ?? [];
   const totals = data?.totals ?? null;
   const cashOk = totals?.cashOk ?? true;
+  const { ctx } = useAdmin();
+  const isMaster = ctx.approverTier === "master";
   const [residualView, setResidualView] = React.useState(false);
   const [expandedUserId, setExpandedUserId] = React.useState<string | null>(null);
   const scopeLabel =
@@ -3391,7 +3429,9 @@ function TradeSequencePanel({
                   {commitDisabled
                     ? commitTitle
                     : isExecute
-                      ? "Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet."
+                      ? isMaster
+                        ? "Executes immediately — parked/booked straight onto the Rebalance tab. No committee review, no separate release click."
+                        : "Creates the controlled IC proposal with this client-impact snapshot. No market order is sent yet."
                       : "Continue to pick each leg's buy instrument and review the full fee bridge before this is sent to the IC."}
                 </div>
               </div>
@@ -3415,8 +3455,12 @@ function TradeSequencePanel({
                   <Send className="h-3.5 w-3.5" />
                   {isExecute
                     ? submitting
-                      ? "Committing…"
-                      : "Commit trade sequence"
+                      ? isMaster
+                        ? "Executing…"
+                        : "Committing…"
+                      : isMaster
+                        ? "Commit & send to Rebalance tab"
+                        : "Commit trade sequence"
                     : "Continue to trade sequence →"}
                 </button>
               </div>

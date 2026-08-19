@@ -2,9 +2,8 @@ import { NextResponse } from "next/server";
 
 import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
-import { bookSettledRebalanceOrders } from "@/lib/rebalance/book-settled-rebalance-orders";
+import { executeRebalanceRequest } from "@/lib/rebalance/execute-rebalance-request";
 import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
-import { reconcileParkedHoldings } from "@/lib/rebalance/reconcile-parked-holdings";
 import { type CommitteeEnvironment, governanceFor, requiredYes } from "@/lib/research-ic/governance";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
@@ -182,6 +181,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
+  // Compare-and-swap, not a blind write: two concurrent clicks (two admins,
+  // or one impatient double-click) can both read the same `from` state and
+  // both pass every check above before either write lands. Without this
+  // guard both writes apply — and if toStatus is "executed", that means
+  // reconcileParkedHoldings/bookSettledRebalanceOrders would run TWICE,
+  // double-booking every order in the rebalance. `.eq("status", from)` makes
+  // the second writer's update match zero rows instead.
   const { data, error } = await db
     .from("rebalance_request_c")
     .update({
@@ -190,105 +196,41 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       ...(toStatus === "executed" ? { executed_at: new Date().toISOString() } : {}),
     })
     .eq("id", id)
+    .eq("status", from)
     .select()
     .maybeSingle();
 
   if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  if (!data) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "This proposal's status changed since you loaded it — someone else already acted on it. Refresh and try again.",
+      },
+      { status: 409 },
+    );
+  }
 
   // "Send to Order Book" (ic_approved -> executed) is the one moment this
-  // rebalance actually touches anything — any client whose buy into this
-  // strategy hasn't been sent to the broker yet gets repositioned for free,
-  // and settled clients get their delta orders booked. Best-effort: a
-  // failure here doesn't block the transition itself, it's just reported.
+  // rebalance actually touches anything — see executeRebalanceRequest's
+  // docstring. Best-effort: a failure here doesn't block the transition
+  // itself, it's just reported.
   let parked: { reconciledUserIds: string[]; errors: string[] } | null = null;
   let booked: { bookedUserIds: string[]; errors: string[] } | null = null;
-  if (toStatus === "executed" && request.strategy_id) {
-    // rebalance_request_c.strategy_id actually stores the strategy's
-    // display NAME (see rebalance-builder-page.tsx::submitToIc), not its
-    // real id — stock_holdings_c.strategy_id is the real id. Resolve it so
-    // neither query below ends up comparing a name against a UUID column
-    // (which always returns zero rows, silently no-op'ing this whole
-    // feature — caught via a real approval producing no reconciled clients
-    // despite genuinely parked holdings existing).
+  if (toStatus === "executed") {
     const retailDb = createRetailServiceRoleClient();
-    const strategyName = request.strategy_id as string;
-    const strategyRes = await retailDb
-      .from("strategies_c")
-      .select("id, investor_environment")
-      .eq("name", strategyName)
-      .maybeSingle();
-    const resolvedStrategyId = (strategyRes.data?.id as string) ?? "";
-    // Drives the uat_test tag and broker destination on every order booked
-    // below — a UAT/test strategy's orders must show under "UAT orders" on
-    // Active Orderbook regardless of this deployment's own env flag.
-    const isUatStrategy = String(strategyRes.data?.investor_environment ?? "").toUpperCase() === "UAT";
-    const currentComposition = Array.isArray(request.current_composition) ? request.current_composition : [];
-    const proposedComposition = Array.isArray(request.proposed_composition)
-      ? request.proposed_composition
-      : [];
-
-    // A "single_user" request carries ONE client's own target quantities, not
-    // a model template. Both booking passes below normally fan the proposed
-    // composition out across every investor in the strategy, which for this
-    // scope would rewrite everyone else's orders to one account's numbers — so
-    // they get confined to that account. Completion is likewise scoped: see
-    // maybeCompleteRebalance, which skips the model flip and return boundary
-    // entirely for this scope, because the strategy itself does not change.
-    const affected = request.affected_investors as {
-      scope?: unknown;
-      user_id?: unknown;
-      family_member_id?: unknown;
-    } | null;
-    const isSingleUser = affected?.scope === "single_user";
-    const singleUserId = typeof affected?.user_id === "string" ? affected.user_id : "";
-    if (isSingleUser && !singleUserId) {
-      return NextResponse.json(
-        { ok: false, error: "single_user rebalance is missing affected_investors.user_id" },
-        { status: 422 },
-      );
+    const result = await executeRebalanceRequest(retailDb, db, {
+      id: request.id as string,
+      strategy_id: request.strategy_id as string | null,
+      current_composition: request.current_composition,
+      proposed_composition: request.proposed_composition,
+      affected_investors: request.affected_investors,
+    });
+    if (!result.ok) {
+      return NextResponse.json({ ok: false, error: result.error }, { status: 422 });
     }
-    const restrictToUserId = isSingleUser ? singleUserId : undefined;
-    const restrictToFamilyMemberId = isSingleUser && typeof affected?.family_member_id === "string"
-      ? affected.family_member_id
-      : null;
-
-    try {
-      parked = await reconcileParkedHoldings(
-        retailDb,
-        db,
-        resolvedStrategyId,
-        strategyName,
-        currentComposition,
-        proposedComposition,
-        id,
-        isUatStrategy,
-        restrictToUserId,
-        restrictToFamilyMemberId,
-      );
-    } catch (err) {
-      parked = { reconciledUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
-    }
-
-    // Settled (already-filled) clients don't get their holdings touched at
-    // approval time — only a real fill can change what they hold. This
-    // books the parked delta orders (+1/-5 etc.) the desk reviews on the
-    // UAT order book instead.
-    try {
-      booked = await bookSettledRebalanceOrders(
-        retailDb,
-        db,
-        resolvedStrategyId,
-        strategyName,
-        currentComposition,
-        proposedComposition,
-        id,
-        isUatStrategy,
-        restrictToUserId,
-        restrictToFamilyMemberId,
-      );
-    } catch (err) {
-      booked = { bookedUserIds: [], errors: [err instanceof Error ? err.message : String(err)] };
-    }
+    parked = result.parked;
+    booked = result.booked;
   }
 
   return NextResponse.json({ ok: true, request: data, parked, booked });
