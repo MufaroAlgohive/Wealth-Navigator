@@ -68,6 +68,14 @@ interface ExecutionRow {
   // execution row back to a specific investor's specific security position,
   // not just to "the whole book". null for rows predating this stamp.
   holding_id: string | null;
+  // The rebalance_request_c.id this order was booked from (stamped by
+  // reconcile-parked-holdings.ts / book-settled-rebalance-orders.ts), null
+  // for orders not sourced from a rebalance. Lets the UI warn before
+  // cancelling an order whose parent rebalance is already "executed" — a
+  // cancel here is a pure local status flip and does NOT revert that
+  // rebalance's status or notify anything, so the client silently ends up
+  // without the shares the rebalance record says they got.
+  rebalance_request_id: string | null;
   // 2026-07-23: CRM-style order-book number (see release-to-market/route.ts,
   // which stamps this onto every row released together in one "Send to
   // Market" click) — null until the row has been released at least once.
@@ -241,6 +249,7 @@ function mapRow(r: AuditRow): ExecutionRow {
   return {
     id: r.id,
     holding_id: str(payload.holding_id),
+    rebalance_request_id: str(payload.rebalance_request_id),
     order_book_seq:
       typeof payload.order_book_seq === "number"
         ? payload.order_book_seq
