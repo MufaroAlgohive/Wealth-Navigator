@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { canResearchIc, canSeeUatSurfaces, getAdminContext } from "@/lib/admin/rbac";
+import { requireMasterPassword } from "@/lib/admin/step-up";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { executeRebalanceRequest } from "@/lib/rebalance/execute-rebalance-request";
 import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
@@ -170,22 +172,24 @@ function bareSymbol(value: unknown): string {
     .replace(/\.(JO|JSE)$/i, "");
 }
 
+function sharesOf(row: unknown): number | null {
+  if (!row || typeof row !== "object") return null;
+  const value = Number((row as { shares?: unknown }).shares);
+  return Number.isFinite(value) ? value : null;
+}
+function symbolOf(row: unknown): string {
+  return row && typeof row === "object" ? bareSymbol((row as { ticker?: unknown }).ticker) : "";
+}
+function toSymbolMap(rows: unknown[]): Map<string, number | null> {
+  const map = new Map<string, number | null>();
+  for (const row of rows) {
+    const symbol = symbolOf(row);
+    if (symbol) map.set(symbol, sharesOf(row));
+  }
+  return map;
+}
+
 function changedSymbols(current: unknown[], proposed: unknown[]): string[] {
-  const sharesOf = (row: unknown): number | null => {
-    if (!row || typeof row !== "object") return null;
-    const value = Number((row as { shares?: unknown }).shares);
-    return Number.isFinite(value) ? value : null;
-  };
-  const symbolOf = (row: unknown): string =>
-    row && typeof row === "object" ? bareSymbol((row as { ticker?: unknown }).ticker) : "";
-  const toSymbolMap = (rows: unknown[]) => {
-    const map = new Map<string, number | null>();
-    for (const row of rows) {
-      const symbol = symbolOf(row);
-      if (symbol) map.set(symbol, sharesOf(row));
-    }
-    return map;
-  };
   const currentBySymbol = toSymbolMap(current);
   const proposedBySymbol = toSymbolMap(proposed);
   const changed = new Set<string>();
@@ -198,13 +202,37 @@ function changedSymbols(current: unknown[], proposed: unknown[]): string[] {
   return [...changed];
 }
 
+/** Symbols whose shares decreased or that dropped out of the proposal
+ *  entirely — mirrors rebalance-builder-page.tsx's sellDirectionTickers
+ *  exactly, so this server-side gate and the client-side one agree on
+ *  what counts as a sell. Must move in lockstep with that file or a
+ *  sell-only submit that the UI allows can still 422 here. */
+function sellDirectionSymbols(current: unknown[], proposed: unknown[]): Set<string> {
+  const currentBySymbol = toSymbolMap(current);
+  const proposedBySymbol = toSymbolMap(proposed);
+  const sells = new Set<string>();
+  for (const [symbol, curShares] of currentBySymbol) {
+    const propShares = proposedBySymbol.get(symbol);
+    if (propShares === undefined) {
+      sells.add(symbol); // dropped out of the proposal entirely — a full exit
+      continue;
+    }
+    if (curShares != null && propShares != null && propShares < curShares) sells.add(symbol);
+  }
+  return sells;
+}
+
 async function missingResearchNotes(
   db: NonNullable<Awaited<ReturnType<typeof openDb>>>,
   current: unknown[],
   proposed: unknown[],
   environmentScope: "live" | "uat",
 ) {
-  const required = changedSymbols(current, proposed);
+  // The research gate is about justifying what a client is being bought
+  // INTO, not about clearing out a position already held — a pure sell is
+  // exempt, same rule the client already enforces before offering Commit.
+  const sells = sellDirectionSymbols(current, proposed);
+  const required = changedSymbols(current, proposed).filter((s) => !sells.has(s));
   if (!required.length) return [];
   const { data, error } = await db
     .from("research_note_c")
@@ -231,6 +259,24 @@ export async function POST(req: Request) {
   const strategyId = typeof body.strategy_id === "string" ? body.strategy_id.trim() : "";
   const currentComposition = body.current_composition;
   const proposedComposition = body.proposed_composition;
+  // Product decision (2026-08-19): rebalances no longer go through committee
+  // voting. A Master ★ account can commit a proposal straight to executed —
+  // parked/booked immediately, on the Rebalance tab with no separate
+  // approve/release click — using the same tier gate as Send to Market and
+  // the manual-fill route (requireMasterPassword). Anyone without that tier
+  // still gets the normal pending-first flow; the flag is simply ignored for
+  // them rather than silently downgrading a request they believed would
+  // execute — checked explicitly below so a forged flag from a non-master
+  // caller is refused outright, not quietly no-op'd.
+  const directExecute = body.direct_execute === true;
+  let directExecuteEmail: string | null = null;
+  if (directExecute) {
+    const stepUp = await requireMasterPassword(undefined);
+    if (!stepUp.ok) {
+      return NextResponse.json({ ok: false, error: stepUp.error }, { status: stepUp.status });
+    }
+    directExecuteEmail = stepUp.email;
+  }
   if (!strategyId) {
     return NextResponse.json({ ok: false, error: "strategy_id is required" }, { status: 400 });
   }
@@ -316,13 +362,59 @@ export async function POST(req: Request) {
     );
   }
 
+  // Duplicate/overlapping-proposal guard (explicit product decision,
+  // 2026-08-19) — this is exactly what let three separate, unresolved DIB
+  // proposals stack up for Test Strategy in one session: nothing stopped a
+  // second proposal from touching a ticker an earlier unresolved one
+  // already did. A proposal on a DIFFERENT ticker for the same strategy is
+  // still fine — only the overlapping ticker(s) block.
+  try {
+    const { data: openRequests, error: openErr } = await db
+      .from("rebalance_request_c")
+      .select("id, current_composition, proposed_composition, status")
+      .eq("strategy_id", strategyId)
+      .eq("environment_scope", environmentScope)
+      .in("status", ["pending", "ic_approved"]);
+    if (openErr) throw new Error(openErr.message);
+    const newSymbols = new Set(changedSymbols(currentComposition, proposedComposition));
+    for (const row of (openRequests ?? []) as Array<{
+      id: string;
+      current_composition: unknown;
+      proposed_composition: unknown;
+      status: string;
+    }>) {
+      const existingSymbols = changedSymbols(
+        Array.isArray(row.current_composition) ? row.current_composition : [],
+        Array.isArray(row.proposed_composition) ? row.proposed_composition : [],
+      );
+      const overlap = existingSymbols.filter((s) => newSymbols.has(s));
+      if (overlap.length) {
+        return NextResponse.json(
+          {
+            ok: false,
+            error: `${overlap.join(", ")} already ${overlap.length === 1 ? "has" : "have"} an unresolved proposal for this strategy (status: ${row.status}). Cancel or resolve it before proposing ${overlap.length === 1 ? "it" : "them"} again.`,
+          },
+          { status: 409 },
+        );
+      }
+    }
+  } catch (err) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `Could not check for overlapping proposals: ${err instanceof Error ? err.message : String(err)}`,
+      },
+      { status: 503 },
+    );
+  }
+
   const insert: Record<string, unknown> = {
     strategy_id: strategyId,
     requested_by: auth.ctx.email,
     current_composition: currentComposition,
     proposed_composition: proposedComposition,
     affected_investors: body.affected_investors ?? null,
-    status: "pending",
+    status: directExecute ? "executed" : "pending",
     environment_scope: environmentScope,
     research_note_id:
       typeof body.research_note_id === "string" && body.research_note_id.length > 0
@@ -330,6 +422,7 @@ export async function POST(req: Request) {
         : null,
     ic_session_id:
       typeof body.ic_session_id === "string" && body.ic_session_id.length > 0 ? body.ic_session_id : null,
+    ...(directExecute ? { executed_at: new Date().toISOString() } : {}),
   };
 
   const { data, error } = await db.from("rebalance_request_c").insert(insert).select().maybeSingle();
@@ -346,5 +439,41 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
-  return NextResponse.json({ ok: true, request: data }, { status: 201 });
+
+  // Master direct-commit: the request was inserted straight at "executed" —
+  // now actually run its side effects (same mechanics Release to Rebalance
+  // Tab uses, see executeRebalanceRequest's docstring). If this fails, the
+  // request row is left sitting at "executed" with nothing booked — reported
+  // to the caller rather than silently swallowed, since that's a genuinely
+  // inconsistent state someone needs to know about and fix (e.g. by cancelling
+  // and re-raising), not one a retry from the client can safely paper over.
+  let parked: { reconciledUserIds: string[]; errors: string[] } | null = null;
+  let booked: { bookedUserIds: string[]; errors: string[] } | null = null;
+  if (directExecute && data) {
+    const retailDb = createRetailServiceRoleClient();
+    const result = await executeRebalanceRequest(retailDb, db, {
+      id: data.id as string,
+      strategy_id: data.strategy_id as string | null,
+      current_composition: data.current_composition,
+      proposed_composition: data.proposed_composition,
+      affected_investors: data.affected_investors,
+    });
+    if (!result.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Proposal created and marked executed, but booking failed: ${result.error}. It will not appear correctly on the Rebalance tab — cancel it and re-raise.`,
+          request: data,
+        },
+        { status: 500 },
+      );
+    }
+    parked = result.parked;
+    booked = result.booked;
+  }
+
+  return NextResponse.json(
+    { ok: true, request: data, direct_executed_by: directExecuteEmail, parked, booked },
+    { status: 201 },
+  );
 }
