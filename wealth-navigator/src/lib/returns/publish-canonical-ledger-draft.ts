@@ -9,9 +9,9 @@ import {
   rebuildLegsAcrossSettledBoundary,
 } from "./canonical-rebalance-boundary";
 
-type JsonRow = Record<string, unknown>;
+export type JsonRow = Record<string, unknown>;
 type Holding = { ticker: string; units: number };
-type PriceRow = { symbol: string; as_of_date: string; current_price: number; fetched_at: string };
+export type PriceRow = { symbol: string; as_of_date: string; current_price: number; fetched_at: string };
 export type CanonicalRow = {
   strategy_id: string;
   as_of_date: string;
@@ -48,23 +48,23 @@ export type CanonicalDraftPublishResult = {
   note?: string;
 };
 
-const bare = (symbol: string) =>
+export const bare = (symbol: string) =>
   String(symbol ?? "")
     .trim()
     .toUpperCase()
     .replace(/\.(JO|JSE)$/i, "");
 
-function iso(date: Date) {
+export function iso(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-function addDays(date: string, days: number) {
+export function addDays(date: string, days: number) {
   const value = new Date(`${date}T00:00:00.000Z`);
   value.setUTCDate(value.getUTCDate() + days);
   return iso(value);
 }
 
-function addMonths(date: string, months: number) {
+export function addMonths(date: string, months: number) {
   const value = new Date(`${date}T00:00:00.000Z`);
   const day = value.getUTCDate();
   value.setUTCDate(1);
@@ -75,13 +75,13 @@ function addMonths(date: string, months: number) {
   return iso(value);
 }
 
-function previousWeekEnd(date: string) {
+export function previousWeekEnd(date: string) {
   const value = new Date(`${date}T00:00:00.000Z`);
   value.setUTCDate(value.getUTCDate() - ((value.getUTCDay() + 6) % 7) - 1);
   return iso(value);
 }
 
-function previousMonthEnd(date: string) {
+export function previousMonthEnd(date: string) {
   const value = new Date(`${date}T00:00:00.000Z`);
   value.setUTCDate(0);
   return iso(value);
@@ -213,7 +213,12 @@ async function many<T>(
   return data ?? [];
 }
 
-async function fetchPriceHistory(db: SupabaseClient, symbols: string[], startDate: string, endDate: string) {
+export async function fetchPriceHistory(
+  db: SupabaseClient,
+  symbols: string[],
+  startDate: string,
+  endDate: string,
+) {
   const result: PriceRow[] = [];
   for (let offset = 0; ; offset += 1000) {
     const page = await many<PriceRow>(
@@ -234,7 +239,7 @@ async function fetchPriceHistory(db: SupabaseClient, symbols: string[], startDat
   return result;
 }
 
-function priceLookup(rows: PriceRow[]) {
+export function priceLookup(rows: PriceRow[]) {
   const exact = new Map<string, { cents: number; fetchedAt: string }>();
   for (const row of rows) {
     const cents = Number(row.current_price);
@@ -321,7 +326,7 @@ export function buildCanonicalInceptionLegs(
   ];
 }
 
-function normalizeLedgerLegs(row: CanonicalRow): NormalizedLeg[] {
+export function normalizeLedgerLegs(row: CanonicalRow): NormalizedLeg[] {
   return row.leg_snapshot.map((leg) => ({
     ticker: bare(String(leg.ticker ?? "")),
     leg: String(leg.leg ?? "Model leg"),
