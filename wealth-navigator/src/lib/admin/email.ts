@@ -124,19 +124,109 @@ export function buildInviteHtml(opts: { link: string; role: string }): string {
   </td></tr>`);
 }
 
-export function buildTradeConfirmationHtml(opts: { firstName?: string; symbol: string; name: string; quantity: number; price: number }): string {
-  const fmt = (n: number) => "R " + Number(n).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return shell(`
-  <tr><td style="background:linear-gradient(135deg,#31005e,#7c3aed);padding:36px;"><h1 style="margin:0;color:#fff;font-size:24px;font-weight:800;">Trade Confirmed</h1></td></tr>
-  <tr><td style="padding:32px 36px;">
-    <p style="margin:0 0 8px;font-size:16px;font-weight:600;color:#1e293b;">Hi ${opts.firstName || "there"},</p>
-    <p style="margin:0 0 24px;font-size:14px;color:#475569;line-height:1.6;">Your order has been executed. Here are the details:</p>
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#faf7ff;border:1px solid #ede5ff;border-radius:12px;margin-bottom:24px;">
-      <tr><td style="padding:8px 20px;font-size:13px;color:#94a3b8;">Instrument</td><td style="padding:8px 20px;font-size:13px;font-weight:600;color:#1e293b;text-align:right;">${opts.name} (${opts.symbol})</td></tr>
-      <tr><td style="padding:8px 20px;font-size:13px;color:#94a3b8;">Quantity</td><td style="padding:8px 20px;font-size:13px;font-weight:600;color:#1e293b;text-align:right;">${opts.quantity}</td></tr>
-      <tr><td style="padding:8px 20px;font-size:13px;color:#94a3b8;">Fill price</td><td style="padding:8px 20px;font-size:13px;font-weight:600;color:#1e293b;text-align:right;">${fmt(opts.price)}</td></tr>
-      <tr><td style="padding:8px 20px;font-size:13px;color:#94a3b8;">Value</td><td style="padding:8px 20px;font-size:15px;font-weight:800;color:#5c3bcf;text-align:right;">${fmt(opts.quantity * opts.price)}</td></tr>
+/**
+ * Client-facing "Trade Confirmation" email — business-supplied template kept
+ * verbatim (inline styles, MINT gold/purple branding, FSP/NCRCP footer).
+ * Deliberately NOT passed through `shell()` like the other builders in this
+ * file: this HTML is already a complete, self-contained email document with
+ * its own `<!DOCTYPE html>`/`<head>`/`<body>`.
+ */
+export function buildTradeConfirmationHtml(opts: {
+  firstName?: string;
+  action: "Buy" | "Sell";
+  symbol: string;
+  orderId: string;
+  quantity: number;
+  avgPriceRands: number;
+}): string {
+  const fmt = (n: number) => Number(n).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const clientName = opts.firstName || "there";
+  const totalValue = opts.quantity * opts.avgPriceRands;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trade Confirmation</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f4f7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+    <div style="max-width: 600px; margin: 40px auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+        <!-- HEADER -->
+<div style="background: #31005E; padding: 44px 44px 38px;">
+  <img src="https://auth.mymint.co.za/storage/v1/object/public/Mint%20Assets/myMINT%20Logo%20White.png" alt="MINT Logo" style="height: 48px; margin-bottom: 16px; display: block;" />
+  <div style="font-size: 11px; letter-spacing: 4px; color: #DDC357; font-weight: 600; text-transform: uppercase; margin-bottom: 26px;">MINT Platforms</div>
+  <h1 style="font-family: 'DM Serif Display', Georgia, serif; font-size: 33px; color: #ffffff; font-weight: 400; line-height: 1.15; letter-spacing: -0.3px; margin-bottom: 14px;">Trade Confirmation</h1>
+  <p style="font-size: 14px; color: rgba(255,255,255,0.62); font-weight: 300;">We have successfully executed your recent market order.</p>
+  <div style="margin-top: 24px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,0.14); font-size: 11px; letter-spacing: 2px; color: #DDC357; text-transform: uppercase; font-weight: 500;">
+    MINT BASKETS &middot; TRADE CONFIRMATION &middot; AUGUST 2026
+  </div>
+</div>
+
+<!-- BODY -->
+<div style="padding: 40px 44px 8px;">
+  <p style="font-size: 16px; line-height: 1.7; color: #2C2738; font-weight: 300; margin-bottom: 36px;">
+    Hi ${clientName},<br><br>
+    Your <strong>${opts.action}</strong> order for <strong>${opts.symbol}</strong> has been fully filled on the market. Here are the details of your trade:
+  </p>
+
+  <!-- SECTION -->
+  <div style="margin-bottom: 38px;">
+    <div style="font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: #5C3BCF; font-weight: 600; margin-bottom: 10px;">EXECUTION DETAILS</div>
+    <h2 style="font-family: 'DM Serif Display', Georgia, serif; font-size: 23px; font-weight: 400; color: #31005E; letter-spacing: -0.2px; margin-bottom: 16px;">Order #${opts.orderId}</h2>
+
+    <!-- TABLE -->
+    <table style="width: 100%; border-collapse: collapse; margin: 22px 0 4px;">
+      <thead>
+        <tr>
+          <th style="text-align: left; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: #8A8398; font-weight: 600; padding: 0 0 10px; border-bottom: 1px solid #E4E0EC;">METRIC</th>
+          <th style="text-align: right; padding-right: 22px; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: #8A8398; font-weight: 600; padding: 0 0 10px; border-bottom: 1px solid #E4E0EC;">VALUE</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Action</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; color: #2C2738;">${opts.action}</td>
+        </tr>
+        <tr>
+          <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Security</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; color: #2C2738;">${opts.symbol}</td>
+        </tr>
+        <tr>
+          <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Quantity Executed</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500;">${opts.quantity} shares</td>
+        </tr>
+        <tr>
+          <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Average Fill Price</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500;">R ${fmt(opts.avgPriceRands)}</td>
+        </tr>
+        <tr>
+          <td style="padding: 20px 0 13px; font-weight: 700; color: #1A1622;">Total Value</td>
+          <td style="text-align: right; padding: 20px 22px 13px 0; font-size: 16px; font-weight: 800; color: #31005E;">R ${fmt(totalValue)}</td>
+        </tr>
+      </tbody>
     </table>
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr><td style="border-radius:999px;background:#5c3bcf;"><a href="https://app.mymint.co.za" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#fff;text-decoration:none;border-radius:999px;">View Portfolio</a></td></tr></table>
-  </td></tr>`);
+  </div>
+</div>
+
+<!-- CLOSE -->
+<div style="padding: 36px 44px 8px;">
+  <p style="font-size: 15px; line-height: 1.7; color: #3A3448; margin-bottom: 14px; font-weight: 300;">
+    Your portfolio and holdings have been automatically updated to reflect this execution. You can view your latest balances and portfolio performance by logging into your account.
+  </p>
+  <a href="https://app.mymint.co.za" style="color: #5C3BCF; text-decoration: none; font-weight: 500;">View my portfolio &rarr;</a>
+</div>
+
+<!-- FOOTER -->
+<div style="padding: 30px 44px 36px; border-top: 1px solid #EEEBF3;">
+  <div style="font-size: 13px; letter-spacing: 3px; color: #31005E; font-weight: 700; margin-bottom: 8px;">MINT PLATFORMS</div>
+  <div style="font-size: 11px; color: #9A93A8; font-weight: 300; line-height: 1.7;">FSP 55118 &nbsp;|&nbsp; NCRCP22892 &nbsp;|&nbsp; Reg. 2024/644796/07</div>
+  <div style="font-size: 11px; color: #9A93A8; font-weight: 300; line-height: 1.7;">3 Gwen Lane, Sandown, Sandton, Johannesburg</div>
+  <div style="font-size: 11px; color: #9A93A8; font-weight: 300; line-height: 1.7;">support@mymint.co.za &nbsp;|&nbsp; www.mymint.co.za</div>
+  <div style="font-size: 10.5px; color: #B4AEC0; margin-top: 16px; line-height: 1.6; font-weight: 300;">
+    This communication is an automated notification and does not constitute investment advice.
+  </div>
+</div>
+    </div>
+</body>
+</html>`;
 }

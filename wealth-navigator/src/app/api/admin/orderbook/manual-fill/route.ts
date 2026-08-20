@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 
+import { buildTradeConfirmationHtml, sendEmail } from "@/lib/admin/email";
 import { requireMasterPassword } from "@/lib/admin/step-up";
 import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
 import { settleRebalanceCashForClients } from "@/lib/rebalance/settle-rebalance-cash";
@@ -147,6 +148,41 @@ export async function POST(req: Request) {
     );
   }
 
+  // Client-facing "Trade Confirmation" — deliberately best-effort. The money
+  // has already moved via settleFill above, so a Resend outage or a client
+  // with no email on file must never fail (or appear to fail) this request;
+  // the desk still sees the fill applied, just without an email sent.
+  let confirmationEmail: "sent" | "skipped" | "failed" = "skipped";
+  try {
+    const { data: profs } = await retailDb
+      .from("profiles")
+      .select("email, first_name")
+      .eq("id", fill.userId)
+      .limit(1);
+    const profile = profs?.[0] as { email?: string; first_name?: string } | undefined;
+    if (profile?.email) {
+      await sendEmail({
+        to: profile.email,
+        subject: `Trade confirmed — ${row.symbol ?? fill.symbol ?? ""}`,
+        html: buildTradeConfirmationHtml({
+          firstName: profile.first_name,
+          action: fill.side === "sell" ? "Sell" : "Buy",
+          symbol: String(row.symbol ?? fill.symbol ?? ""),
+          orderId: String(row.order_id ?? auditId),
+          quantity: qty,
+          avgPriceRands: fillPriceCents / 100,
+        }),
+        emailType: "trade_confirmation",
+        source: "manual_fill",
+        metadata: { order_audit_id: auditId, manual_fill: true },
+      });
+      confirmationEmail = "sent";
+    }
+  } catch (e) {
+    confirmationEmail = "failed";
+    console.warn("[manual-fill] trade confirmation email failed (non-fatal):", e instanceof Error ? e.message : e);
+  }
+
   const { error: updErr } = await institutionalDb
     .from("oems_order_audit")
     .update({
@@ -190,6 +226,7 @@ export async function POST(req: Request) {
     ok: true,
     status: "filled",
     fill_price_cents: fillPriceCents,
+    confirmation_email: confirmationEmail,
     ...(completion ? { rebalance_completion: completion } : {}),
   });
 }
