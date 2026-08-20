@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
 import { canResearchIc, canSeeUatSurfaces, getAdminContext } from "@/lib/admin/rbac";
-import { requireMasterPassword } from "@/lib/admin/step-up";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { executeRebalanceRequest } from "@/lib/rebalance/execute-rebalance-request";
 import { type RebalanceVote, tallyVotes } from "@/lib/rebalance/ic-vote";
@@ -259,24 +258,16 @@ export async function POST(req: Request) {
   const strategyId = typeof body.strategy_id === "string" ? body.strategy_id.trim() : "";
   const currentComposition = body.current_composition;
   const proposedComposition = body.proposed_composition;
-  // Product decision (2026-08-19): rebalances no longer go through committee
-  // voting. A Master ★ account can commit a proposal straight to executed —
-  // parked/booked immediately, on the Rebalance tab with no separate
-  // approve/release click — using the same tier gate as Send to Market and
-  // the manual-fill route (requireMasterPassword). Anyone without that tier
-  // still gets the normal pending-first flow; the flag is simply ignored for
-  // them rather than silently downgrading a request they believed would
-  // execute — checked explicitly below so a forged flag from a non-master
-  // caller is refused outright, not quietly no-op'd.
-  const directExecute = body.direct_execute === true;
-  let directExecuteEmail: string | null = null;
-  if (directExecute) {
-    const stepUp = await requireMasterPassword(undefined);
-    if (!stepUp.ok) {
-      return NextResponse.json({ ok: false, error: stepUp.error }, { status: stepUp.status });
-    }
-    directExecuteEmail = stepUp.email;
-  }
+  // Product decision (2026-08-19, revised same day): the whole IC
+  // vote/approve flow for REBALANCES is obsolete on every edge, not just for
+  // Master accounts — a proposal now always commits straight to "executed"
+  // (parked/booked immediately, on the Rebalance tab) for anyone who already
+  // holds `raise_rebalance`. This does NOT touch the separate, still-live
+  // guard on releasing FROM the Rebalance tab TO the order book
+  // (release-to-orderbook/route.ts — Master-only on LIVE, open on UAT) —
+  // that step is unrelated and stays exactly as it was.
+  const directExecute = true;
+  const directExecuteEmail = auth.ctx.email;
   if (!strategyId) {
     return NextResponse.json({ ok: false, error: "strategy_id is required" }, { status: 400 });
   }
