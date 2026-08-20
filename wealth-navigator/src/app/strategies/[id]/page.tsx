@@ -1,17 +1,17 @@
 "use client";
 
-import * as React from "react";
-import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, BarChart3, PieChart, Users } from "lucide-react";
 import {
   CASH_ASSET_COLOR,
   CASH_ASSET_NAME,
   CASH_ASSET_SYMBOL,
   CashAssetIcon,
 } from "@/components/strategies/cash-asset-icon";
+import { StrategyPerformanceChart } from "@/components/strategies/strategy-performance-chart";
 import { cn } from "@/lib/cn";
 import { formatPct, formatZAR } from "@/lib/format";
-import { buildCanonicalReturnIndex } from "@/lib/returns/canonical-index";
+import { ArrowLeft, BarChart3, PieChart, Users } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
+import * as React from "react";
 
 type Holding = {
   symbol?: string;
@@ -38,7 +38,17 @@ type ReturnRow = {
   all_pct: number | null;
   "1d_pct": number | null;
 };
-type Sec = { symbol: string; name?: string; logo_url?: string; last_price?: number; change_percent?: number };
+type Sec = {
+  symbol: string;
+  name?: string;
+  logo_url?: string;
+  /** Rands (already cents/100 — do NOT divide again). */
+  price_rands?: number | null;
+  /** Percent number (e.g. -0.75 = -0.75%). */
+  day_pct?: number | null;
+  price_as_of?: string | null;
+  price_source?: string;
+};
 type Investor = {
   userId: string;
   familyMemberId?: string | null;
@@ -97,7 +107,7 @@ export default function StrategyOverviewPage() {
     data.securities[`${normalize(String(h.ticker || h.symbol || ""))}.JO`] ||
     data.securities[normalize(String(h.ticker || h.symbol || ""))];
   const minValue = securityHoldings.reduce(
-    (sum, h) => sum + Number(h.shares || h.quantity || 1) * (Number(sec(h)?.last_price || 0) / 100),
+    (sum, h) => sum + Number(h.shares || h.quantity || 1) * Number(sec(h)?.price_rands || 0),
     0,
   );
   return (
@@ -133,15 +143,15 @@ export default function StrategyOverviewPage() {
       <div className="grid grid-cols-12 gap-4">
         <section className="glass-panel col-span-12 p-4 lg:col-span-8">
           <CardTitle icon={BarChart3} title="Performance vs Benchmark" />
-          <PerformanceChart rows={data.returns} />
+          <StrategyPerformanceChart rows={data.returns} height={248} />
           <div className="mt-2 flex justify-end gap-4 text-[9px] text-muted-foreground">
             <span>
-              <i className="mr-1 inline-block h-0.5 w-3 bg-primary" />
+              <i className="mr-1 inline-block h-2 w-2 rounded-full bg-[hsl(var(--up))]" />
               Strategy
             </span>
             <span>
-              <i className="mr-1 inline-block h-0.5 w-3 bg-muted-foreground" />
-              JSE ALSI · benchmark history unavailable
+              <i className="mr-1 inline-block h-0 w-3 border-t border-dashed border-muted-foreground" />
+              Benchmark
             </span>
           </div>
         </section>
@@ -165,9 +175,10 @@ export default function StrategyOverviewPage() {
               const security = sec(h);
               const symbol = String(h.ticker || h.symbol || "");
               const shares = h.isCash ? null : Number(h.shares || h.quantity || 1);
-              const price = Number(security?.last_price || 0) / 100;
+              // price_rands is already Rands (the API divides cents by 100).
+              const price = security?.price_rands != null ? Number(security.price_rands) : null;
               const weight = holdingWeight(h, holdings);
-              const change = Number(security?.change_percent || 0);
+              const change = security?.day_pct != null ? Number(security.day_pct) : null;
               return (
                 <div
                   key={`${symbol}-${index}`}
@@ -194,7 +205,11 @@ export default function StrategyOverviewPage() {
                   </div>
                   <span className="text-right font-mono text-[10px]">{shares ?? "—"}</span>
                   <span className="text-right font-mono text-[10px] font-bold">
-                    {formatZAR(h.isCash ? Number(h.cashValue || 0) : Number(shares) * price)}
+                    {h.isCash
+                      ? formatZAR(Number(h.cashValue || 0))
+                      : price == null
+                        ? "—"
+                        : formatZAR(Number(shares) * price)}
                   </span>
                   <div>
                     <div className="flex justify-between font-mono text-[9px]">
@@ -210,10 +225,10 @@ export default function StrategyOverviewPage() {
                   <span
                     className={cn(
                       "text-right font-mono text-[10px] font-bold",
-                      change >= 0 ? "text-success" : "text-destructive",
+                      (change ?? 0) >= 0 ? "text-success" : "text-destructive",
                     )}
                   >
-                    {h.isCash ? "—" : formatPct(change)}
+                    {h.isCash ? "—" : change == null ? "—" : formatPct(change)}
                   </span>
                 </div>
               );
@@ -335,8 +350,10 @@ function SecurityRibbon({
           const symbol = String(holding.ticker || holding.symbol || "").replace(/\.JO$/i, "");
           const price = holding.isCash
             ? Number(holding.cashValue || 0)
-            : Number(security?.last_price || 0) / 100;
-          const change = Number(security?.change_percent || 0);
+            : security?.price_rands != null
+              ? Number(security.price_rands)
+              : null;
+          const change = security?.day_pct != null ? Number(security.day_pct) : null;
           return (
             <div
               key={`${symbol}-${index}`}
@@ -347,15 +364,16 @@ function SecurityRibbon({
                 {symbol}
               </span>
               <span className="font-mono text-[10px] text-muted-foreground">
-                {price ? formatZAR(price) : "—"}
+                {price != null && price > 0 ? formatZAR(price) : "—"}
               </span>
               <span
                 className={cn(
                   "font-mono text-[10px] font-bold",
-                  change >= 0 ? "text-success" : "text-destructive",
+                  (change ?? 0) >= 0 ? "text-success" : "text-destructive",
                 )}
               >
-                {change >= 0 ? "↑" : "↓"} {Math.abs(change).toFixed(2)}%
+                {change == null ? "—" : change >= 0 ? "↑" : "↓"}{" "}
+                {change == null ? "" : `${Math.abs(change).toFixed(2)}%`}
               </span>
             </div>
           );
@@ -435,85 +453,6 @@ function Kpi({ label, value }: { label: string; value: string }) {
     <div className="min-w-24 px-3 py-2 text-center">
       <p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
       <p className="mt-0.5 font-mono text-xs font-bold">{value}</p>
-    </div>
-  );
-}
-function PerformanceChart({ rows }: { rows: ReturnRow[] }) {
-  const [period, setPeriod] = React.useState<"1M" | "3M" | "YTD" | "ALL">("YTD");
-  const all = buildCanonicalReturnIndex(rows);
-  const end = all.at(-1) ? new Date(all.at(-1)!.asOfDate) : new Date();
-  const start = new Date(end);
-  if (period === "1M") start.setMonth(start.getMonth() - 1);
-  if (period === "3M") start.setMonth(start.getMonth() - 3);
-  if (period === "YTD") start.setMonth(0, 1);
-  const series = period === "ALL" ? all : all.filter((row) => new Date(row.asOfDate) >= start);
-  if (series.length < 2)
-    return (
-      <p className="flex h-56 items-center justify-center text-xs text-muted-foreground">
-        No performance history available for {period}.
-      </p>
-    );
-  const base = series[0]!.value;
-  const values = series.map((row) => (row.value / base) * 100);
-  const min = Math.min(...values),
-    max = Math.max(...values),
-    pad = Math.max(1, (max - min) * 0.15),
-    low = min - pad,
-    high = max + pad,
-    range = high - low;
-  const points = values
-    .map((value, index) => `${(index / (values.length - 1)) * 100},${90 - ((value - low) / range) * 76}`)
-    .join(" ");
-  return (
-    <div>
-      <div className="mt-2 flex justify-end gap-1">
-        {(["1M", "3M", "YTD", "ALL"] as const).map((item) => (
-          <button
-            type="button"
-            key={item}
-            onClick={() => setPeriod(item)}
-            className={cn(
-              "rounded-md px-2 py-1 text-[9px] font-bold",
-              period === item ? "bg-primary text-primary-foreground" : "bg-muted/50 text-muted-foreground",
-            )}
-          >
-            {item}
-          </button>
-        ))}
-      </div>
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="mt-1 h-52 w-full overflow-visible">
-        <defs>
-          <linearGradient id="perf-fill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stopColor="hsl(var(--primary))" stopOpacity=".28" />
-            <stop offset="1" stopColor="hsl(var(--primary))" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        {[20, 55, 90].map((y) => (
-          <line
-            key={y}
-            x1="0"
-            y1={y}
-            x2="100"
-            y2={y}
-            stroke="hsl(var(--border))"
-            strokeWidth=".35"
-            strokeDasharray="2 2"
-          />
-        ))}
-        <polygon points={`0,100 ${points} 100,100`} fill="url(#perf-fill)" />
-        <polyline
-          points={points}
-          fill="none"
-          stroke="hsl(var(--primary))"
-          strokeWidth="1.4"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-      <div className="flex justify-between font-mono text-[8px] text-muted-foreground">
-        <span>{series[0]!.asOfDate}</span>
-        <span>Indexed to 100 · latest {values.at(-1)!.toFixed(2)}</span>
-        <span>{series.at(-1)!.asOfDate}</span>
-      </div>
     </div>
   );
 }
