@@ -36,7 +36,12 @@ import { observedFillFromAudit, settleFill } from "@workers/iress-ingest/src/set
 
 export const dynamic = "force-dynamic";
 
-const NON_FILLABLE = new Set(["FILLED", "CANCELLED", "REJECTED", "EXPIRED", "FAILED", "filled", "cancelled", "rejected", "expired", "failed"]);
+// REJECTED/FAILED are deliberately fillable — a rejection can be an
+// IRESS-side problem (licensing seat conflict, dropped session) rather than
+// proof nothing actually traded, so a real broker confirmation must still be
+// applicable after the system marked the order rejected. FILLED/CANCELLED/
+// EXPIRED are genuinely done — nothing left to reconcile there.
+const NON_FILLABLE = new Set(["FILLED", "CANCELLED", "EXPIRED", "filled", "cancelled", "expired"]);
 
 export async function POST(req: Request) {
   const stepUp = await requireMasterPassword(undefined);
