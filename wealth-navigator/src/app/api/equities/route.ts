@@ -1,3 +1,5 @@
+import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { IRESS_DIVERGENCE, iressPriceOverlayEnabled, iressQuoteMaxAgeMs } from "@/lib/iress/overlay-policy";
 /**
  * GET /api/equities
  *
@@ -15,12 +17,11 @@
  */
 import {
   createRetailServiceRoleClient,
-  isRetailSupabaseConfigured,
   createServiceRoleClient,
+  isRetailSupabaseConfigured,
   isSupabaseConfigured,
 } from "@/lib/supabase/server";
-import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
-import { iressPriceOverlayEnabled, iressQuoteMaxAgeMs, IRESS_DIVERGENCE } from "@/lib/iress/overlay-policy";
+import { computePeriodReturns, fetchYahooHistory } from "@/lib/yahoo/returns";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,9 @@ interface SecurityRow {
   isin: string | null;
   ytd_performance: number | null;
   is_active: boolean | null;
+  /** Trailing 1M / 6M returns — Yahoo daily closes (see `attachPeriodReturns`). */
+  return_1m?: number | null;
+  return_6m?: number | null;
   /** "iress" when last+change were overlaid from quote_snapshot_c, else "yahoo". */
   price_source?: "iress" | "yahoo";
 }
@@ -110,7 +114,7 @@ async function overlayIressQuotes(rows: SecurityRow[]): Promise<number> {
 
       // Freshness gate: a stale snapshot (e.g. a weekend-old CT row) must not
       // override the live board.
-      const ts = m.ts ? Date.parse(m.ts) : NaN;
+      const ts = m.ts ? Date.parse(m.ts) : Number.NaN;
       if (!Number.isFinite(ts) || now - ts > maxAge) continue;
 
       // Divergence guard: quote_snapshot_c.last and securities_c.last_price are
@@ -150,6 +154,10 @@ interface EquitiesResponse {
   count: number;
   /** How many board rows had their price/change overlaid from live IRESS. */
   iressOverlay?: number;
+  /** How many board rows carry Yahoo-derived 1M/6M returns. */
+  returnsCoverage?: number;
+  /** Latest daily close used for the period returns. */
+  returnsAsOf?: string | null;
   securities: SecurityRow[];
   sectors: SectorAgg[];
   reason?: BffUnavailableReason;
@@ -160,13 +168,83 @@ interface EquitiesResponse {
 const SELECT =
   "symbol,name,sector,industry,last_price,change_price,change_percent,pe,eps,dividend_yield,beta,market_cap,isin,ytd_performance,is_active";
 
+/**
+ * Trailing 1M / 6M returns for the board. `securities_c` carries no period
+ * returns, so we derive them from a single daily Yahoo history fetch per
+ * symbol (range=1y — ~250 bars, a fraction of the 10y payload the admin
+ * dashboard fetches) and reuse the same outlier-clamped computation as
+ * `lib/yahoo/returns.ts`.
+ *
+ * Bounded + best-effort: Yahoo traffic is capped at the top-N symbols by
+ * market cap (the rows the board actually surfaces first), fetched in
+ * bounded-parallel batches, and any failure leaves the row's 1M/6M as null
+ * so the UI renders an honest "—". Results are cached in-process for 5 min.
+ * Returns how many rows actually got a value + the as-of, so the UI can
+ * label the coverage truthfully.
+ */
+const EQUITIES_RETURNS_CAP = Number.parseInt(process.env.EQUITIES_RETURNS_CAP ?? "60", 10) || 60;
+const EQUITIES_RETURNS_CONCURRENCY = 6;
+
+async function attachPeriodReturns(rows: SecurityRow[]): Promise<{
+  coverage: number;
+  asOf: string | null;
+}> {
+  const withCap = rows
+    .filter((r) => Number(r.market_cap) > 0)
+    .sort((a, b) => (Number(b.market_cap) || 0) - (Number(a.market_cap) || 0))
+    .slice(0, EQUITIES_RETURNS_CAP);
+  if (withCap.length === 0) return { coverage: 0, asOf: null };
+
+  let coverage = 0;
+  let asOf: string | null = null;
+  try {
+    for (let i = 0; i < withCap.length; i += EQUITIES_RETURNS_CONCURRENCY) {
+      const slice = withCap.slice(i, i + EQUITIES_RETURNS_CONCURRENCY);
+      const results = await Promise.all(
+        slice.map(async (r) => {
+          const {
+            bars,
+            asOf: barAsOf,
+            error,
+          } = await fetchYahooHistory(bareCode(r.symbol), {
+            range: "1y",
+            interval: "1d",
+          });
+          if (error || bars.length < 2) return { row: r, value: null, asOf: null, ok: false };
+          const { period } = computePeriodReturns(bars);
+          return { row: r, value: period, asOf: barAsOf, ok: true };
+        }),
+      );
+      for (const res of results) {
+        if (!res.ok) continue;
+        const v = res.value?.["1m_pct"];
+        const v6 = res.value?.["6m_pct"];
+        if (v != null || v6 != null) {
+          res.row.return_1m = v ?? null;
+          res.row.return_6m = v6 ?? null;
+          coverage += 1;
+        }
+        if (res.asOf) asOf = new Date(res.asOf).toISOString();
+      }
+    }
+  } catch {
+    // Board must never break because Yahoo is slow/down — rows keep nulls.
+  }
+  return { coverage, asOf };
+}
+
 /** Market-cap-weighted average day change per sector (falls back to simple mean). */
 function buildSectorHeatmap(rows: SecurityRow[]): SectorAgg[] {
   const bySector = new Map<string, SecurityRow[]>();
   for (const r of rows) {
     const s = (r.sector ?? "").trim();
     if (!s) continue;
-    (bySector.get(s) ?? bySector.set(s, []).get(s)!).push(r);
+    let list = bySector.get(s);
+    if (!list) {
+      list = [];
+      bySector.set(s, list);
+    }
+    list.push(r);
   }
   const out: SectorAgg[] = [];
   for (const [sector, list] of bySector) {
@@ -176,10 +254,13 @@ function buildSectorHeatmap(rows: SecurityRow[]): SectorAgg[] {
     let avgChangePct: number;
     if (weightedDen > 0) {
       avgChangePct =
-        withChange.reduce((acc, r) => acc + (Number(r.change_percent) || 0) * (Number(r.market_cap) || 0), 0) /
-        weightedDen;
+        withChange.reduce(
+          (acc, r) => acc + (Number(r.change_percent) || 0) * (Number(r.market_cap) || 0),
+          0,
+        ) / weightedDen;
     } else if (withChange.length > 0) {
-      avgChangePct = withChange.reduce((acc, r) => acc + (Number(r.change_percent) || 0), 0) / withChange.length;
+      avgChangePct =
+        withChange.reduce((acc, r) => acc + (Number(r.change_percent) || 0), 0) / withChange.length;
     } else {
       avgChangePct = 0;
     }
@@ -219,7 +300,9 @@ export async function GET() {
         securities: [],
         sectors: [],
         reason: "supabase_query_failed",
-        migration: isSupabaseSchemaMissing(error) ? "securities_c (retail): table/columns missing" : undefined,
+        migration: isSupabaseSchemaMissing(error)
+          ? "securities_c (retail): table/columns missing"
+          : undefined,
         error: error.message,
       } satisfies EquitiesResponse,
       { status: 200 },
@@ -230,10 +313,14 @@ export async function GET() {
   // IRESS-first: overlay live IRESS last + change% before computing the sector
   // heatmap, so movers / heatmaps / board all reflect IRESS where available.
   const iressOverlay = await overlayIressQuotes(securities);
+  // 1M / 6M trailing returns from Yahoo daily closes (bounded, best-effort).
+  const { coverage: returnsCoverage, asOf: returnsAsOf } = await attachPeriodReturns(securities);
   return Response.json({
     source: securities.length === 0 ? "unavailable" : iressOverlay > 0 ? "hybrid" : "yahoo",
     count: securities.length,
     iressOverlay,
+    returnsCoverage,
+    returnsAsOf,
     securities,
     sectors: buildSectorHeatmap(securities),
     reason: securities.length === 0 ? "empty" : undefined,
