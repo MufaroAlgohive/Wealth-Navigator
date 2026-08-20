@@ -257,22 +257,47 @@ function fmtTs(iso: string): string {
  *  wrapped in double quotes, internal quotes doubled. */
 const csvField = (v: unknown): string => `"${String(v ?? "").replace(/"/g, '""')}"`;
 
-/** Same 3-column broker-ticket shape as MyMintAdmin's orderbook CSV export
- *  (Buy/sell, Equity code, Nominal) — one row, this order only, exchange
- *  suffix stripped off the ticker same as the CRM does. */
-function exportRowCsv(row: ExecutionRow) {
+/** One CSV data line for an order — same field order MyMintAdmin's export
+ *  has always used (Buy/sell, Equity code, Nominal), exchange suffix
+ *  stripped off the ticker. No aggregation: this is per ORDER, so if two
+ *  different clients both bought the same instrument, each gets its own
+ *  line rather than being summed into one — Longmark needs to see it's two
+ *  people, not one bigger order. */
+function orderCsvLine(row: ExecutionRow): string {
   const ticker = String(row.symbol || "").replace(/\.(JO|JSE)$/i, "").trim();
-  const header = ["Buy/sell", "Equity code", "Nominal"].map(csvField).join(",");
-  const line = [row.side, ticker, row.qty].map(csvField).join(",");
-  const blob = new Blob([`${header}\n${line}`], { type: "text/csv;charset=utf-8;" });
+  return [row.side, ticker, row.qty].map(csvField).join(",");
+}
+
+function downloadCsv(content: string, filename: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `order-${row.order_id || row.id}-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+/** Same 3-column broker-ticket shape as MyMintAdmin's orderbook CSV export
+ *  (Buy/sell, Equity code, Nominal) — one row, this order only. */
+function exportRowCsv(row: ExecutionRow) {
+  const header = ["Buy/sell", "Equity code", "Nominal"].map(csvField).join(",");
+  downloadCsv(`${header}\n${orderCsvLine(row)}`, `order-${row.order_id || row.id}-${new Date().toISOString().slice(0, 10)}.csv`);
+}
+
+/** Exports every order currently in this orderbook as one CSV — same shape
+ *  and same "no aggregation" rule as exportRowCsv, just every row instead
+ *  of one. Matches CRM's whole-book export (downloadCsv(liveRows, ...)),
+ *  which is what the desk already hands Longmark today. */
+function exportBookCsv(rows: ExecutionRow[], bookSeq: number) {
+  const header = ["Buy/sell", "Equity code", "Nominal"].map(csvField).join(",");
+  const lines = rows.map(orderCsvLine);
+  downloadCsv(
+    [header, ...lines].join("\n"),
+    `orderbook-${String(bookSeq).padStart(2, "0")}-${new Date().toISOString().slice(0, 10)}.csv`,
+  );
 }
 
 /** Bare ticker, exchange suffix stripped, uppercased — same normalisation
@@ -2208,6 +2233,15 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                   : `Send to Market (${parkedCount})`}
             </Button>
           ) : null}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => exportBookCsv(liveGroupedRows.map((g) => g.parent), liveBookSequence)}
+            disabled={liveGroupedRows.length === 0}
+            title="Export every order in this orderbook as one CSV (Buy/sell, Equity code, Nominal) — one line per order, not aggregated across clients."
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5" />
+          </Button>
           <Button variant="ghost" size="sm" onClick={refreshAll}>
             Refresh
           </Button>
