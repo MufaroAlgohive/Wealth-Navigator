@@ -12,7 +12,7 @@ import {
 type JsonRow = Record<string, unknown>;
 type Holding = { ticker: string; units: number };
 type PriceRow = { symbol: string; as_of_date: string; current_price: number; fetched_at: string };
-type CanonicalRow = {
+export type CanonicalRow = {
   strategy_id: string;
   as_of_date: string;
   ledger_version: string;
@@ -257,11 +257,11 @@ function priceLookup(rows: PriceRow[]) {
   };
 }
 
-function rowOnOrBefore(rows: CanonicalRow[], date: string) {
+export function rowOnOrBefore(rows: CanonicalRow[], date: string) {
   return rows.filter((row) => row.as_of_date <= date).at(-1) ?? rows[0] ?? null;
 }
 
-function directMetric(rows: CanonicalRow[], current: CanonicalRow, requestedReferenceDate: string) {
+export function directMetric(rows: CanonicalRow[], current: CanonicalRow, requestedReferenceDate: string) {
   const reference = rowOnOrBefore(rows, requestedReferenceDate) ?? current;
   const denominator = Number(reference.complete_value_cents);
   const pnl = Number(current.complete_value_cents) - denominator;
@@ -277,7 +277,7 @@ function directMetric(rows: CanonicalRow[], current: CanonicalRow, requestedRefe
   };
 }
 
-type NormalizedLeg = {
+export type NormalizedLeg = {
   ticker: string;
   leg: string;
   units: number;
@@ -334,7 +334,7 @@ function normalizeLedgerLegs(row: CanonicalRow): NormalizedLeg[] {
   }));
 }
 
-function legMetric(
+export function legMetric(
   legs: NormalizedLeg[],
   currentDate: string,
   mappedReferenceDate: string,
@@ -670,6 +670,16 @@ export async function publishCanonicalLedgerDraft(
         SI: earliestDate,
       };
       const allRows = [...priorLedgerRows, current];
+      // NOTE (chain-linking fix): return_pct/numerator_cents/denominator_cents/pnl_cents are ALWAYS
+      // derived from directMetric()'s complete_value_cents ratio, for every period, regardless of
+      // whether the composition changed. complete_value_cents is continuous across rebalances by
+      // construction (rebuildLegsAcrossSettledBoundary enforces value continuity at every boundary),
+      // so this is equivalent to full segment-by-segment chain-linking without the leg-sum
+      // denominator-inflation bug: legMetric() adds each rebalance leg's full purchase price to the
+      // denominator as if it were newly-contributed capital, even though it's the same money that
+      // came from selling the prior leg. legMetric()'s output (when available) is retained ONLY as
+      // leg_trace: supplementary, informational audit detail about which securities contributed what -
+      // it must never be read as the authoritative return.
       if (metricLegs || !previous) {
         const normalized = metricLegs ?? bootstrapLegs;
         current.leg_snapshot = normalized.map((leg) => ({
@@ -699,7 +709,23 @@ export async function publishCanonicalLedgerDraft(
         current.period_metrics = Object.fromEntries(
           Object.entries(references).map(([period, requested]) => {
             const mapped = rowOnOrBefore(allRows, requested)?.as_of_date ?? earliestDate;
-            return [period, legMetric(normalized, asOf, mapped, lookup.onOrBefore)];
+            const authoritative = directMetric(allRows, current, requested);
+            // leg_trace is supplementary audit detail only; if it can't be built (e.g. a missing
+            // stored close for an intermediate leg), that must not block the authoritative
+            // value-ratio return from being published.
+            let legTrace: unknown;
+            try {
+              legTrace = legMetric(normalized, asOf, mapped, lookup.onOrBefore).leg_trace;
+            } catch {
+              legTrace = undefined;
+            }
+            return [
+              period,
+              {
+                ...authoritative,
+                leg_trace: legTrace,
+              },
+            ];
           }),
         );
       } else {
