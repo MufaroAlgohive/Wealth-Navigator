@@ -1,19 +1,20 @@
 "use client";
 
-import * as React from "react";
 import { ArrowLeft } from "lucide-react";
+import * as React from "react";
 
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { CASH_ASSET_NAME, CASH_ASSET_SYMBOL, CashAssetIcon } from "@/components/strategies/cash-asset-icon";
+import { FactsheetPerformanceChart } from "@/components/strategies/factsheet-performance-chart";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/cn";
 import {
+  type CanonicalChartRange,
   buildCanonicalCalendarReturns,
   buildCanonicalPeriodSeries,
   canonicalDailyPnlCents,
-  type CanonicalChartRange,
 } from "@/lib/returns/canonical-index";
 
 interface Sec {
@@ -83,6 +84,25 @@ const FEES = [
 
 const normalize = (s: string) =>
   typeof s === "string" && s.trim() ? s.trim().split(".")[0]!.toUpperCase() : s;
+/** Map a raw strategies_c.status to a display group. The DB uses values like
+ *  "active" / "live" / "paper" / "halted" — "active" IS a live strategy, so
+ *  hardcoding literal statuses ("staged", "draft") made every non-All filter
+ *  return nothing. Anything unseen keeps its own raw value (data-driven). */
+const STATUS_GROUPS: Record<string, string[]> = {
+  live: ["live", "active"],
+  paper: ["paper"],
+  halted: ["halted"],
+};
+const statusGroup = (status: string | null | undefined): string => {
+  const s = String(status ?? "")
+    .trim()
+    .toLowerCase();
+  if (!s) return "unknown";
+  for (const [group, members] of Object.entries(STATUS_GROUPS)) {
+    if (members.includes(s)) return group;
+  }
+  return s;
+};
 const fmtR = (v: number | null, ccy = "ZAR", decimals = 0) => {
   const n = Number(v);
   if (v == null || Number.isNaN(n)) return "N/A";
@@ -176,7 +196,7 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
 
   const visible = React.useMemo(() => {
     let items = [...(strategies ?? [])];
-    if (filter !== "all") items = items.filter((s) => (s.status || "draft") === filter);
+    if (filter !== "all") items = items.filter((s) => statusGroup(s.status) === filter);
     const q = search.trim().toLowerCase();
     if (q)
       items = items.filter((s) =>
@@ -187,6 +207,16 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
     return items;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategies, returns, filter, search, sort]);
+
+  // Filter chips are derived from the ACTUAL statuses present in the data —
+  // "live" covers DB values live|active, then paper/halted/anything else
+  // appear only when the data actually contains them. This keeps the board
+  // honest and every chip non-empty instead of a dead button.
+  const groups = React.useMemo(() => {
+    const seen = new Set<string>();
+    for (const s of strategies ?? []) seen.add(statusGroup(s.status));
+    return ["all", ...[...seen].sort()];
+  }, [strategies]);
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
@@ -232,7 +262,7 @@ function Gallery({ onOpen }: { onOpen: (id: string) => void }) {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex gap-1 rounded-lg bg-muted p-0.5">
-          {["all", "live", "staged", "draft"].map((f) => (
+          {groups.map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -392,9 +422,7 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
   const cashWeight = Math.max(0, Math.min(100, Number(data.cashAsset?.weight || 0)));
   const completeValueCents =
     latest?.complete_value_cents ??
-    (latest
-      ? Number(latest.securities_value_cents || 0) + Number(latest.continuity_cash_cents || 0)
-      : null);
+    (latest ? Number(latest.securities_value_cents || 0) + Number(latest.continuity_cash_cents || 0) : null);
   const canonicalModelValue =
     completeValueCents != null && completeValueCents > 0 ? completeValueCents / 100 : min;
   const dayPnlCents = canonicalDailyPnlCents(completeValueCents, latest?.["1d_pct"]);
@@ -433,11 +461,7 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
           <Kpi label="Holdings" value={String(hs.length + (data.cashAsset ? 1 : 0))} />
           <Kpi
             label="Model Basket Value"
-            value={
-              canonicalModelValue
-                ? fmtR(canonicalModelValue, s.base_currency || "ZAR", 2)
-                : "N/A"
-            }
+            value={canonicalModelValue ? fmtR(canonicalModelValue, s.base_currency || "ZAR", 2) : "N/A"}
           />
           <Kpi
             label="Cash Asset (CA)"
@@ -478,7 +502,11 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
         />
         <Kpi label="MTD" value={pctStr(latest?.mtd_pct ?? null)} valueCls={pctCls(latest?.mtd_pct ?? null)} />
         <Kpi label="YTD" value={pctStr(latest?.ytd_pct ?? null)} valueCls={pctCls(latest?.ytd_pct ?? null)} />
-        <Kpi label="All-time" value={pctStr(latest?.all_pct ?? null)} valueCls={pctCls(latest?.all_pct ?? null)} />
+        <Kpi
+          label="All-time"
+          value={pctStr(latest?.all_pct ?? null)}
+          valueCls={pctCls(latest?.all_pct ?? null)}
+        />
       </div>
       <div className="grid grid-cols-3 gap-3">
         <Kpi label="Best Day" value={pctStr(best)} valueCls={pctCls(best)} />
@@ -486,10 +514,11 @@ function Detail({ id, onBack }: { id: string; onBack: () => void }) {
         <Kpi label="Avg Daily" value={pctStr(avg)} valueCls={pctCls(avg)} />
       </div>
       <div className="text-right text-[10px] text-muted-foreground">
-        Canonical valuation as of {latest?.as_of_date || "—"} · {latest?.source_kind || "effective return view"}
+        Canonical valuation as of {latest?.as_of_date || "—"} ·{" "}
+        {latest?.source_kind || "effective return view"}
       </div>
 
-      <PerformanceChart series={series} range={chartRange} onRangeChange={setChartRange} />
+      <FactsheetPerformanceChart series={series} range={chartRange} onRangeChange={setChartRange} />
 
       {/* Holdings */}
       <div className="rounded-2xl border border-border bg-card p-5">
@@ -617,103 +646,6 @@ function Spark({ series }: { series: number[] }) {
   );
 }
 
-function PerformanceChart({
-  series,
-  range,
-  onRangeChange,
-}: {
-  series: Array<{ asOfDate: string; value: number }>;
-  range: CanonicalChartRange;
-  onRangeChange: (range: CanonicalChartRange) => void;
-}) {
-  const rangeButtons = (
-    <div className="flex flex-wrap gap-1">
-      {(["YTD", "3M", "6M", "1Y", "ALL"] as CanonicalChartRange[]).map((option) => (
-        <button
-          key={option}
-          type="button"
-          onClick={() => onRangeChange(option)}
-          className={cn(
-            "rounded-md px-2.5 py-1 text-[11px] font-semibold",
-            range === option
-              ? "bg-primary text-primary-foreground"
-              : "bg-muted text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {option}
-        </button>
-      ))}
-    </div>
-  );
-  if (series.length < 2) {
-    return (
-      <div className="space-y-3 rounded-2xl border border-border bg-card p-5">
-        {rangeButtons}
-        <div className="text-sm text-muted-foreground">
-          Performance history is not yet available for {range}.
-        </div>
-      </div>
-    );
-  }
-  const width = 900;
-  const height = 260;
-  const pad = 24;
-  const values = series.map((point) => point.value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const plotRange = max - min || 1;
-  const d = series
-    .map((point, index) => {
-      const x = pad + (index / (series.length - 1)) * (width - pad * 2);
-      const y = pad + ((max - point.value) / plotRange) * (height - pad * 2);
-      return `${index === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-  const latest = series[series.length - 1];
-  if (!latest) return null;
-  const change = latest.value - 100;
-  return (
-    <div className="rounded-2xl border border-border bg-card p-5">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-bold text-foreground">Performance</h3>
-          <p className="text-xs text-muted-foreground">
-            Canonical {range} return chain, indexed to 100 · rebalance neutral
-          </p>
-        </div>
-        <div className={cn("text-sm font-bold", pctCls(change))}>{pctStr(change)}</div>
-      </div>
-      <div className="mb-3">{rangeButtons}</div>
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="h-64 w-full"
-        role="img"
-        aria-label="Canonical strategy performance chart"
-      >
-        <line
-          x1={pad}
-          y1={height / 2}
-          x2={width - pad}
-          y2={height / 2}
-          stroke="currentColor"
-          className="text-border"
-          strokeDasharray="5 5"
-        />
-        <path
-          d={d}
-          fill="none"
-          stroke="hsl(var(--primary))"
-          strokeWidth="3"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-      <div className="flex justify-between text-[10px] text-muted-foreground">
-        <span>{series[0]?.asOfDate}</span>
-        <span>{latest.asOfDate}</span>
-      </div>
-    </div>
-  );
-}
 function Kpi({
   label,
   value,
