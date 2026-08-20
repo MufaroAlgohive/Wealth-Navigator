@@ -5,20 +5,17 @@ import * as React from "react";
 /**
  * Sector heatmap.
  *
- * A uniform grid where every sector is an EQUAL cell, sorted best to worst by
- * day move, coloured on a diverging green / slate / red scale. Equal cells mean
- * you can read every sector and how it did at a glance, instead of squinting at
- * market-cap-weighted boxes.
- *
- * The colour uses a neutral slate band for tiny moves (|change| below
- * NEUTRAL_EPS) so a flat tape reads as a calm grid instead of muddy maroon, and
- * a PER-DAY ADAPTIVE reference so the biggest mover of the day carries clear
- * colour while a wild day still scales out to 3% before saturating.
+ * A weighted grid — each sector's cell spans more columns the bigger its
+ * share of total market cap, so the block sizes read as a real treemap
+ * (banks/mining dominate visually) instead of every sector looking equally
+ * important. Colour is a solid, saturated green/red scaled by day move
+ * intensity (matching the original Lovable design), with a neutral slate
+ * band for tiny moves so a flat tape doesn't read as muddy maroon.
  */
 
 export interface SectorDatum {
   name: string;
-  /** Relative weight (market cap), kept for the cap-share readout, not size. */
+  /** Relative weight (market cap) — drives cell SIZE (grid column span). */
   weight: number;
   /** Day change %, drives the colour. */
   change: number;
@@ -36,6 +33,11 @@ const NEUTRAL_EPS = 0.06;
 const REF_MIN = 0.5;
 const REF_MAX = 3;
 
+// Grid is 6 columns wide; a cell spans 1..GRID_MAX_SPAN columns based on its
+// share of total weight, so no single sector can swallow the whole board.
+const GRID_COLS = 6;
+const GRID_MAX_SPAN = 3;
+
 /** sqrt-scaled magnitude past the deadband, 0..1, against the per-day ref. */
 function intensityOf(change: number, ref: number): number {
   const a = Math.abs(change);
@@ -45,38 +47,23 @@ function intensityOf(change: number, ref: number): number {
   return Math.sqrt(t);
 }
 
-/** Tint colour for a cell, or null when inside the neutral band. */
-function tintColor(change: number, ref: number): string | null {
-  const intensity = intensityOf(change, ref);
-  if (intensity === 0) return null;
-  if (change > 0) return `hsl(var(--up) / ${(0.12 + 0.5 * intensity).toFixed(3)})`;
-  return `hsl(var(--down) / ${(0.14 + 0.5 * intensity).toFixed(3)})`;
-}
-
-/** Layered cell background: slate base for depth, then the tint on top. */
+/** Solid cell fill: saturated green/red scaled by intensity, slate when flat. */
 function cellBackground(change: number, ref: number): string {
-  const base = "linear-gradient(150deg, hsl(var(--elevated)), hsl(var(--surface-2)))";
-  const tint = tintColor(change, ref);
-  const top = tint ?? "hsl(var(--muted-foreground) / 0.05)";
-  return `linear-gradient(0deg, ${top}, ${top}), ${base}`;
+  const intensity = intensityOf(change, ref);
+  if (intensity === 0) return "hsl(var(--muted-foreground) / 0.14)";
+  return change > 0
+    ? `hsl(142, 71%, ${(50 - intensity * 25).toFixed(1)}%)`
+    : `hsl(0, 84%, ${(60 - intensity * 20).toFixed(1)}%)`;
 }
 
-/** Lit-edge colour for a cell. */
-function borderColor(change: number, ref: number): string {
-  const intensity = intensityOf(change, ref);
-  if (intensity === 0) return "hsl(var(--foreground) / 0.1)";
-  const a = (0.22 + 0.34 * intensity).toFixed(3);
-  return change > 0 ? `hsl(var(--up) / ${a})` : `hsl(var(--down) / ${a})`;
+/** Cell text colour: white on a saturated fill, foreground on the neutral slate. */
+function cellTextColor(change: number, ref: number): string {
+  return intensityOf(change, ref) === 0 ? "hsl(var(--foreground) / 0.85)" : "#fff";
 }
 
 function changeText(change: number): string {
   const sign = change >= 0 ? "+" : "";
   return `${sign}${change.toFixed(2)}%`;
-}
-
-function changeTextColor(change: number): string {
-  if (Math.abs(change) < NEUTRAL_EPS) return "hsl(var(--muted-foreground))";
-  return change > 0 ? "hsl(var(--up))" : "hsl(var(--down))";
 }
 
 const clampStyle: React.CSSProperties = {
@@ -148,37 +135,45 @@ export function SectorTreemap({ data }: { data: SectorDatum[] }) {
   return (
     <div className="flex h-full w-full select-none flex-col gap-2">
       <div
-        className="grid min-h-0 flex-1 gap-1.5"
-        style={{
-          gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
-          gridAutoRows: "minmax(0, 1fr)",
-        }}
+        className="grid min-h-0 flex-1 auto-rows-[minmax(0,1fr)] gap-1.5"
+        style={{ gridTemplateColumns: `repeat(${GRID_COLS}, minmax(0, 1fr))` }}
       >
         {ordered.map((s) => {
           const capPct = totalWeight > 0 ? (Math.max(0, s.weight) / totalWeight) * 100 : 0;
           const meta =
             typeof s.count === "number" ? `${s.count} stk` : `${(s.weightPct ?? capPct).toFixed(1)}%`;
+          // Cell size = share of total weight, spread across an 8-unit scale
+          // and clamped to [1, GRID_MAX_SPAN] columns so the biggest sector
+          // doesn't swallow the whole grid and the smallest stays legible.
+          const span = totalWeight > 0
+            ? Math.min(GRID_MAX_SPAN, Math.max(1, Math.round((Math.max(0, s.weight) / totalWeight) * 8)))
+            : 1;
           return (
             <div
               key={s.name}
               title={`${s.name} · ${changeText(s.change)}${typeof s.count === "number" ? ` · ${s.count} constituents` : ""} · ${capPct.toFixed(1)}% cap`}
-              className="relative flex min-h-0 cursor-default flex-col justify-between overflow-hidden rounded-lg border p-2 transition-all duration-150 hover:-translate-y-px hover:shadow-[0_6px_18px_-10px_hsl(var(--canvas))] hover:ring-1 hover:ring-[hsl(var(--glass-border-strong))]"
-              style={{ background: cellBackground(s.change, ref), borderColor: borderColor(s.change, ref) }}
+              className="relative flex min-h-0 cursor-default flex-col justify-between overflow-hidden rounded-sm p-2 transition-transform duration-150 hover:-translate-y-px"
+              style={{ gridColumn: `span ${span}`, background: cellBackground(s.change, ref) }}
             >
               <span
-                className="text-[11px] font-semibold leading-tight tracking-tight text-foreground/90"
-                style={clampStyle}
+                className="text-[11px] font-medium leading-tight tracking-tight"
+                style={{ ...clampStyle, color: cellTextColor(s.change, ref) }}
               >
                 {s.name}
               </span>
               <span className="flex items-baseline justify-between gap-1">
                 <span
                   className="font-mono text-[12px] font-semibold tabular-nums"
-                  style={{ color: changeTextColor(s.change) }}
+                  style={{ color: cellTextColor(s.change, ref) }}
                 >
                   {changeText(s.change)}
                 </span>
-                <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-foreground">{meta}</span>
+                <span
+                  className="shrink-0 font-mono text-[9px] tabular-nums opacity-80"
+                  style={{ color: cellTextColor(s.change, ref) }}
+                >
+                  {meta}
+                </span>
               </span>
             </div>
           );
@@ -189,7 +184,7 @@ export function SectorTreemap({ data }: { data: SectorDatum[] }) {
           and the advance/decline split. Reads bullish vs bearish at a glance. */}
       <div className="shrink-0 space-y-1 px-0.5">
         <div className="flex items-center justify-between text-[10px] font-medium">
-          <span className="tabular-nums" style={{ color: changeTextColor(breadth.net) }}>
+          <span className="tabular-nums" style={{ color: sentiment === "Mixed" ? "hsl(var(--muted-foreground))" : sentiment === "Bullish" ? "hsl(var(--up))" : "hsl(var(--down))" }}>
             {sentiment} · {changeText(breadth.net)} avg
           </span>
           <span className="font-mono text-[9px] tabular-nums">
