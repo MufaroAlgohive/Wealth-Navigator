@@ -521,11 +521,51 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: holdsErr.message }, { status: 500 });
   }
 
-  const holdings = (holds ?? []) as Holding[];
-  if (holdings.length === 0) {
+  const allHoldings = (holds ?? []) as Holding[];
+  if (allHoldings.length === 0) {
     return NextResponse.json(
       { ok: false, error: "No active holdings found for that book_id." },
       { status: 404 },
+    );
+  }
+
+  // DOUBLE-FILL GUARD (2026-08-20): a holding stays `is_active=true` after it
+  // fills — a fill OPENS the position, it doesn't deactivate the holding row —
+  // so re-running Send to Market for the same book_id would blindly pick this
+  // already-executed holding back up and dispatch a SECOND real order for it.
+  // This applies identically whether the original fill came from IRESS (the
+  // automated poller) or from the emergency manual-fill route: both stamp the
+  // SAME oems_order_audit.status via the SAME `payload.holding_id` linkage, so
+  // one check here covers both origins with no manual-vs-IRESS special-casing.
+  // Anything already dispatched — filled OR still working the broker — must be
+  // excluded; only a holding with NO prior order_audit row (or a purely
+  // terminal-and-never-traded one, e.g. rejected/cancelled/expired/failed) is
+  // eligible to be sent.
+  const ALREADY_DISPATCHED_STATUSES = new Set([...IN_FLIGHT_STATUSES, "filled"]);
+  const institutional = openInstitutional();
+  if (!institutional) {
+    return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
+  }
+  const { data: dispatchedRows } = await institutional
+    .from("oems_order_audit")
+    .select("payload, status")
+    .in("payload->>holding_id", allHoldings.map((h) => h.id))
+    .in("status", Array.from(ALREADY_DISPATCHED_STATUSES));
+  const alreadyDispatchedHoldingIds = new Set(
+    ((dispatchedRows ?? []) as Array<{ payload: Record<string, unknown> | null }>)
+      .map((r) => (typeof r.payload?.holding_id === "string" ? r.payload.holding_id : null))
+      .filter((id): id is string => id != null),
+  );
+  const skippedAlreadyDispatched = allHoldings.filter((h) => alreadyDispatchedHoldingIds.has(h.id));
+  const holdings = allHoldings.filter((h) => !alreadyDispatchedHoldingIds.has(h.id));
+  if (holdings.length === 0) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `All ${allHoldings.length} active holding(s) in book '${bookId}' already have a filled or in-flight order — nothing left to send. This book may just need "Send Confirmation" / moving to Closed Book, not a re-send.`,
+        already_dispatched_ids: skippedAlreadyDispatched.map((h) => h.id),
+      },
+      { status: 409 },
     );
   }
 
@@ -587,10 +627,7 @@ export async function POST(req: Request) {
     }
   }
 
-  const institutional = openInstitutional();
-  if (!institutional) {
-    return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
-  }
+  // (institutional client already opened above for the double-fill guard)
 
   // ── Pre-trade limit guard ───────────────────────────────────────────
   // (2026-07-14) Refuse the dispatch when ANY holding would create a
@@ -933,6 +970,9 @@ export async function POST(req: Request) {
       rebalance_id: rebalanceId,
       notice: rebalanceNotice,
       count: executionRows.length,
+      // Holdings in this book_id that already had a filled/in-flight order
+      // and were therefore excluded from this dispatch (double-fill guard).
+      skipped_already_dispatched: skippedAlreadyDispatched.length > 0 ? skippedAlreadyDispatched.map((h) => h.id) : undefined,
       mode: uatFanout.mode,
       uat: {
         attempted: uatFanout.attempted,
@@ -968,6 +1008,9 @@ export async function POST(req: Request) {
     rebalance_id: rebalanceId,
     notice: rebalanceNotice,
     count: executionRows.length,
+    // Holdings in this book_id that already had a filled/in-flight order
+    // and were therefore excluded from this dispatch (double-fill guard).
+    skipped_already_dispatched: skippedAlreadyDispatched.length > 0 ? skippedAlreadyDispatched.map((h) => h.id) : undefined,
     mode: uatFanout.mode,
     uat: {
       attempted: uatFanout.attempted,
