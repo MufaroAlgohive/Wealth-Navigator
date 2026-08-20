@@ -33,7 +33,7 @@
  * the tab is hidden.
  */
 
-import { ChevronRight, FileSpreadsheet, Loader2, Pencil, Radio, SendHorizontal, Upload } from "lucide-react";
+import { ChevronRight, FileSpreadsheet, Loader2, Pencil, Radio, SendHorizontal } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
@@ -351,6 +351,13 @@ function slipColor(slipCents: number | null): string {
 
 /** Terminal lifecycle states — once the poll observes one, the optimistic override is dropped. */
 const TERMINAL_STATES = new Set(["FILLED", "CANCELLED", "REJECTED", "EXPIRED", "FAILED"]);
+/** States an emergency manual fill can still apply to — everything terminal
+ *  EXCEPT REJECTED/FAILED. A rejection can be a broker-side/IRESS problem
+ *  (a licensing seat conflict, a dropped session) rather than proof nothing
+ *  actually traded, so the desk needs to be able to apply a real broker
+ *  confirmation even after the system marked the order rejected. FILLED/
+ *  CANCELLED/EXPIRED are genuinely done — nothing to reconcile there. */
+const MANUAL_FILL_BLOCKED_STATES = new Set(["FILLED", "CANCELLED", "EXPIRED"]);
 /** Broker-observation time of a row, for reconciling optimistic overrides against the poll. */
 const obsTime = (r: ExecutionRow): number => Date.parse(r.updated_at ?? r.ts) || 0;
 
@@ -923,7 +930,7 @@ function GroupRow({
         <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
           <span className="inline-flex items-center gap-1">
             {r.filled > 0 && r.avg_fill_price ? fmtMoney(r.avg_fill_price) : "—"}
-            {!TERMINAL_STATES.has(r.state) ? (
+            {!MANUAL_FILL_BLOCKED_STATES.has(r.state) ? (
               <>
                 <input
                   ref={manualFillInputRef}
@@ -942,7 +949,7 @@ function GroupRow({
                   className="rounded p-0.5 text-muted-foreground hover:bg-[hsl(var(--foreground)/0.08)] hover:text-foreground"
                   title="Emergency manual fill — upload a broker fill sheet (xlsx/xls/csv) for when IRESS is down. Requires Master ★."
                 >
-                  <Upload className="h-3 w-3" />
+                  <Pencil className="h-3 w-3" />
                 </button>
               </>
             ) : null}
