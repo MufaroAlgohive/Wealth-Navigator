@@ -156,19 +156,27 @@ export async function POST(req: Request) {
   try {
     const { data: profs } = await retailDb
       .from("profiles")
-      .select("email, first_name")
+      .select("email, first_name, mint_number")
       .eq("id", fill.userId)
       .limit(1);
-    const profile = profs?.[0] as { email?: string; first_name?: string } | undefined;
+    const profile = profs?.[0] as { email?: string; first_name?: string; mint_number?: string } | undefined;
     if (profile?.email) {
+      const symbolStr = String(row.symbol ?? fill.symbol ?? "");
+      // Client-facing reference: {mint_number}-{bare ticker} (e.g.
+      // "AND0930090326-SHP") instead of the internal order_id — the internal
+      // id is desk/audit-trail language, not something a client recognises.
+      // Falls back to the raw order_id only when mint_number is missing, so
+      // the reference is never blank.
+      const bareSymbol = symbolStr.replace(/\.(JO|JSE)$/i, "");
+      const reference = profile.mint_number ? `${profile.mint_number}-${bareSymbol}` : String(row.order_id ?? auditId);
       await sendEmail({
         to: profile.email,
         subject: `Trade confirmed — ${row.symbol ?? fill.symbol ?? ""}`,
         html: buildTradeConfirmationHtml({
           firstName: profile.first_name,
           action: fill.side === "sell" ? "Sell" : "Buy",
-          symbol: String(row.symbol ?? fill.symbol ?? ""),
-          orderId: String(row.order_id ?? auditId),
+          symbol: symbolStr,
+          orderId: reference,
           quantity: qty,
           avgPriceRands: fillPriceCents / 100,
         }),

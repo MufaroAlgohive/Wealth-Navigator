@@ -94,7 +94,7 @@ export async function POST(req: Request) {
       } else if (t.email_type === "trade_confirmation") {
         const userId = rec[t.user_id_field || "user_id"] as string | undefined;
         if (!userId) throw new Error("No user_id in record");
-        const { data: profs } = await db.from("profiles").select("email, first_name").eq("id", userId).limit(1);
+        const { data: profs } = await db.from("profiles").select("email, first_name, mint_number").eq("id", userId).limit(1);
         const profile = profs?.[0];
         if (!profile?.email) throw new Error("No profile/email for user");
         let symbol = "";
@@ -107,6 +107,11 @@ export async function POST(req: Request) {
         // (see admin/orderbook/route.ts's own read of the same column); default
         // to "Buy" only if it's genuinely missing/unrecognised.
         const action = String(rec.trade_side ?? "").toUpperCase() === "SELL" ? "Sell" : "Buy";
+        // Client-facing reference: {mint_number}-{bare ticker} (e.g.
+        // "AND0930090326-SHP") instead of the internal holding row id — falls
+        // back to that id only when mint_number is missing.
+        const bareSymbol = symbol.replace(/\.(JO|JSE)$/i, "");
+        const reference = profile.mint_number ? `${profile.mint_number as string}-${bareSymbol}` : String(rec.id ?? "");
         await sendEmail({
           to: profile.email as string,
           subject: `Trade confirmed${symbol ? ` — ${symbol}` : ""}`,
@@ -114,7 +119,7 @@ export async function POST(req: Request) {
             firstName: profile.first_name as string,
             action,
             symbol,
-            orderId: String(rec.id ?? ""),
+            orderId: reference,
             quantity: Number(rec.quantity) || 0,
             avgPriceRands: priceRands,
           }),
