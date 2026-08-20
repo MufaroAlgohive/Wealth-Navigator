@@ -156,19 +156,27 @@ export async function POST(req: Request) {
   try {
     const { data: profs } = await retailDb
       .from("profiles")
-      .select("email, first_name")
+      .select("email, first_name, mint_number")
       .eq("id", fill.userId)
       .limit(1);
-    const profile = profs?.[0] as { email?: string; first_name?: string } | undefined;
+    const profile = profs?.[0] as { email?: string; first_name?: string; mint_number?: string } | undefined;
     if (profile?.email) {
+      const symbolStr = String(row.symbol ?? fill.symbol ?? "");
+      // Client-facing reference: {mint_number}-{bare ticker} (e.g.
+      // "AND0930090326-SHP") instead of the internal order_id — the internal
+      // id is desk/audit-trail language, not something a client recognises.
+      // Falls back to the raw order_id only when mint_number is missing, so
+      // the reference is never blank.
+      const bareSymbol = symbolStr.replace(/\.(JO|JSE)$/i, "");
+      const reference = profile.mint_number ? `${profile.mint_number}-${bareSymbol}` : String(row.order_id ?? auditId);
       await sendEmail({
         to: profile.email,
         subject: `Trade confirmed — ${row.symbol ?? fill.symbol ?? ""}`,
         html: buildTradeConfirmationHtml({
           firstName: profile.first_name,
           action: fill.side === "sell" ? "Sell" : "Buy",
-          symbol: String(row.symbol ?? fill.symbol ?? ""),
-          orderId: String(row.order_id ?? auditId),
+          symbol: symbolStr,
+          orderId: reference,
           quantity: qty,
           avgPriceRands: fillPriceCents / 100,
         }),
@@ -181,6 +189,63 @@ export async function POST(req: Request) {
   } catch (e) {
     confirmationEmail = "failed";
     console.warn("[manual-fill] trade confirmation email failed (non-fatal):", e instanceof Error ? e.message : e);
+  }
+
+  // Book-graduation parity with an IRESS-observed fill (2026-08-20): the
+  // "Active Order Books" panel groups by `payload.order_book_seq`, stamped
+  // ONLY at release time (release-to-market/route.ts) when a batch is sent
+  // to the broker successfully. A manual fill's underlying order may never
+  // have gotten that stamp — it can arrive here after a failed/rejected
+  // release (no seq was ever assigned, since only SUCCESSFUL releases in
+  // that route's loop get stamped) or via some other dispatch path — and
+  // without one it can NEVER complete a book, no matter how "filled" it is,
+  // because order-books/route.ts has nothing to group it under. A manual
+  // fill is exactly as real as a broker-observed one, so it must be able to
+  // graduate the same way: if this order has no seq yet, mint it a fresh
+  // one now (book-of-one), reusing release-to-market's own best-effort,
+  // race-safe sequence assignment. Never block the fill over this — a
+  // numbering failure here is a display gap, not a financial one.
+  if (typeof updatedPayload.order_book_seq !== "number") {
+    try {
+      const assignSequence = async (): Promise<number | null> => {
+        const { data: last } = await institutionalDb
+          .from("oems_order_book")
+          .select("sequence")
+          .order("sequence", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        const nextSeq = ((last as { sequence?: number } | null)?.sequence ?? 0) + 1;
+        const { error: insErr } = await institutionalDb.from("oems_order_book").insert({
+          sequence: nextSeq,
+          released_by: stepUp.email ?? null,
+          member_count: 1,
+        });
+        if (!insErr) return nextSeq;
+        // Postgres unique_violation — another dispatch raced us for this
+        // sequence number. Re-read max and retry exactly once (mirrors
+        // release-to-market/route.ts's own retry).
+        if ((insErr as { code?: string }).code === "23505") {
+          const { data: last2 } = await institutionalDb
+            .from("oems_order_book")
+            .select("sequence")
+            .order("sequence", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          const retrySeq = ((last2 as { sequence?: number } | null)?.sequence ?? 0) + 1;
+          const { error: retryErr } = await institutionalDb.from("oems_order_book").insert({
+            sequence: retrySeq,
+            released_by: stepUp.email ?? null,
+            member_count: 1,
+          });
+          if (!retryErr) return retrySeq;
+        }
+        return null;
+      };
+      const seq = await assignSequence();
+      if (seq != null) updatedPayload.order_book_seq = seq;
+    } catch (e) {
+      console.warn("[manual-fill] order_book_seq assignment failed (non-fatal):", e instanceof Error ? e.message : e);
+    }
   }
 
   const { error: updErr } = await institutionalDb
