@@ -243,10 +243,11 @@ async function dispatchConfirmationEmails(
         subject: `Trade confirmed${symbol ? ` — ${symbol}` : ""}`,
         html: buildTradeConfirmationHtml({
           firstName: profile.first_name,
+          action: "Buy",
           symbol,
           name,
           quantity,
-          price: priceRands,
+          avgPriceRands: priceRands,
           orderId: context.orderId,
         }),
         emailType: "trade_confirmation",

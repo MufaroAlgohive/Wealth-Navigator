@@ -135,31 +135,31 @@ const esc = (v: unknown) =>
     .replace(/"/g, "&quot;");
 
 /**
- * Trade confirmation — MINT Platforms house design (supplied 2026-08-18).
- *
- * Deliberately NOT wrapped in `shell()`: this template is a complete
- * standalone document with its own header, body and regulatory footer.
- * Passing it through shell() would double up the outer card and the FSP
- * footer.
+ * Client-facing "Trade Confirmation" email — business-supplied template kept
+ * verbatim (inline styles, MINT gold/purple branding, FSP/NCRCP footer).
+ * Deliberately NOT passed through `shell()` like the other builders in this
+ * file: this HTML is already a complete, self-contained email document with
+ * its own `<!DOCTYPE html>`/`<head>`/`<body>`.
  */
 export function buildTradeConfirmationHtml(opts: {
   firstName?: string;
+  action: "Buy" | "Sell";
   symbol: string;
-  name: string;
+  name?: string; // Optional full name if available
+  orderId: string;
   quantity: number;
-  price: number;
-  /** "Buy" | "Sell" — defaults to Buy, which is all the app can currently place. */
-  side?: string;
-  /** Broker/settlement reference shown as "Order #…". Omitted line if absent. */
-  orderId?: string;
+  avgPriceRands: number;
 }): string {
   const money = (n: number) => Number(n).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const side = esc(opts.side && opts.side.trim() ? opts.side : "Buy");
+  const clientName = esc(opts.firstName || "there");
+  const action = esc(opts.action);
   const symbol = esc(opts.symbol);
   const security = opts.name && opts.name !== opts.symbol ? `${esc(opts.name)} (${symbol})` : symbol;
+  const totalValue = opts.quantity * opts.avgPriceRands;
   const period = new Date()
     .toLocaleDateString("en-ZA", { month: "long", year: "numeric" })
     .toUpperCase();
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -183,8 +183,8 @@ export function buildTradeConfirmationHtml(opts: {
 <!-- BODY -->
 <div style="padding: 40px 44px 8px;">
   <p style="font-size: 16px; line-height: 1.7; color: #2C2738; font-weight: 300; margin-bottom: 36px;">
-    Hi ${esc(opts.firstName) || "there"},<br><br>
-    Your <strong>${side}</strong> order for <strong>${symbol}</strong> has been fully filled on the market. Here are the details of your trade:
+    Hi ${clientName},<br><br>
+    Your <strong>${action}</strong> order for <strong>${security}</strong> has been fully filled on the market. Here are the details of your trade:
   </p>
 
   <!-- SECTION -->
@@ -203,7 +203,7 @@ export function buildTradeConfirmationHtml(opts: {
       <tbody>
         <tr>
           <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Action</td>
-          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; color: #2C2738;">${side}</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; color: #2C2738;">${action}</td>
         </tr>
         <tr>
           <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Security</td>
@@ -215,11 +215,11 @@ export function buildTradeConfirmationHtml(opts: {
         </tr>
         <tr>
           <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Average Fill Price</td>
-          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500;">R ${money(opts.price)}</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500;">R ${money(opts.avgPriceRands)}</td>
         </tr>
         <tr>
           <td style="padding: 20px 0 13px; font-weight: 700; color: #1A1622;">Total Value</td>
-          <td style="text-align: right; padding: 20px 22px 13px 0; font-size: 16px; font-weight: 800; color: #31005E;">R ${money(opts.quantity * opts.price)}</td>
+          <td style="text-align: right; padding: 20px 22px 13px 0; font-size: 16px; font-weight: 800; color: #31005E;">R ${money(totalValue)}</td>
         </tr>
       </tbody>
     </table>

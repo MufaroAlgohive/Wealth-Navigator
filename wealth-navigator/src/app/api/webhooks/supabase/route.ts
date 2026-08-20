@@ -97,17 +97,27 @@ export async function POST(req: Request) {
         const { data: profs } = await db.from("profiles").select("email, first_name").eq("id", userId).limit(1);
         const profile = profs?.[0];
         if (!profile?.email) throw new Error("No profile/email for user");
-        let symbol = "", name = "";
+        let symbol = "";
         if (rec.security_id) {
           const { data: secs } = await db.from("securities_c").select("symbol, name").eq("id", rec.security_id).limit(1);
           symbol = (secs?.[0]?.symbol as string) || "";
-          name = (secs?.[0]?.name as string) || symbol;
         }
         const priceRands = rec.avg_fill ? Number(rec.avg_fill) / 100 : Number(rec.Expected_fill) || 0;
+        // stock_holdings_c.trade_side is the only side field this record carries
+        // (see admin/orderbook/route.ts's own read of the same column); default
+        // to "Buy" only if it's genuinely missing/unrecognised.
+        const action = String(rec.trade_side ?? "").toUpperCase() === "SELL" ? "Sell" : "Buy";
         await sendEmail({
           to: profile.email as string,
           subject: `Trade confirmed${symbol ? ` — ${symbol}` : ""}`,
-          html: buildTradeConfirmationHtml({ firstName: profile.first_name as string, symbol, name, quantity: Number(rec.quantity) || 0, price: priceRands }),
+          html: buildTradeConfirmationHtml({
+            firstName: profile.first_name as string,
+            action,
+            symbol,
+            orderId: String(rec.id ?? ""),
+            quantity: Number(rec.quantity) || 0,
+            avgPriceRands: priceRands,
+          }),
           emailType: "trade_confirmation",
           source: "webhook",
           metadata: { holding_id: rec.id, user_id: userId },
