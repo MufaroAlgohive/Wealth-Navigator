@@ -206,9 +206,17 @@ async function attachPeriodReturns(rows: SecurityRow[]): Promise<{
   asOf: string | null;
 }> {
   // Ranked by market cap purely so the rotation covers the most-watched
-  // names first on a cold cache; it no longer gates who's eligible.
+  // names first on a cold cache — NOT a filter. Some JSE-listed instruments
+  // (e.g. the FNB international feeder ETFs) have no market cap at all
+  // because Yahoo genuinely doesn't publish one for them (marketCap,
+  // nonDilutedMarketCap, and totalAssets all come back empty — verified
+  // live, not a symbol-resolution issue), but they still have valid daily
+  // history and deserve 1M/6M. Excluding market_cap-less rows here would
+  // permanently starve them regardless of caching. `Number(null) || 0`
+  // sorts them last, so they still get covered by the rotation, just after
+  // the ranked names.
   const ranked = rows
-    .filter((r) => Number(r.market_cap) > 0)
+    .filter((r) => typeof r.symbol === "string" && r.symbol.trim().length > 0)
     .sort((a, b) => (Number(b.market_cap) || 0) - (Number(a.market_cap) || 0));
   if (ranked.length === 0) return { coverage: 0, asOf: null };
 
