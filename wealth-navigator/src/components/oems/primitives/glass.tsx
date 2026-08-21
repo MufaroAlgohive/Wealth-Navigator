@@ -48,7 +48,7 @@ export function GlassSection({
   const dev = useDevTools();
   return (
     <section className={cn("glass-panel", className)} {...rest}>
-      <header className="flex items-start justify-between gap-3 border-b border-[hsl(var(--glass-border))] px-5 py-3.5">
+      <header className="flex items-start justify-between gap-3 px-5 py-3.5">
         <div className="min-w-0 space-y-0.5">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-section">{title}</h2>
@@ -169,11 +169,11 @@ export function GlassBadge({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium backdrop-blur-sm",
-        tone === "primary" && "border-primary/30 bg-primary/10 text-primary",
-        tone === "success" && "border-success/30 bg-success/10 text-success",
-        tone === "warning" && "border-warning/30 bg-warning/10 text-warning",
-        tone === "neutral" && "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.04)] text-muted-foreground",
+        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium backdrop-blur-sm",
+        tone === "primary" && "bg-primary/10 text-primary",
+        tone === "success" && "bg-success/10 text-success",
+        tone === "warning" && "bg-warning/10 text-warning",
+        tone === "neutral" && "bg-[hsl(var(--foreground)/0.04)] text-muted-foreground",
       )}
     >
       {children}
