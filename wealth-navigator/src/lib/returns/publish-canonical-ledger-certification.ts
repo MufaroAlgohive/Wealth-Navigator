@@ -104,6 +104,7 @@ async function certifyOne(
   db: SupabaseClient,
   strategy: { id: string; name: string },
   asOf: string,
+  certificationActor: string,
 ): Promise<CanonicalCertificationResultRow> {
   const row = await one<CanonicalDraftRow>(
     "canonical row",
@@ -125,7 +126,7 @@ async function certifyOne(
   const rpc = await db.rpc("certify_strategy_canonical_daily_ledger_c", {
     p_strategy_id: strategy.id,
     p_as_of_date: asOf,
-    p_certification_actor: AUTOMATIC_CERTIFICATION_ACTOR,
+    p_certification_actor: certificationActor,
     p_expected_evidence_sha256: row.source_evidence_sha256,
   });
   if (rpc.error) return { strategy: strategy.name, action: "failed", reason: rpc.error.message, asOf };
@@ -133,9 +134,10 @@ async function certifyOne(
 }
 
 export async function publishCanonicalLedgerCertification(
-  options: { asOfDate?: string } = {},
+  options: { asOfDate?: string; strategyName?: string; certificationActor?: string } = {},
 ): Promise<CanonicalCertificationResult> {
   const asOf = options.asOfDate ?? new Date().toISOString().slice(0, 10);
+  const certificationActor = options.certificationActor ?? AUTOMATIC_CERTIFICATION_ACTOR;
   const empty = { certified: 0, alreadyCertified: 0, failed: 0, total: 0 };
   if (!isRetailSupabaseConfigured())
     return { ok: false, asOf, summary: empty, results: [], note: "retail supabase not configured" };
@@ -152,18 +154,20 @@ export async function publishCanonicalLedgerCertification(
   if (!calendar?.is_trading_day)
     return { ok: true, asOf, summary: empty, results: [], note: "not a JSE trading day" };
 
-  const strategyResult = await db
+  let strategyQuery = db
     .from("strategies_c")
     .select("id,name")
     .eq("status", "active")
     .neq("name", "Test Strategy");
+  if (options.strategyName) strategyQuery = strategyQuery.eq("name", options.strategyName);
+  const strategyResult = await strategyQuery;
   if (strategyResult.error)
     return { ok: false, asOf, summary: empty, results: [], note: strategyResult.error.message };
   const strategies = strategyResult.data ?? [];
   const results: CanonicalCertificationResultRow[] = [];
   for (const strategy of strategies) {
     try {
-      results.push(await certifyOne(db, strategy, asOf));
+      results.push(await certifyOne(db, strategy, asOf, certificationActor));
     } catch (error) {
       results.push({
         strategy: strategy.name,
