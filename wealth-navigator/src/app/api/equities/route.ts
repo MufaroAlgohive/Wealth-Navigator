@@ -175,31 +175,70 @@ const SELECT =
  * dashboard fetches) and reuse the same outlier-clamped computation as
  * `lib/yahoo/returns.ts`.
  *
- * Bounded + best-effort: Yahoo traffic is capped at the top-N symbols by
- * market cap (the rows the board actually surfaces first), fetched in
- * bounded-parallel batches, and any failure leaves the row's 1M/6M as null
- * so the UI renders an honest "—". Results are cached in-process for 5 min.
- * Returns how many rows actually got a value + the as-of, so the UI can
- * label the coverage truthfully.
+ * Rotating in-process cache, NOT a fixed top-N: a module-scope Map keyed by
+ * bare symbol holds the last computed 1M/6M + timestamp for the lifetime of
+ * the warm serverless instance. On each request:
+ *   1. Every row with a cache entry younger than RETURNS_CACHE_TTL_MS is
+ *      served straight from memory — zero Yahoo calls, zero DB calls.
+ *   2. Whatever is left (never fetched, or stale) is the "stale queue". We
+ *      only fetch a bounded slice of it (RETURNS_BATCH_SIZE) per request,
+ *      picked via a rotating cursor so a *different* slice of the stale
+ *      queue gets covered each time the page is hit — the queue only
+ *      advances because someone is actually looking at /oems/equities.
+ *   3. A transient Yahoo failure for a symbol falls back to its last good
+ *      cached value (if any) rather than nulling out a previously-working
+ *      row; a symbol that has never resolved renders an honest "—".
+ * Across enough page loads this eventually covers the whole board instead
+ * of permanently favouring the same top-N by market cap. Returns how many
+ * rows carry a value + the freshest as-of, so the UI can label coverage
+ * truthfully.
  */
-const EQUITIES_RETURNS_CAP = Number.parseInt(process.env.EQUITIES_RETURNS_CAP ?? "60", 10) || 60;
+const RETURNS_BATCH_SIZE = Number.parseInt(process.env.EQUITIES_RETURNS_BATCH ?? "60", 10) || 60;
+const RETURNS_CACHE_TTL_MS = 15 * 60 * 1000;
 const EQUITIES_RETURNS_CONCURRENCY = 6;
+
+type ReturnsCacheEntry = { return_1m: number | null; return_6m: number | null; computedAt: number };
+const returnsCache = new Map<string, ReturnsCacheEntry>();
+let returnsRotationCursor = 0;
 
 async function attachPeriodReturns(rows: SecurityRow[]): Promise<{
   coverage: number;
   asOf: string | null;
 }> {
-  const withCap = rows
+  // Ranked by market cap purely so the rotation covers the most-watched
+  // names first on a cold cache; it no longer gates who's eligible.
+  const ranked = rows
     .filter((r) => Number(r.market_cap) > 0)
-    .sort((a, b) => (Number(b.market_cap) || 0) - (Number(a.market_cap) || 0))
-    .slice(0, EQUITIES_RETURNS_CAP);
-  if (withCap.length === 0) return { coverage: 0, asOf: null };
+    .sort((a, b) => (Number(b.market_cap) || 0) - (Number(a.market_cap) || 0));
+  if (ranked.length === 0) return { coverage: 0, asOf: null };
 
+  const now = Date.now();
   let coverage = 0;
   let asOf: string | null = null;
+
+  const stale: SecurityRow[] = [];
+  for (const r of ranked) {
+    const cached = returnsCache.get(bareCode(r.symbol));
+    if (cached && now - cached.computedAt < RETURNS_CACHE_TTL_MS) {
+      r.return_1m = cached.return_1m;
+      r.return_6m = cached.return_6m;
+      coverage += 1;
+    } else {
+      stale.push(r);
+    }
+  }
+  if (stale.length === 0) return { coverage, asOf };
+
+  const start = returnsRotationCursor % stale.length;
+  const batch =
+    stale.length <= RETURNS_BATCH_SIZE
+      ? stale
+      : [...stale.slice(start), ...stale.slice(0, start)].slice(0, RETURNS_BATCH_SIZE);
+  returnsRotationCursor = (start + batch.length) % stale.length;
+
   try {
-    for (let i = 0; i < withCap.length; i += EQUITIES_RETURNS_CONCURRENCY) {
-      const slice = withCap.slice(i, i + EQUITIES_RETURNS_CONCURRENCY);
+    for (let i = 0; i < batch.length; i += EQUITIES_RETURNS_CONCURRENCY) {
+      const slice = batch.slice(i, i + EQUITIES_RETURNS_CONCURRENCY);
       const results = await Promise.all(
         slice.map(async (r) => {
           const {
@@ -216,14 +255,22 @@ async function attachPeriodReturns(rows: SecurityRow[]): Promise<{
         }),
       );
       for (const res of results) {
-        if (!res.ok) continue;
-        const v = res.value?.["1m_pct"];
-        const v6 = res.value?.["6m_pct"];
-        if (v != null || v6 != null) {
-          res.row.return_1m = v ?? null;
-          res.row.return_6m = v6 ?? null;
-          coverage += 1;
+        const key = bareCode(res.row.symbol);
+        if (!res.ok) {
+          const prev = returnsCache.get(key);
+          if (prev) {
+            res.row.return_1m = prev.return_1m;
+            res.row.return_6m = prev.return_6m;
+            coverage += 1;
+          }
+          continue;
         }
+        const v = res.value?.["1m_pct"] ?? null;
+        const v6 = res.value?.["6m_pct"] ?? null;
+        res.row.return_1m = v;
+        res.row.return_6m = v6;
+        returnsCache.set(key, { return_1m: v, return_6m: v6, computedAt: now });
+        if (v != null || v6 != null) coverage += 1;
         if (res.asOf) asOf = new Date(res.asOf).toISOString();
       }
     }
