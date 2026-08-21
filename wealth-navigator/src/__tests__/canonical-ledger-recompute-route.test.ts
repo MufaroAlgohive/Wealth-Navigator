@@ -183,13 +183,99 @@ describe("POST /api/admin/canonical-ledger/recompute", () => {
     expect(certificationCalls[0]).toMatchObject({ strategyName: "Income" });
   });
 
-  it("returns 502 and skips certification when the draft phase fails", async () => {
-    draftResult = { ok: false, asOf: "2026-08-21", apply: true, summary: { written: 0, planned: 0, skipped: 0, failed: 1, total: 1 }, results: [] };
+  it("returns 502 when nothing certifies at all (total failure, e.g. infra outage)", async () => {
+    draftResult = {
+      ok: false,
+      asOf: "2026-08-21",
+      apply: true,
+      summary: { written: 0, planned: 0, skipped: 0, failed: 1, total: 1 },
+      results: [{ strategy: "Growth", action: "failed", reason: "EXACT_CLOSE_MISSING:CLS" }],
+    };
+    certificationResult = {
+      ok: false,
+      asOf: "2026-08-21",
+      summary: { certified: 0, alreadyCertified: 0, failed: 1, total: 1 },
+      results: [{ strategy: "Growth", action: "failed", reason: "DRAFT_MISSING", asOf: "2026-08-21" }],
+    };
     const res = await post({ asOfDate: "2026-08-21" });
     const body = (await res.json()) as { ok: boolean; phase: string };
     expect(res.status).toBe(502);
     expect(body.ok).toBe(false);
-    expect(body.phase).toBe("draft");
-    expect(certificationCalls).toHaveLength(0);
+    expect(body.phase).toBe("certification");
+    // certification still ran — it is per-strategy and naturally reports
+    // DRAFT_MISSING for the strategy that never got a draft row.
+    expect(certificationCalls).toHaveLength(1);
+  });
+
+  it("REGRESSION: one strategy's draft failure (e.g. a missing stored close) no longer blocks certification for its healthy siblings", async () => {
+    // Mirrors the real bug report: 7 of 8 active strategies draft
+    // successfully, one ("Blended Focus") fails with EXACT_CLOSE_MISSING:CLS.
+    // Certification must still run and certify the 7 healthy strategies,
+    // with real YTD before/after values for each — only Blended Focus should
+    // show up as its own isolated failure.
+    draftResult = {
+      ok: false,
+      asOf: "2026-08-21",
+      apply: true,
+      summary: { written: 1, planned: 0, skipped: 0, failed: 1, total: 2 },
+      results: [
+        { strategy: "Growth", action: "written", asOf: "2026-08-21" },
+        { strategy: "Blended Focus", action: "failed", reason: "EXACT_CLOSE_MISSING:CLS" },
+      ],
+    };
+    certificationResult = {
+      ok: false,
+      asOf: "2026-08-21",
+      summary: { certified: 1, alreadyCertified: 0, failed: 1, total: 2 },
+      results: [
+        { strategy: "Growth", action: "certified", asOf: "2026-08-21" },
+        { strategy: "Blended Focus", action: "failed", reason: "DRAFT_MISSING", asOf: "2026-08-21" },
+      ],
+    };
+
+    const res = await post({ asOfDate: "2026-08-21" });
+    const body = (await res.json()) as {
+      ok: boolean;
+      phase: string;
+      draft: { results: Array<{ strategy: string; action: string; reason?: string }> };
+      certification: { results: Array<{ strategy: string; action: string; reason?: string }> };
+      ytd: Array<{ strategy: string; ytdReturnPctBefore: number | null; ytdReturnPctAfter: number | null }>;
+    };
+
+    // Certification must still have been attempted — this is the crux of
+    // the fix: the draft failure must not gate the certification call.
+    expect(certificationCalls).toHaveLength(1);
+
+    // 200, not 502 — one isolated data gap must not read as a full request
+    // failure when other strategies fully succeeded.
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(false); // honest: not everything succeeded
+    expect(body.phase).toBe("partial");
+
+    // Growth: real success, visible in both draft and certification.
+    expect(body.draft.results).toContainEqual({ strategy: "Growth", action: "written", asOf: "2026-08-21" });
+    expect(body.certification.results).toContainEqual({
+      strategy: "Growth",
+      action: "certified",
+      asOf: "2026-08-21",
+    });
+    expect(body.ytd).toContainEqual({
+      strategy: "Growth",
+      ytdReturnPctBefore: 4.2,
+      ytdReturnPctAfter: 4.2,
+    });
+
+    // Blended Focus: real, un-swallowed failure with its real reason.
+    expect(body.draft.results).toContainEqual({
+      strategy: "Blended Focus",
+      action: "failed",
+      reason: "EXACT_CLOSE_MISSING:CLS",
+    });
+    expect(body.certification.results).toContainEqual({
+      strategy: "Blended Focus",
+      action: "failed",
+      reason: "DRAFT_MISSING",
+      asOf: "2026-08-21",
+    });
   });
 });
