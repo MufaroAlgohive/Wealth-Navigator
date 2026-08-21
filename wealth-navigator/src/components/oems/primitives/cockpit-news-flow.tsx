@@ -1,13 +1,12 @@
 "use client";
 
-import { ExternalLink } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import type { DbName } from "@/components/oems/primitives/data-source-badge";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassSection } from "@/components/oems/primitives/glass";
+import { NewsArticleDialog } from "@/components/oems/primitives/news-article-dialog";
 import { Pill } from "@/components/oems/primitives/pill";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/cn";
 import { formatTime } from "@/lib/format";
 
@@ -167,75 +166,7 @@ export function CockpitNewsFlow({
         )}
       </GlassSection>
 
-      <Dialog open={active != null} onOpenChange={(o) => !o && setActive(null)}>
-        <DialogContent className="max-w-xl">
-          {active && (
-            <>
-              <DialogHeader>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Pill tone={active.wire === "SENS" ? "primary" : "neutral"} size="xs">
-                    {active.wire === "SENS" ? "SENS" : "Alliance"}
-                  </Pill>
-                  {active.regulatory && (
-                    <Pill tone="destructive" size="xs">
-                      REG
-                    </Pill>
-                  )}
-                  {active.category && (
-                    <Pill tone="neutral" size="xs">
-                      {active.category}
-                    </Pill>
-                  )}
-                  <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-                    {formatTime(active.ts)}
-                  </span>
-                </div>
-                <DialogTitle className="mt-2 pr-6 leading-snug">{active.headline}</DialogTitle>
-                <DialogDescription className="font-mono text-[11px]">{active.source}</DialogDescription>
-              </DialogHeader>
-
-              <div className="space-y-3">
-                <p className="text-sm leading-relaxed text-foreground/90">
-                  {active.body && active.body.trim().length > 0 ? active.body : active.headline}
-                </p>
-
-                {(active.tickers ?? []).length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {(active.tickers ?? []).map((t) => (
-                      <span
-                        key={t}
-                        className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[11px] text-primary"
-                      >
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {/* Full article body + attachments wire in the data phase; today
-                    the wire feed only carries a headline for most items. */}
-                {!active.body && (
-                  <p className="text-[11px] text-muted-foreground">
-                    Full article text wires in the data phase — the wire currently delivers headlines only.
-                  </p>
-                )}
-
-                {active.url && (
-                  <a
-                    href={active.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
-                  >
-                    Open source
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </a>
-                )}
-              </div>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      <NewsArticleDialog item={active} open={active != null} onOpenChange={(o) => !o && setActive(null)} />
     </>
   );
 }
