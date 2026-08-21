@@ -14,7 +14,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { GlassBadge, GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
@@ -130,17 +130,33 @@ export default function EquitiesPage() {
     ...queryOpts("reference"),
     // 1M/6M trailing returns are backfilled a bounded batch at a time (see
     // /api/equities' attachPeriodReturns — persisted, rotating cache, PR
-    // #159-#161), so a single load rarely has full coverage. Poll every 3s
+    // #159-#161), so a single load rarely has full coverage. Poll every 20s
     // while returnsCoverage is still behind count so the board fills in on
     // its own instead of requiring manual refreshes; stop the moment it
-    // catches up (or if the response is unavailable/still loading).
+    // catches up. 20s (not something aggressive like 3s) matters here: each
+    // poll can trigger up to RETURNS_BATCH_SIZE Yahoo requests server-side,
+    // and Yahoo's unauthenticated chart endpoint has an aggressive per-IP
+    // rate limit — hammering it from every open tab risks tripping that
+    // limit and making coverage look permanently stuck at 0 for everyone.
+    // Also hard-cap at 15 polls (~5 min) so a genuinely stuck backend
+    // (Yahoo blocked, cache table misconfigured, etc.) doesn't poll forever.
     refetchInterval: (query) => {
       const d = query.state.data;
       if (!d || d.source === "unavailable") return false;
       const coverage = d.returnsCoverage ?? 0;
-      return coverage < d.count ? 3_000 : false;
+      if (coverage >= d.count) return false;
+      if (query.state.dataUpdateCount >= 15) return false;
+      return 20_000;
     },
   });
+  // `dataUpdateCount` (used to cap the poll above) lives on the internal
+  // query object the `refetchInterval` callback receives, not on the
+  // `UseQueryResult` this hook returns — track our own count off
+  // `dataUpdatedAt` changes so the "stalled" badge state below can use it.
+  const [returnsPollCount, setReturnsPollCount] = useState(0);
+  useEffect(() => {
+    if (equitiesUniverseQ.dataUpdatedAt > 0) setReturnsPollCount((n) => n + 1);
+  }, [equitiesUniverseQ.dataUpdatedAt]);
   // Sorted by bare symbol for a stable A→Z table (BFF already orders by the
   // `.JO`-suffixed symbol; sort defensively on the stripped display symbol).
   const universeRows = useMemo(() => {
@@ -241,9 +257,20 @@ export default function EquitiesPage() {
     <div className="space-y-4 pb-6">
       <header className="glass-panel relative overflow-hidden p-5 md:p-6">
         <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-primary/15 blur-3xl" />
-        <div className="relative">
-          <h1 className="text-display text-2xl md:text-3xl">Equities</h1>
-          <p className="text-caption mt-1.5">JSE mandates · L1 quotes · pre-trade compliance via IRESS</p>
+        <div className="relative flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h1 className="text-display text-2xl md:text-3xl">Equities</h1>
+            <p className="text-caption mt-1.5">JSE mandates · L1 quotes · pre-trade compliance via IRESS</p>
+          </div>
+          {realDataOnly ? (
+            <ReturnsCoverageBadge
+              response={equitiesUniverseQ.data}
+              stalled={
+                returnsPollCount >= 15 &&
+                (equitiesUniverseQ.data?.returnsCoverage ?? 0) < (equitiesUniverseQ.data?.count ?? 0)
+              }
+            />
+          ) : null}
         </div>
       </header>
 
@@ -736,13 +763,22 @@ function UniversePagination({
 }
 
 /**
- * Small live progress readout for the 1M/6M returns backfill. The board
+ * Live progress pill for the 1M/6M returns backfill, styled like the other
+ * hero-header GlassBadges (see cockpit-client.tsx's masthead). The board
  * polls `/api/equities` every 3s (see `equitiesUniverseQ.refetchInterval`
  * above) while coverage is incomplete — this just renders where that
  * polling currently stands, so the user isn't left guessing whether
- * reloading the page is doing anything.
+ * anything is happening.
  */
-function ReturnsCoverageBadge({ response }: { response: EquitiesUniverseResponse | undefined }) {
+function ReturnsCoverageBadge({
+  response,
+  stalled,
+}: {
+  response: EquitiesUniverseResponse | undefined;
+  /** True once the poll cap is hit without reaching full coverage — see the
+   * `dataUpdateCount >= 15` guard on equitiesUniverseQ.refetchInterval. */
+  stalled?: boolean;
+}) {
   if (!response || response.source === "unavailable") return null;
   const coverage = response.returnsCoverage ?? 0;
   const total = response.count;
@@ -750,27 +786,17 @@ function ReturnsCoverageBadge({ response }: { response: EquitiesUniverseResponse
   const remaining = Math.max(total - coverage, 0);
   const done = remaining === 0;
   return (
-    <div className="mb-2 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+    <GlassBadge tone={done ? "success" : stalled ? "neutral" : "warning"}>
       <span
         className={cn(
           "h-1.5 w-1.5 rounded-full",
-          done ? "bg-up" : "animate-pulse bg-amber-400",
+          done ? "bg-up" : stalled ? "bg-muted-foreground" : "animate-pulse bg-warning",
         )}
         aria-hidden
       />
-      {done ? (
-        <span>
-          1M/6M returns fully loaded — <span className="font-mono">{total}</span>/
-          <span className="font-mono">{total}</span>
-        </span>
-      ) : (
-        <span>
-          Loading 1M/6M returns… <span className="font-mono font-semibold">{coverage}</span>/
-          <span className="font-mono">{total}</span> loaded,{" "}
-          <span className="font-mono">{remaining}</span> still loading
-        </span>
-      )}
-    </div>
+      1M/6M <span className="font-mono">{coverage}</span>/<span className="font-mono">{total}</span>
+      {!done ? <span className="text-muted-foreground">{stalled ? "stalled" : "loading…"}</span> : null}
+    </GlassBadge>
   );
 }
 
@@ -861,7 +887,6 @@ function RealUniverseTable({
           </>
         ) : null}
       </p>
-      <ReturnsCoverageBadge response={response} />
       <div className="glass-inset overflow-x-auto scrollbar-thin">
         <Table>
           <TableHeader>
