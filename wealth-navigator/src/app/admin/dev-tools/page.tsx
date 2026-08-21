@@ -56,7 +56,13 @@ function RecomputePanel() {
       });
       const body = (await res.json().catch(() => ({}))) as RecomputeResponse;
       setResult(body);
-      if (!res.ok || body.ok === false) {
+      if (!res.ok) {
+        toast.error(body.error ?? `Recompute failed (${res.status}).`);
+      } else if (body.phase === "partial") {
+        toast.warning(
+          `Certified for ${body.asOf}, but at least one strategy failed — see the table for which one.`,
+        );
+      } else if (body.ok === false) {
         toast.error(body.error ?? `Recompute failed (${res.status}).`);
       } else {
         toast.success(`Canonical ledger recomputed and certified for ${body.asOf}.`);
