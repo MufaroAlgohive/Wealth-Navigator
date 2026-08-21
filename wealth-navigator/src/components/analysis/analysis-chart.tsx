@@ -28,6 +28,7 @@ import {
 } from "lightweight-charts";
 import { useEffect, useRef } from "react";
 
+import { ChartsBrandBadge } from "@/components/analysis/charts-brand-badge";
 import { cn } from "@/lib/cn";
 import { tokenToRgba } from "@/lib/color";
 
@@ -81,6 +82,9 @@ export function AnalysisChart({ sym, points, prevClose, mode, height = 360, clas
         textColor: fg,
         fontFamily: "var(--font-mono, ui-monospace)",
         fontSize: 10,
+        // Custom brand badge replaces the built-in TradingView watermark
+        // (see ChartsBrandBadge for the licence-required attribution link).
+        attributionLogo: false,
       },
       grid: {
         vertLines: { color: border, style: LineStyle.Dotted },
@@ -92,10 +96,19 @@ export function AnalysisChart({ sym, points, prevClose, mode, height = 360, clas
     });
     chartRef.current = chart;
 
-    // Build the data array.
+    // Build the data array. lightweight-charts requires ascending-unique
+    // time values: the intraday tick stream can emit multiple ticks within
+    // the same epoch second, so we collapse duplicates here (last-write-wins)
+    // before setData — otherwise `series.setData` throws an assertion.
     const lineData: LineData[] = points
       .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v) && p.v > 0)
-      .map((p) => ({ time: Math.floor(p.t / 1000) as Time, value: p.v }));
+      .map((p) => ({ time: Math.floor(p.t / 1000) as Time, value: p.v }))
+      .sort((a, b) => (a.time as number) - (b.time as number));
+    const dedupedByTime = new Map<Time, LineData>();
+    for (const point of lineData) dedupedByTime.set(point.time, point);
+    const data: LineData[] = [...dedupedByTime.values()].sort(
+      (a, b) => (a.time as number) - (b.time as number),
+    );
 
     if (mode === "line") {
       const series = chart.addLineSeries({
@@ -105,7 +118,7 @@ export function AnalysisChart({ sym, points, prevClose, mode, height = 360, clas
         lastValueVisible: true,
         lastPriceAnimation: 2,
       });
-      series.setData(lineData);
+      series.setData(data);
       mainSeriesRef.current = series;
     } else {
       // For candlesticks we need OHLC. We have a single `v` per point; build
@@ -114,10 +127,10 @@ export function AnalysisChart({ sym, points, prevClose, mode, height = 360, clas
       // TimeSeriesGet2 daily payload only carries a single daily close, so the
       // candle body is a visualisation approximation (footnoted in the UI).
       const ohlc: CandlestickData[] = [];
-      let prev = lineData[0]?.value ?? 0;
-      for (let i = 0; i < lineData.length; i++) {
-        const close = lineData[i]?.value;
-        const time = lineData[i]?.time;
+      let prev = data[0]?.value ?? 0;
+      for (let i = 0; i < data.length; i++) {
+        const close = data[i]?.value;
+        const time = data[i]?.time;
         if (close === undefined || time === undefined) continue;
         const open = i === 0 ? close : prev;
         const high = Math.max(open, close) * 1.0015;
@@ -194,9 +207,9 @@ export function AnalysisChart({ sym, points, prevClose, mode, height = 360, clas
     // Prev-bar lookup for the tooltip's up/down colour (works for both the 1D
     // prevClose overlay and daily history ranges where prevClose is null).
     const prevByTime = new Map<Time, number>();
-    for (let i = 1; i < lineData.length; i++) {
-      const t = lineData[i]?.time;
-      const pv = lineData[i - 1]?.value;
+    for (let i = 1; i < data.length; i++) {
+      const t = data[i]?.time;
+      const pv = data[i - 1]?.value;
       if (t !== undefined && pv !== undefined) prevByTime.set(t, pv);
     }
     const showTooltip = (param: MouseEventParams<Time>) => {
@@ -269,6 +282,7 @@ export function AnalysisChart({ sym, points, prevClose, mode, height = 360, clas
         style={{ width: "100%", minHeight: height + 120 }}
         aria-label={`${sym} price chart`}
       />
+      <ChartsBrandBadge />
       <div
         ref={tooltipRef}
         className="pointer-events-none absolute z-20 min-w-[124px] rounded-xl border border-border bg-card/95 px-3 py-2 opacity-0 shadow-xl shadow-black/20 backdrop-blur-sm"

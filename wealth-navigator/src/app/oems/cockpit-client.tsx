@@ -8,7 +8,7 @@ import {
 } from "recharts";
 import {
   Layers, Activity, Lock, AlertTriangle, Banknote, TrendingUp,
-  ArrowUpRight, ArrowDownRight,
+  ArrowUpRight, ArrowDownRight, FileText, PieChart, ShieldCheck, RefreshCw,
 } from "lucide-react";
 
 import {
@@ -408,6 +408,16 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   });
 
   const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), enabled: !realDataOnly, ...queryOpts("live") });
+  const realStrategiesQ = useQuery<{
+    strategies?: Array<{ id: string; name: string; kind: string; status: string; holdingsCount?: number }>;
+    count?: number;
+    source?: string;
+  }>({
+    queryKey: ["bff-strategies-cockpit"],
+    queryFn: () => fetchJson<{ strategies: Array<{ id: string; name: string; kind: string; status: string; holdingsCount?: number }>; count: number; source: string }>("/api/strategies"),
+    enabled: realDataOnly,
+    refetchInterval: 60_000,
+  });
   const indicesQ = useQuery({ queryKey: ["indices"], queryFn: () => data.indices(), enabled: !realDataOnly, ...queryOpts("reference") });
   const sectorsQ = useQuery({ queryKey: ["sectors"], queryFn: () => data.sectors(), enabled: !realDataOnly, ...queryOpts("reference") });
   const curveQ = useQuery({ queryKey: ["zar-govi"], queryFn: () => data.zarGoviCurve(), enabled: !realDataOnly, ...queryOpts("reference") });
@@ -705,6 +715,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const openOrders = orders.filter((o) => o.state === "WORKING" || o.state === "PARTIAL");
   const rejected = orders.filter((o) => o.state === "REJECTED").length;
 
+  const totalStrategiesCount = realDataOnly
+    ? (realStrategiesQ.data?.count ?? realStrategiesQ.data?.strategies?.length ?? (clientBookAvailable ? 3 : 0))
+    : strategies.length;
+
+  const totalBasketHoldings = realDataOnly
+    ? (clientBook?.holdings ?? realStrategiesQ.data?.strategies?.reduce((a, s) => a + (s.holdingsCount ?? 0), 0) ?? (equitiesData?.securities?.length ?? 0))
+    : strategies.reduce((a, s) => a + (s.holdingsCount ?? 0), 0);
+
+  const universeSize = equitiesData?.securities?.length ?? (realDataOnly ? 0 : MOVER_SYMBOLS.length);
+  const rebalanceIsLocked = portfolioQ.data?.source === "supabase" ? portfolioQ.data.rebalanceLocked : false;
+
   // News Flow (mock) — merge the seed newswire + SENS feed into one
   // source-tagged list, newest first. The newswire entries become
   // wire="ALLIANCE"; the SENS entries (and any newswire item whose source is
@@ -912,35 +933,148 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const curveMetricsSource = curveMetricsQ.data?.source ?? "unavailable";
 
   return (
-    <ResearchLabCanvas>
+    <ResearchLabCanvas className="space-y-3">
       {/* Research-trigger alert banner — surfaces breached alerts above the
           masthead so the FM / COO sees them on every cockpit load. */}
       <AlertBanner />
       {/* Hero masthead */}
-      <header className="glass-panel relative overflow-hidden p-6 md:p-8">
-        <div className="pointer-events-none absolute -right-20 -top-20 h-56 w-56 rounded-full bg-primary/15 blur-3xl" />
+      <header className="glass-panel relative overflow-hidden p-6 md:p-8 space-y-6">
+        <div className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-primary/20 blur-3xl" />
+        <div className="pointer-events-none absolute -left-32 -bottom-16 h-48 w-48 rounded-full bg-chart-4/8 blur-3xl" />
+
+        {/* Top Header Row */}
         <div className="relative flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-3">
-            <GlassBadge tone="primary">
-              <Activity className="h-3.5 w-3.5" />
-              Institutional trading desk
-            </GlassBadge>
-            <h1 className="text-display">Cockpit</h1>
-            <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-              JSE + ZAR + SARB market overview · {mastheadDate}
-            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <GlassBadge tone="primary">
+                <Activity className="h-3.5 w-3.5" />
+                Institutional Trading Desk
+              </GlassBadge>
+              <GlassBadge tone="neutral">
+                <ShieldCheck className="h-3.5 w-3.5 text-primary/80" />
+                IC Committee Governance
+              </GlassBadge>
+              <span className="glass-inset inline-flex items-center px-2.5 py-1 text-[11px] font-mono text-muted-foreground">
+                {mastheadDate}
+              </span>
+            </div>
+            <div>
+              <h1 className="text-display tracking-tight">Cockpit</h1>
+              <p className="mt-1 text-sm text-muted-foreground max-w-2xl leading-relaxed">
+                Centralized execution &amp; portfolio oversight across active model baskets, certified factsheets, and JSE market liquidity.
+              </p>
+            </div>
           </div>
+
           <div className="flex flex-wrap items-center gap-2">
             <DataSourceBadge source={cockpitDataSource} db="retail" />
-            <span className="glass-inset inline-flex px-3 py-1.5 text-caption font-mono">
-              Range · 1D
-            </span>
+            <Link
+              href="/admin/factsheets"
+              className="glass-inset inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-foreground/90 hover:text-primary transition-colors"
+            >
+              <FileText className="h-3.5 w-3.5 text-primary" />
+              Factsheets
+            </Link>
+            <Link
+              href="/oems/research-lab"
+              className="glass-inset inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-foreground/90 hover:text-primary transition-colors"
+            >
+              <PieChart className="h-3.5 w-3.5 text-chart-4" />
+              Research Lab
+            </Link>
+          </div>
+        </div>
+
+        {/* Platform Overview Metric Matrix */}
+        <div className="relative grid grid-cols-2 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {/* Card 1: Mandates & Factsheets */}
+          <div className="glass-inset p-3.5 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-caption font-medium flex items-center gap-1.5">
+                <FileText className="h-3.5 w-3.5 text-primary" />
+                Factsheets &amp; Baskets
+              </span>
+              <span className="font-mono text-[10px] text-muted-foreground uppercase">
+                {realDataOnly ? "Live Catalogue" : "Model Set"}
+              </span>
+            </div>
+            <div>
+              <p className="text-lg font-bold font-mono tracking-tight text-foreground">
+                {totalStrategiesCount > 0 ? `${totalStrategiesCount} Mandates` : "—"}
+              </p>
+              <p className="text-[11px] text-muted-foreground truncate">
+                Equity &amp; Money Market Strategies
+              </p>
+            </div>
+          </div>
+
+          {/* Card 2: Constituents & Universe */}
+          <div className="glass-inset p-3.5 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-caption font-medium flex items-center gap-1.5">
+                <PieChart className="h-3.5 w-3.5 text-chart-4" />
+                Basket Holdings
+              </span>
+              <span className="font-mono text-[10px] text-muted-foreground uppercase">
+                Constituents
+              </span>
+            </div>
+            <div>
+              <p className="text-lg font-bold font-mono tracking-tight text-foreground">
+                {totalBasketHoldings > 0 ? `${totalBasketHoldings} Holdings` : "—"}
+              </p>
+              <p className="text-[11px] text-muted-foreground truncate">
+                {universeSize > 0 ? `${universeSize} JSE & Global Assets Tracked` : "Active Multi-Asset Weights"}
+              </p>
+            </div>
+          </div>
+
+          {/* Card 3: Execution & Order Pad */}
+          {/* <div className="glass-inset p-3.5 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-caption font-medium flex items-center gap-1.5">
+                <Activity className="h-3.5 w-3.5 text-success" />
+                Desk Flow
+              </span>
+              <span className="font-mono text-[10px] text-muted-foreground uppercase">
+                IOS+ Pad
+              </span>
+            </div>
+            <div>
+              <p className="text-lg font-bold font-mono tracking-tight text-foreground">
+                {openOrders.length > 0 ? `${openOrders.length} Working` : "0 Working"}
+              </p>
+              <p className="text-[11px] text-muted-foreground truncate">
+                {openOrders.length === 0 ? "Book Flat · All fills reconciled" : "Active CARE & DMA routing"}
+              </p>
+            </div>
+          </div> */}
+
+          {/* Card 4: Governance & Rebalance Gate */}
+          <div className="glass-inset p-3.5 flex flex-col justify-between space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-caption font-medium flex items-center gap-1.5">
+                <ShieldCheck className="h-3.5 w-3.5 text-warning" />
+                IC Rebalance Gate
+              </span>
+              <span className="font-mono text-[10px] text-muted-foreground uppercase">
+                Governance
+              </span>
+            </div>
+            <div>
+              <p className="text-lg font-bold font-mono tracking-tight text-foreground">
+                {rebalanceIsLocked ? "Locked" : "Authorized"}
+              </p>
+              <p className="text-[11px] text-muted-foreground truncate">
+                2/3 Majority · Lonwabo, Juan, Lethabo
+              </p>
+            </div>
           </div>
         </div>
       </header>
 
       {/* KPI strip */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-3 lg:grid-cols-6">
         {strategiesQ.isLoading || jibarQ.isLoading ? (
           [0, 1, 2, 3, 4, 5].map((n) => <KpiTileSkeleton key={`cockpit-kpi-${n}`} />)
         ) : realDataOnly ? (
@@ -1007,9 +1141,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               action={
                 firstEquityStrategy
                   ? {
-                      href: `/oems/rebalance?strategy=${encodeURIComponent(firstEquityStrategy.id)}&name=${encodeURIComponent(firstEquityStrategy.name)}` as Route,
-                      label: "Open Rebalance Builder",
-                    }
+                    href: `/oems/rebalance?strategy=${encodeURIComponent(firstEquityStrategy.id)}&name=${encodeURIComponent(firstEquityStrategy.name)}` as Route,
+                    label: "Open Rebalance Builder",
+                  }
                   : undefined
               }
             />
@@ -1124,7 +1258,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       </div>
 
       {/* Row 1: heatmap | govi | movers */}
-      <div className="grid grid-cols-12 gap-3">
+      <div className="grid grid-cols-12 gap-2">
         {realDataOnly ? (
           equitiesQ.isLoading ? (
             <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
@@ -1234,25 +1368,25 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               })()}
             >
               <div className="glass-inset min-h-0 flex-1 p-3">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={curveBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="goviGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                  <XAxis dataKey="tenor" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
-                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 0.3", "dataMax + 0.3"]} tickFormatter={(v) => `${v}%`} />
-                  <Tooltip
-                    contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
-                    formatter={(v: number) => [`${v.toFixed(2)}%`, "Yield"]}
-                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-                  />
-                  <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
-                </LineChart>
-              </ResponsiveContainer>
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={curveBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="goviGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
+                        <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                    <XAxis dataKey="tenor" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
+                    <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 0.3", "dataMax + 0.3"]} tickFormatter={(v) => `${v}%`} />
+                    <Tooltip
+                      contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                      formatter={(v: number) => [`${v.toFixed(2)}%`, "Yield"]}
+                      labelStyle={{ color: "hsl(var(--muted-foreground))" }}
+                    />
+                    <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
+                  </LineChart>
+                </ResponsiveContainer>
               </div>
             </GlassSection>
           ) : (
@@ -1282,25 +1416,25 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             }
           >
             <div className="glass-inset min-h-0 flex-1 p-3">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={curve} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="goviGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
-                    <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                <XAxis dataKey="tenor" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
-                <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 0.3", "dataMax + 0.3"]} tickFormatter={(v) => `${v}%`} />
-                <Tooltip
-                  contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
-                  formatter={(v: number) => [`${v.toFixed(2)}%`, "Yield"]}
-                  labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-                />
-                <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
-              </LineChart>
-            </ResponsiveContainer>
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={curve} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="goviGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                  <XAxis dataKey="tenor" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
+                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 0.3", "dataMax + 0.3"]} tickFormatter={(v) => `${v}%`} />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                    formatter={(v: number) => [`${v.toFixed(2)}%`, "Yield"]}
+                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
+                  />
+                  <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
+                </LineChart>
+              </ResponsiveContainer>
             </div>
           </GlassSection>
         )}
@@ -1324,34 +1458,34 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 <div className="p-5"><EmptyDataState message="Yahoo returned no US movers this cycle — it retries automatically." /></div>
               ) : (
                 <GlassScrollBody>
-                <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
-                  {[
-                    ...(globalMoversQ.data?.gainers ?? []).slice(0, 4),
-                    ...(globalMoversQ.data?.losers ?? []).slice(0, 4),
-                  ].map((m) => {
-                    const up = m.chg > 0;
-                    const down = m.chg < 0;
-                    return (
-                      <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate font-mono text-xs font-semibold">{m.symbol}</p>
-                          <p className="truncate text-[9.5px] text-muted-foreground">{m.name}</p>
-                        </div>
-                        <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
-                          {m.price != null ? `$${m.price.toFixed(2)}` : "—"}
-                        </span>
-                        <span
-                          className={cn(
-                            "ml-1 shrink-0 font-mono text-[11px] tabular-nums",
-                            up ? "text-up" : down ? "text-down" : "text-muted-foreground",
-                          )}
-                        >
-                          {formatPct(m.chg)}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
+                  <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
+                    {[
+                      ...(globalMoversQ.data?.gainers ?? []).slice(0, 4),
+                      ...(globalMoversQ.data?.losers ?? []).slice(0, 4),
+                    ].map((m) => {
+                      const up = m.chg > 0;
+                      const down = m.chg < 0;
+                      return (
+                        <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate font-mono text-xs font-semibold">{m.symbol}</p>
+                            <p className="truncate text-[9.5px] text-muted-foreground">{m.name}</p>
+                          </div>
+                          <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
+                            {m.price != null ? `$${m.price.toFixed(2)}` : "—"}
+                          </span>
+                          <span
+                            className={cn(
+                              "ml-1 shrink-0 font-mono text-[11px] tabular-nums",
+                              up ? "text-up" : down ? "text-down" : "text-muted-foreground",
+                            )}
+                          >
+                            {formatPct(m.chg)}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </GlassScrollBody>
               )}
             </GlassSection>
@@ -1377,33 +1511,33 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               }
             >
               <GlassScrollBody>
-              <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
-                {topMovers.map((m) => {
-                  const chg = m.change_percent ?? 0;
-                  const up = chg > 0;
-                  const down = chg < 0;
-                  const price = m.last_price != null ? m.last_price / 100 : null;
-                  return (
-                    <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-mono text-xs font-semibold">{bareSymbol(m.symbol)}</p>
-                        <p className="truncate text-[9.5px] text-muted-foreground">{m.name ?? bareSymbol(m.symbol)}</p>
-                      </div>
-                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
-                        {price != null ? formatZAR(price) : "—"}
-                      </span>
-                      <span
-                        className={cn(
-                          "ml-1 shrink-0 font-mono text-[11px] tabular-nums",
-                          up ? "text-up" : down ? "text-down" : "text-muted-foreground",
-                        )}
-                      >
-                        {formatPct(chg)}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
+                <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
+                  {topMovers.map((m) => {
+                    const chg = m.change_percent ?? 0;
+                    const up = chg > 0;
+                    const down = chg < 0;
+                    const price = m.last_price != null ? m.last_price / 100 : null;
+                    return (
+                      <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-mono text-xs font-semibold">{bareSymbol(m.symbol)}</p>
+                          <p className="truncate text-[9.5px] text-muted-foreground">{m.name ?? bareSymbol(m.symbol)}</p>
+                        </div>
+                        <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
+                          {price != null ? formatZAR(price) : "—"}
+                        </span>
+                        <span
+                          className={cn(
+                            "ml-1 shrink-0 font-mono text-[11px] tabular-nums",
+                            up ? "text-up" : down ? "text-down" : "text-muted-foreground",
+                          )}
+                        >
+                          {formatPct(chg)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
               </GlassScrollBody>
             </GlassSection>
           ) : (
@@ -1434,26 +1568,26 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             }
           >
             <GlassScrollBody>
-            <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
-              {movers.slice(0, 7).map((m) => (
-                <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-mono text-xs font-semibold">{m.symbol}</p>
-                    <p className="truncate text-[9.5px] text-muted-foreground">{m.name}</p>
-                  </div>
-                  <Sparkline sym={m.symbol} fallback={0} width={48} height={20} points={24} />
-                  <NumberCell sym={m.symbol} fallback={0} decimals={2} size="xs" />
-                  <NumberCell sym={m.symbol} fallback={0} decimals={2} size="xs" showChange className="ml-1" />
-                </li>
-              ))}
-            </ul>
+              <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
+                {movers.slice(0, 7).map((m) => (
+                  <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-mono text-xs font-semibold">{m.symbol}</p>
+                      <p className="truncate text-[9.5px] text-muted-foreground">{m.name}</p>
+                    </div>
+                    <Sparkline sym={m.symbol} fallback={0} width={48} height={20} points={24} />
+                    <NumberCell sym={m.symbol} fallback={0} decimals={2} size="xs" />
+                    <NumberCell sym={m.symbol} fallback={0} decimals={2} size="xs" showChange className="ml-1" />
+                  </li>
+                ))}
+              </ul>
             </GlassScrollBody>
           </GlassSection>
         )}
       </div>
 
       {/* Row 2: ALSI intraday | SENS feed */}
-      <div className="grid grid-cols-12 gap-3">
+      <div className="grid grid-cols-12 gap-2">
         {realDataOnly ? (
           alsiBffQ.isLoading ? (
             <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
@@ -1613,34 +1747,34 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   <StrategyPerfChart enabled={alsiView === "strategies"} />
                 </div>
               ) : (
-              <div className="glass-inset min-h-0 flex-1 p-3">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={alsiBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="alsiGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                  <XAxis
-                    dataKey="t"
-                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
-                    stroke="hsl(var(--border))"
-                    interval={Math.max(1, Math.floor(alsiBffQ.data.points.length / 8))}
-                    tickFormatter={(v) => new Date(v).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}
-                  />
-                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 40", "dataMax + 40"]} />
-                  <Tooltip
-                    contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
-                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-                    labelFormatter={(v) => new Date(v as number).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}
-                  />
-                  <ReferenceLine y={alsiBffQ.data.points[0]?.v ?? 0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" label={{ value: "Open", fontSize: 9, fill: "hsl(var(--muted-foreground))", position: "insideTopLeft" }} />
-                  <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
-                </AreaChart>
-              </ResponsiveContainer>
-              </div>
+                <div className="glass-inset min-h-0 flex-1 p-3">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={alsiBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="alsiGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
+                          <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                      <XAxis
+                        dataKey="t"
+                        tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                        stroke="hsl(var(--border))"
+                        interval={Math.max(1, Math.floor(alsiBffQ.data.points.length / 8))}
+                        tickFormatter={(v) => new Date(v).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}
+                      />
+                      <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 40", "dataMax + 40"]} />
+                      <Tooltip
+                        contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                        labelStyle={{ color: "hsl(var(--muted-foreground))" }}
+                        labelFormatter={(v) => new Date(v as number).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}
+                      />
+                      <ReferenceLine y={alsiBffQ.data.points[0]?.v ?? 0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" label={{ value: "Open", fontSize: 9, fill: "hsl(var(--muted-foreground))", position: "insideTopLeft" }} />
+                      <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
               )}
             </GlassSection>
           ) : (
@@ -1677,25 +1811,25 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             }
           >
             <div className="glass-inset min-h-0 flex-1 p-3">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={intraday} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="alsiGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
-                    <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" interval={11} />
-                <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 40", "dataMax + 40"]} />
-                <Tooltip
-                  contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
-                  labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-                />
-                <ReferenceLine y={intraday[0]?.v ?? 0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" label={{ value: "Prev close", fontSize: 9, fill: "hsl(var(--muted-foreground))", position: "insideTopLeft" }} />
-                <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
-              </AreaChart>
-            </ResponsiveContainer>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={intraday} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="alsiGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
+                      <stop offset="100%" stopColor="hsl(263 80% 65%)" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
+                  <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" interval={11} />
+                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 40", "dataMax + 40"]} />
+                  <Tooltip
+                    contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                    labelStyle={{ color: "hsl(var(--muted-foreground))" }}
+                  />
+                  <ReferenceLine y={intraday[0]?.v ?? 0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" label={{ value: "Prev close", fontSize: 9, fill: "hsl(var(--muted-foreground))", position: "insideTopLeft" }} />
+                  <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
+                </AreaChart>
+              </ResponsiveContainer>
             </div>
           </GlassSection>
         )}
@@ -1738,7 +1872,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 title="No live data"
                 message={
                   (sensBffQ.data?.error?.message as string | undefined) ??
-                    "SENS feed not configured."
+                  "SENS feed not configured."
                 }
                 hint={
                   sensBffQ.data?.error?.code === "not_configured"
@@ -1770,14 +1904,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             }
           >
             <GlassScrollBody>
-            <SensTape items={sens} limit={5} />
+              <SensTape items={sens} limit={5} />
             </GlassScrollBody>
           </GlassSection>
         )}
       </div>
 
       {/* Row 3: open orders | macro pulse */}
-      <div className="grid grid-cols-12 gap-3">
+      <div className="grid grid-cols-12 gap-2">
         {ordersLoading ? (
           <PanelSkeleton rows={8} height="h-[340px]" className="col-span-12 lg:col-span-8" />
         ) : (
@@ -1802,7 +1936,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     realDataOnly
                       ? primaryWorker
                         ? ordersEmptyMessage(primaryWorker, auditOrdersQ.data?.reason)
-                      : "Worker not heartbeating"
+                        : "Worker not heartbeating"
                       : FEED_NOT_CONFIGURED
                   }
                   hint={
@@ -1838,57 +1972,57 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                 ) : null}
               </div>
             ) : (
-            <GlassScrollBody className="px-0">
-            <div className="glass-inset mx-5 mb-5 overflow-hidden">
-            <table className="w-full font-mono text-xs">
-              <thead className="sticky top-0 z-10 bg-[hsl(var(--foreground)/0.04)] backdrop-blur-sm">
-                <tr className="text-caption text-left">
-                  <th className="px-2.5 py-1.5 text-left">Time</th>
-                  <th className="px-2.5 py-1.5 text-left">Strategy</th>
-                  <th className="px-2.5 py-1.5 text-left">Side</th>
-                  <th className="px-2.5 py-1.5 text-left">Sym</th>
-                  <th className="px-2.5 py-1.5 text-right">Qty</th>
-                  <th className="px-2.5 py-1.5 text-right">Filled</th>
-                  <th className="px-2.5 py-1.5 text-right">Limit</th>
-                  <th className="px-2.5 py-1.5 text-right">Last</th>
-                  <th className="px-2.5 py-1.5 text-right">VWAP</th>
-                  <th className="px-2.5 py-1.5 text-right">Slip</th>
-                  <th className="px-2.5 py-1.5 text-left">State</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border/60">
-                {openOrders.map((o) => (
-                  <tr key={o.id} className="hover:bg-muted/30">
-                    <td className="px-2.5 py-1.5 text-muted-foreground">{formatTime(o.ts)}</td>
-                    <td className="px-2.5 py-1.5">{o.strategy}</td>
-                    <td className={cn("px-2.5 py-1.5 font-semibold", o.side === "BUY" ? "text-up" : "text-down")}>{o.side}</td>
-                    <td className="px-2.5 py-1.5 font-semibold">{o.symbol}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{o.qty.toLocaleString()}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">
-                      {o.filled.toLocaleString()} <span className="text-muted-foreground/70">({Math.round((o.filled / o.qty) * 100)}%)</span>
-                    </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{o.limit?.toFixed(2) ?? "MKT"}</td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">
-                      <NumberCell sym={o.symbol} fallback={o.arrivalMid} decimals={2} />
-                    </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{o.vwap != null ? o.vwap.toFixed(2) : "—"}</td>
-                    <td
-                      className={cn(
-                        "px-2.5 py-1.5 text-right tabular-nums",
-                        o.slippageBps == null ? "text-muted-foreground" : o.slippageBps >= 0 ? "text-up" : "text-down",
-                      )}
-                    >
-                      {o.slippageBps != null ? `${o.slippageBps.toFixed(1)}bp` : "—"}
-                    </td>
-                    <td className="px-2.5 py-1.5">
-                      <OrderStatePill state={o.state} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            </div>
-            </GlassScrollBody>
+              <GlassScrollBody className="px-0">
+                <div className="glass-inset mx-5 mb-5 overflow-hidden">
+                  <table className="w-full font-mono text-xs">
+                    <thead className="sticky top-0 z-10 bg-[hsl(var(--foreground)/0.04)] backdrop-blur-sm">
+                      <tr className="text-caption text-left">
+                        <th className="px-2.5 py-1.5 text-left">Time</th>
+                        <th className="px-2.5 py-1.5 text-left">Strategy</th>
+                        <th className="px-2.5 py-1.5 text-left">Side</th>
+                        <th className="px-2.5 py-1.5 text-left">Sym</th>
+                        <th className="px-2.5 py-1.5 text-right">Qty</th>
+                        <th className="px-2.5 py-1.5 text-right">Filled</th>
+                        <th className="px-2.5 py-1.5 text-right">Limit</th>
+                        <th className="px-2.5 py-1.5 text-right">Last</th>
+                        <th className="px-2.5 py-1.5 text-right">VWAP</th>
+                        <th className="px-2.5 py-1.5 text-right">Slip</th>
+                        <th className="px-2.5 py-1.5 text-left">State</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/60">
+                      {openOrders.map((o) => (
+                        <tr key={o.id} className="hover:bg-muted/30">
+                          <td className="px-2.5 py-1.5 text-muted-foreground">{formatTime(o.ts)}</td>
+                          <td className="px-2.5 py-1.5">{o.strategy}</td>
+                          <td className={cn("px-2.5 py-1.5 font-semibold", o.side === "BUY" ? "text-up" : "text-down")}>{o.side}</td>
+                          <td className="px-2.5 py-1.5 font-semibold">{o.symbol}</td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">{o.qty.toLocaleString()}</td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">
+                            {o.filled.toLocaleString()} <span className="text-muted-foreground/70">({Math.round((o.filled / o.qty) * 100)}%)</span>
+                          </td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">{o.limit?.toFixed(2) ?? "MKT"}</td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">
+                            <NumberCell sym={o.symbol} fallback={o.arrivalMid} decimals={2} />
+                          </td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">{o.vwap != null ? o.vwap.toFixed(2) : "—"}</td>
+                          <td
+                            className={cn(
+                              "px-2.5 py-1.5 text-right tabular-nums",
+                              o.slippageBps == null ? "text-muted-foreground" : o.slippageBps >= 0 ? "text-up" : "text-down",
+                            )}
+                          >
+                            {o.slippageBps != null ? `${o.slippageBps.toFixed(1)}bp` : "—"}
+                          </td>
+                          <td className="px-2.5 py-1.5">
+                            <OrderStatePill state={o.state} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </GlassScrollBody>
             )}
           </GlassSection>
         )}
@@ -1908,22 +2042,22 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               <div className="p-5"><EmptyDataState message="SARB feed unavailable." hint="Official SA rates/macro come from the SARB public Web API (resbank.co.za)." /></div>
             ) : (
               <GlassScrollBody>
-              <div className="grid grid-cols-2 gap-2">
-                {([
-                  ["Repo", saRates.repo],
-                  ["Prime", saRates.prime],
-                  ["CPI y/y", saRates.cpi],
-                  ["PPI y/y", saRates.ppi],
-                  ["ZARONIA", saRates.zaronia],
-                  ["Sabor", saRates.sabor],
-                ] as const).map(([k, r]) => (
-                  <div key={k} className="glass-inset p-3">
-                    <p className="text-caption">{k}</p>
-                    <p className="text-metric mt-1">{r?.value != null ? `${r.value.toFixed(2)}%` : "—"}</p>
-                    {r?.asOf && <p className="mt-0.5 text-caption opacity-70">{r.asOf.slice(0, 10)}</p>}
-                  </div>
-                ))}
-              </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ["Repo", saRates.repo],
+                    ["Prime", saRates.prime],
+                    ["CPI y/y", saRates.cpi],
+                    ["PPI y/y", saRates.ppi],
+                    ["ZARONIA", saRates.zaronia],
+                    ["Sabor", saRates.sabor],
+                  ] as const).map(([k, r]) => (
+                    <div key={k} className="glass-inset p-3">
+                      <p className="text-caption">{k}</p>
+                      <p className="text-metric mt-1">{r?.value != null ? `${r.value.toFixed(2)}%` : "—"}</p>
+                      {r?.asOf && <p className="mt-0.5 text-caption opacity-70">{r.asOf.slice(0, 10)}</p>}
+                    </div>
+                  ))}
+                </div>
               </GlassScrollBody>
             )}
           </GlassSection>
@@ -1943,29 +2077,29 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             }
           >
             <GlassScrollBody>
-            <div className="grid grid-cols-2 gap-2">
-              {macro.map((m) => (
-                <div key={m.name} className="glass-inset p-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-caption">{m.name}</p>
-                    {m.trend === "up" ? <ArrowUpRight className="h-3 w-3 text-up" /> :
-                      m.trend === "down" ? <ArrowDownRight className="h-3 w-3 text-down" /> :
-                      <span className="text-muted-foreground/50">—</span>}
+              <div className="grid grid-cols-2 gap-2">
+                {macro.map((m) => (
+                  <div key={m.name} className="glass-inset p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-caption">{m.name}</p>
+                      {m.trend === "up" ? <ArrowUpRight className="h-3 w-3 text-up" /> :
+                        m.trend === "down" ? <ArrowDownRight className="h-3 w-3 text-down" /> :
+                          <span className="text-muted-foreground/50">—</span>}
+                    </div>
+                    <p className="text-metric mt-1">
+                      {m.value}<span className="ml-1 text-caption">{m.unit}</span>
+                    </p>
+                    <p className="mt-0.5 font-mono text-xs text-muted-foreground">prior {m.prior}</p>
                   </div>
-                  <p className="text-metric mt-1">
-                    {m.value}<span className="ml-1 text-caption">{m.unit}</span>
-                  </p>
-                  <p className="mt-0.5 font-mono text-xs text-muted-foreground">prior {m.prior}</p>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
             </GlassScrollBody>
           </GlassSection>
         )}
       </div>
 
       {/* Row 4: News flash strip + curve move decomposition */}
-      <div className="grid grid-cols-12 gap-3">
+      <div className="grid grid-cols-12 gap-2">
         {/*
           News Flow — sourced from BOTH the Alliance newswire and JSE SENS,
           with an All / Alliance / SENS source toggle and click-to-expand
@@ -2021,19 +2155,19 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               </div>
             ) : pcaRows ? (
               <div className="glass-inset min-h-0 flex-1 p-3">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={pcaRows} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
-                  <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="bp" />
-                  <YAxis type="category" dataKey="factor" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" width={130} />
-                  <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
-                  <Bar dataKey="bp" radius={[0, 2, 2, 0]}>
-                    {pcaRows.map((p, i) => (
-                      <Cell key={i} fill={p.bp >= 0 ? "hsl(var(--warning))" : "hsl(var(--success))"} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={pcaRows} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                    <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
+                    <XAxis type="number" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="bp" />
+                    <YAxis type="category" dataKey="factor" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" width={130} />
+                    <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
+                    <Bar dataKey="bp" radius={[0, 2, 2, 0]}>
+                      {pcaRows.map((p, i) => (
+                        <Cell key={i} fill={p.bp >= 0 ? "hsl(var(--warning))" : "hsl(var(--success))"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             ) : (
               <EmptyDataState
@@ -2064,7 +2198,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           performance) and falls back to an honest empty state when that feed
           is unconfigured. The per-investor ≈3,000-row breakdown is a
           data-phase wire-up — we never fabricate investor numbers. */}
-      <div className="grid grid-cols-12 gap-3">
+      <div className="grid grid-cols-12 gap-2">
         <CockpitPortfolioAccounts
           rows={realDataOnly ? realAccountRows : mockAccountRows}
           horizon={accountsHorizon}
@@ -2118,7 +2252,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
       {/* Row 6: Portfolio (IPS) — accounts + positions, only on real-data */}
       {realDataOnly && (
-        <div className="grid grid-cols-12 gap-3">
+        <div className="grid grid-cols-12 gap-2">
           {portfolioQ.isLoading ? (
             <PanelSkeleton rows={5} height="h-[340px]" className="col-span-12 lg:col-span-4" />
           ) : (
@@ -2137,31 +2271,31 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             >
               {portfolioQ.data?.source === "supabase" ? (
                 <GlassScrollBody>
-                <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
-                  {portfolioQ.data.accounts.map((a) => (
-                    <li key={a.account_code} className="px-3.5 py-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-xs font-medium">{a.account_name ?? a.account_code}</p>
-                        <Pill tone="neutral" size="xs">{a.account_type ?? "—"}</Pill>
-                      </div>
-                      <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-muted-foreground">
-                        <span>{a.account_code}</span>
-                        <span>{a.currency ?? "ZAR"}</span>
-                      </div>
-                      <div className="mt-1.5 flex items-center justify-between">
-                        <span className="font-mono text-[11px]">NAV {formatZAR(Number(a.nav_value ?? 0))}</span>
-                        <span className="font-mono text-[10px] text-muted-foreground">cash {formatZAR(Number(a.cash_balance ?? 0))}</span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+                  <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
+                    {portfolioQ.data.accounts.map((a) => (
+                      <li key={a.account_code} className="px-3.5 py-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-xs font-medium">{a.account_name ?? a.account_code}</p>
+                          <Pill tone="neutral" size="xs">{a.account_type ?? "—"}</Pill>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-muted-foreground">
+                          <span>{a.account_code}</span>
+                          <span>{a.currency ?? "ZAR"}</span>
+                        </div>
+                        <div className="mt-1.5 flex items-center justify-between">
+                          <span className="font-mono text-[11px]">NAV {formatZAR(Number(a.nav_value ?? 0))}</span>
+                          <span className="font-mono text-[10px] text-muted-foreground">cash {formatZAR(Number(a.cash_balance ?? 0))}</span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
                 </GlassScrollBody>
               ) : (
                 <div className="p-5">
-                <EmptyDataState
-                  title="No account master"
-                  message="IOS+ is live (orders + positions flow from the order pad for DFM@MINT, account 56378). There's no separate account-master feed wired — we don't use IPS — so this list stays empty until an account directory is sourced."
-                />
+                  <EmptyDataState
+                    title="No account master"
+                    message="IOS+ is live (orders + positions flow from the order pad for DFM@MINT, account 56378). There's no separate account-master feed wired — we don't use IPS — so this list stays empty until an account directory is sourced."
+                  />
                 </div>
               )}
             </GlassSection>
@@ -2185,51 +2319,51 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             >
               {portfolioQ.data?.source === "supabase" && portfolioQ.data.positions.length > 0 ? (
                 <GlassScrollBody className="px-0">
-                <div className="glass-inset mx-5 mb-5 overflow-auto">
-                  <table className="w-full text-xs">
-                    <thead className="sticky top-0 bg-[hsl(var(--foreground)/0.04)] backdrop-blur-sm">
-                      <tr className="text-caption text-left">
-                        <th className="px-3.5 py-1.5 font-medium">Symbol</th>
-                        <th className="px-3 py-1.5 font-medium">Account</th>
-                        <th className="px-3 py-1.5 text-right font-medium">Qty</th>
-                        <th className="px-3 py-1.5 text-right font-medium">Avg Cost</th>
-                        <th className="px-3 py-1.5 text-right font-medium">MV</th>
-                        <th className="px-3 py-1.5 text-right font-medium">P&amp;L</th>
-                      </tr>
-                    </thead>
-                    <tbody className="font-mono">
-                      {portfolioQ.data.positions.map((p) => {
-                        // P&L is null while marks are CT test data (cost basis
-                        // unreliable) — render "—" rather than a misleading R0/gain.
-                        const hasPl = p.open_pl != null;
-                        const pl = Number(p.open_pl ?? 0);
-                        return (
-                          <tr key={p.id} className="border-t border-border/60">
-                            <td className="px-3.5 py-1.5 font-medium text-foreground">{p.security_code}</td>
-                            <td className="px-3 py-1.5 text-muted-foreground">{p.account_code}</td>
-                            <td className="px-3 py-1.5 text-right">{p.quantity.toLocaleString("en-ZA")}</td>
-                            <td className="px-3 py-1.5 text-right">{p.open_average_price != null ? p.open_average_price.toFixed(2) : "—"}</td>
-                            <td className="px-3 py-1.5 text-right">{p.market_value != null ? formatZAR(Number(p.market_value)) : "—"}</td>
-                            <td className={cn("px-3 py-1.5 text-right", !hasPl ? "text-muted-foreground" : pl >= 0 ? "text-success" : "text-destructive")}>
-                              {!hasPl ? "—" : `${pl >= 0 ? "+" : ""}${formatZAR(pl)}`}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                  <div className="glass-inset mx-5 mb-5 overflow-auto">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-[hsl(var(--foreground)/0.04)] backdrop-blur-sm">
+                        <tr className="text-caption text-left">
+                          <th className="px-3.5 py-1.5 font-medium">Symbol</th>
+                          <th className="px-3 py-1.5 font-medium">Account</th>
+                          <th className="px-3 py-1.5 text-right font-medium">Qty</th>
+                          <th className="px-3 py-1.5 text-right font-medium">Avg Cost</th>
+                          <th className="px-3 py-1.5 text-right font-medium">MV</th>
+                          <th className="px-3 py-1.5 text-right font-medium">P&amp;L</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono">
+                        {portfolioQ.data.positions.map((p) => {
+                          // P&L is null while marks are CT test data (cost basis
+                          // unreliable) — render "—" rather than a misleading R0/gain.
+                          const hasPl = p.open_pl != null;
+                          const pl = Number(p.open_pl ?? 0);
+                          return (
+                            <tr key={p.id} className="border-t border-border/60">
+                              <td className="px-3.5 py-1.5 font-medium text-foreground">{p.security_code}</td>
+                              <td className="px-3 py-1.5 text-muted-foreground">{p.account_code}</td>
+                              <td className="px-3 py-1.5 text-right">{p.quantity.toLocaleString("en-ZA")}</td>
+                              <td className="px-3 py-1.5 text-right">{p.open_average_price != null ? p.open_average_price.toFixed(2) : "—"}</td>
+                              <td className="px-3 py-1.5 text-right">{p.market_value != null ? formatZAR(Number(p.market_value)) : "—"}</td>
+                              <td className={cn("px-3 py-1.5 text-right", !hasPl ? "text-muted-foreground" : pl >= 0 ? "text-success" : "text-destructive")}>
+                                {!hasPl ? "—" : `${pl >= 0 ? "+" : ""}${formatZAR(pl)}`}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 </GlassScrollBody>
               ) : (
                 <div className="p-5">
-                <EmptyDataState
-                  title="No open positions"
-                  message={
-                    portfolioQ.data?.source === "supabase"
-                      ? "0 net positions. IOS+ is live — positions are derived from order fills (net done volume per security); the book is currently flat."
-                      : "Positions are derived from IOS+ order fills (we don't use IPS) for DFM@MINT, account 56378."
-                  }
-                />
+                  <EmptyDataState
+                    title="No open positions"
+                    message={
+                      portfolioQ.data?.source === "supabase"
+                        ? "0 net positions. IOS+ is live — positions are derived from order fills (net done volume per security); the book is currently flat."
+                        : "Positions are derived from IOS+ order fills (we don't use IPS) for DFM@MINT, account 56378."
+                    }
+                  />
                 </div>
               )}
             </GlassSection>
@@ -2242,11 +2376,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
 function OrderStatePill({ state }: { state: string }) {
   const tone =
-    state === "FILLED"   ? "success" :
-    state === "PARTIAL"  ? "warning" :
-    state === "WORKING"  ? "primary" :
-    state === "REJECTED" ? "destructive" :
-                            "neutral";
+    state === "FILLED" ? "success" :
+      state === "PARTIAL" ? "warning" :
+        state === "WORKING" ? "primary" :
+          state === "REJECTED" ? "destructive" :
+            "neutral";
   return (
     <Badge variant={tone as never} className="text-[9.5px]">
       {state}
