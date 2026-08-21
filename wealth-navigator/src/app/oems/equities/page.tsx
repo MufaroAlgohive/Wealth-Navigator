@@ -128,6 +128,18 @@ export default function EquitiesPage() {
     queryFn: fetchEquitiesUniverse,
     enabled: realDataOnly,
     ...queryOpts("reference"),
+    // 1M/6M trailing returns are backfilled a bounded batch at a time (see
+    // /api/equities' attachPeriodReturns — persisted, rotating cache, PR
+    // #159-#161), so a single load rarely has full coverage. Poll every 3s
+    // while returnsCoverage is still behind count so the board fills in on
+    // its own instead of requiring manual refreshes; stop the moment it
+    // catches up (or if the response is unavailable/still loading).
+    refetchInterval: (query) => {
+      const d = query.state.data;
+      if (!d || d.source === "unavailable") return false;
+      const coverage = d.returnsCoverage ?? 0;
+      return coverage < d.count ? 3_000 : false;
+    },
   });
   // Sorted by bare symbol for a stable A→Z table (BFF already orders by the
   // `.JO`-suffixed symbol; sort defensively on the stripped display symbol).
@@ -723,6 +735,45 @@ function UniversePagination({
   );
 }
 
+/**
+ * Small live progress readout for the 1M/6M returns backfill. The board
+ * polls `/api/equities` every 3s (see `equitiesUniverseQ.refetchInterval`
+ * above) while coverage is incomplete — this just renders where that
+ * polling currently stands, so the user isn't left guessing whether
+ * reloading the page is doing anything.
+ */
+function ReturnsCoverageBadge({ response }: { response: EquitiesUniverseResponse | undefined }) {
+  if (!response || response.source === "unavailable") return null;
+  const coverage = response.returnsCoverage ?? 0;
+  const total = response.count;
+  if (total <= 0) return null;
+  const remaining = Math.max(total - coverage, 0);
+  const done = remaining === 0;
+  return (
+    <div className="mb-2 flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full",
+          done ? "bg-up" : "animate-pulse bg-amber-400",
+        )}
+        aria-hidden
+      />
+      {done ? (
+        <span>
+          1M/6M returns fully loaded — <span className="font-mono">{total}</span>/
+          <span className="font-mono">{total}</span>
+        </span>
+      ) : (
+        <span>
+          Loading 1M/6M returns… <span className="font-mono font-semibold">{coverage}</span>/
+          <span className="font-mono">{total}</span> loaded,{" "}
+          <span className="font-mono">{remaining}</span> still loading
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─── Securities Universe · real-data table ──────────────────────────────
 
 function RealUniverseTable({
@@ -810,6 +861,7 @@ function RealUniverseTable({
           </>
         ) : null}
       </p>
+      <ReturnsCoverageBadge response={response} />
       <div className="glass-inset overflow-x-auto scrollbar-thin">
         <Table>
           <TableHeader>
