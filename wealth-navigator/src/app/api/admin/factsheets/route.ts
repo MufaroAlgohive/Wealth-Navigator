@@ -220,10 +220,33 @@ export async function GET(req: Request) {
     }
     const out: Record<string, unknown> = {};
     if (symbols.size) {
-      const { data } = await db!
+      // price_source is an OPTIONAL provenance column (additive migration
+      // supabase/retail/20260614_add_price_source.sql) — only select it once
+      // the worker's own gate (RETAIL_PRICE_SOURCE_COL=1) confirms both
+      // writers are stamping it, so an unmigrated securities_c never errors
+      // on an unknown column. resolveSecurityPrices() falls back to plain
+      // recency when the field is absent (see isIressConfirmedFresh).
+      const priceSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
+      const { data: rawSecurities } = await db!
         .from("securities_c")
-        .select("id, symbol, name, logo_url, last_price, change_percent, updated_at")
+        .select(
+          `id, symbol, name, logo_url, last_price, change_percent, updated_at${priceSourceCol ? ", price_source" : ""}`,
+        )
         .in("symbol", [...symbols]);
+      // Cast via unknown: the dynamic select() string (price_source is
+      // optional) defeats supabase-js's compile-time column parser, so
+      // `rawSecurities` is inferred as ParserError[] (same pattern as
+      // workers/iress-ingest/src/retail-ingest.ts's loadRetailUniverse).
+      const data = rawSecurities as unknown as Array<{
+        id: string;
+        symbol: string;
+        name?: string | null;
+        logo_url?: string | null;
+        last_price?: number | null;
+        change_percent?: number | null;
+        updated_at?: string | null;
+        price_source?: "iress" | "yahoo" | null;
+      }> | null;
       const securityIds = (data ?? []).map((row) => row.id).filter(Boolean);
       const { data: intraday } = securityIds.length
         ? await db!
@@ -246,15 +269,7 @@ export async function GET(req: Request) {
       const found = new Set((data ?? []).map((row) => String(row.symbol).toUpperCase()));
       const missing = [...symbols].filter((symbol) => !found.has(String(symbol).toUpperCase()));
       const resolved = await resolveSecurityPrices({
-        rows: (data ?? []) as Array<{
-          id: string;
-          symbol: string;
-          name?: string | null;
-          logo_url?: string | null;
-          last_price?: number | null;
-          change_percent?: number | null;
-          updated_at?: string | null;
-        }>,
+        rows: data ?? [],
         intradayBySecurityId: latestIntraday as unknown as Map<
           string,
           { current_price?: number | null; "1d_pct"?: number | null; timestamp?: string | null }

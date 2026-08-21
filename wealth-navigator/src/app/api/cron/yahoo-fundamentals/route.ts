@@ -98,6 +98,14 @@ export async function GET(req: Request) {
     /* fail-closed */
   }
   const staleFallbackMs = (Number(process.env.IRESS_STALE_FALLBACK_HOURS) || 3) * 3_600_000;
+  // Same gate the retail-ingest worker uses to stamp price_source='iress'
+  // (workers/iress-ingest/src/retail-ingest.ts). Sharing the flag keeps the
+  // read side (isIressConfirmedFresh in lib/market-prices/fallback.ts) and
+  // both write sides in lock-step: either every writer stamps provenance, or
+  // none of them select/write the column, so an unmigrated securities_c
+  // (price_source not yet added by supabase/retail/20260614_add_price_source.sql)
+  // never errors on an unknown column.
+  const setSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
 
   const session = await yahooCrumb();
   if (!session) return NextResponse.json({ ok: false, error: "Could not establish a Yahoo session (cookie/crumb)" }, { status: 502 });
@@ -129,7 +137,7 @@ export async function GET(req: Request) {
       const cur = res.price?.currency;
       if (cur && cur !== "ZAc") { failed++; continue; }
 
-      const update: Record<string, number> = {};
+      const update: Record<string, number | string> = {};
       const mc = res.price?.marketCap?.raw;
       if (mc != null) update.market_cap = Math.round(mc);
       const pe = res.summaryDetail?.trailingPE?.raw ?? res.defaultKeyStatistics?.trailingPE?.raw;
@@ -166,6 +174,11 @@ export async function GET(req: Request) {
         if (px != null && px > 0) {
           const pxCents = Math.round(px);
           update.last_price = pxCents;
+          // Provenance stamp: lets the read-side switch-back check
+          // (isIressConfirmedFresh, lib/market-prices/fallback.ts) tell a
+          // fresh IRESS write apart from Yahoo's own upkeep write, which
+          // otherwise refreshes updated_at and looks identically "fresh".
+          if (setSourceCol) update.price_source = "yahoo";
           let pct: number | null = null;
           let abs: number | null = null;
           if (chg != null) {

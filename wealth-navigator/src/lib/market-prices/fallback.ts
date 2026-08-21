@@ -22,9 +22,33 @@ import { type YahooTruthQuote, fetchYahooTruthQuote } from "@/lib/truth/yahoo-li
  *  - Read paths NEVER write to the DB: this is an in-memory overlay. The
  *    yahoo-fundamentals cron is the only persist path, and it keeps the
  *    same cents contract (its write gate is `YAHOO_FUNDAMENTALS_WRITE=1`).
+ *
+ * Provenance vs recency (the "switch back to IRESS" problem):
+ *  - `isPriceStale()` alone answers "was this row touched recently?" — it
+ *    cannot answer "did IRESS itself produce this value?". The Yahoo
+ *    fallback writer (`/api/cron/yahoo-fundamentals`) refreshes
+ *    `securities_c.updated_at` on every write it makes for a symbol it
+ *    owns, so a purely recency-based check can stay "fresh" forever from
+ *    Yahoo's own upkeep — with IRESS down for weeks — and never signal a
+ *    clean handover back.
+ *  - `securities_c.price_source` (additive column, `supabase/retail/
+ *    20260614_add_price_source.sql`, already stamped by the real IRESS
+ *    writer at `workers/iress-ingest/src/retail-ingest.ts` when
+ *    `RETAIL_PRICE_SOURCE_COL=1`) records WHO last wrote the price.
+ *    `isIressConfirmedFresh()` below is the actual switch-back condition:
+ *    fresh AND `price_source !== 'yahoo'`. A fresh row stamped 'yahoo' is
+ *    Yahoo's own maintenance write and must never be read as "IRESS is
+ *    back", however recent it is.
+ *  - Rows with no `price_source` (column not selected because
+ *    `RETAIL_PRICE_SOURCE_COL` isn't set yet, or a pre-provenance write)
+ *    fall back to plain recency — the pre-existing behaviour — so this is
+ *    additive and never breaks an unmigrated DB.
  */
 
 export const IRESS_STALE_FALLBACK_MS = (Number(process.env.IRESS_STALE_FALLBACK_HOURS) || 3) * 3_600_000;
+
+/** Who last wrote `securities_c.last_price` for a symbol, per `price_source`. */
+export type PriceSourceFeed = "iress" | "yahoo" | null | undefined;
 
 export type ResolvedPriceSource = "securities_c" | "stock_intraday_c" | "yahoo";
 
@@ -49,6 +73,10 @@ export interface SecurityPriceRow {
   last_price?: number | null;
   change_percent?: number | null;
   updated_at?: string | null;
+  /** Feed that last wrote `last_price` ('iress' | 'yahoo' | null). Only
+   *  present when the caller selected it (gated by `RETAIL_PRICE_SOURCE_COL`
+   *  — see isIressConfirmedFresh). */
+  price_source?: PriceSourceFeed;
 }
 
 /** Latest stock_intraday_c tick per security_id. */
@@ -115,6 +143,35 @@ export function isPriceStale(asOf: string | null | undefined, now: number = Date
   return now - ts > IRESS_STALE_FALLBACK_MS;
 }
 
+/**
+ * THE switch-back condition. True only when a row's freshness is genuine
+ * evidence that IRESS itself produced the value — not just that some writer
+ * (possibly the Yahoo fallback cron doing its normal upkeep) touched the row
+ * recently.
+ *
+ * `isPriceStale()` alone cannot tell these apart: `/api/cron/yahoo-fundamentals`
+ * refreshes `securities_c.updated_at` on every write it makes for a symbol it
+ * owns, so a purely recency-based check can read "fresh" forever purely from
+ * Yahoo's own upkeep, even with IRESS down for weeks — the switch never
+ * cleanly hands back. A fresh row stamped `price_source: 'yahoo'` must NOT be
+ * read as "IRESS is back", however recent it is; only a fresh 'iress'-sourced
+ * row counts.
+ *
+ * Rows with no `price_source` (column not selected — gated by
+ * `RETAIL_PRICE_SOURCE_COL` until the additive migration is applied and the
+ * flag flipped — or a pre-provenance write) fall back to plain recency, the
+ * pre-existing behaviour, so this is additive and never breaks an unmigrated
+ * DB or regresses current behaviour before the flag is on.
+ */
+export function isIressConfirmedFresh(
+  asOf: string | null | undefined,
+  priceSource: PriceSourceFeed,
+  now: number = Date.now(),
+): boolean {
+  if (isPriceStale(asOf, now)) return false;
+  return priceSource !== "yahoo";
+}
+
 async function runBounded<T>(items: T[], concurrency: number, work: (item: T) => Promise<void>) {
   let cursor = 0;
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
@@ -160,6 +217,16 @@ export async function resolveSecurityPrices(
     const fresh = !isPriceStale(asOf, now);
     const havePrice = priceCents > 0;
     if (havePrice && fresh) {
+      // Provenance-aware label: a live intraday tick has no per-tick
+      // provenance today (both writers upsert stock_intraday_c the same
+      // shape), so it keeps the old "stock_intraday_c" label. For the
+      // securities_c-only path, honestly distinguish a fresh IRESS write
+      // from a fresh Yahoo upkeep write — see isIressConfirmedFresh.
+      const source: ResolvedPriceSource = live
+        ? "stock_intraday_c"
+        : isIressConfirmedFresh(asOf, row.price_source, now)
+          ? "securities_c"
+          : "yahoo";
       out.push({
         symbol: row.symbol,
         name: row.name,
@@ -172,7 +239,7 @@ export async function resolveSecurityPrices(
               ? null
               : Number(row.change_percent),
         price_as_of: asOf ?? null,
-        price_source: live ? "stock_intraday_c" : "securities_c",
+        price_source: source,
       });
     } else {
       out.push({
