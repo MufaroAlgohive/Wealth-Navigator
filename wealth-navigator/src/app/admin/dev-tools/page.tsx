@@ -12,7 +12,9 @@ import { Button } from "@/components/ui/button";
 type RecomputeStrategyResult = {
   strategy: string;
   draftAction?: string;
+  draftReason?: string;
   certificationAction?: string;
+  certificationReason?: string;
   ytdReturnPctBefore: number | null;
   ytdReturnPctAfter: number | null;
 };
@@ -23,8 +25,14 @@ type RecomputeResponse = {
   phase?: string;
   error?: string;
   triggeredBy?: string;
-  draft?: { results: Array<{ strategy: string; action: string; reason?: string }> };
-  certification?: { results: Array<{ strategy: string; action: string; reason?: string }> };
+  draft?: {
+    results: Array<{ strategy: string; action: string; reason?: string }>;
+    note?: string;
+  };
+  certification?: {
+    results: Array<{ strategy: string; action: string; reason?: string }>;
+    note?: string;
+  };
   ytd?: Array<{ strategy: string; ytdReturnPctBefore: number | null; ytdReturnPctAfter: number | null }>;
 };
 
@@ -71,6 +79,7 @@ function RecomputePanel() {
       byStrategy.set(d.strategy, {
         strategy: d.strategy,
         draftAction: d.action,
+        draftReason: d.reason,
         ytdReturnPctBefore: null,
         ytdReturnPctAfter: null,
       });
@@ -82,6 +91,7 @@ function RecomputePanel() {
         ytdReturnPctAfter: null,
       };
       existing.certificationAction = c.action;
+      existing.certificationReason = c.reason;
       byStrategy.set(c.strategy, existing);
     }
     for (const y of result.ytd ?? []) {
@@ -118,6 +128,16 @@ function RecomputePanel() {
         {result && (
           <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
             {result.error && !result.draft && <p className="text-destructive">{result.error}</p>}
+            {result.draft?.note && (
+              <p className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-600 dark:text-amber-400">
+                Draft: {result.draft.note}
+              </p>
+            )}
+            {result.certification?.note && (
+              <p className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-600 dark:text-amber-400">
+                Certification: {result.certification.note}
+              </p>
+            )}
             {result.asOf && (
               <p className="mb-2 text-muted-foreground">
                 As of <span className="font-mono text-foreground">{result.asOf}</span>
@@ -145,32 +165,42 @@ function RecomputePanel() {
                     <tr key={r.strategy}>
                       <td className="py-1 pr-2 font-sans font-semibold">{r.strategy}</td>
                       <td className="py-1 pr-2">
-                        <Pill
-                          tone={
-                            r.draftAction === "written"
-                              ? "success"
-                              : r.draftAction === "failed"
-                                ? "destructive"
-                                : "neutral"
-                          }
-                          size="xs"
-                        >
-                          {r.draftAction ?? "—"}
-                        </Pill>
+                        <span title={r.draftReason} className="inline-flex items-center gap-1">
+                          <Pill
+                            tone={
+                              r.draftAction === "written"
+                                ? "success"
+                                : r.draftAction === "failed"
+                                  ? "destructive"
+                                  : "neutral"
+                            }
+                            size="xs"
+                          >
+                            {r.draftAction ?? "—"}
+                          </Pill>
+                          {r.draftReason && (
+                            <span className="text-muted-foreground">({r.draftReason})</span>
+                          )}
+                        </span>
                       </td>
                       <td className="py-1 pr-2">
-                        <Pill
-                          tone={
-                            r.certificationAction === "certified" || r.certificationAction === "already-certified"
-                              ? "success"
-                              : r.certificationAction === "failed"
-                                ? "destructive"
-                                : "neutral"
-                          }
-                          size="xs"
-                        >
-                          {r.certificationAction ?? "—"}
-                        </Pill>
+                        <span title={r.certificationReason} className="inline-flex items-center gap-1">
+                          <Pill
+                            tone={
+                              r.certificationAction === "certified" || r.certificationAction === "already-certified"
+                                ? "success"
+                                : r.certificationAction === "failed"
+                                  ? "destructive"
+                                  : "neutral"
+                            }
+                            size="xs"
+                          >
+                            {r.certificationAction ?? "—"}
+                          </Pill>
+                          {r.certificationReason && (
+                            <span className="text-muted-foreground">({r.certificationReason})</span>
+                          )}
+                        </span>
                       </td>
                       <td className="py-1 pr-2 text-right">{formatPct(r.ytdReturnPctBefore)}</td>
                       <td className="py-1 text-right font-semibold">{formatPct(r.ytdReturnPctAfter)}</td>
