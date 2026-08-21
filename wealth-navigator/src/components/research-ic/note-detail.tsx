@@ -326,22 +326,22 @@ export function NoteDetail({
         >
           {fundamentals.length ? (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full table-fixed text-[11px]">
                 <thead>
-                  <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                    <th className="px-5 py-2 font-medium">Metric</th>
-                    <th className="px-3 py-2 text-right font-medium">Prior</th>
-                    <th className="px-3 py-2 text-right font-medium">Current</th>
+                  <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[9px] uppercase tracking-wide text-muted-foreground">
+                    <th className="px-2 py-1 font-semibold">Metric</th>
+                    <th className="w-12 px-2 py-1 text-right font-semibold">Prior</th>
+                    <th className="w-12 px-2 py-1 text-right font-semibold">Current</th>
                     {fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0) ? (
                       <>
-                        <th className="px-3 py-2 text-right font-medium">Year 1</th>
-                        <th className="px-3 py-2 text-right font-medium">Year 2</th>
-                        <th className="px-3 py-2 text-right font-medium">Year 3</th>
+                        <th className="w-12 px-2 py-1 text-right font-semibold">Y1</th>
+                        <th className="w-12 px-2 py-1 text-right font-semibold">Y2</th>
+                        <th className="w-12 px-2 py-1 text-right font-semibold">Y3</th>
                       </>
                     ) : (
-                      <th className="px-3 py-2 text-right font-medium">Forecast</th>
+                      <th className="w-14 px-2 py-1 text-right font-semibold">Forecast</th>
                     )}
-                    <th className="px-5 py-2 text-right font-medium">Trend</th>
+                    <th className="w-9 px-2 py-1 text-right font-semibold">Trend</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -352,34 +352,34 @@ export function NoteDetail({
                         key={f.metric}
                         className="border-b border-[hsl(var(--glass-border))] last:border-0"
                       >
-                        <td className="px-5 py-2 text-foreground/85">
+                        <td className="truncate px-2 py-1 text-foreground/85" title={`${f.metric}${f.unit ? ` (${f.unit})` : ""}`}>
                           {f.metric}
                           {f.unit ? ` (${f.unit})` : ""}
                         </td>
-                        <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                        <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                           {fmtFundCell(f.prior, f.unit)}
                         </td>
-                        <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
+                        <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums">
                           {fmtFundCell(f.current, f.unit)}
                         </td>
                         {years.length > 0 ? (
                           <>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[0], f.unit)}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[1], f.unit)}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[2], f.unit)}
                             </td>
                           </>
                         ) : (
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                          <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                             {fmtFundCell(f.forecast, f.unit)}
                           </td>
                         )}
-                        <td className="px-5 py-2">
+                        <td className="px-2 py-1">
                           <span className="flex justify-end">
                             <TrendArrow trend={f.trend} />
                           </span>
@@ -391,7 +391,7 @@ export function NoteDetail({
               </table>
             </div>
           ) : (
-            <p className="p-5 text-caption">No fundamentals captured.</p>
+            <p className="p-3 text-caption">No fundamentals captured.</p>
           )}
         </GlassSection>
         <GlassSection
@@ -434,11 +434,11 @@ export function NoteDetail({
               },
             ]}
           />
-          <div className="border-t border-[hsl(var(--glass-border))] p-5">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="border-t border-[hsl(var(--glass-border))] p-2.5">
+            <p className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
               P/E bars
             </p>
-            <div className="mt-2 h-[140px]">
+            <div className="mt-1.5 h-[110px]">
               <PeerPeBars
                 peers={peers}
                 subjectPe={note.valuation?.pe_multiple ?? null}
@@ -464,21 +464,24 @@ export function NoteDetail({
       {/* IC log */}
       <GlassSection title="Investment committee log" dataSource="supabase" db="institutional">
         {icLog.length ? (
-          <ol className="space-y-3">
+          <ol className="space-y-1.5">
             {icLog.map((e) => (
-              <li key={`${e.at}-${e.action}`} className="flex gap-3">
-                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.06)] text-[10px] font-semibold text-muted-foreground">
+              <li
+                key={`${e.at}-${e.action}`}
+                className="flex items-start gap-2 border-b border-[hsl(var(--glass-border))] pb-1.5 last:border-0 last:pb-0"
+              >
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.06)] text-[9px] font-semibold text-muted-foreground">
                   {e.initials ?? initialsOf(e.actor)}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-semibold">{e.actor}</span>
-                    <span className="rounded border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] font-semibold">{e.actor}</span>
+                    <span className="rounded border border-[hsl(var(--glass-border))] px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
                       {e.action}
                     </span>
-                    <span className="text-[10px] text-muted-foreground">{e.at}</span>
+                    <span className="text-[9px] text-muted-foreground">{e.at}</span>
                   </div>
-                  {e.note && <p className="mt-0.5 text-xs text-foreground/80">{e.note}</p>}
+                  {e.note && <p className="mt-0.5 text-[11px] text-foreground/80">{e.note}</p>}
                 </div>
               </li>
             ))}
