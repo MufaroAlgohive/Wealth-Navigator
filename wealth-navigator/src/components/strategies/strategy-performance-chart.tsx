@@ -36,6 +36,7 @@ import {
 } from "lightweight-charts";
 import * as React from "react";
 
+import { ChartsBrandBadge } from "@/components/analysis/charts-brand-badge";
 import { cn } from "@/lib/cn";
 import { hslToRgba } from "@/lib/color";
 import { formatDate } from "@/lib/format";
@@ -180,6 +181,9 @@ export function StrategyPerformanceChart({
         textColor: hslToRgba(theme.fg),
         fontFamily: "var(--font-jetbrains-mono, ui-monospace, monospace)",
         fontSize: 10,
+        // Custom brand badge replaces the built-in TradingView watermark
+        // (see ChartsBrandBadge for the licence-required attribution link).
+        attributionLogo: false,
       },
       grid: {
         vertLines: { color: hslToRgba(theme.border), style: LineStyle.Dotted },
@@ -357,6 +361,7 @@ export function StrategyPerformanceChart({
       </div>
 
       <div ref={containerRef} style={{ width: "100%", height }} aria-label="Strategy performance chart" />
+      <ChartsBrandBadge />
 
       {/* Magnifier tooltip */}
       {tooltip && (
