@@ -132,18 +132,23 @@ export async function POST(req: Request) {
 
   const before = await readYtdSnapshot(asOfDate, strategyName);
 
+  // IMPORTANT: draft failures are per-strategy (publishCanonicalLedgerDraft
+  // writes a real DRAFT row for every strategy that succeeds, independently
+  // of whatever happened to its siblings — see the doc comment on
+  // CanonicalDraftPublishResult). We deliberately do NOT early-return here
+  // when draft.ok is false: certification is itself per-strategy
+  // (publishCanonicalLedgerCertification loops each active strategy and
+  // only fails the ones with no valid DRAFT row, e.g. DRAFT_MISSING), so a
+  // single strategy's data gap (a missing stored close, say) must not block
+  // certification — and therefore corrected YTD — for every OTHER healthy
+  // strategy. Always run certification for whatever DID get a valid draft;
+  // the draft failure itself is still reported in full below, unmodified.
   const draft = await publishCanonicalLedgerDraft({
     asOfDate,
     apply: true,
     replaceExistingDraft: true,
     strategyName,
   });
-  if (!draft.ok) {
-    return NextResponse.json(
-      { ok: false, asOf: asOfDate, phase: "draft", triggeredBy: stepUp.email, draft, certification: null },
-      { status: 502 },
-    );
-  }
 
   const certification = await publishCanonicalLedgerCertification({
     asOfDate,
@@ -159,17 +164,27 @@ export async function POST(req: Request) {
     ytdReturnPctAfter: after.get(strategy) ?? null,
   }));
 
+  const certifiedCount = certification.summary.certified + certification.summary.alreadyCertified;
+  const anyCertified = certifiedCount > 0;
+  const allOk = draft.ok && certification.ok;
+  // 502 only when NOTHING succeeded end-to-end (e.g. total outage, or every
+  // strategy hit a data gap). A single strategy's isolated failure — with
+  // every other strategy fully certified — is a 200 with the failure
+  // visible per-strategy in the body, not a request-level error.
+  const phase = allOk ? "complete" : anyCertified ? "partial" : "certification";
+  const status = allOk || anyCertified ? 200 : 502;
+
   return NextResponse.json(
     {
-      ok: certification.ok,
+      ok: allOk,
       asOf: asOfDate,
-      phase: certification.ok ? "complete" : "certification",
+      phase,
       triggeredBy: stepUp.email,
       certificationActor,
       draft,
       certification,
       ytd,
     },
-    { status: certification.ok ? 200 : 502 },
+    { status },
   );
 }
