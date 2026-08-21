@@ -120,6 +120,7 @@ export function NoteDetail({
 
   const peers = note.valuation?.peers ?? [];
   const fundamentals = th.fundamentals ?? [];
+  const hasForecastYears = fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0);
   const icLog = th.icLog ?? [];
   const canSubmit = perms.createNote && (note.status === "draft" || note.status === "in_review");
 
@@ -316,7 +317,7 @@ export function NoteDetail({
       <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
         <GlassSection
           title={
-            fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0)
+            hasForecastYears
               ? "Fundamentals · multi-year (Year 1 / Year 2 / Year 3)"
               : "Fundamentals · latest vs forecast"
           }
@@ -325,23 +326,45 @@ export function NoteDetail({
           noPadding
         >
           {fundamentals.length ? (
+            // `table-fixed` columns are sized in PERCENT, not px, so they
+            // always sum to exactly 100% of the panel's real rendered
+            // width (which varies — this sits in a 1.4fr/1fr grid cell
+            // inside a 3-column [320px_1fr_260px] page grid, so the
+            // panel itself can be as narrow as ~300px on a real screen).
+            // Percent widths make horizontal scroll impossible to trigger
+            // by accident; `overflow-x-auto` stays only as a defensive
+            // fallback. Two width sets, one per column count:
+            //   latest-vs-forecast (5 cols): Metric 48 / Prior 13 / Current 13 / Forecast 16 / Trend 10
+            //   multi-year (7 cols):         Metric 32 / Prior 12 / Current 12 / Y1 12 / Y2 12 / Y3 12 / Trend 8
+            // Trend only needs to fit a 14px icon (+ 16px cell padding),
+            // so it gets the smallest share; Metric gets the rest so
+            // longer names ("Net debt/EBITDA (x)") truncate gracefully
+            // instead of being squeezed to a couple of characters.
             <div className="overflow-x-auto">
               <table className="w-full table-fixed text-[11px]">
                 <thead>
                   <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[9px] uppercase tracking-wide text-muted-foreground">
-                    <th className="px-2 py-1 font-semibold">Metric</th>
-                    <th className="w-12 px-2 py-1 text-right font-semibold">Prior</th>
-                    <th className="w-12 px-2 py-1 text-right font-semibold">Current</th>
-                    {fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0) ? (
+                    <th className={cn("px-2 py-1 font-semibold", hasForecastYears ? "w-[32%]" : "w-[48%]")}>
+                      Metric
+                    </th>
+                    <th className={cn("px-2 py-1 text-right font-semibold", hasForecastYears ? "w-[12%]" : "w-[13%]")}>
+                      Prior
+                    </th>
+                    <th className={cn("px-2 py-1 text-right font-semibold", hasForecastYears ? "w-[12%]" : "w-[13%]")}>
+                      Current
+                    </th>
+                    {hasForecastYears ? (
                       <>
-                        <th className="w-12 px-2 py-1 text-right font-semibold">Y1</th>
-                        <th className="w-12 px-2 py-1 text-right font-semibold">Y2</th>
-                        <th className="w-12 px-2 py-1 text-right font-semibold">Y3</th>
+                        <th className="w-[12%] px-2 py-1 text-right font-semibold">Y1</th>
+                        <th className="w-[12%] px-2 py-1 text-right font-semibold">Y2</th>
+                        <th className="w-[12%] px-2 py-1 text-right font-semibold">Y3</th>
                       </>
                     ) : (
-                      <th className="w-14 px-2 py-1 text-right font-semibold">Forecast</th>
+                      <th className="w-[16%] px-2 py-1 text-right font-semibold">Forecast</th>
                     )}
-                    <th className="w-9 px-2 py-1 text-right font-semibold">Trend</th>
+                    <th className={cn("px-2 py-1 text-right font-semibold", hasForecastYears ? "w-[8%]" : "w-[10%]")}>
+                      Trend
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -356,26 +379,26 @@ export function NoteDetail({
                           {f.metric}
                           {f.unit ? ` (${f.unit})` : ""}
                         </td>
-                        <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
+                        <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                           {fmtFundCell(f.prior, f.unit)}
                         </td>
-                        <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums">
+                        <td className="whitespace-nowrap px-2 py-1 text-right font-mono font-semibold tabular-nums">
                           {fmtFundCell(f.current, f.unit)}
                         </td>
                         {years.length > 0 ? (
                           <>
-                            <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[0], f.unit)}
                             </td>
-                            <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[1], f.unit)}
                             </td>
-                            <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[2], f.unit)}
                             </td>
                           </>
                         ) : (
-                          <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
+                          <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                             {fmtFundCell(f.forecast, f.unit)}
                           </td>
                         )}
