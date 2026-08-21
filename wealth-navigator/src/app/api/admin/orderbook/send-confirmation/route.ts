@@ -35,11 +35,15 @@ import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } f
  *  1. Stamp confirmation metadata (who / when) onto the source row.
  *  2. Update RETAIL `stock_holdings_c.Fill_date` to today for the affected
  *     holding(s) so client P&L start date = execution date.
- *  3. Actually send the confirmation emails — the client gets the standard
- *     trade-confirmation template, the desk gets a summary. This was
- *     previously a `console.info` stub ("Resend dispatch deferred") that
- *     returned `email: "logged"`, so despite the button's tooltip nothing
- *     was ever delivered to anyone. See dispatchConfirmationEmails below.
+ *  3. Send a real MINT-branded trade-confirmation email (same Resend
+ *     infrastructure + `buildTradeConfirmationHtml` template `manual-fill`
+ *     already uses successfully) to every distinct client affected by the
+ *     book — a strategy-wide order can touch many clients, so this sends
+ *     one email per client, not one generic email. Email failures (bad/
+ *     missing address, Resend outage) are caught per-client and never block
+ *     or roll back the confirmation-stamping / Fill_date logic above; the
+ *     outcome is surfaced via `confirmation_email` (aggregate status) and
+ *     `confirmation_email_summary` (`{ sent, skipped, failed }` counts).
  *
  * Body (oem):  { order_id: string, book_id: string }
  * Body (crm):  { order_id: string, book_id: string, origin: "crm", source_ids: string[] }
@@ -55,6 +59,7 @@ interface AuditRow {
   id: string;
   order_id: string;
   symbol: string;
+  side: string | null;
   quantity: number;
   status: string;
   payload: Record<string, unknown>;
@@ -107,34 +112,34 @@ function openRetail(): SupabaseClient | null {
   }
 }
 
-interface EligibleHolding {
-  id: string;
-  user_id: string;
-  security_id: string | null;
-  quantity: number | null;
-  avg_fill: number | null;
-  Expected_fill: number | null;
+/** One distinct client whose stock_holdings_c row(s) actually had Fill_date
+ * stamped by updateHoldingsFillDate — i.e. AFTER the UAT real-client guard
+ * has already excluded anyone who must not be touched. `quantity` sums that
+ * client's matched holding rows, giving each client's own trade-confirmation
+ * email an accurate per-client fill size rather than the order's total. */
+interface AffectedClient {
+  userId: string;
+  quantity: number;
 }
 
 /** Bulk Fill_date update shared by both origins' holding-update step, with
- * the same UAT real-client protection both paths need. Returns the rows that
- * actually passed the guard so the caller can email exactly that set — the
- * confirmation email and the Fill_date write must never disagree about which
- * clients were touched. */
+ * the same UAT real-client protection both paths need. Also returns the
+ * distinct clients actually touched, so the caller can email exactly the
+ * people whose holdings were updated (never a UAT-protected real client). */
 async function updateHoldingsFillDate(
   retail: SupabaseClient,
   ids: string[],
   today: string,
-): Promise<{ updated: number; notice: string | null; eligible: EligibleHolding[] }> {
-  if (ids.length === 0) return { updated: 0, notice: "No holding ids provided — Fill_date unchanged.", eligible: [] };
+): Promise<{ updated: number; notice: string | null; clients: AffectedClient[] }> {
+  if (ids.length === 0) return { updated: 0, notice: "No holding ids provided — Fill_date unchanged.", clients: [] };
   const { data: holds, error: holdsErr } = await retail
     .from("stock_holdings_c")
-    .select("id, user_id, security_id, quantity, avg_fill, Expected_fill")
+    .select("id, user_id, quantity")
     .in("id", ids)
     .eq("is_active", true);
-  if (holdsErr) return { updated: 0, notice: `stock_holdings_c read failed: ${holdsErr.message}`, eligible: [] };
+  if (holdsErr) return { updated: 0, notice: `stock_holdings_c read failed: ${holdsErr.message}`, clients: [] };
 
-  let holdingRows = (holds ?? []) as EligibleHolding[];
+  let holdingRows = (holds ?? []) as Array<{ id: string; user_id: string; quantity: number | null }>;
   let protectedReal = 0;
   if (isUatEnv() && holdingRows.length > 0) {
     const ownerIds = [...new Set(holdingRows.map((h) => h.user_id).filter(Boolean))];
@@ -154,7 +159,7 @@ async function updateHoldingsFillDate(
         protectedReal > 0
           ? `No test holdings matched${protectedSuffix} — Fill_date unchanged.`
           : "No matching stock_holdings_c rows — Fill_date unchanged.",
-      eligible: [],
+      clients: [],
     };
   }
 
@@ -166,133 +171,96 @@ async function updateHoldingsFillDate(
       holdingRows.map((h) => h.id),
     )
     .eq("is_active", true);
-  if (upErr) return { updated: 0, notice: `Fill_date update failed: ${upErr.message}`, eligible: [] };
+  if (upErr) return { updated: 0, notice: `Fill_date update failed: ${upErr.message}`, clients: [] };
+
+  const byClient = new Map<string, number>();
+  for (const h of holdingRows) {
+    if (!h.user_id) continue;
+    byClient.set(h.user_id, (byClient.get(h.user_id) ?? 0) + (Number(h.quantity) || 0));
+  }
+
   return {
     updated: count ?? holdingRows.length,
     notice: protectedSuffix ? `Fill_date updated for test holdings only${protectedSuffix}.` : null,
-    eligible: holdingRows,
+    clients: [...byClient.entries()].map(([userId, quantity]) => ({ userId, quantity })),
   };
 }
 
-/**
- * Actually dispatches the confirmation emails this endpoint has always
- * claimed to send. Until now it only `console.info`'d the intent ("Resend
- * dispatch deferred"), so the button's own tooltip ("Sends trade
- * confirmation emails to client") was untrue and nobody — client or desk —
- * ever received anything.
- *
- * Two audiences:
- *  - the CLIENT who owns each affected holding, using the existing
- *    buildTradeConfirmationHtml template (already used by the
- *    trade_confirmation Supabase webhook, so the two paths look identical
- *    in the client's inbox).
- *  - the DESK, one summary to every admin_team member with
- *    permissions.notifications.csv_exports — the same recipient rule
- *    close-book already uses, so there is one place to manage who is on
- *    the trade-notification list rather than two competing ones.
- *
- * `eligible` has already passed the UAT real-client guard in
- * updateHoldingsFillDate, so during UAT this can only ever reach test
- * accounts. Never throws: a mail failure must not roll back a
- * confirmation that has already stamped Fill_date.
- */
-async function dispatchConfirmationEmails(
+/** Overall status string for the response — "sent" if at least one client
+ * got their email, "failed" if nobody got one but at least one attempt
+ * errored, "skipped" only when there was nothing to send (no clients, or
+ * every affected client has no email on file). Mirrors the per-request
+ * `confirmation_email` field manual-fill/route.ts already returns, extended
+ * here to an aggregate across however many clients this book/order touched. */
+function summarizeEmailStatus(s: { sent: number; skipped: number; failed: number }): "sent" | "skipped" | "failed" {
+  if (s.sent > 0) return "sent";
+  if (s.failed > 0) return "failed";
+  return "skipped";
+}
+
+/** Sends one real trade-confirmation email per affected client — same
+ * Resend call + `buildTradeConfirmationHtml` template manual-fill/route.ts
+ * already uses successfully. Deliberately best-effort per client: a bad
+ * address or a Resend outage for one client must never stop the others, and
+ * must never roll back the Fill_date/confirmation-stamp work that already
+ * happened above this call. */
+async function sendConfirmationEmails(
   retail: SupabaseClient,
-  eligible: EligibleHolding[],
-  context: { orderId: string; bookId: string; actorEmail: string },
-): Promise<{ clientsEmailed: number; deskEmailed: number; notice: string | null }> {
-  if (eligible.length === 0) return { clientsEmailed: 0, deskEmailed: 0, notice: null };
-  const problems: string[] = [];
-
-  const ownerIds = [...new Set(eligible.map((h) => h.user_id).filter(Boolean))];
-  const securityIds = [...new Set(eligible.map((h) => h.security_id).filter(Boolean))] as string[];
-  const [{ data: profiles }, { data: securities }, { data: team }] = await Promise.all([
-    ownerIds.length
-      ? retail.from("profiles").select("id, email, first_name").in("id", ownerIds)
-      : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
-    securityIds.length
-      ? retail.from("securities_c").select("id, symbol, name").in("id", securityIds)
-      : Promise.resolve({ data: [] as Array<Record<string, unknown>> }),
-    retail.from("admin_team").select("email, permissions"),
-  ]);
-  const profileById = new Map((profiles ?? []).map((p) => [String(p.id), p as { email?: string; first_name?: string }]));
-  const securityById = new Map((securities ?? []).map((s) => [String(s.id), s as { symbol?: string; name?: string }]));
-
-  let clientsEmailed = 0;
-  const lines: string[] = [];
-  for (const holding of eligible) {
-    const profile = profileById.get(holding.user_id);
-    const security = holding.security_id ? securityById.get(holding.security_id) : undefined;
-    const symbol = security?.symbol ?? "";
-    const name = security?.name ?? symbol ?? "Instrument";
-    const quantity = Number(holding.quantity) || 0;
-    // avg_fill is CENTS (broker fill); Expected_fill is already RANDS. Same
-    // convention the trade_confirmation webhook uses -- keep them identical
-    // so the two senders can never quote a client different prices.
-    const priceRands = holding.avg_fill ? Number(holding.avg_fill) / 100 : Number(holding.Expected_fill) || 0;
-    lines.push(
-      `<tr><td style="padding:4px 12px 4px 0">${profile?.email ?? holding.user_id}</td><td style="padding:4px 12px 4px 0">${name}${symbol ? ` (${symbol})` : ""}</td><td style="padding:4px 12px 4px 0;text-align:right">${quantity}</td><td style="padding:4px 0;text-align:right">R ${priceRands.toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td></tr>`,
-    );
-    if (!profile?.email) {
-      problems.push(`no email on file for owner ${holding.user_id}`);
-      continue;
-    }
+  params: {
+    clients: AffectedClient[];
+    action: "Buy" | "Sell";
+    symbol: string;
+    avgPriceRands: number;
+    source: string;
+    metadata: Record<string, unknown>;
+  },
+): Promise<{ sent: number; skipped: number; failed: number }> {
+  let sent = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const client of params.clients) {
     try {
+      const { data: profs } = await retail
+        .from("profiles")
+        .select("email, first_name, mint_number")
+        .eq("id", client.userId)
+        .limit(1);
+      const profile = profs?.[0] as { email?: string; first_name?: string; mint_number?: string } | undefined;
+      if (!profile?.email) {
+        skipped += 1;
+        continue;
+      }
+      // Same client-facing reference convention manual-fill/route.ts uses:
+      // {mint_number}-{bare ticker}, falling back to the raw symbol only when
+      // mint_number is missing so the reference is never blank.
+      const bareSymbol = params.symbol.replace(/\.(JO|JSE)$/i, "");
+      const reference = profile.mint_number ? `${profile.mint_number}-${bareSymbol}` : params.symbol;
       await sendEmail({
         to: profile.email,
-        subject: `Trade confirmed${symbol ? ` — ${symbol}` : ""}`,
+        subject: `Trade confirmed — ${params.symbol}`,
         html: buildTradeConfirmationHtml({
           firstName: profile.first_name,
-          action: "Buy",
-          symbol,
-          name,
-          quantity,
-          avgPriceRands: priceRands,
-          orderId: context.orderId,
+          action: params.action,
+          symbol: params.symbol,
+          orderId: reference,
+          quantity: client.quantity,
+          avgPriceRands: params.avgPriceRands,
         }),
         emailType: "trade_confirmation",
-        source: "orderbook-send-confirmation",
-        metadata: { holding_id: holding.id, user_id: holding.user_id, order_id: context.orderId, book_id: context.bookId },
+        source: params.source,
+        metadata: { ...params.metadata, user_id: client.userId },
       });
-      clientsEmailed += 1;
+      sent += 1;
     } catch (e) {
-      problems.push(`client ${profile.email}: ${(e as Error).message}`);
+      failed += 1;
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[orderbook/send-confirmation] trade confirmation email failed for user=${client.userId} (non-fatal):`,
+        e instanceof Error ? e.message : e,
+      );
     }
   }
-
-  // Desk copy — same recipient rule as close-book's CSV export.
-  let deskEmailed = 0;
-  const deskRecipients = ((team ?? []) as Array<{ email: string | null; permissions: Record<string, unknown> | null }>)
-    .filter((r) => {
-      const notifs = (r.permissions?.notifications ?? {}) as Record<string, unknown>;
-      return !!r.email && notifs.csv_exports === true;
-    })
-    .map((r) => r.email as string);
-  if (deskRecipients.length === 0) {
-    problems.push("no desk recipients have notifications.csv_exports enabled");
-  } else {
-    try {
-      await sendEmail({
-        to: deskRecipients,
-        subject: `Trade confirmation sent — order ${context.orderId}`,
-        html: `<div style="font-family:sans-serif;font-size:13px;color:#111">
-  <p><strong>${clientsEmailed}</strong> client confirmation${clientsEmailed === 1 ? "" : "s"} dispatched for order <strong>${context.orderId}</strong> (book ${context.bookId}) by ${context.actorEmail}.</p>
-  <table style="border-collapse:collapse;font-size:12px">
-    <tr style="text-align:left;color:#666"><th style="padding:4px 12px 4px 0">Client</th><th style="padding:4px 12px 4px 0">Instrument</th><th style="padding:4px 12px 4px 0;text-align:right">Qty</th><th style="padding:4px 0;text-align:right">Fill</th></tr>
-    ${lines.join("\n    ")}
-  </table>
-</div>`,
-        emailType: "trade_confirmation_desk",
-        source: "orderbook-send-confirmation",
-        metadata: { order_id: context.orderId, book_id: context.bookId, client_count: clientsEmailed },
-      });
-      deskEmailed = deskRecipients.length;
-    } catch (e) {
-      problems.push(`desk: ${(e as Error).message}`);
-    }
-  }
-
-  return { clientsEmailed, deskEmailed, notice: problems.length ? problems.join("; ") : null };
+  return { sent, skipped, failed };
 }
 
 /**
@@ -397,14 +365,36 @@ async function handleCrmConfirmation(
   const {
     updated: holdingsUpdated,
     notice: holdingsNotice,
-    eligible,
+    clients,
   } = await updateHoldingsFillDate(retail, idsToUpdate, today);
 
-  const mail = await dispatchConfirmationEmails(retail, eligible, { orderId, bookId, actorEmail });
+  // CRM snapshot rows never went through oems_order_audit, so symbol/side/
+  // qty live under different field names than the OEM path — mirrors
+  // order-books/route.ts's own crmMember() field derivation exactly so the
+  // email matches what the UI already shows for this row. avgFill (computed
+  // above for the fill-gate) is already in RANDS in a CRM snapshot row
+  // (crmMoneyValue/crmNum), unlike the OEM path's audit-row CENTS convention
+  // — no /100 conversion here.
+  const symbol =
+    (typeof row.ticker === "string" && row.ticker) || (typeof row.instrumentName === "string" && row.instrumentName) || orderId;
+  const action: "Buy" | "Sell" = (typeof row.side === "string" ? row.side : "BUY").toUpperCase() === "SELL" ? "Sell" : "Buy";
+
+  let emailSummary = { sent: 0, skipped: 0, failed: 0 };
+  if (clients.length > 0) {
+    emailSummary = await sendConfirmationEmails(retail, {
+      clients,
+      action,
+      symbol,
+      avgPriceRands: avgFill,
+      source: "orderbook_send_confirmation_crm",
+      metadata: { order_id: orderId, book_id: bookId, origin: "crm" },
+    });
+  }
+  const confirmationEmail = summarizeEmailStatus(emailSummary);
 
   // eslint-disable-next-line no-console
   console.info(
-    `[orderbook/send-confirmation] CRM order=${orderId} book=${bookId} source_ids=${idsToUpdate.join(",")} clients_emailed=${mail.clientsEmailed} desk_emailed=${mail.deskEmailed} by=${actorEmail} at=${now}`,
+    `[orderbook/send-confirmation] CRM order=${orderId} book=${bookId} source_ids=${idsToUpdate.join(",")} confirmation_dispatched by=${actorEmail} at=${now} email=${confirmationEmail} (sent=${emailSummary.sent} skipped=${emailSummary.skipped} failed=${emailSummary.failed})`,
   );
 
   return NextResponse.json({
@@ -414,10 +404,8 @@ async function handleCrmConfirmation(
     holdings_updated: holdingsUpdated,
     holdings_notice: holdingsNotice,
     confirmation_sent_at: now,
-    clients_emailed: mail.clientsEmailed,
-    desk_emailed: mail.deskEmailed,
-    email_notice: mail.notice,
-    email: mail.clientsEmailed > 0 || mail.deskEmailed > 0 ? "sent" : "not_sent",
+    confirmation_email: confirmationEmail,
+    confirmation_email_summary: emailSummary,
   });
 }
 
@@ -467,7 +455,7 @@ export async function POST(req: Request) {
   const v = orderId.replace(/[\\"]/g, ""); // neutralise PostgREST filter metachars
   const { data: rows, error: rowsErr } = await institutional
     .from("oems_order_audit")
-    .select("id, order_id, symbol, quantity, status, payload, result_payload")
+    .select("id, order_id, symbol, side, quantity, status, payload, result_payload")
     .eq("order_id", v)
     .order("updated_at", { ascending: false })
     .limit(1);
@@ -527,7 +515,7 @@ export async function POST(req: Request) {
   // Update RETAIL `stock_holdings_c.Fill_date` so client P&L start = today.
   let holdingsUpdated = 0;
   let holdingsNotice: string | null = null;
-  let eligible: EligibleHolding[] = [];
+  let emailSummary = { sent: 0, skipped: 0, failed: 0 };
   const retail = openRetail();
   if (retail && bookId) {
     try {
@@ -559,8 +547,26 @@ export async function POST(req: Request) {
           const ids = ((holds ?? []) as Holding[]).map((h) => h.id);
           const result = await updateHoldingsFillDate(retail, ids, today);
           holdingsUpdated = result.updated;
-          eligible = result.eligible;
           holdingsNotice = result.notice ?? (ids.length === 0 ? "No stock_holdings_c rows matched the order — Fill_date unchanged." : null);
+
+          if (result.clients.length > 0) {
+            // oems_order_audit stores fill price in CENTS (payload.avgPx /
+            // result_payload.avgFillPrice) -- same convention order-books/
+            // route.ts and manual-fill/route.ts both read it under.
+            const payload = (orderRow.payload ?? {}) as Record<string, unknown>;
+            const resultPayload = (orderRow.result_payload ?? {}) as Record<string, unknown>;
+            const avgFillCents = Number(payload.avgPx) || Number(resultPayload.avgFillPrice) || 0;
+            const avgPriceRands = avgFillCents > 0 ? avgFillCents / 100 : 0;
+            const action: "Buy" | "Sell" = (orderRow.side ?? "buy").toUpperCase() === "SELL" ? "Sell" : "Buy";
+            emailSummary = await sendConfirmationEmails(retail, {
+              clients: result.clients,
+              action,
+              symbol: String(orderRow.symbol ?? ""),
+              avgPriceRands,
+              source: "orderbook_send_confirmation",
+              metadata: { order_id: orderId, book_id: bookId, origin: "oem" },
+            });
+          }
         }
       }
     } catch (e) {
@@ -574,17 +580,11 @@ export async function POST(req: Request) {
     }
   }
 
-  const mail = retail
-    ? await dispatchConfirmationEmails(retail, eligible, {
-        orderId,
-        bookId,
-        actorEmail: auth.ctx.email ?? "",
-      })
-    : { clientsEmailed: 0, deskEmailed: 0, notice: "RETAIL database not configured — no emails sent." };
+  const confirmationEmail = summarizeEmailStatus(emailSummary);
 
   // eslint-disable-next-line no-console
   console.info(
-    `[orderbook/send-confirmation] order=${orderId} book=${bookId} clients_emailed=${mail.clientsEmailed} desk_emailed=${mail.deskEmailed} by=${auth.ctx.email} at=${now}`,
+    `[orderbook/send-confirmation] order=${orderId} book=${bookId} confirmation_dispatched by=${auth.ctx.email} at=${now} email=${confirmationEmail} (sent=${emailSummary.sent} skipped=${emailSummary.skipped} failed=${emailSummary.failed})`,
   );
 
   return NextResponse.json({
@@ -594,9 +594,7 @@ export async function POST(req: Request) {
     holdings_updated: holdingsUpdated,
     holdings_notice: holdingsNotice,
     confirmation_sent_at: now,
-    clients_emailed: mail.clientsEmailed,
-    desk_emailed: mail.deskEmailed,
-    email_notice: mail.notice,
-    email: mail.clientsEmailed > 0 || mail.deskEmailed > 0 ? "sent" : "not_sent",
+    confirmation_email: confirmationEmail,
+    confirmation_email_summary: emailSummary,
   });
 }
