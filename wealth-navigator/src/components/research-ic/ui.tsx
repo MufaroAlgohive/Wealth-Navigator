@@ -634,13 +634,13 @@ export function PeerScorecard({
     );
   }
   return (
-    <table className="w-full text-sm">
+    <table className="w-full table-fixed text-[11px]">
       <thead>
-        <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-          <th className="px-4 py-2 font-medium">Metric</th>
-          <th className="px-3 py-2 text-right font-medium">{subjectName}</th>
-          <th className="px-3 py-2 text-right font-medium">Peer median</th>
-          <th className="px-5 py-2 text-right font-medium">Signal</th>
+        <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[9px] uppercase tracking-wide text-muted-foreground">
+          <th className="px-2 py-1 font-semibold">Metric</th>
+          <th className="w-14 px-2 py-1 text-right font-semibold">{subjectName}</th>
+          <th className="w-16 px-2 py-1 text-right font-semibold">Median</th>
+          <th className="w-14 px-2 py-1 text-right font-semibold">Signal</th>
         </tr>
       </thead>
       <tbody>
@@ -651,19 +651,21 @@ export function PeerScorecard({
           const u = m.unit ?? "";
           return (
             <tr key={m.label} className="border-b border-[hsl(var(--glass-border))] last:border-0">
-              <td className="px-4 py-2 font-medium">{m.label}</td>
-              <td className="px-3 py-2 text-right font-mono tabular-nums">
+              <td className="truncate px-2 py-1 font-medium" title={m.label}>
+                {m.label}
+              </td>
+              <td className="px-2 py-1 text-right font-mono tabular-nums">
                 {fmt(m.subject)}
                 {u}
               </td>
-              <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+              <td className="px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                 {fmt(m.median)}
                 {u}
               </td>
-              <td className="px-5 py-2 text-right">
+              <td className="px-2 py-1 text-right">
                 <span
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                    "inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-wide",
                     TONE_CLS[tone],
                   )}
                   title={
