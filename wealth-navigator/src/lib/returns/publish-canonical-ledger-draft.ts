@@ -8,6 +8,7 @@ import {
   type SettledBoundaryBatch,
   rebuildLegsAcrossSettledBoundary,
 } from "./canonical-rebalance-boundary";
+import { resolveJseTradingDay } from "./jse-trading-calendar-fallback";
 
 export type JsonRow = Record<string, unknown>;
 type Holding = { ticker: string; units: number };
@@ -424,9 +425,24 @@ export async function publishCanonicalLedgerDraft(
     .maybeSingle();
   if (calendar.error)
     return { ok: false, asOf, apply, summary: empty, results: [], note: calendar.error.message };
-  if (!calendar.data?.is_trading_day) {
-    return { ok: true, asOf, apply, summary: empty, results: [], note: "not a JSE trading day" };
+  const tradingDay = resolveJseTradingDay(asOf, calendar.data ?? null);
+  if (!tradingDay.isTradingDay) {
+    return {
+      ok: true,
+      asOf,
+      apply,
+      summary: empty,
+      results: [],
+      note:
+        tradingDay.source === "calendar"
+          ? "not a JSE trading day (calendar row: is_trading_day=false)"
+          : "not a JSE trading day (no calendar row for this date; static weekday/holiday fallback used)",
+    };
   }
+  const tradingDayNote =
+    tradingDay.source === "static_fallback"
+      ? "jse_trading_calendar has no row for this date; proceeded using the static weekday/holiday fallback"
+      : undefined;
 
   let strategyQuery = db
     .from("strategies_c")
@@ -809,5 +825,6 @@ export async function publishCanonicalLedgerDraft(
     apply,
     summary: { written, planned, skipped, failed, total: strategies.length },
     results,
+    ...(tradingDayNote ? { note: tradingDayNote } : {}),
   };
 }
