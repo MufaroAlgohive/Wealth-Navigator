@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "../supabase/server";
+import { resolveJseTradingDay } from "./jse-trading-calendar-fallback";
 
 type JsonObject = Record<string, unknown>;
 type CanonicalDraftRow = {
@@ -151,8 +152,23 @@ export async function publishCanonicalLedgerCertification(
       .eq("trading_date", asOf)
       .maybeSingle(),
   );
-  if (!calendar?.is_trading_day)
-    return { ok: true, asOf, summary: empty, results: [], note: "not a JSE trading day" };
+  const tradingDay = resolveJseTradingDay(asOf, calendar ?? null);
+  if (!tradingDay.isTradingDay) {
+    return {
+      ok: true,
+      asOf,
+      summary: empty,
+      results: [],
+      note:
+        tradingDay.source === "calendar"
+          ? "not a JSE trading day (calendar row: is_trading_day=false)"
+          : "not a JSE trading day (no calendar row for this date; static weekday/holiday fallback used)",
+    };
+  }
+  const tradingDayNote =
+    tradingDay.source === "static_fallback"
+      ? "jse_trading_calendar has no row for this date; proceeded using the static weekday/holiday fallback"
+      : undefined;
 
   let strategyQuery = db
     .from("strategies_c")
@@ -185,5 +201,6 @@ export async function publishCanonicalLedgerCertification(
     asOf,
     summary: { certified, alreadyCertified, failed, total: strategies.length },
     results,
+    ...(tradingDayNote ? { note: tradingDayNote } : {}),
   };
 }
