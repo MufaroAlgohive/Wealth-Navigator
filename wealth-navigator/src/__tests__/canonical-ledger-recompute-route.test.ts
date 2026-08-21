@@ -3,9 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * POST /api/admin/canonical-ledger/recompute — on-demand admin trigger for
  * the same draft -> certification sequence the canonical-ledger-daily cron
- * runs automatically. Gated on Master ★ (requireMasterPassword), NOT the
- * cron's CRON_SECRET bearer auth and NOT the granular can() permission
- * check — see the doc comment on the route for the reasoning.
+ * runs automatically. Gated on Dev-or-Master approver tier
+ * (requireElevatedTier), NOT the cron's CRON_SECRET bearer auth and NOT the
+ * granular can() permission check — see the doc comment on the route for
+ * the reasoning.
  */
 
 let getAdminContextResult: { status: string; ctx?: Record<string, unknown> } = {
@@ -118,7 +119,7 @@ describe("POST /api/admin/canonical-ledger/recompute", () => {
     expect(draftCalls).toHaveLength(0);
   });
 
-  it("403s for a non-master admin (e.g. plain staff/admin tier)", async () => {
+  it("403s for a non-elevated admin (e.g. plain staff/admin tier, no dev/master)", async () => {
     getAdminContextResult = {
       status: "ok",
       ctx: { email: "staff@mint.test", permissions: {}, approverTier: null },
@@ -157,6 +158,23 @@ describe("POST /api/admin/canonical-ledger/recompute", () => {
     });
 
     expect(body.ytd).toEqual([{ strategy: "Growth", ytdReturnPctBefore: 4.2, ytdReturnPctAfter: 4.2 }]);
+  });
+
+  it("runs draft then certification for a dev-tier session (previously would have been rejected, Master-only)", async () => {
+    getAdminContextResult = {
+      status: "ok",
+      ctx: { email: "dev@mint.test", permissions: {}, approverTier: "dev" },
+    };
+    const res = await post({ asOfDate: "2026-08-21" });
+    const body = (await res.json()) as { ok: boolean; triggeredBy: string; certificationActor: string };
+
+    expect(res.status).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.triggeredBy).toBe("dev@mint.test");
+    expect(body.certificationActor).toBe("MANUAL:dev@mint.test");
+
+    expect(draftCalls).toHaveLength(1);
+    expect(certificationCalls).toHaveLength(1);
   });
 
   it("passes strategyName through to both draft and certification when provided", async () => {

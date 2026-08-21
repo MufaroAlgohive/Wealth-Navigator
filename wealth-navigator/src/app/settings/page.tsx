@@ -7,6 +7,7 @@ import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useIress } from "@/lib/iress/provider";
 import { iressConfig } from "@/lib/iress";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
@@ -115,7 +116,7 @@ function RecomputePanel() {
           sequence the 17:30 UTC daily cron runs automatically. Use this to pull corrected YTD figures forward
           immediately (e.g. after a ledger fix) instead of waiting for tonight&apos;s scheduled run. This can
           take a while — draft and certification run sequentially for every active strategy. Requires a
-          Master ★ account.
+          Dev or Master ★ account.
         </p>
         {result && (
           <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
@@ -208,47 +209,58 @@ export default function SettingsPage() {
         <p className="mt-1 text-sm text-muted-foreground">Read-only view of the running configuration. Override via environment variables.</p>
       </div>
 
-      <Panel title="IRESS adapter" endpoint="iress.config">
-        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
-          {Object.entries(iressConfig).map(([k, v]) => (
-            <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
-              <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
-              <p className="mt-0.5 break-all font-mono text-xs font-semibold">
-                {Array.isArray(v) ? v.join(", ") : String(v)}
-              </p>
-            </div>
-          ))}
-        </div>
-      </Panel>
+      <Tabs defaultValue="general">
+        <TabsList>
+          <TabsTrigger value="general">General</TabsTrigger>
+          <TabsTrigger value="dev-tools">Dev Tools</TabsTrigger>
+        </TabsList>
 
-      <Panel
-        title="Endpoint health snapshot"
-        endpoint="iress.health"
-        dataSource={realDataOnly ? undefined : "mock"}
-        density="scroll"
-      >
-        {realDataOnly ? (
-          <EmptyDataState
-            message="Live endpoint latency & health is the worker heartbeat on the Integration page."
-            hint="This panel only shows a simulated snapshot under an explicit mock opt-in (?mock=1)."
-          />
-        ) : (
-          <table className="w-full font-mono text-xs">
-            <tbody className="divide-y divide-border/60">
-              {endpoints.map((e) => (
-                <tr key={e.name}>
-                  <td className="px-2.5 py-1.5 font-semibold">{e.name}</td>
-                  <td className="px-2.5 py-1.5 text-muted-foreground">{e.method}</td>
-                  <td className="px-2.5 py-1.5 text-right">p95 {e.p95}ms</td>
-                  <td className="px-2.5 py-1.5"><Pill tone={e.status === "ok" ? "success" : "warning"} size="xs" dot>{e.status}</Pill></td>
-                </tr>
+        <TabsContent value="general" className="mt-3 space-y-4">
+          <Panel title="IRESS adapter" endpoint="iress.config">
+            <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+              {Object.entries(iressConfig).map(([k, v]) => (
+                <div key={k} className="rounded-md border border-border/60 bg-surface-2/30 p-2">
+                  <p className="text-[9.5px] uppercase tracking-wider text-muted-foreground">{k}</p>
+                  <p className="mt-0.5 break-all font-mono text-xs font-semibold">
+                    {Array.isArray(v) ? v.join(", ") : String(v)}
+                  </p>
+                </div>
               ))}
-            </tbody>
-          </table>
-        )}
-      </Panel>
+            </div>
+          </Panel>
 
-      <RecomputePanel />
+          <Panel
+            title="Endpoint health snapshot"
+            endpoint="iress.health"
+            dataSource={realDataOnly ? undefined : "mock"}
+            density="scroll"
+          >
+            {realDataOnly ? (
+              <EmptyDataState
+                message="Live endpoint latency & health is the worker heartbeat on the Integration page."
+                hint="This panel only shows a simulated snapshot under an explicit mock opt-in (?mock=1)."
+              />
+            ) : (
+              <table className="w-full font-mono text-xs">
+                <tbody className="divide-y divide-border/60">
+                  {endpoints.map((e) => (
+                    <tr key={e.name}>
+                      <td className="px-2.5 py-1.5 font-semibold">{e.name}</td>
+                      <td className="px-2.5 py-1.5 text-muted-foreground">{e.method}</td>
+                      <td className="px-2.5 py-1.5 text-right">p95 {e.p95}ms</td>
+                      <td className="px-2.5 py-1.5"><Pill tone={e.status === "ok" ? "success" : "warning"} size="xs" dot>{e.status}</Pill></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Panel>
+        </TabsContent>
+
+        <TabsContent value="dev-tools" className="mt-3 space-y-4">
+          <RecomputePanel />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

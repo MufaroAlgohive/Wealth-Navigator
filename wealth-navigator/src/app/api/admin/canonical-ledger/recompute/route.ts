@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { requireMasterPassword } from "@/lib/admin/step-up";
+import { requireElevatedTier } from "@/lib/admin/step-up";
 import { publishCanonicalLedgerCertification } from "@/lib/returns/publish-canonical-ledger-certification";
 import { publishCanonicalLedgerDraft } from "@/lib/returns/publish-canonical-ledger-draft";
 import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
@@ -16,10 +16,10 @@ import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib
  * for the next natural cron run, and as a standing capability for future
  * re-runs (data fixes, testing).
  *
- * AUTH: gated on `requireMasterPassword` (Master ★ approver tier), the SAME
- * tier `send-to-market` and `manual-fill` use — NOT the granular
- * `can(ctx, section, field)` permission check those two routes also choose
- * between. Reasoning (see `src/lib/admin/step-up.ts` and `src/lib/admin/rbac.ts`):
+ * AUTH: gated on `requireElevatedTier` (Dev OR Master ★ approver tier) —
+ * NOT the granular `can(ctx, section, field)` permission check
+ * `send-to-market` and `manual-fill` choose between, and NOT Master-only
+ * either. Reasoning (see `src/lib/admin/step-up.ts` and `src/lib/admin/rbac.ts`):
  *
  *   - `can()` grants are for routine, scoped desk actions (e.g. "may this
  *     staff member send THIS book to market"). This route has no such
@@ -28,22 +28,19 @@ import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib
  *     once, and `strategy_returns_effective_c` mirrors those rows
  *     immediately (PR #143) — the figures every investor and the CEO see
  *     change the moment this call succeeds. That is a direct write to a
- *     certified financial record, not a scoped trading action.
- *   - `manual-fill` sits on Master ★ specifically because "there is no
- *     broker confirmation behind this call" (see its own comment) — the
- *     desk is trusting the operator's judgment with no independent check
- *     at the moment of write. Certifying a canonical ledger row is the
- *     analogous case here: `canonicalDraftShapeBlockers` validates
- *     *shape*, but nothing external re-verifies that recomputing today's
- *     numbers and certifying them right now is the right call — that's a
- *     judgment call reserved, by this codebase's existing convention, for
- *     Master ★ approvers.
+ *     certified financial record, not a scoped trading action, so plain
+ *     `staff`/`admin` roles with no elevated tier are still rejected.
+ *   - Unlike `manual-fill` (Master ★ only, "there is no broker confirmation
+ *     behind this call") this route was explicitly scoped down from
+ *     Master-only per the business owner: "most likely devs are who will be
+ *     running it." `requireElevatedTier` accepts either `dev` or `master`
+ *     approver tier — see its doc comment in `step-up.ts` for why those two
+ *     tiers specifically (both are already-trusted operators; `dev` is the
+ *     existing codebase convention for "runs the tests"/internal tooling).
  *   - `send-to-market` uses the granular permission specifically because it
  *     is routine desk workflow gated by role, with its own additional
  *     guards (limit guard, double-fill guard, UAT/production lane). This
- *     route has no such per-desk-role workflow — it is closer in kind to
- *     manual-fill's "irreversible, trust-the-operator" shape than to
- *     send-to-market's "routine, permissioned" shape.
+ *     route has no such per-desk-role workflow.
  *
  * ATTRIBUTION: a manually-triggered certification must NOT be recorded
  * under `AUTOMATIC_CERTIFICATION_ACTOR` ("SYSTEM:WEALTH_NAVIGATOR_DAILY_V1")
@@ -117,7 +114,7 @@ async function readYtdSnapshot(
 }
 
 export async function POST(req: Request) {
-  const stepUp = await requireMasterPassword(undefined);
+  const stepUp = await requireElevatedTier();
   if (!stepUp.ok) {
     return NextResponse.json({ ok: false, error: stepUp.error }, { status: stepUp.status });
   }
