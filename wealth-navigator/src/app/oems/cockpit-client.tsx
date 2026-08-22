@@ -1,55 +1,81 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer,
-  Tooltip, XAxis, YAxis, Cell, ReferenceLine,
-} from "recharts";
-import {
-  Layers, Activity, Lock, AlertTriangle, Banknote, TrendingUp,
-  ArrowUpRight, ArrowDownRight, FileText, PieChart, ShieldCheck, RefreshCw,
+  Activity,
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
+  Banknote,
+  FileText,
+  Layers,
+  Lock,
+  PieChart,
+  RefreshCw,
+  ShieldCheck,
+  TrendingUp,
 } from "lucide-react";
-
+import { useEffect, useMemo, useState } from "react";
 import {
-  GlassBadge,
-  GlassSection,
-  ResearchLabCanvas,
-} from "@/components/oems/primitives/glass";
-import { NumberCell } from "@/components/oems/primitives/number-cell";
-import { DataSourceBadge, type DataSourceKind, type DbName } from "@/components/oems/primitives/data-source-badge";
-import { Pill } from "@/components/oems/primitives/pill";
-import { Sparkline } from "@/components/oems/primitives/sparkline";
-import { SectorTreemap } from "@/components/oems/primitives/sector-treemap";
-import { StrategyPerfChart } from "@/components/oems/primitives/strategy-perf-chart";
-import { isRestrictedEmail } from "@/lib/platform/access";
-import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
-import { CockpitNewsFlow, type NewsFlowItem } from "@/components/oems/primitives/cockpit-news-flow";
-import { CockpitPortfolioAccounts, type PortfolioAccountRow, type AccountsHorizon } from "@/components/oems/primitives/cockpit-portfolio-accounts";
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+
 import { AlertBanner } from "@/components/oems/cockpit/alert-banner";
-import { PanelSkeleton, KpiTileSkeleton, PanelErrorShell } from "@/components/oems/primitives/panel-skeleton";
+import { CockpitNewsFlow, type NewsFlowItem } from "@/components/oems/primitives/cockpit-news-flow";
+import {
+  type AccountsHorizon,
+  CockpitPortfolioAccounts,
+  type PortfolioAccountRow,
+} from "@/components/oems/primitives/cockpit-portfolio-accounts";
+import {
+  DataSourceBadge,
+  type DataSourceKind,
+  type DbName,
+} from "@/components/oems/primitives/data-source-badge";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
+import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
+import { GlassBadge, GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
+import { NumberCell } from "@/components/oems/primitives/number-cell";
+import { KpiTileSkeleton, PanelErrorShell, PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { Pill } from "@/components/oems/primitives/pill";
+import { SectorTreemap } from "@/components/oems/primitives/sector-treemap";
+import { Sparkline } from "@/components/oems/primitives/sparkline";
+import { StrategyPerfChart } from "@/components/oems/primitives/strategy-perf-chart";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/cn";
+import { FEED_NOT_CONFIGURED, isRealDataOnlyClient } from "@/lib/data-policy";
+import { mapSource } from "@/lib/data-source";
+import { formatPct, formatTime, formatZAR } from "@/lib/format";
+import { deriveDbFresh, isWorkerAlive, resolveActiveDataSource } from "@/lib/market-prices/active-source";
+import { deriveDataSource } from "@/lib/hooks/quote-routing";
+import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
+import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
+import { usePortfolio } from "@/lib/hooks/use-portfolio";
+import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
 // Tabs/TabsList/TabsTrigger were removed with the non-functional range
 // tabs (Yellow #27). They will be re-introduced when the BFF honors
 // `?range=5D` after the TimeSeriesGet2 entitlement is flipped.
 import { useIress } from "@/lib/iress/provider";
-import { formatPct, formatTime, formatZAR } from "@/lib/format";
-import { cn } from "@/lib/cn";
-import Link from "next/link";
-import type { Route } from "next";
-import { Button } from "@/components/ui/button";
+import { isRestrictedEmail } from "@/lib/platform/access";
 import { queryOpts } from "@/lib/store/query-provider";
-import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { useTick } from "@/lib/store/tick-stream-provider";
-import { deriveDataSource } from "@/lib/hooks/quote-routing";
-import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
-import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
-import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
-import { usePortfolio } from "@/lib/hooks/use-portfolio";
-import { isRealDataOnlyClient, FEED_NOT_CONFIGURED } from "@/lib/data-policy";
-import { mapSource } from "@/lib/data-source";
-import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
+import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
+import type { Route } from "next";
+import Link from "next/link";
 
 /**
  * SSR-safe intraday x-axis labels.
@@ -151,7 +177,14 @@ function CockpitKpi({
   label: string;
   value: string;
   sub?: React.ReactNode;
-  live?: { sym: string; fallback: number; decimals?: number; prefix?: boolean; suffix?: string; showChange?: boolean };
+  live?: {
+    sym: string;
+    fallback: number;
+    decimals?: number;
+    prefix?: boolean;
+    suffix?: string;
+    showChange?: boolean;
+  };
   accent?: CockpitKpiAccent;
   /**
    * Optional CTA rendered below the sub-line. Used by the "Rebalance Locked"
@@ -243,9 +276,7 @@ function CockpitKpi({
 /** Scrollable body for fixed-height glass sections. */
 function GlassScrollBody({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("min-h-0 flex-1 overflow-y-auto scrollbar-thin px-5 pb-5", className)}>
-      {children}
-    </div>
+    <div className={cn("min-h-0 flex-1 overflow-y-auto scrollbar-thin px-5 pb-5", className)}>{children}</div>
   );
 }
 
@@ -264,37 +295,60 @@ const MOVER_SYMBOLS = ["NPN", "PRX", "FSR", "SBK", "AGL", "MTN", "SOL", "USDZAR"
  * filename is rendered in a monospace pill so the operator can
  * copy-paste it.
  */
-function portfolioAumSub(portfolio: { source: string; reason?: string; migration?: string; error?: string; accounts?: unknown[] } | undefined): React.ReactNode {
+function portfolioAumSub(
+  portfolio:
+    | { source: string; reason?: string; migration?: string; error?: string; accounts?: unknown[] }
+    | undefined,
+): React.ReactNode {
   if (!portfolio) return "Loading portfolio…";
   if (portfolio.source === "supabase") return `${(portfolio.accounts ?? []).length} accounts`;
-  if (portfolio.reason === "supabase_not_configured") return <span>Database not configured. Contact your administrator to complete platform configuration.</span>;
-  if (portfolio.reason === "supabase_query_failed") return (
-    <span>Run <span className="font-mono">{portfolio.migration ?? "supabase migration"}</span></span>
-  );
-  if (portfolio.reason === "empty") return <span>No open positions — derived from IOS+ order fills (book currently flat)</span>;
-  if (portfolio.reason === "entitlement_blocked") return <span>Positions are unavailable due to account permissions. Contact your administrator.</span>;
-  if (portfolio.reason === "worker_not_running") return <span>Data ingestion service is offline. Contact your administrator.</span>;
+  if (portfolio.reason === "supabase_not_configured")
+    return (
+      <span>Database not configured. Contact your administrator to complete platform configuration.</span>
+    );
+  if (portfolio.reason === "supabase_query_failed")
+    return (
+      <span>
+        Run <span className="font-mono">{portfolio.migration ?? "supabase migration"}</span>
+      </span>
+    );
+  if (portfolio.reason === "empty")
+    return <span>No open positions — derived from IOS+ order fills (book currently flat)</span>;
+  if (portfolio.reason === "entitlement_blocked")
+    return <span>Positions are unavailable due to account permissions. Contact your administrator.</span>;
+  if (portfolio.reason === "worker_not_running")
+    return <span>Data ingestion service is offline. Contact your administrator.</span>;
   return FEED_NOT_CONFIGURED;
 }
 
-function portfolioDayPnlSub(portfolio: { source: string; reason?: string; migration?: string; positions?: unknown[] } | undefined): React.ReactNode {
+function portfolioDayPnlSub(
+  portfolio: { source: string; reason?: string; migration?: string; positions?: unknown[] } | undefined,
+): React.ReactNode {
   if (!portfolio) return "Loading…";
   if (portfolio.source === "supabase") {
     const n = (portfolio.positions ?? []).length;
     return n > 0 ? `MTM on ${n} positions` : "MTM via IPS";
   }
-  if (portfolio.reason === "supabase_query_failed") return (
-    <span>Run <span className="font-mono">{portfolio.migration ?? "migration"}</span> first</span>
-  );
+  if (portfolio.reason === "supabase_query_failed")
+    return (
+      <span>
+        Run <span className="font-mono">{portfolio.migration ?? "migration"}</span> first
+      </span>
+    );
   return portfolioAumSub(portfolio);
 }
 
-function portfolioRebalanceSub(portfolio: { source: string; reason?: string; migration?: string; rebalanceDrift?: number } | undefined): React.ReactNode {
+function portfolioRebalanceSub(
+  portfolio: { source: string; reason?: string; migration?: string; rebalanceDrift?: number } | undefined,
+): React.ReactNode {
   if (!portfolio) return "Loading…";
   if (portfolio.source === "supabase") return `max drift ${(portfolio.rebalanceDrift ?? 0).toFixed(2)}%`;
-  if (portfolio.reason === "supabase_query_failed") return (
-    <span>Run <span className="font-mono">{portfolio.migration ?? "migration"}</span> first</span>
-  );
+  if (portfolio.reason === "supabase_query_failed")
+    return (
+      <span>
+        Run <span className="font-mono">{portfolio.migration ?? "migration"}</span> first
+      </span>
+    );
   return portfolioAumSub(portfolio);
 }
 
@@ -327,7 +381,12 @@ function JibarOrUsdzarSub({
   // JIBAR / USD-ZAR are not in this account's IRESS security master (FX spot +
   // SARB/JIBAR rates aren't provisioned for DFM@MINT — confirmed via
   // SecuritySearchGet). Not a "pending poll"; it needs IRESS to enable the feed.
-  return <span><span className="font-mono">{sym}</span> not in this account&apos;s IRESS feed (FX/rates not provisioned)</span>;
+  return (
+    <span>
+      <span className="font-mono">{sym}</span> not in this account&apos;s IRESS feed (FX/rates not
+      provisioned)
+    </span>
+  );
 }
 
 /**
@@ -338,10 +397,16 @@ function JibarOrUsdzarSub({
  *   - empty                     (worker healthy, audit table is empty)
  */
 function ordersEmptyMessage(
-  primaryWorker: { status?: string; account_configured?: boolean; last_heartbeat_at: string; accounts?: string[] } | null,
+  primaryWorker: {
+    status?: string;
+    account_configured?: boolean;
+    last_heartbeat_at: string;
+    accounts?: string[];
+  } | null,
   reason: string | undefined,
 ): string {
-  if (reason === "supabase_query_failed") return "Run supabase/migrations/20260613000000_oems_order_audit.sql first";
+  if (reason === "supabase_query_failed")
+    return "Run supabase/migrations/20260613000000_oems_order_audit.sql first";
   if (!primaryWorker) return "Worker not heartbeating";
   if (primaryWorker.status === "healthy" && primaryWorker.account_configured === false)
     return "Account code not configured. Contact your administrator.";
@@ -407,23 +472,63 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     refetchInterval: 60_000,
   });
 
-  const strategiesQ = useQuery({ queryKey: ["strategies"], queryFn: () => data.strategies(), enabled: !realDataOnly, ...queryOpts("live") });
+  const strategiesQ = useQuery({
+    queryKey: ["strategies"],
+    queryFn: () => data.strategies(),
+    enabled: !realDataOnly,
+    ...queryOpts("live"),
+  });
   const realStrategiesQ = useQuery<{
     strategies?: Array<{ id: string; name: string; kind: string; status: string; holdingsCount?: number }>;
     count?: number;
     source?: string;
   }>({
     queryKey: ["bff-strategies-cockpit"],
-    queryFn: () => fetchJson<{ strategies: Array<{ id: string; name: string; kind: string; status: string; holdingsCount?: number }>; count: number; source: string }>("/api/strategies"),
+    queryFn: () =>
+      fetchJson<{
+        strategies: Array<{ id: string; name: string; kind: string; status: string; holdingsCount?: number }>;
+        count: number;
+        source: string;
+      }>("/api/strategies"),
     enabled: realDataOnly,
     refetchInterval: 60_000,
   });
-  const indicesQ = useQuery({ queryKey: ["indices"], queryFn: () => data.indices(), enabled: !realDataOnly, ...queryOpts("reference") });
-  const sectorsQ = useQuery({ queryKey: ["sectors"], queryFn: () => data.sectors(), enabled: !realDataOnly, ...queryOpts("reference") });
-  const curveQ = useQuery({ queryKey: ["zar-govi"], queryFn: () => data.zarGoviCurve(), enabled: !realDataOnly, ...queryOpts("reference") });
-  const jibarQ = useQuery({ queryKey: ["jibar"], queryFn: () => data.jibarFixings(), enabled: !realDataOnly, ...queryOpts("reference") });
-  const macroQ = useQuery({ queryKey: ["macro"], queryFn: () => data.macroIndicators(), enabled: !realDataOnly, ...queryOpts("reference") });
-  const seedOrdersQ = useQuery({ queryKey: ["orders"], queryFn: () => data.orders(), enabled: !realDataOnly, ...queryOpts("live") });
+  const indicesQ = useQuery({
+    queryKey: ["indices"],
+    queryFn: () => data.indices(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const sectorsQ = useQuery({
+    queryKey: ["sectors"],
+    queryFn: () => data.sectors(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const curveQ = useQuery({
+    queryKey: ["zar-govi"],
+    queryFn: () => data.zarGoviCurve(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const jibarQ = useQuery({
+    queryKey: ["jibar"],
+    queryFn: () => data.jibarFixings(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const macroQ = useQuery({
+    queryKey: ["macro"],
+    queryFn: () => data.macroIndicators(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const seedOrdersQ = useQuery({
+    queryKey: ["orders"],
+    queryFn: () => data.orders(),
+    enabled: !realDataOnly,
+    ...queryOpts("live"),
+  });
   const auditOrdersQ = useAuditOrders("ALL", realDataOnly);
   const workerQ = useWorkerHealth(realDataOnly);
   const portfolioQ = usePortfolio(realDataOnly);
@@ -434,7 +539,16 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // the worker mode + tick timestamps.
   const primaryWorker = workerQ.data?.workers?.[0] ?? null;
   const wsDataSource = deriveDataSource(
-    ((liveQuotes.data as unknown) as { rows?: Array<{ sym: string; last: number; ts?: number; source: "live" | "iress" | "supabase" | "mock" | "seed-fallback" | "unavailable" }> })?.rows ?? [],
+    (
+      liveQuotes.data as unknown as {
+        rows?: Array<{
+          sym: string;
+          last: number;
+          ts?: number;
+          source: "live" | "iress" | "supabase" | "mock" | "seed-fallback" | "unavailable";
+        }>;
+      }
+    )?.rows ?? [],
     {
       liveCount: (liveQuotes.data as { liveCount?: number } | undefined)?.liveCount ?? 0,
       fallbackCount: (liveQuotes.data as { fallbackCount?: number } | undefined)?.fallbackCount ?? 0,
@@ -448,13 +562,66 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // BFF response; otherwise fall back to the existing hook output
   // (the seed/mock path). The hook internally calls the legacy
   // `deriveDataSource` which is fine for non-live modes.
-  const cockpitDataSource = primaryWorker?.iress_mode === "live" ? wsDataSource : (liveQuotes.dataSource ?? "mock");
-  const moversQ = useQuery({ queryKey: ["movers"], queryFn: () => data.jseEquities(), ...queryOpts("reference") });
-  const newsQ = useQuery({ queryKey: ["news"], queryFn: () => data.news(), enabled: !realDataOnly, ...queryOpts("reference") });
-  const sensQ = useQuery({ queryKey: ["sens"], queryFn: () => data.sens(), enabled: !realDataOnly, ...queryOpts("reference") });
+  const cockpitDataSource =
+    primaryWorker?.iress_mode === "live" ? wsDataSource : (liveQuotes.dataSource ?? "mock");
+  // Single source of truth for the active data source. Used by the
+  // cockpit's existing DataSourceBadge so the chip + reason stay in
+  // lockstep with the centralised fallback chain: IRESS live → IRESS+Yahoo
+  // hybrid → DB → Yahoo only → unavailable. The reason text rides as
+  // the badge title so operators get a one-line explanation on hover.
+  const lastQuoteSyncAt = primaryWorker?.last_quote_sync_at ?? null;
+  const latestTickTs = (liveQuotes.data as { rows?: Array<{ ts?: number }> } | undefined)?.rows?.reduce(
+    (max, row) => (typeof row.ts === "number" && row.ts > max ? row.ts : max),
+    0,
+  );
+  const activeSource = resolveActiveDataSource({
+    iressMode: primaryWorker?.iress_mode ?? null,
+    workerAlive: isWorkerAlive(primaryWorker?.last_heartbeat_at ?? null),
+    lastQuoteSyncAt,
+    fallbackCount: (liveQuotes.data as { fallbackCount?: number } | undefined)?.fallbackCount ?? 0,
+    dbFresh: deriveDbFresh(
+      latestTickTs ? new Date(latestTickTs).toISOString() : null,
+    ),
+    // CRITICAL: gate IRESS·PROD on the most recent IRESS service event
+    // being healthy (`level: "info"`). Without this, a worker that keeps
+    // heartbeating but whose SOAP calls have been failing for minutes
+    // would still register as IRESS·PROD here, even though no live price
+    // is actually flowing.
+    iressEvents: (primaryWorker?.recent_events ?? []) as Array<{
+      ts: string;
+      service?: string | null;
+      level?: string | null;
+    }>,
+    cockpitSource: liveQuotes.dataSource ?? null,
+  });
+  const moversQ = useQuery({
+    queryKey: ["movers"],
+    queryFn: () => data.jseEquities(),
+    ...queryOpts("reference"),
+  });
+  const newsQ = useQuery({
+    queryKey: ["news"],
+    queryFn: () => data.news(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
+  const sensQ = useQuery({
+    queryKey: ["sens"],
+    queryFn: () => data.sens(),
+    enabled: !realDataOnly,
+    ...queryOpts("reference"),
+  });
   // Real-data news: live RSS (Moneyweb/BusinessTech) + Alliance wire via the BFF.
   const newsBffQ = useQuery<{
-    items: Array<{ id: string; headline: string; ts: number; source: string; category: string; tickers: string[]; url: string | null }>;
+    items: Array<{
+      id: string;
+      headline: string;
+      ts: number;
+      source: string;
+      category: string;
+      tickers: string[];
+      url: string | null;
+    }>;
     source: string;
     sourceLabel?: string;
   }>({
@@ -546,7 +713,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     ...queryOpts("reference"),
   });
   // Real USD/ZAR from the FX BFF (Frankfurter / ECB) — IRESS has no FX feed.
-  const fxQ = useQuery<{ pair: string; rate: number | null; change: number | null; changePct: number | null; source: string; sourceLabel?: string }>({
+  const fxQ = useQuery<{
+    pair: string;
+    rate: number | null;
+    change: number | null;
+    changePct: number | null;
+    source: string;
+    sourceLabel?: string;
+  }>({
     queryKey: ["bff-fx-usdzar"],
     queryFn: async () => {
       const r = await fetch("/api/fx/USDZAR", { cache: "no-store" });
@@ -560,7 +734,12 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // Official SARB rates + macro (repo / prime / ZARONIA / Sabor / CPI / PPI).
   // IRESS V4 on DFM@MINT has no rates or macro feed; SARB's free Web API does.
   type SaRate = { label: string; value: number | null; asOf: string | null } | null;
-  const saRatesQ = useQuery<{ source: string; sourceLabel?: string; asOf: string | null; rates: Record<string, SaRate> }>({
+  const saRatesQ = useQuery<{
+    source: string;
+    sourceLabel?: string;
+    asOf: string | null;
+    rates: Record<string, SaRate>;
+  }>({
     queryKey: ["bff-sa-rates"],
     queryFn: async () => {
       const r = await fetch("/api/sa-rates", { cache: "no-store" });
@@ -584,13 +763,22 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // `sectorsBffQ` poll was removed.
   const curveBffQ = useQuery({
     queryKey: ["bff-curve-zar-nss"],
-    queryFn: () => fetchJson<{ code: string; points: Array<{ tenor: string; years: number; yield: number; asOf: string }>; source: string; message?: string }>("/api/curves/ZAR_NSS"),
+    queryFn: () =>
+      fetchJson<{
+        code: string;
+        points: Array<{ tenor: string; years: number; yield: number; asOf: string }>;
+        source: string;
+        message?: string;
+      }>("/api/curves/ZAR_NSS"),
     enabled: realDataOnly,
     refetchInterval: 60_000,
   });
   const alsiBffQ = useQuery({
     queryKey: ["bff-index-J203"],
-    queryFn: () => fetchJson<{ code: string; points: Array<{ t: number; v: number }>; source: string; message?: string }>("/api/indices/J203"),
+    queryFn: () =>
+      fetchJson<{ code: string; points: Array<{ t: number; v: number }>; source: string; message?: string }>(
+        "/api/indices/J203",
+      ),
     enabled: realDataOnly,
     refetchInterval: 30_000,
   });
@@ -669,9 +857,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // strip which reads the quote's own signed value directly).
   const topMovers = useMemo<EquitiesBffSecurity[]>(() => {
     if (!equitiesAvailable) return [];
-    const withChange = (equitiesData?.securities ?? []).filter(
-      (s) => Number.isFinite(s.change_percent),
-    );
+    const withChange = (equitiesData?.securities ?? []).filter((s) => Number.isFinite(s.change_percent));
     const gainers = [...withChange]
       .sort((a, b) => (b.change_percent ?? 0) - (a.change_percent ?? 0))
       .slice(0, 4);
@@ -716,11 +902,16 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   const rejected = orders.filter((o) => o.state === "REJECTED").length;
 
   const totalStrategiesCount = realDataOnly
-    ? (realStrategiesQ.data?.count ?? realStrategiesQ.data?.strategies?.length ?? (clientBookAvailable ? 3 : 0))
+    ? (realStrategiesQ.data?.count ??
+      realStrategiesQ.data?.strategies?.length ??
+      (clientBookAvailable ? 3 : 0))
     : strategies.length;
 
   const totalBasketHoldings = realDataOnly
-    ? (clientBook?.holdings ?? realStrategiesQ.data?.strategies?.reduce((a, s) => a + (s.holdingsCount ?? 0), 0) ?? (equitiesData?.securities?.length ?? 0))
+    ? (clientBook?.holdings ??
+      realStrategiesQ.data?.strategies?.reduce((a, s) => a + (s.holdingsCount ?? 0), 0) ??
+      equitiesData?.securities?.length ??
+      0)
     : strategies.reduce((a, s) => a + (s.holdingsCount ?? 0), 0);
 
   const universeSize = equitiesData?.securities?.length ?? (realDataOnly ? 0 : MOVER_SYMBOLS.length);
@@ -781,7 +972,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // hands us `relatedCodes[]` (per Headline SecurityCodeList) instead of
   // a single `ticker`, and `category` is a raw code like `"105000000"`
   // or `"SENS"`.
-  const realSens = useMemo<Array<{ id: string; ts: number; ticker: string; issuer: string; category: string; severity: string; headline: string }>>(() => {
+  const realSens = useMemo<
+    Array<{
+      id: string;
+      ts: number;
+      ticker: string;
+      issuer: string;
+      category: string;
+      severity: string;
+      headline: string;
+    }>
+  >(() => {
     const fromIress = (sensBffQ.data?.headlines ?? []).map((n) => {
       const code = (n.relatedCodes?.[0] ?? "").toString();
       const rawCat = (n.category ?? "SENS").toString();
@@ -913,7 +1114,12 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           unit: "bp" | "%";
           asOf: string;
         }>;
-        pca: { level: number | null; slope: number | null; curvature: number | null; residual: number | null } | null;
+        pca: {
+          level: number | null;
+          slope: number | null;
+          curvature: number | null;
+          residual: number | null;
+        } | null;
         source: string;
         message?: string;
       }>("/api/curves/ZAR_NSS/metrics"),
@@ -966,7 +1172,21 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           </div>
 
           <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-            <DataSourceBadge source={cockpitDataSource} db="retail" />
+            <span
+              className="inline-flex items-center gap-1"
+              title={activeSource.reason}
+              aria-label={activeSource.reason}
+            >
+              <DataSourceBadge source={activeSource.kind} db="retail" />
+              {activeSource.yahooActive ? (
+                <span
+                  className="font-mono text-[9.5px] font-semibold uppercase tracking-wider text-amber-300"
+                  title="Some symbols on this render came from the Yahoo live fallback — the DB row was stale or missing."
+                >
+                  + yahoo
+                </span>
+              ) : null}
+            </span>
             <Link
               href="/admin/factsheets"
               className="glass-inset inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-foreground/90 hover:text-primary transition-colors"
@@ -1064,20 +1284,20 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   ? `across all strategies · as of ${clientBook!.asOf ?? "—"}`
                   : "Across all strategies — client book unavailable"
               }
-              accent={
-                clientBookAvailable
-                  ? clientBook!.dayPnl >= 0
-                    ? "positive"
-                    : "negative"
-                  : "default"
-              }
+              accent={clientBookAvailable ? (clientBook!.dayPnl >= 0 ? "positive" : "negative") : "default"}
             />
             <CockpitKpi
               icon={<Lock className="h-3.5 w-3.5" />}
               label="Rebalance Locked"
               dataSource="supabase"
               db="institutional"
-              value={portfolioQ.data?.source === "supabase" ? (portfolioQ.data.rebalanceLocked ? "Yes" : "No") : "—"}
+              value={
+                portfolioQ.data?.source === "supabase"
+                  ? portfolioQ.data.rebalanceLocked
+                    ? "Yes"
+                    : "No"
+                  : "—"
+              }
               sub={portfolioRebalanceSub(portfolioQ.data)}
               accent={
                 portfolioQ.data?.source === "supabase"
@@ -1089,9 +1309,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               action={
                 firstEquityStrategy
                   ? {
-                    href: `/oems/rebalance?strategy=${encodeURIComponent(firstEquityStrategy.id)}&name=${encodeURIComponent(firstEquityStrategy.name)}` as Route,
-                    label: "Open Rebalance Builder",
-                  }
+                      href: `/oems/rebalance?strategy=${encodeURIComponent(firstEquityStrategy.id)}&name=${encodeURIComponent(firstEquityStrategy.name)}` as Route,
+                      label: "Open Rebalance Builder",
+                    }
                   : undefined
               }
             />
@@ -1121,7 +1341,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               value={saRates?.zaronia?.value != null ? `${saRates.zaronia.value.toFixed(3)}%` : "—"}
               sub={
                 saRates?.zaronia?.value != null ? (
-                  <span>overnight · SARB{saRates.zaronia.asOf ? ` · ${saRates.zaronia.asOf.slice(0, 10)}` : ""}</span>
+                  <span>
+                    overnight · SARB{saRates.zaronia.asOf ? ` · ${saRates.zaronia.asOf.slice(0, 10)}` : ""}
+                  </span>
                 ) : saRatesQ.isLoading ? (
                   "Loading SARB…"
                 ) : (
@@ -1190,8 +1412,13 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               value={`${jibar[2]?.rate.toFixed(2) ?? "—"}%`}
               sub={
                 jibar[2] ? (
-                  <span>Δ {jibar[2].change >= 0 ? "+" : ""}{(jibar[2].change * 100).toFixed(0)}bp</span>
-                ) : <span>—</span>
+                  <span>
+                    Δ {jibar[2].change >= 0 ? "+" : ""}
+                    {(jibar[2].change * 100).toFixed(0)}bp
+                  </span>
+                ) : (
+                  <span>—</span>
+                )
               }
             />
             <CockpitKpi
@@ -1199,7 +1426,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               label="USD/ZAR"
               live={{ sym: "USDZAR", fallback: 18.452, decimals: 4, showChange: false }}
               value=""
-              sub={<span className="flex items-center gap-1"><NumberCell sym="USDZAR" fallback={18.452} decimals={4} size="xs" showChange /></span>}
+              sub={
+                <span className="flex items-center gap-1">
+                  <NumberCell sym="USDZAR" fallback={18.452} decimals={4} size="xs" showChange />
+                </span>
+              }
             />
           </>
         )}
@@ -1220,9 +1451,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               dataSource={mapSource(equitiesData?.source, "hybrid")}
               noPadding
               className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
-              right={
-                <span className="text-caption font-mono">colour = day move · sorted best to worst</span>
-              }
+              right={<span className="text-caption font-mono">colour = day move · sorted best to worst</span>}
             >
               <div className="min-h-0 flex-1 p-3">
                 <SectorTreemap
@@ -1258,7 +1487,10 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         ) : sectorsQ.isLoading ? (
           <PanelSkeleton rows={6} height="h-[300px]" className="col-span-12 lg:col-span-5" />
         ) : sectorsQ.isError ? (
-          <PanelErrorShell title="Sector Allocation" className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0" />
+          <PanelErrorShell
+            title="Sector Allocation"
+            className="col-span-12 lg:col-span-5 flex h-[300px] flex-col min-h-0"
+          />
         ) : (
           <GlassSection
             title="Sector Allocation"
@@ -1270,7 +1502,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             right={<span className="text-caption font-mono">colour = day move · sorted best to worst</span>}
           >
             <div className="min-h-0 flex-1 p-3">
-              <SectorTreemap data={sectors.map((s) => ({ name: s.sector, weight: s.weight, change: s.change }))} />
+              <SectorTreemap
+                data={sectors.map((s) => ({ name: s.sector, weight: s.weight, change: s.change }))}
+              />
             </div>
           </GlassSection>
         )}
@@ -1278,7 +1512,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         {realDataOnly ? (
           curveBffQ.isLoading ? (
             <PanelSkeleton rows={4} height="h-[300px]" className="col-span-12 lg:col-span-4" />
-          ) : curveBffQ.isError || (curveBffQ.data?.source === "entitlement-required") ? (
+          ) : curveBffQ.isError || curveBffQ.data?.source === "entitlement-required" ? (
             <GlassSection
               title="ZAR Sovereign Curve · NSS"
               endpoint="GET /api/curves/ZAR_NSS"
@@ -1287,7 +1521,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               className="col-span-12 lg:col-span-4 flex h-[300px] flex-col min-h-0"
             >
               <EmptyDataState
-                title={curveBffQ.data?.source === "entitlement-required" ? "ZAR curve feed not on prod-test" : "Curve data unavailable"}
+                title={
+                  curveBffQ.data?.source === "entitlement-required"
+                    ? "ZAR curve feed not on prod-test"
+                    : "Curve data unavailable"
+                }
                 message={
                   curveBffQ.data?.message ??
                   "TimeSeriesGet2 works; the NSS/GOVI curve has no data on the prod-test (CT) feed. Needs the curve code + DataSource enabled for DFM@MINT, or production."
@@ -1325,14 +1563,34 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                       </linearGradient>
                     </defs>
                     <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                    <XAxis dataKey="tenor" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
-                    <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 0.3", "dataMax + 0.3"]} tickFormatter={(v) => `${v}%`} />
+                    <XAxis
+                      dataKey="tenor"
+                      tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                      stroke="hsl(var(--border))"
+                    />
+                    <YAxis
+                      tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                      stroke="hsl(var(--border))"
+                      domain={["dataMin - 0.3", "dataMax + 0.3"]}
+                      tickFormatter={(v) => `${v}%`}
+                    />
                     <Tooltip
-                      contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                      contentStyle={{
+                        fontSize: 11,
+                        background: "hsl(var(--popover))",
+                        border: "1px solid hsl(var(--border))",
+                        borderRadius: 6,
+                      }}
                       formatter={(v: number) => [`${v.toFixed(2)}%`, "Yield"]}
                       labelStyle={{ color: "hsl(var(--muted-foreground))" }}
                     />
-                    <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
+                    <Line
+                      type="monotone"
+                      dataKey="yield"
+                      stroke="hsl(38 95% 56%)"
+                      strokeWidth={2}
+                      dot={{ r: 2, fill: "hsl(38 95% 56%)" }}
+                    />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -1373,14 +1631,34 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     </linearGradient>
                   </defs>
                   <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                  <XAxis dataKey="tenor" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" />
-                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 0.3", "dataMax + 0.3"]} tickFormatter={(v) => `${v}%`} />
+                  <XAxis
+                    dataKey="tenor"
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    stroke="hsl(var(--border))"
+                  />
+                  <YAxis
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    stroke="hsl(var(--border))"
+                    domain={["dataMin - 0.3", "dataMax + 0.3"]}
+                    tickFormatter={(v) => `${v}%`}
+                  />
                   <Tooltip
-                    contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                    contentStyle={{
+                      fontSize: 11,
+                      background: "hsl(var(--popover))",
+                      border: "1px solid hsl(var(--border))",
+                      borderRadius: 6,
+                    }}
                     formatter={(v: number) => [`${v.toFixed(2)}%`, "Yield"]}
                     labelStyle={{ color: "hsl(var(--muted-foreground))" }}
                   />
-                  <Line type="monotone" dataKey="yield" stroke="hsl(38 95% 56%)" strokeWidth={2} dot={{ r: 2, fill: "hsl(38 95% 56%)" }} />
+                  <Line
+                    type="monotone"
+                    dataKey="yield"
+                    stroke="hsl(38 95% 56%)"
+                    strokeWidth={2}
+                    dot={{ r: 2, fill: "hsl(38 95% 56%)" }}
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -1401,9 +1679,14 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               right={<span className="text-caption font-mono">Yahoo</span>}
             >
               {globalMoversQ.isLoading ? (
-                <div className="p-5"><PanelSkeleton rows={7} /></div>
-              ) : (globalMoversQ.data?.gainers?.length ?? 0) + (globalMoversQ.data?.losers?.length ?? 0) === 0 ? (
-                <div className="p-5"><EmptyDataState message="Yahoo returned no US movers this cycle — it retries automatically." /></div>
+                <div className="p-5">
+                  <PanelSkeleton rows={7} />
+                </div>
+              ) : (globalMoversQ.data?.gainers?.length ?? 0) + (globalMoversQ.data?.losers?.length ?? 0) ===
+                0 ? (
+                <div className="p-5">
+                  <EmptyDataState message="Yahoo returned no US movers this cycle — it retries automatically." />
+                </div>
               ) : (
                 <GlassScrollBody>
                   <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
@@ -1414,7 +1697,10 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                       const up = m.chg > 0;
                       const down = m.chg < 0;
                       return (
-                        <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
+                        <li
+                          key={m.symbol}
+                          className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30"
+                        >
                           <div className="min-w-0 flex-1">
                             <p className="truncate font-mono text-xs font-semibold">{m.symbol}</p>
                             <p className="truncate text-[9.5px] text-muted-foreground">{m.name}</p>
@@ -1466,10 +1752,15 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     const down = chg < 0;
                     const price = m.last_price != null ? m.last_price / 100 : null;
                     return (
-                      <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
+                      <li
+                        key={m.symbol}
+                        className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30"
+                      >
                         <div className="min-w-0 flex-1">
                           <p className="truncate font-mono text-xs font-semibold">{bareSymbol(m.symbol)}</p>
-                          <p className="truncate text-[9.5px] text-muted-foreground">{m.name ?? bareSymbol(m.symbol)}</p>
+                          <p className="truncate text-[9.5px] text-muted-foreground">
+                            {m.name ?? bareSymbol(m.symbol)}
+                          </p>
                         </div>
                         <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
                           {price != null ? formatZAR(price) : "—"}
@@ -1518,14 +1809,24 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <GlassScrollBody>
               <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
                 {movers.slice(0, 7).map((m) => (
-                  <li key={m.symbol} className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30">
+                  <li
+                    key={m.symbol}
+                    className="flex items-center gap-2 px-3 py-1.5 transition-colors hover:bg-muted/30"
+                  >
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-mono text-xs font-semibold">{m.symbol}</p>
                       <p className="truncate text-[9.5px] text-muted-foreground">{m.name}</p>
                     </div>
                     <Sparkline sym={m.symbol} fallback={0} width={48} height={20} points={24} />
                     <NumberCell sym={m.symbol} fallback={0} decimals={2} size="xs" />
-                    <NumberCell sym={m.symbol} fallback={0} decimals={2} size="xs" showChange className="ml-1" />
+                    <NumberCell
+                      sym={m.symbol}
+                      fallback={0}
+                      decimals={2}
+                      size="xs"
+                      showChange
+                      className="ml-1"
+                    />
                   </li>
                 ))}
               </ul>
@@ -1539,7 +1840,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         {realDataOnly ? (
           alsiBffQ.isLoading ? (
             <PanelSkeleton rows={5} height="h-[320px]" className="col-span-12 lg:col-span-8" />
-          ) : alsiBffQ.isError || (alsiBffQ.data?.source === "entitlement-required") ? (
+          ) : alsiBffQ.isError || alsiBffQ.data?.source === "entitlement-required" ? (
             <GlassSection
               title={`${heatmap.market} Market · Heatmap`}
               endpoint={heatmap.market === "JSE" ? "GET /api/equities" : "GET /api/global-movers"}
@@ -1562,7 +1863,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                         onClick={() => setHeatmapMarket(m)}
                         className={cn(
                           "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors",
-                          heatmapMarket === m ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground",
+                          heatmapMarket === m
+                            ? "bg-primary/20 text-primary"
+                            : "text-muted-foreground hover:text-foreground",
                         )}
                       >
                         {m}
@@ -1572,7 +1875,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   {heatmap.market === "JSE" && heatmap.capWtd != null ? (
                     <span className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
                       cap-wt
-                      <span className={cn("text-sm font-semibold", heatmap.capWtd >= 0 ? "text-up" : "text-down")}>
+                      <span
+                        className={cn("text-sm font-semibold", heatmap.capWtd >= 0 ? "text-up" : "text-down")}
+                      >
                         {heatmap.capWtd >= 0 ? "+" : ""}
                         {heatmap.capWtd.toFixed(2)}%
                       </span>
@@ -1605,7 +1910,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                           style={{ backgroundColor: bg }}
                           title={`${t.name} · ${formatPct(t.chg)}`}
                         >
-                          <span className="font-mono text-[10px] font-semibold leading-tight text-foreground">{t.symbol}</span>
+                          <span className="font-mono text-[10px] font-semibold leading-tight text-foreground">
+                            {t.symbol}
+                          </span>
                           <span className="font-mono text-[9px] leading-tight text-foreground/80">
                             {t.chg >= 0 ? "+" : ""}
                             {t.chg.toFixed(1)}%
@@ -1617,21 +1924,23 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   <p className="shrink-0 text-[9.5px] leading-relaxed text-muted-foreground/70">
                     {heatmap.market === "JSE" ? (
                       <>
-                        Top {heatmap.tiles.length} JSE names by market cap, shaded by day move — a real constituent
-                        heatmap from the live universe. The cap-weighted figure is a broad-market proxy, NOT the
-                        official J203/ALSI (IRESS has no index feed on this account).
+                        Top {heatmap.tiles.length} JSE names by market cap, shaded by day move — a real
+                        constituent heatmap from the live universe. The cap-weighted figure is a broad-market
+                        proxy, NOT the official J203/ALSI (IRESS has no index feed on this account).
                       </>
                     ) : (
                       <>
-                        Top {heatmap.tiles.length} most-active US names by market cap, shaded by day move. Source:{" "}
-                        {heatmap.sourceLabel} — unofficial public endpoints, best-effort.
+                        Top {heatmap.tiles.length} most-active US names by market cap, shaded by day move.
+                        Source: {heatmap.sourceLabel} — unofficial public endpoints, best-effort.
                       </>
                     )}
                   </p>
                 </div>
               ) : (
                 <EmptyDataState
-                  title={heatmap.market === "JSE" ? "Index feed not on prod-test" : "US market data unavailable"}
+                  title={
+                    heatmap.market === "JSE" ? "Index feed not on prod-test" : "US market data unavailable"
+                  }
                   message={
                     heatmap.market === "JSE"
                       ? (alsiBffQ.data?.message ??
@@ -1646,7 +1955,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               title={alsiView === "strategies" ? "JSE All Share · Strategies" : "JSE All Share · Intraday"}
               endpoint={alsiView === "strategies" ? "GET /api/strategies/returns" : "GET /api/indices/J203"}
               db={alsiView === "strategies" ? "retail" : "institutional"}
-              dataSource={alsiView === "strategies" ? "hybrid" : alsiBffQ.data.source === "seed-fallback" ? "seed" : alsiBffQ.data.source === "supabase" ? "iress" : alsiBffQ.data.source === "yahoo" ? "yahoo" : "blocked-external"}
+              dataSource={
+                alsiView === "strategies"
+                  ? "hybrid"
+                  : alsiBffQ.data.source === "seed-fallback"
+                    ? "seed"
+                    : alsiBffQ.data.source === "supabase"
+                      ? "iress"
+                      : alsiBffQ.data.source === "yahoo"
+                        ? "yahoo"
+                        : "blocked-external"
+              }
               className="col-span-12 lg:col-span-8 flex h-[320px] flex-col min-h-0"
               right={
                 <div className="flex items-center gap-2">
@@ -1665,7 +1984,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                             {last.v.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}
                           </span>
                           <span className={cn("ml-2 text-xs", changePct >= 0 ? "text-up" : "text-down")}>
-                            {changePct >= 0 ? "+" : ""}{change.toFixed(2)} ({formatPct(changePct)})
+                            {changePct >= 0 ? "+" : ""}
+                            {change.toFixed(2)} ({formatPct(changePct)})
                           </span>
                         </div>
                       );
@@ -1679,7 +1999,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                           onClick={() => setAlsiView(v)}
                           className={cn(
                             "rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
-                            alsiView === v ? "bg-primary/20 text-primary" : "text-muted-foreground hover:text-foreground",
+                            alsiView === v
+                              ? "bg-primary/20 text-primary"
+                              : "text-muted-foreground hover:text-foreground",
                           )}
                         >
                           {v === "intraday" ? "Intraday" : "Strategies"}
@@ -1697,7 +2019,10 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               ) : (
                 <div className="glass-inset min-h-0 flex-1 p-3">
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={alsiBffQ.data.points} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                    <AreaChart
+                      data={alsiBffQ.data.points}
+                      margin={{ top: 8, right: 12, left: -8, bottom: 0 }}
+                    >
                       <defs>
                         <linearGradient id="alsiGrad" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" stopColor="hsl(263 80% 65%)" stopOpacity={0.4} />
@@ -1710,16 +2035,53 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                         tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
                         stroke="hsl(var(--border))"
                         interval={Math.max(1, Math.floor(alsiBffQ.data.points.length / 8))}
-                        tickFormatter={(v) => new Date(v).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}
+                        tickFormatter={(v) =>
+                          new Date(v).toLocaleTimeString("en-ZA", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            timeZone: "Africa/Johannesburg",
+                          })
+                        }
                       />
-                      <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 40", "dataMax + 40"]} />
+                      <YAxis
+                        tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                        stroke="hsl(var(--border))"
+                        domain={["dataMin - 40", "dataMax + 40"]}
+                      />
                       <Tooltip
-                        contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                        contentStyle={{
+                          fontSize: 11,
+                          background: "hsl(var(--popover))",
+                          border: "1px solid hsl(var(--border))",
+                          borderRadius: 6,
+                        }}
                         labelStyle={{ color: "hsl(var(--muted-foreground))" }}
-                        labelFormatter={(v) => new Date(v as number).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Johannesburg" })}
+                        labelFormatter={(v) =>
+                          new Date(v as number).toLocaleTimeString("en-ZA", {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            timeZone: "Africa/Johannesburg",
+                          })
+                        }
                       />
-                      <ReferenceLine y={alsiBffQ.data.points[0]?.v ?? 0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" label={{ value: "Open", fontSize: 9, fill: "hsl(var(--muted-foreground))", position: "insideTopLeft" }} />
-                      <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
+                      <ReferenceLine
+                        y={alsiBffQ.data.points[0]?.v ?? 0}
+                        stroke="hsl(var(--muted-foreground))"
+                        strokeDasharray="3 3"
+                        label={{
+                          value: "Open",
+                          fontSize: 9,
+                          fill: "hsl(var(--muted-foreground))",
+                          position: "insideTopLeft",
+                        }}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="v"
+                        stroke="hsl(263 80% 65%)"
+                        strokeWidth={1.8}
+                        fill="url(#alsiGrad)"
+                      />
                     </AreaChart>
                   </ResponsiveContainer>
                 </div>
@@ -1752,7 +2114,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     {alsi.last.toLocaleString("en-ZA", { maximumFractionDigits: 0 })}
                   </span>
                   <span className={cn("ml-2 text-xs", alsi.changePct >= 0 ? "text-up" : "text-down")}>
-                    {alsi.changePct >= 0 ? "+" : ""}{alsi.change.toFixed(2)} ({formatPct(alsi.changePct)})
+                    {alsi.changePct >= 0 ? "+" : ""}
+                    {alsi.change.toFixed(2)} ({formatPct(alsi.changePct)})
                   </span>
                 </div>
               ) : null
@@ -1768,14 +2131,44 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     </linearGradient>
                   </defs>
                   <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                  <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" interval={11} />
-                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" domain={["dataMin - 40", "dataMax + 40"]} />
+                  <XAxis
+                    dataKey="t"
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    stroke="hsl(var(--border))"
+                    interval={11}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    stroke="hsl(var(--border))"
+                    domain={["dataMin - 40", "dataMax + 40"]}
+                  />
                   <Tooltip
-                    contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }}
+                    contentStyle={{
+                      fontSize: 11,
+                      background: "hsl(var(--popover))",
+                      border: "1px solid hsl(var(--border))",
+                      borderRadius: 6,
+                    }}
                     labelStyle={{ color: "hsl(var(--muted-foreground))" }}
                   />
-                  <ReferenceLine y={intraday[0]?.v ?? 0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" label={{ value: "Prev close", fontSize: 9, fill: "hsl(var(--muted-foreground))", position: "insideTopLeft" }} />
-                  <Area type="monotone" dataKey="v" stroke="hsl(263 80% 65%)" strokeWidth={1.8} fill="url(#alsiGrad)" />
+                  <ReferenceLine
+                    y={intraday[0]?.v ?? 0}
+                    stroke="hsl(var(--muted-foreground))"
+                    strokeDasharray="3 3"
+                    label={{
+                      value: "Prev close",
+                      fontSize: 9,
+                      fill: "hsl(var(--muted-foreground))",
+                      position: "insideTopLeft",
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="v"
+                    stroke="hsl(263 80% 65%)"
+                    strokeWidth={1.8}
+                    fill="url(#alsiGrad)"
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -1818,10 +2211,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             >
               <EmptyDataState
                 title="No live data"
-                message={
-                  (sensBffQ.data?.error?.message as string | undefined) ??
-                  "SENS feed not configured."
-                }
+                message={(sensBffQ.data?.error?.message as string | undefined) ?? "SENS feed not configured."}
                 hint={
                   sensBffQ.data?.error?.code === "not_configured"
                     ? "Set IRESS_WORKER_URL (or RAILWAY_SERVICE_URL) on Vercel — the BFF can't reach the worker."
@@ -1887,11 +2277,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                         : "Worker not heartbeating"
                       : FEED_NOT_CONFIGURED
                   }
-                  hint={
-                    realDataOnly && primaryWorker
-                      ? undefined
-                      : undefined
-                  }
+                  hint={realDataOnly && primaryWorker ? undefined : undefined}
                 />
                 {/* Yellow #37 — deployment details collapsed by default.
                     The empty-state message above is the visible copy;
@@ -1911,9 +2297,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                         <span className="text-foreground">Z12345,Z67890</span>), then restart.
                       </p>
                       <p>
-                        Quote ingest keeps running independently of this env.
-                        OrderPadGetByAccount → oems_order_audit is the audit
-                        table the Cockpit Open Orders panel reads from.
+                        Quote ingest keeps running independently of this env. OrderPadGetByAccount →
+                        oems_order_audit is the audit table the Cockpit Open Orders panel reads from.
                       </p>
                     </div>
                   </details>
@@ -1943,21 +2328,39 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                         <tr key={o.id} className="hover:bg-muted/30">
                           <td className="px-2.5 py-1.5 text-muted-foreground">{formatTime(o.ts)}</td>
                           <td className="px-2.5 py-1.5">{o.strategy}</td>
-                          <td className={cn("px-2.5 py-1.5 font-semibold", o.side === "BUY" ? "text-up" : "text-down")}>{o.side}</td>
+                          <td
+                            className={cn(
+                              "px-2.5 py-1.5 font-semibold",
+                              o.side === "BUY" ? "text-up" : "text-down",
+                            )}
+                          >
+                            {o.side}
+                          </td>
                           <td className="px-2.5 py-1.5 font-semibold">{o.symbol}</td>
                           <td className="px-2.5 py-1.5 text-right tabular-nums">{o.qty.toLocaleString()}</td>
                           <td className="px-2.5 py-1.5 text-right tabular-nums">
-                            {o.filled.toLocaleString()} <span className="text-muted-foreground/70">({Math.round((o.filled / o.qty) * 100)}%)</span>
+                            {o.filled.toLocaleString()}{" "}
+                            <span className="text-muted-foreground/70">
+                              ({Math.round((o.filled / o.qty) * 100)}%)
+                            </span>
                           </td>
-                          <td className="px-2.5 py-1.5 text-right tabular-nums">{o.limit?.toFixed(2) ?? "MKT"}</td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">
+                            {o.limit?.toFixed(2) ?? "MKT"}
+                          </td>
                           <td className="px-2.5 py-1.5 text-right tabular-nums">
                             <NumberCell sym={o.symbol} fallback={o.arrivalMid} decimals={2} />
                           </td>
-                          <td className="px-2.5 py-1.5 text-right tabular-nums">{o.vwap != null ? o.vwap.toFixed(2) : "—"}</td>
+                          <td className="px-2.5 py-1.5 text-right tabular-nums">
+                            {o.vwap != null ? o.vwap.toFixed(2) : "—"}
+                          </td>
                           <td
                             className={cn(
                               "px-2.5 py-1.5 text-right tabular-nums",
-                              o.slippageBps == null ? "text-muted-foreground" : o.slippageBps >= 0 ? "text-up" : "text-down",
+                              o.slippageBps == null
+                                ? "text-muted-foreground"
+                                : o.slippageBps >= 0
+                                  ? "text-up"
+                                  : "text-down",
                             )}
                           >
                             {o.slippageBps != null ? `${o.slippageBps.toFixed(1)}bp` : "—"}
@@ -1985,20 +2388,29 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             right={<span className="text-caption font-mono">{saRatesQ.data?.sourceLabel ?? "SARB"}</span>}
           >
             {saRatesQ.isLoading ? (
-              <div className="p-5"><PanelSkeleton rows={4} /></div>
+              <div className="p-5">
+                <PanelSkeleton rows={4} />
+              </div>
             ) : saRatesQ.data?.source !== "sarb" || !saRates ? (
-              <div className="p-5"><EmptyDataState message="SARB feed unavailable." hint="Official SA rates/macro come from the SARB public Web API (resbank.co.za)." /></div>
+              <div className="p-5">
+                <EmptyDataState
+                  message="SARB feed unavailable."
+                  hint="Official SA rates/macro come from the SARB public Web API (resbank.co.za)."
+                />
+              </div>
             ) : (
               <GlassScrollBody>
                 <div className="grid grid-cols-2 gap-2">
-                  {([
-                    ["Repo", saRates.repo],
-                    ["Prime", saRates.prime],
-                    ["CPI y/y", saRates.cpi],
-                    ["PPI y/y", saRates.ppi],
-                    ["ZARONIA", saRates.zaronia],
-                    ["Sabor", saRates.sabor],
-                  ] as const).map(([k, r]) => (
+                  {(
+                    [
+                      ["Repo", saRates.repo],
+                      ["Prime", saRates.prime],
+                      ["CPI y/y", saRates.cpi],
+                      ["PPI y/y", saRates.ppi],
+                      ["ZARONIA", saRates.zaronia],
+                      ["Sabor", saRates.sabor],
+                    ] as const
+                  ).map(([k, r]) => (
                     <div key={k} className="glass-inset p-3">
                       <p className="text-caption">{k}</p>
                       <p className="text-metric mt-1">{r?.value != null ? `${r.value.toFixed(2)}%` : "—"}</p>
@@ -2030,12 +2442,17 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   <div key={m.name} className="glass-inset p-3">
                     <div className="flex items-center justify-between">
                       <p className="text-caption">{m.name}</p>
-                      {m.trend === "up" ? <ArrowUpRight className="h-3 w-3 text-up" /> :
-                        m.trend === "down" ? <ArrowDownRight className="h-3 w-3 text-down" /> :
-                          <span className="text-muted-foreground/50">—</span>}
+                      {m.trend === "up" ? (
+                        <ArrowUpRight className="h-3 w-3 text-up" />
+                      ) : m.trend === "down" ? (
+                        <ArrowDownRight className="h-3 w-3 text-down" />
+                      ) : (
+                        <span className="text-muted-foreground/50">—</span>
+                      )}
                     </div>
                     <p className="text-metric mt-1">
-                      {m.value}<span className="ml-1 text-caption">{m.unit}</span>
+                      {m.value}
+                      <span className="ml-1 text-caption">{m.unit}</span>
                     </p>
                     <p className="mt-0.5 font-mono text-xs text-muted-foreground">prior {m.prior}</p>
                   </div>
@@ -2089,9 +2506,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           endpoint="GET /api/curves/ZAR_NSS/metrics"
           db="institutional"
           dataSource={
-            curveMetricsSource === "supabase" || curveMetricsSource === "live"
-              ? "supabase"
-              : "unconfigured"
+            curveMetricsSource === "supabase" || curveMetricsSource === "live" ? "supabase" : "unconfigured"
           }
           className="col-span-12 lg:col-span-4 flex h-[260px] flex-col min-h-0"
           right={<span className="text-caption font-mono">today vs 1D</span>}
@@ -2104,11 +2519,33 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             ) : pcaRows ? (
               <div className="glass-inset min-h-0 flex-1 p-3">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={pcaRows} layout="vertical" margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
+                  <BarChart
+                    data={pcaRows}
+                    layout="vertical"
+                    margin={{ top: 8, right: 8, left: 8, bottom: 0 }}
+                  >
                     <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="bp" />
-                    <YAxis type="category" dataKey="factor" tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" width={130} />
-                    <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
+                    <XAxis
+                      type="number"
+                      tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                      stroke="hsl(var(--border))"
+                      unit="bp"
+                    />
+                    <YAxis
+                      type="category"
+                      dataKey="factor"
+                      tick={{ fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                      stroke="hsl(var(--border))"
+                      width={130}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        fontSize: 11,
+                        background: "hsl(var(--popover))",
+                        border: "1px solid hsl(var(--border))",
+                        borderRadius: 6,
+                      }}
+                    />
                     <Bar dataKey="bp" radius={[0, 2, 2, 0]}>
                       {pcaRows.map((p, i) => (
                         <Cell key={i} fill={p.bp >= 0 ? "hsl(var(--warning))" : "hsl(var(--success))"} />
@@ -2120,7 +2557,10 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             ) : (
               <EmptyDataState
                 message="Curve is live — PCA accumulating from daily snapshots."
-                hint={curveMetricsQ.data?.message ?? "The ZAR_NSS curve flows from IRESS; PCA needs a few days of yield_curve_history_c snapshots to decompose."}
+                hint={
+                  curveMetricsQ.data?.message ??
+                  "The ZAR_NSS curve flows from IRESS; PCA needs a few days of yield_curve_history_c snapshots to decompose."
+                }
               />
             )
           ) : (
@@ -2176,10 +2616,9 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
         <div className="col-span-12 lg:col-span-6 glass-panel flex flex-col justify-center gap-2 p-6">
           <p className="text-caption">Full Investors View</p>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            The snippet beside this lists investors with their holdings value
-            and performance over the selected horizon (1D / MTD / YTD, default
-            YTD). The complete per-investor breakdown opens in the Clients
-            workspace.
+            The snippet beside this lists investors with their holdings value and performance over the
+            selected horizon (1D / MTD / YTD, default YTD). The complete per-investor breakdown opens in the
+            Clients workspace.
           </p>
           <Link
             href="/admin/clients"
@@ -2224,15 +2663,21 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                       <li key={a.account_code} className="px-3.5 py-2.5">
                         <div className="flex items-center justify-between gap-2">
                           <p className="truncate text-xs font-medium">{a.account_name ?? a.account_code}</p>
-                          <Pill tone="neutral" size="xs">{a.account_type ?? "—"}</Pill>
+                          <Pill tone="neutral" size="xs">
+                            {a.account_type ?? "—"}
+                          </Pill>
                         </div>
                         <div className="mt-1 flex items-center justify-between font-mono text-[10px] text-muted-foreground">
                           <span>{a.account_code}</span>
                           <span>{a.currency ?? "ZAR"}</span>
                         </div>
                         <div className="mt-1.5 flex items-center justify-between">
-                          <span className="font-mono text-[11px]">NAV {formatZAR(Number(a.nav_value ?? 0))}</span>
-                          <span className="font-mono text-[10px] text-muted-foreground">cash {formatZAR(Number(a.cash_balance ?? 0))}</span>
+                          <span className="font-mono text-[11px]">
+                            NAV {formatZAR(Number(a.nav_value ?? 0))}
+                          </span>
+                          <span className="font-mono text-[10px] text-muted-foreground">
+                            cash {formatZAR(Number(a.cash_balance ?? 0))}
+                          </span>
                         </div>
                       </li>
                     ))}
@@ -2261,7 +2706,12 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               className="col-span-12 lg:col-span-8 flex h-[340px] flex-col min-h-0"
               right={
                 portfolioQ.data?.source === "supabase" ? (
-                  <span className="text-caption font-mono">{portfolioQ.data.positions.length} positions · MV {formatZAR(portfolioQ.data.positions.reduce((acc, p) => acc + Number(p.market_value ?? 0), 0))}</span>
+                  <span className="text-caption font-mono">
+                    {portfolioQ.data.positions.length} positions · MV{" "}
+                    {formatZAR(
+                      portfolioQ.data.positions.reduce((acc, p) => acc + Number(p.market_value ?? 0), 0),
+                    )}
+                  </span>
                 ) : undefined
               }
             >
@@ -2290,9 +2740,22 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                               <td className="px-3.5 py-1.5 font-medium text-foreground">{p.security_code}</td>
                               <td className="px-3 py-1.5 text-muted-foreground">{p.account_code}</td>
                               <td className="px-3 py-1.5 text-right">{p.quantity.toLocaleString("en-ZA")}</td>
-                              <td className="px-3 py-1.5 text-right">{p.open_average_price != null ? p.open_average_price.toFixed(2) : "—"}</td>
-                              <td className="px-3 py-1.5 text-right">{p.market_value != null ? formatZAR(Number(p.market_value)) : "—"}</td>
-                              <td className={cn("px-3 py-1.5 text-right", !hasPl ? "text-muted-foreground" : pl >= 0 ? "text-success" : "text-destructive")}>
+                              <td className="px-3 py-1.5 text-right">
+                                {p.open_average_price != null ? p.open_average_price.toFixed(2) : "—"}
+                              </td>
+                              <td className="px-3 py-1.5 text-right">
+                                {p.market_value != null ? formatZAR(Number(p.market_value)) : "—"}
+                              </td>
+                              <td
+                                className={cn(
+                                  "px-3 py-1.5 text-right",
+                                  !hasPl
+                                    ? "text-muted-foreground"
+                                    : pl >= 0
+                                      ? "text-success"
+                                      : "text-destructive",
+                                )}
+                              >
                                 {!hasPl ? "—" : `${pl >= 0 ? "+" : ""}${formatZAR(pl)}`}
                               </td>
                             </tr>
@@ -2324,11 +2787,15 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
 
 function OrderStatePill({ state }: { state: string }) {
   const tone =
-    state === "FILLED" ? "success" :
-      state === "PARTIAL" ? "warning" :
-        state === "WORKING" ? "primary" :
-          state === "REJECTED" ? "destructive" :
-            "neutral";
+    state === "FILLED"
+      ? "success"
+      : state === "PARTIAL"
+        ? "warning"
+        : state === "WORKING"
+          ? "primary"
+          : state === "REJECTED"
+            ? "destructive"
+            : "neutral";
   return (
     <Badge variant={tone as never} className="text-[9.5px]">
       {state}
@@ -2358,14 +2825,34 @@ const SENS_TONE: Record<string, "primary" | "info" | "success" | "neutral" | "wa
   CAUTIONARY: "destructive",
 };
 
-function SensTape({ items, limit = 6 }: { items: { id: string; ts: number; ticker: string; issuer: string; category: string; severity: string; headline: string }[]; limit?: number }) {
+function SensTape({
+  items,
+  limit = 6,
+}: {
+  items: {
+    id: string;
+    ts: number;
+    ticker: string;
+    issuer: string;
+    category: string;
+    severity: string;
+    headline: string;
+  }[];
+  limit?: number;
+}) {
   return (
     <ul className="divide-y divide-border/60">
       {items.slice(0, limit).map((s) => (
         <li key={s.id} className="px-3 py-2.5 hover:bg-muted/30">
           <div className="flex items-center gap-1.5">
-            <Pill tone={SENS_TONE[s.category] ?? "neutral"} size="xs">{s.category}</Pill>
-            {s.severity === "regulatory" && <Pill tone="destructive" size="xs">REG</Pill>}
+            <Pill tone={SENS_TONE[s.category] ?? "neutral"} size="xs">
+              {s.category}
+            </Pill>
+            {s.severity === "regulatory" && (
+              <Pill tone="destructive" size="xs">
+                REG
+              </Pill>
+            )}
             <span className="ml-auto font-mono text-[9.5px] text-muted-foreground">{formatTime(s.ts)}</span>
           </div>
           <p className="mt-1 text-xs font-medium leading-snug">{s.headline}</p>
