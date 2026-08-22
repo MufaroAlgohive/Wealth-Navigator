@@ -26,7 +26,7 @@ import {
 } from "@/lib/supabase/server";
 import type { Order, Quote } from "@/types/iress";
 
-export type QuoteSource = "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "unavailable";
+export type QuoteSource = "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "yahoo" | "unavailable";
 
 export interface QuoteWithSource {
   quote: Quote;

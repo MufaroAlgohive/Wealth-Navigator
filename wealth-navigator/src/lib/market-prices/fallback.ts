@@ -292,3 +292,102 @@ export async function resolveSecurityPrices(
   }
   return out;
 }
+
+/**
+ * Aggregate summary of a `resolveSecurityPrices` result. Lets BFF routes emit a
+ * single `yahooCount` / `dbCount` figure alongside the rows so the UI badge
+ * can honestly say "yahoo fallback" for the whole response (DataSourceBadge).
+ *
+ * Seamlessness contract: the freshness gate inside `resolveSecurityPrices`
+ * (see `isPriceStale` / `IRESS_STALE_FALLBACK_MS`) makes IRESS-back-online
+ * recovery automatic — the moment `securities_c.updated_at` or
+ * `stock_intraday_c.timestamp` lands inside the freshness window, the next
+ * read returns that DB row and `yahooCount` drops by one. The 60s in-process
+ * cache here only matters for repeated lookups of the SAME stale symbol
+ * inside one warm Vercel instance; on cold / new instances the cache is empty
+ * so a freshly-recovered IRESS row is shown immediately.
+ */
+export interface ResolvedPriceSummary {
+  total: number;
+  /** Rows where IRESS/securities_c/stock_intraday_c had a fresh value. */
+  dbCount: number;
+  /** Rows whose price came from Yahoo live (DB was missing or stale). */
+  yahooCount: number;
+}
+
+export function summariseResolvedPrices(rows: ResolvedSecurityPrice[]): ResolvedPriceSummary {
+  let dbCount = 0;
+  let yahooCount = 0;
+  for (const row of rows) {
+    if (row.price_source === "yahoo") yahooCount += 1;
+    else dbCount += 1;
+  }
+  return { total: rows.length, dbCount, yahooCount };
+}
+
+/**
+ * One-call convenience for BFF routes: resolves prices for a set of DB rows
+ * and applies the result back onto the caller's rows in place. Cents-safety:
+ * the helper writes `last_price` as INTEGER CENTS (Yahoo `priceCents` verbatim
+ * for `.JO`, ×100 for non-JSE, divided by 100 → Rands × 100 → cents).
+ *
+ * Returns the count of rows that ended up on the Yahoo fallback so the caller
+ * can surface it in the response (DataSourceBadge, operator diagnostics).
+ *
+ * IRESS-back-online seam: when securities_c.updated_at lands inside the
+ * freshness window (`IRESS_STALE_FALLBACK_MS`), the next call's freshness
+ * gate flips the row back to its DB value automatically — no state to clear.
+ */
+export interface ApplyTargetRow {
+  symbol: string;
+  last_price?: number | null;
+  change_percent?: number | null;
+  price_source?: "iress" | "yahoo" | "securities_c" | "stock_intraday_c" | "supabase";
+}
+
+export interface ApplyOptions {
+  rows: ApplyTargetRow[];
+  intradayBySecurityId?: Map<string, IntradayPriceRow>;
+  /** Skip the fresh check for these rows (forces Yahoo lookup). Useful for
+   *  "always fallback" admin diagnostics, never for production read paths. */
+  force?: boolean;
+  maxYahoo?: number;
+  concurrency?: number;
+}
+
+export async function applyYahooFallback(opts: ApplyOptions): Promise<{ yahooFallback: number }> {
+  const { rows, intradayBySecurityId = new Map(), maxYahoo = 40, concurrency = 4 } = opts;
+  if (rows.length === 0) return { yahooFallback: 0 };
+
+  const priceRows: SecurityPriceRow[] = rows.map((r) => ({
+    id: r.symbol,
+    symbol: r.symbol,
+    name: null,
+    logo_url: null,
+    last_price: r.last_price ?? null,
+    change_percent: r.change_percent ?? null,
+    updated_at: null,
+  }));
+  const resolved = await resolveSecurityPrices({
+    rows: priceRows,
+    intradayBySecurityId,
+    maxYahoo,
+    concurrency,
+  });
+  const bySymbol = new Map(resolved.map((r) => [r.symbol.toUpperCase(), r] as const));
+  let yahooFallback = 0;
+  for (const row of rows) {
+    const r = bySymbol.get(String(row.symbol).toUpperCase());
+    if (!r) continue;
+    if (r.price_source !== "yahoo") continue;
+    if (r.price_rands != null) {
+      row.last_price = Math.round(r.price_rands * 100);
+    }
+    if (r.day_pct != null) {
+      row.change_percent = r.day_pct;
+    }
+    row.price_source = "yahoo";
+    yahooFallback += 1;
+  }
+  return { yahooFallback };
+}

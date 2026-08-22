@@ -56,6 +56,8 @@ interface UniverseSecurity {
   market_cap: number | null;
   isin: string | null;
   ytd_performance: number | null;
+  /** Worker / cron updated_at — feeds the Yahoo fallback freshness gate. */
+  updated_at?: string | null;
   /** Trailing returns — Yahoo daily closes for the top-N by market cap. */
   return_1m?: number | null;
   return_6m?: number | null;
@@ -69,6 +71,9 @@ interface EquitiesUniverseResponse {
   count: number;
   /** How many board rows had price/change overlaid from live IRESS. */
   iressOverlay?: number;
+  /** How many board rows had their price/change served by the Yahoo live
+   *  fallback (DB row was missing or stale past IRESS_STALE_FALLBACK_HOURS). */
+  yahooFallback?: number;
   /** How many board rows carry Yahoo-derived 1M/6M returns. */
   returnsCoverage?: number;
   /** Latest daily close used for the period returns. */
@@ -864,6 +869,13 @@ function RealUniverseTable({
         <span className="font-mono font-semibold text-up">{iressCount}</span> of{" "}
         <span className="font-mono">{rows.length}</span> priced live from IRESS (last + day change); the rest
         show the latest stored price. Fundamentals / market cap / sector come from the stored reference data.
+        {response?.yahooFallback ? (
+          <>
+            {" "}
+            <span className="font-mono font-semibold text-warning">{response.yahooFallback}</span> served by
+            the Yahoo live fallback (DB row was stale or missing); the rest render "—" until IRESS recovers.
+          </>
+        ) : null}
         {response?.returnsCoverage ? (
           <>
             {" "}
