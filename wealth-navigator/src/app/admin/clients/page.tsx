@@ -35,6 +35,14 @@ interface Detail {
   mandate?: { available: boolean; data: Record<string, unknown>; signed_agreement_url?: string | null };
   child_certificate?: { url?: string | null; status?: string | null; reviewed_at?: string | null };
   rich_details?: RichDetails | null;
+  children?: Array<{
+    family_member_id: string;
+    first_name: string | null;
+    last_name: string | null;
+    mint_number: string | null;
+    kyc: Kyc;
+    certificate_url: string | null;
+  }>;
 }
 
 const R = (cents: number) => new Intl.NumberFormat("en-ZA", { style: "currency", currency: "ZAR", maximumFractionDigits: 0 }).format(cents / 100);
@@ -207,6 +215,58 @@ export default function ClientsPage() {
     }
   };
 
+  // Child equivalent of downloadPack — a child has no profiles/Sumsub/Experian
+  // record (family_members rows for unlinked children carry no user account),
+  // so the parent pack's Sumsub/Experian/mandate bundling doesn't apply here.
+  // The only real document is the birth certificate; bundle it with a summary
+  // manifest so admins get the same one-click zip convenience as the parent
+  // pack instead of having to manually open+save the certificate link.
+  const downloadChildPack = async () => {
+    if (!sel?.family_member_id || !detail) return;
+    setPackBusy(true);
+    try {
+      const zip = new JSZip();
+      let added = 0;
+      const certUrl = detail.child_certificate?.url;
+      if (certUrl) {
+        try {
+          const response = await fetch(certUrl);
+          if (response.ok) {
+            const blob = await response.blob();
+            const extension = /\.[a-z0-9]{2,5}$/i.test(certUrl) ? "" : blob.type.includes("pdf") ? ".pdf" : blob.type.includes("png") ? ".png" : ".jpg";
+            zip.file(`birth-certificate-${safeFilename(sel.name || sel.id)}${extension}`, blob);
+            added += 1;
+          }
+        } catch (certErr) {
+          console.error("Child certificate fetch for pack failed:", certErr);
+        }
+      }
+      zip.file("manifest.json", JSON.stringify({
+        family_member_id: sel.family_member_id,
+        child: sel.name,
+        managing_parent: str(p.managing_parent ?? p.guardian_name ?? p.parent_name),
+        date_of_birth: str(p.date_of_birth),
+        mint_number: sel.mint_number,
+        certificate_status: detail.child_certificate?.status ?? null,
+        certificate_reviewed_at: detail.child_certificate?.reviewed_at ?? null,
+        generated_at: new Date().toISOString(),
+        document_count: added,
+      }, null, 2));
+      const blob = await zip.generateAsync({ type: "blob" });
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = window.document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = `child-pack-${safeFilename(sel.name || sel.id)}.zip`;
+      anchor.click();
+      URL.revokeObjectURL(objectUrl);
+      toast.success(added ? "Downloaded child pack with the birth certificate" : "Downloaded child pack (no certificate on file yet)");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not download child pack");
+    } finally {
+      setPackBusy(false);
+    }
+  };
+
   const openComputershareDocument = async (mode: "view" | "download") => {
     if (!detail) return;
     setComputershareBusy(true);
@@ -328,6 +388,10 @@ export default function ClientsPage() {
                   <Button size="sm" onClick={downloadPack} disabled={packBusy}><Package />{packBusy ? "Preparing pack…" : "Download pack"}</Button>
                 </div>}
 
+                {detail.is_unlinked_child && <div className="flex flex-wrap justify-end gap-2">
+                  <Button size="sm" onClick={downloadChildPack} disabled={packBusy}><Package />{packBusy ? "Preparing pack…" : "Download child pack"}</Button>
+                </div>}
+
                 <Tabs value={tab} onValueChange={setTab}>
                   <TabsList><TabsTrigger value="profile">Profile</TabsTrigger><TabsTrigger value="kyc">KYC</TabsTrigger>{!detail.is_unlinked_child && <TabsTrigger value="mandate">Mandate</TabsTrigger>}<TabsTrigger value="holdings">Holdings</TabsTrigger><TabsTrigger value="activity">Activity</TabsTrigger></TabsList>
 
@@ -342,6 +406,21 @@ export default function ClientsPage() {
                       <Row label="Address" value={str(p.address ?? detail.rich_details?.fields.address?.value)} /><Row label="Joined" value={p.created_at ? new Date(String(p.created_at)).toLocaleDateString("en-ZA") : "—"} />
                       <Row label="Managing parent" value={str(p.managing_parent ?? p.guardian_name ?? p.parent_name)} /><Row label="Relationship" value={str(p.parent_relationship ?? p.relationship)} />
                     </dl>
+                    {!!detail.children?.length && <div className="mt-4 space-y-2">
+                      <p className="text-xs font-semibold text-foreground">Children</p>
+                      {detail.children.map((child) => (
+                        <div key={child.family_member_id} className="flex items-center justify-between gap-2 rounded-xl border border-border bg-card px-3 py-2.5">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xs font-medium text-foreground">{`${child.first_name || ""} ${child.last_name || ""}`.trim() || "Unnamed child"}</p>
+                            <p className="text-[10px] text-muted-foreground">{child.mint_number || "—"} · <span className="capitalize">{kycLabel(child.kyc)}</span></p>
+                          </div>
+                          <div className="flex shrink-0 gap-2">
+                            {child.certificate_url ? <Button size="sm" variant="secondary" asChild><a href={child.certificate_url} target="_blank" rel="noreferrer">View certificate</a></Button> : <span className="text-[11px] text-muted-foreground">No certificate</span>}
+                            <Button size="sm" variant="outline" onClick={() => openClient(`family:${child.family_member_id}`)}>Open record</Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>}
                   </TabsContent>
 
                   <TabsContent value="mandate" className="space-y-3">
