@@ -249,9 +249,11 @@ export function NotificationsCenter({ open, onOpenChange, initialCategory }: Not
   return (
     <>
       {/* Backdrop */}
-      <div
-        aria-hidden
-        // biome-ignore lint/a11y/useKeyWithClickEvents: dismissable via Escape + close button + outside click on Panel
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: dismissable via Escape + close button + outside click on Panel */}
+      <button
+        type="button"
+        aria-label="Close notifications"
+        tabIndex={-1}
         onClick={() => onOpenChange(false)}
         className={cn(
           "fixed inset-0 z-40 bg-black/40 backdrop-blur-sm transition-opacity duration-300",
