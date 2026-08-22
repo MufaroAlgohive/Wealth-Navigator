@@ -29,6 +29,8 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { useAdmin } from "@/lib/admin/context";
 import { cn } from "@/lib/cn";
 
@@ -53,6 +55,117 @@ const ZAR = (n: number | string | null) => {
   const v = Number(n) || 0;
   return `R ${v.toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
+
+function AddFundsModal({ onAdded }: { onAdded: () => void }) {
+  const [open, setOpen] = React.useState(false);
+  const [search, setSearch] = React.useState("");
+  const [clients, setClients] = React.useState<{ id: string; email: string; mint_number: string; first_name: string; last_name: string }[]>([]);
+  const [selectedClient, setSelectedClient] = React.useState<string>("");
+  const [amount, setAmount] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+
+  // Search clients when query changes
+  React.useEffect(() => {
+    if (!search || search.length < 2) {
+      setClients([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/admin/eft?action=search-clients&q=${encodeURIComponent(search)}`);
+        const data = await res.json();
+        if (data.ok) setClients(data.clients || []);
+      } catch (e) {
+        // ignore
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedClient) return toast.error("Please select a client.");
+    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) return toast.error("Please enter a valid amount.");
+
+    setLoading(true);
+    try {
+      const res = await fetch("/api/admin/eft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add-wallet", user_id: selectedClient, amount: Number(amount) }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Failed to add funds");
+      
+      toast.success("Funds added to pending queue.");
+      setOpen(false);
+      setSearch("");
+      setAmount("");
+      setSelectedClient("");
+      onAdded();
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add funds.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          + Add funds
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-[425px]">
+        <DialogHeader>
+          <DialogTitle>Add funds to client wallet</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="grid gap-4 py-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Search Client</label>
+            <Input 
+              placeholder="Search by name, email or Mint #" 
+              value={search} 
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {clients.length > 0 && (
+              <div className="max-h-32 overflow-y-auto rounded-md border p-1 mt-1">
+                {clients.map((c) => (
+                  <div
+                    key={c.id}
+                    className={cn(
+                      "flex cursor-pointer flex-col p-2 text-sm rounded hover:bg-muted",
+                      selectedClient === c.id ? "bg-muted font-medium" : ""
+                    )}
+                    onClick={() => { setSelectedClient(c.id); setSearch(`${c.first_name || ""} ${c.last_name || ""} (${c.mint_number})`.trim()); setClients([]); }}
+                  >
+                    <span>{c.first_name} {c.last_name}</span>
+                    <span className="text-xs text-muted-foreground">{c.email} · {c.mint_number}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Amount (ZAR)</label>
+            <Input 
+              type="number" 
+              step="0.01"
+              placeholder="e.g. 50000" 
+              value={amount} 
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          </div>
+          <Button type="submit" disabled={loading} className="mt-2">
+            {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Submit
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default function BankingEftPage() {
   const { ctx } = useAdmin();
@@ -142,6 +255,7 @@ export default function BankingEftPage() {
           <p className="text-caption">Pending wallet_transactions awaiting manual credit / rejection.</p>
         </div>
         <div className="flex gap-2">
+          <AddFundsModal onAdded={reload} />
           <Button variant="secondary" size="sm" onClick={reload}>
             <Loader2 className="h-3.5 w-3.5" /> Refresh
           </Button>

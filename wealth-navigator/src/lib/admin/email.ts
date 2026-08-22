@@ -124,6 +124,16 @@ export function buildInviteHtml(opts: { link: string; role: string }): string {
   </td></tr>`);
 }
 
+/** Minimal HTML-entity escape for values interpolated into email markup —
+ * a client name or instrument name containing `&` or `<` must not be able to
+ * break the layout (or inject markup) in someone's inbox. */
+const esc = (v: unknown) =>
+  String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
 /**
  * Client-facing "Trade Confirmation" email — business-supplied template kept
  * verbatim (inline styles, MINT gold/purple branding, FSP/NCRCP footer).
@@ -135,13 +145,21 @@ export function buildTradeConfirmationHtml(opts: {
   firstName?: string;
   action: "Buy" | "Sell";
   symbol: string;
+  name?: string; // Optional full name if available
   orderId: string;
   quantity: number;
   avgPriceRands: number;
 }): string {
-  const fmt = (n: number) => Number(n).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const clientName = opts.firstName || "there";
+  const money = (n: number) => Number(n).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const clientName = esc(opts.firstName || "there");
+  const action = esc(opts.action);
+  const symbol = esc(opts.symbol);
+  const security = opts.name && opts.name !== opts.symbol ? `${esc(opts.name)} (${symbol})` : symbol;
   const totalValue = opts.quantity * opts.avgPriceRands;
+  const period = new Date()
+    .toLocaleDateString("en-ZA", { month: "long", year: "numeric" })
+    .toUpperCase();
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -158,7 +176,7 @@ export function buildTradeConfirmationHtml(opts: {
   <h1 style="font-family: 'DM Serif Display', Georgia, serif; font-size: 33px; color: #ffffff; font-weight: 400; line-height: 1.15; letter-spacing: -0.3px; margin-bottom: 14px;">Trade Confirmation</h1>
   <p style="font-size: 14px; color: rgba(255,255,255,0.62); font-weight: 300;">We have successfully executed your recent market order.</p>
   <div style="margin-top: 24px; padding-top: 18px; border-top: 1px solid rgba(255,255,255,0.14); font-size: 11px; letter-spacing: 2px; color: #DDC357; text-transform: uppercase; font-weight: 500;">
-    MINT BASKETS &middot; TRADE CONFIRMATION &middot; AUGUST 2026
+    MINT BASKETS &middot; TRADE CONFIRMATION &middot; ${period}
   </div>
 </div>
 
@@ -166,13 +184,13 @@ export function buildTradeConfirmationHtml(opts: {
 <div style="padding: 40px 44px 8px;">
   <p style="font-size: 16px; line-height: 1.7; color: #2C2738; font-weight: 300; margin-bottom: 36px;">
     Hi ${clientName},<br><br>
-    Your <strong>${opts.action}</strong> order for <strong>${opts.symbol}</strong> has been fully filled on the market. Here are the details of your trade:
+    Your <strong>${action}</strong> order for <strong>${security}</strong> has been fully filled on the market. Here are the details of your trade:
   </p>
 
   <!-- SECTION -->
   <div style="margin-bottom: 38px;">
     <div style="font-size: 10px; letter-spacing: 3px; text-transform: uppercase; color: #5C3BCF; font-weight: 600; margin-bottom: 10px;">EXECUTION DETAILS</div>
-    <h2 style="font-family: 'DM Serif Display', Georgia, serif; font-size: 23px; font-weight: 400; color: #31005E; letter-spacing: -0.2px; margin-bottom: 16px;">Order #${opts.orderId}</h2>
+    <h2 style="font-family: 'DM Serif Display', Georgia, serif; font-size: 23px; font-weight: 400; color: #31005E; letter-spacing: -0.2px; margin-bottom: 16px;">${opts.orderId ? `Order #${esc(opts.orderId)}` : "Order Execution"}</h2>
 
     <!-- TABLE -->
     <table style="width: 100%; border-collapse: collapse; margin: 22px 0 4px;">
@@ -185,11 +203,11 @@ export function buildTradeConfirmationHtml(opts: {
       <tbody>
         <tr>
           <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Action</td>
-          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; color: #2C2738;">${opts.action}</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; color: #2C2738;">${action}</td>
         </tr>
         <tr>
           <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Security</td>
-          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; color: #2C2738;">${opts.symbol}</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; color: #2C2738;">${security}</td>
         </tr>
         <tr>
           <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Quantity Executed</td>
@@ -197,11 +215,11 @@ export function buildTradeConfirmationHtml(opts: {
         </tr>
         <tr>
           <td style="padding: 13px 0; border-bottom: 1px solid #F0EDF5; font-size: 14px; font-weight: 500; color: #1A1622; width: 32%;">Average Fill Price</td>
-          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500;">R ${fmt(opts.avgPriceRands)}</td>
+          <td style="text-align: right; padding: 13px 22px 13px 0; border-bottom: 1px solid #F0EDF5; font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 500;">R ${money(opts.avgPriceRands)}</td>
         </tr>
         <tr>
           <td style="padding: 20px 0 13px; font-weight: 700; color: #1A1622;">Total Value</td>
-          <td style="text-align: right; padding: 20px 22px 13px 0; font-size: 16px; font-weight: 800; color: #31005E;">R ${fmt(totalValue)}</td>
+          <td style="text-align: right; padding: 20px 22px 13px 0; font-size: 16px; font-weight: 800; color: #31005E;">R ${money(totalValue)}</td>
         </tr>
       </tbody>
     </table>

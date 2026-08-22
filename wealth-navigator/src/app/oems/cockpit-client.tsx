@@ -1150,6 +1150,26 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       <header className="glass-panel relative overflow-hidden px-4 py-2.5">
         <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-primary/10 blur-3xl" />
 
+<<<<<<< HEAD
+        {/* Title row */}
+        <div className="relative flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <h1 className="shrink-0 text-sm font-semibold tracking-tight text-foreground">Cockpit</h1>
+            <span className="shrink-0 text-muted-foreground/40">·</span>
+            <p className="truncate text-xs text-muted-foreground max-w-md">
+              Centralized execution &amp; portfolio oversight across active model baskets, certified factsheets, and JSE market liquidity.
+            </p>
+            <GlassBadge tone="primary">
+              <Activity className="h-3 w-3" />
+              Institutional Trading Desk
+            </GlassBadge>
+            <GlassBadge tone="neutral">
+              <ShieldCheck className="h-3 w-3 text-primary/80" />
+              IC Committee Governance
+            </GlassBadge>
+            <span className="glass-inset shrink-0 inline-flex items-center px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
+              {mastheadDate}
+=======
         {/* Top Header Row */}
         <div className="relative flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 space-y-3">
@@ -1190,6 +1210,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                   + yahoo
                 </span>
               ) : null}
+>>>>>>> mint/main
             </span>
             <Link
               href="/admin/factsheets"
@@ -1283,6 +1304,74 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               </p>
             </div>
           </div>
+
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            <span
+              className="inline-flex items-center gap-1"
+              title={activeSource.reason}
+              aria-label={activeSource.reason}
+            >
+              <DataSourceBadge source={activeSource.kind} db="retail" />
+              {activeSource.yahooActive ? (
+                <span
+                  className="font-mono text-[9.5px] font-semibold uppercase tracking-wider text-amber-300"
+                  title="Some symbols on this render came from the Yahoo live fallback — the DB row was stale or missing."
+                >
+                  + yahoo
+                </span>
+              ) : null}
+            </span>
+            <Link
+              href="/admin/factsheets"
+              className="glass-inset inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-foreground/90 hover:text-primary transition-colors"
+            >
+              <FileText className="h-3.5 w-3.5 text-primary" />
+              Factsheets
+            </Link>
+            <Link
+              href="/oems/research-lab"
+              className="glass-inset inline-flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-foreground/90 hover:text-primary transition-colors"
+            >
+              <PieChart className="h-3.5 w-3.5 text-chart-4" />
+              Research Lab
+            </Link>
+          </div>
+        </div>
+
+        {/* Platform overview stat strip — plain inline label:value groups,
+            no card backgrounds/borders, matches the KPI/panel density used
+            elsewhere on this page. */}
+        <div className="relative mt-2 flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-foreground/[0.06] pt-2 text-[11px]">
+          <span className="flex items-center gap-1.5">
+            <FileText className="h-3 w-3 text-primary" />
+            <span className="text-muted-foreground">Factsheets &amp; Baskets</span>
+            <span className="font-mono font-semibold text-foreground">
+              {totalStrategiesCount > 0 ? `${totalStrategiesCount} Mandates` : "—"}
+            </span>
+            <span className="text-muted-foreground/70">
+              {realDataOnly ? "Live Catalogue" : "Model Set"} · Equity &amp; Money Market
+            </span>
+          </span>
+
+          <span className="flex items-center gap-1.5">
+            <PieChart className="h-3 w-3 text-chart-4" />
+            <span className="text-muted-foreground">Basket Holdings</span>
+            <span className="font-mono font-semibold text-foreground">
+              {totalBasketHoldings > 0 ? `${totalBasketHoldings} Holdings` : "—"}
+            </span>
+            <span className="text-muted-foreground/70">
+              {universeSize > 0 ? `${universeSize} JSE & Global Assets Tracked` : "Active Multi-Asset Weights"}
+            </span>
+          </span>
+
+          <span className="flex items-center gap-1.5">
+            <ShieldCheck className="h-3 w-3 text-warning" />
+            <span className="text-muted-foreground">IC Rebalance Gate</span>
+            <span className="font-mono font-semibold text-foreground">
+              {rebalanceIsLocked ? "Locked" : "Authorized"}
+            </span>
+            <span className="text-muted-foreground/70">2/3 Majority · Lonwabo, Juan, Lethabo</span>
+          </span>
         </div>
       </header>
 

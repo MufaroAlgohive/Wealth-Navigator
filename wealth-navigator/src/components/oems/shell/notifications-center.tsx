@@ -452,6 +452,7 @@ export function NotificationsCenter({ open, onOpenChange, initialCategory }: Not
                   <li key={item.id} className="relative">
                     <span aria-hidden className={cn("absolute left-0 top-0 h-full w-0.5", sev.bar)} />
                     {item.href ? (
+                      // biome-ignore lint/a11y/useKeyWithClickEvents: mark-read also fires on focus + the parent <li> is Enter-activatable via this anchor
                       <a
                         href={item.href}
                         onClick={handleClick}
@@ -464,6 +465,7 @@ export function NotificationsCenter({ open, onOpenChange, initialCategory }: Not
                         {ItemBody}
                       </a>
                     ) : (
+                      // biome-ignore lint/a11y/useKeyWithClickEvents: same rationale as the anchor above
                       <button
                         type="button"
                         onClick={handleClick}
