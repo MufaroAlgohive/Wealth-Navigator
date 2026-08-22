@@ -222,7 +222,7 @@ async function handleApprove(db: SupabaseClient, transactionId: string): Promise
     const newBalance = currentBalance + amountRands;
     const { error: walletUpdErr } = await db
       .from("wallets")
-      .update({ balance: newBalance, updated_at: now })
+      .update({ balance: newBalance, mailer: "not sent", updated_at: now })
       .eq("id", wallet.id);
     if (walletUpdErr) {
       walletNotice = `Wallet credit failed: ${walletUpdErr.message}`;
