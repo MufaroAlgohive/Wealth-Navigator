@@ -30,3 +30,33 @@ export async function requireMasterPassword(_password: unknown): Promise<StepUpR
 
   return { ok: true, email: auth.ctx.email };
 }
+
+/**
+ * Elevated-tier gate for admin actions that need more trust than routine
+ * staff/admin desk work, but are not the "irreversible, no broker
+ * confirmation behind this call" shape `requireMasterPassword` protects
+ * (send-to-market, manual-fill, release-to-orderbook — leave those on
+ * Master ★ only).
+ *
+ * Accepts EITHER approver tier — `dev` or `master` — not just Master ★.
+ * The business owner's stated intent (2026-08, canonical-ledger recompute)
+ * was explicitly "most likely devs are who will be running it", so a
+ * Master-only gate over-restricted this action. This still requires an
+ * elevated tier, though: plain `staff`/`admin` roles with no
+ * `approver_tier` set are rejected, same as before.
+ */
+export async function requireElevatedTier(): Promise<StepUpResult> {
+  const auth = await getAdminContext();
+  if (auth.status === "no-session") return { ok: false, status: 401, error: "no-session" };
+  if (auth.status !== "ok") return { ok: false, status: 403, error: "forbidden" };
+
+  if (auth.ctx.approverTier !== "master" && auth.ctx.approverTier !== "dev") {
+    return {
+      ok: false,
+      status: 403,
+      error: "This action requires a Dev or Master ★ account.",
+    };
+  }
+
+  return { ok: true, email: auth.ctx.email };
+}
