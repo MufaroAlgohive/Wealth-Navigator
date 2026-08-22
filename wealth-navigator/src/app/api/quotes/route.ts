@@ -1,6 +1,7 @@
 import { type ProviderName, getProvider } from "@/lib/data/providers";
 import { iressConfig } from "@/lib/iress";
 import { type QuoteWithSource, fetchQuotesSafe } from "@/lib/iress/live-queries";
+import { type SecurityPriceRow, resolveSecurityPrices } from "@/lib/market-prices/fallback";
 import { isRetailSupabaseConfigured } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -107,6 +108,72 @@ export async function GET(req: Request) {
 
   const quotes: QuoteWithSource[] = await fetchQuotesSafe(symbols, exchange);
 
+  // IRESS → Yahoo fallback for any quote that came back with no usable price
+  // (IRESS offline, IRESS test mode, sandbox seat, the symbol isn't covered,
+  // etc.). Without this the cockpit reads `/api/quotes`, sees fallbackCount=0,
+  // and reports "UNAVAILABLE" — even though Yahoo is happily serving live
+  // prices for every symbol. Cents-safe via yahooPriceToCents: .JO instruments
+  // are stored verbatim, non-JSE ×100. Reads only — never writes back.
+  const STALE_PRICE_MS = (Number(process.env.IRESS_STALE_FALLBACK_HOURS) || 3) * 60 * 60 * 1000;
+  const nowMs = Date.now();
+  const missing = quotes
+    .map((q, idx) => ({ q, idx }))
+    .filter(({ q }) => {
+      const hasPrice = Number.isFinite(q.quote.last) && Number(q.quote.last) > 0;
+      const tsMs = typeof q.quote.ts === "number" ? q.quote.ts : new Date(q.quote.ts ?? 0).getTime();
+      const tsFresh = Number.isFinite(tsMs) && nowMs - tsMs <= STALE_PRICE_MS;
+      // Fall back when the price is missing OR the timestamp is stale.
+      return !hasPrice || !tsFresh;
+    });
+  let yahooCount = 0;
+  if (missing.length > 0) {
+    try {
+      const fallbackRows: SecurityPriceRow[] = missing.map(({ q }) => ({
+        id: q.symbol,
+        symbol: q.symbol,
+        name: null,
+        logo_url: null,
+        last_price:
+          Number.isFinite(q.quote.last) && Number(q.quote.last) > 0
+            ? Math.round(Number(q.quote.last) * 100)
+            : null,
+        change_percent:
+          Number.isFinite(q.quote.changePct) && q.quote.changePct != null ? Number(q.quote.changePct) : null,
+        updated_at: typeof q.quote.ts === "number" ? new Date(q.quote.ts).toISOString() : null,
+      }));
+      const resolved = await resolveSecurityPrices({
+        rows: fallbackRows,
+        intradayBySecurityId: new Map(),
+        maxYahoo: 60,
+        concurrency: 4,
+      });
+      const bySymbol = new Map(resolved.map((r) => [r.symbol.toUpperCase(), r] as const));
+      for (const { idx, q } of missing) {
+        const r = bySymbol.get(q.symbol.toUpperCase());
+        if (!r || r.price_rands == null || r.price_rands <= 0) continue;
+        // Overwrite the IRESS/supabase row with the Yahoo-resolved price. Cents
+        // math: price_rands (Rands) × 100 → integer cents to match the IRESS
+        // convention used everywhere downstream.
+        quotes[idx] = {
+          ...q,
+          quote: {
+            ...q.quote,
+            last: r.price_rands,
+            // `q.quote.ts` is a number epoch ms — keep the Yahoo as-of timestamp
+            // in the same shape. `price_as_of` is the ISO string from the truth
+            // layer; coerce via Date.
+            ts: r.price_as_of ? new Date(r.price_as_of).getTime() : Date.now(),
+          },
+          source: "yahoo",
+        };
+        yahooCount += 1;
+      }
+    } catch {
+      /* Yahoo slow/down — fall through, the cockpit will report whatever the
+       * raw source says (UNAVAILABLE / SUPABASE / SEED-FALLBACK). */
+    }
+  }
+
   const summaryQuotes = quotes.map((q) => ({
     symbol: q.symbol,
     last_price: q.quote.last,
@@ -119,17 +186,26 @@ export async function GET(req: Request) {
     source: q.source,
   }));
 
+  // yahooCount counts the rows the live Yahoo fallback just filled in for
+  // this call — the cockpit reads `fallbackCount` from this response and
+  // uses it as the `yahooActive` signal in the centralised
+  // resolveActiveDataSource() helper. Previously this was hardcoded to 0
+  // here, which made the cockpit badge lie when IRESS was down.
+  const fallbackCount = yahooCount + quotes.filter((q) => q.source === "seed-fallback").length;
+  const dbCount = quotes.filter(
+    (q) => q.source === "supabase" || q.source === "live" || q.source === "iress",
+  ).length;
+
   return Response.json({
     mode: useSupabase ? "supabase" : iressConfig.mode,
     useSupabase,
     quotes: summaryQuotes,
-    // "iress" (IRESS-PROD overlay applied) counts as a LIVE row so
-    // deriveDataSource classifies the feed live/hybrid, not mock — the row
-    // carries its precise "iress" source for per-symbol badging.
     liveCount: quotes.filter((q) => q.source === "live" || q.source === "iress").length,
-    fallbackCount: quotes.filter((q) => q.source === "seed-fallback").length,
+    fallbackCount,
+    yahooCount: yahooCount,
     mockCount: quotes.filter((q) => q.source === "mock").length,
     supabaseCount: quotes.filter((q) => q.source === "supabase").length,
     unavailableCount: quotes.filter((q) => q.source === "unavailable").length,
+    dbCount,
   });
 }
