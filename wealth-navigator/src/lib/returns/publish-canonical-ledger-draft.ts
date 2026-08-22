@@ -8,11 +8,12 @@ import {
   type SettledBoundaryBatch,
   rebuildLegsAcrossSettledBoundary,
 } from "./canonical-rebalance-boundary";
+import { resolveJseTradingDay } from "./jse-trading-calendar-fallback";
 
-type JsonRow = Record<string, unknown>;
+export type JsonRow = Record<string, unknown>;
 type Holding = { ticker: string; units: number };
-type PriceRow = { symbol: string; as_of_date: string; current_price: number; fetched_at: string };
-type CanonicalRow = {
+export type PriceRow = { symbol: string; as_of_date: string; current_price: number; fetched_at: string };
+export type CanonicalRow = {
   strategy_id: string;
   as_of_date: string;
   ledger_version: string;
@@ -48,23 +49,23 @@ export type CanonicalDraftPublishResult = {
   note?: string;
 };
 
-const bare = (symbol: string) =>
+export const bare = (symbol: string) =>
   String(symbol ?? "")
     .trim()
     .toUpperCase()
     .replace(/\.(JO|JSE)$/i, "");
 
-function iso(date: Date) {
+export function iso(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-function addDays(date: string, days: number) {
+export function addDays(date: string, days: number) {
   const value = new Date(`${date}T00:00:00.000Z`);
   value.setUTCDate(value.getUTCDate() + days);
   return iso(value);
 }
 
-function addMonths(date: string, months: number) {
+export function addMonths(date: string, months: number) {
   const value = new Date(`${date}T00:00:00.000Z`);
   const day = value.getUTCDate();
   value.setUTCDate(1);
@@ -75,13 +76,13 @@ function addMonths(date: string, months: number) {
   return iso(value);
 }
 
-function previousWeekEnd(date: string) {
+export function previousWeekEnd(date: string) {
   const value = new Date(`${date}T00:00:00.000Z`);
   value.setUTCDate(value.getUTCDate() - ((value.getUTCDay() + 6) % 7) - 1);
   return iso(value);
 }
 
-function previousMonthEnd(date: string) {
+export function previousMonthEnd(date: string) {
   const value = new Date(`${date}T00:00:00.000Z`);
   value.setUTCDate(0);
   return iso(value);
@@ -213,7 +214,12 @@ async function many<T>(
   return data ?? [];
 }
 
-async function fetchPriceHistory(db: SupabaseClient, symbols: string[], startDate: string, endDate: string) {
+export async function fetchPriceHistory(
+  db: SupabaseClient,
+  symbols: string[],
+  startDate: string,
+  endDate: string,
+) {
   const result: PriceRow[] = [];
   for (let offset = 0; ; offset += 1000) {
     const page = await many<PriceRow>(
@@ -234,7 +240,7 @@ async function fetchPriceHistory(db: SupabaseClient, symbols: string[], startDat
   return result;
 }
 
-function priceLookup(rows: PriceRow[]) {
+export function priceLookup(rows: PriceRow[]) {
   const exact = new Map<string, { cents: number; fetchedAt: string }>();
   for (const row of rows) {
     const cents = Number(row.current_price);
@@ -257,11 +263,11 @@ function priceLookup(rows: PriceRow[]) {
   };
 }
 
-function rowOnOrBefore(rows: CanonicalRow[], date: string) {
+export function rowOnOrBefore(rows: CanonicalRow[], date: string) {
   return rows.filter((row) => row.as_of_date <= date).at(-1) ?? rows[0] ?? null;
 }
 
-function directMetric(rows: CanonicalRow[], current: CanonicalRow, requestedReferenceDate: string) {
+export function directMetric(rows: CanonicalRow[], current: CanonicalRow, requestedReferenceDate: string) {
   const reference = rowOnOrBefore(rows, requestedReferenceDate) ?? current;
   const denominator = Number(reference.complete_value_cents);
   const pnl = Number(current.complete_value_cents) - denominator;
@@ -277,7 +283,7 @@ function directMetric(rows: CanonicalRow[], current: CanonicalRow, requestedRefe
   };
 }
 
-type NormalizedLeg = {
+export type NormalizedLeg = {
   ticker: string;
   leg: string;
   units: number;
@@ -321,7 +327,7 @@ export function buildCanonicalInceptionLegs(
   ];
 }
 
-function normalizeLedgerLegs(row: CanonicalRow): NormalizedLeg[] {
+export function normalizeLedgerLegs(row: CanonicalRow): NormalizedLeg[] {
   return row.leg_snapshot.map((leg) => ({
     ticker: bare(String(leg.ticker ?? "")),
     leg: String(leg.leg ?? "Model leg"),
@@ -334,7 +340,7 @@ function normalizeLedgerLegs(row: CanonicalRow): NormalizedLeg[] {
   }));
 }
 
-function legMetric(
+export function legMetric(
   legs: NormalizedLeg[],
   currentDate: string,
   mappedReferenceDate: string,
@@ -419,9 +425,24 @@ export async function publishCanonicalLedgerDraft(
     .maybeSingle();
   if (calendar.error)
     return { ok: false, asOf, apply, summary: empty, results: [], note: calendar.error.message };
-  if (!calendar.data?.is_trading_day) {
-    return { ok: true, asOf, apply, summary: empty, results: [], note: "not a JSE trading day" };
+  const tradingDay = resolveJseTradingDay(asOf, calendar.data ?? null);
+  if (!tradingDay.isTradingDay) {
+    return {
+      ok: true,
+      asOf,
+      apply,
+      summary: empty,
+      results: [],
+      note:
+        tradingDay.source === "calendar"
+          ? "not a JSE trading day (calendar row: is_trading_day=false)"
+          : "not a JSE trading day (no calendar row for this date; static weekday/holiday fallback used)",
+    };
   }
+  const tradingDayNote =
+    tradingDay.source === "static_fallback"
+      ? "jse_trading_calendar has no row for this date; proceeded using the static weekday/holiday fallback"
+      : undefined;
 
   let strategyQuery = db
     .from("strategies_c")
@@ -670,6 +691,16 @@ export async function publishCanonicalLedgerDraft(
         SI: earliestDate,
       };
       const allRows = [...priorLedgerRows, current];
+      // NOTE (chain-linking fix): return_pct/numerator_cents/denominator_cents/pnl_cents are ALWAYS
+      // derived from directMetric()'s complete_value_cents ratio, for every period, regardless of
+      // whether the composition changed. complete_value_cents is continuous across rebalances by
+      // construction (rebuildLegsAcrossSettledBoundary enforces value continuity at every boundary),
+      // so this is equivalent to full segment-by-segment chain-linking without the leg-sum
+      // denominator-inflation bug: legMetric() adds each rebalance leg's full purchase price to the
+      // denominator as if it were newly-contributed capital, even though it's the same money that
+      // came from selling the prior leg. legMetric()'s output (when available) is retained ONLY as
+      // leg_trace: supplementary, informational audit detail about which securities contributed what -
+      // it must never be read as the authoritative return.
       if (metricLegs || !previous) {
         const normalized = metricLegs ?? bootstrapLegs;
         current.leg_snapshot = normalized.map((leg) => ({
@@ -699,7 +730,23 @@ export async function publishCanonicalLedgerDraft(
         current.period_metrics = Object.fromEntries(
           Object.entries(references).map(([period, requested]) => {
             const mapped = rowOnOrBefore(allRows, requested)?.as_of_date ?? earliestDate;
-            return [period, legMetric(normalized, asOf, mapped, lookup.onOrBefore)];
+            const authoritative = directMetric(allRows, current, requested);
+            // leg_trace is supplementary audit detail only; if it can't be built (e.g. a missing
+            // stored close for an intermediate leg), that must not block the authoritative
+            // value-ratio return from being published.
+            let legTrace: unknown;
+            try {
+              legTrace = legMetric(normalized, asOf, mapped, lookup.onOrBefore).leg_trace;
+            } catch {
+              legTrace = undefined;
+            }
+            return [
+              period,
+              {
+                ...authoritative,
+                leg_trace: legTrace,
+              },
+            ];
           }),
         );
       } else {
@@ -778,5 +825,6 @@ export async function publishCanonicalLedgerDraft(
     apply,
     summary: { written, planned, skipped, failed, total: strategies.length },
     results,
+    ...(tradingDayNote ? { note: tradingDayNote } : {}),
   };
 }

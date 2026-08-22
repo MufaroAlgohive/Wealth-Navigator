@@ -191,16 +191,27 @@ export async function GET(req: Request) {
     Number.isFinite(lastBeatMs) && lastBeatMs > 0 ? now - lastBeatMs : Number.POSITIVE_INFINITY;
   const offline = !lastBeatMs || worker?.status === "stopped" || heartbeatAgeMs > DOWN_AFTER_MS;
 
-  // Context: how many active retail symbols are currently older than the
-  // IRESS_STALE_FALLBACK_HOURS window (i.e. being served by Yahoo fallback).
+  // Context: how many active retail symbols are currently served by Yahoo
+  // fallback rather than IRESS.
+  //
+  // When RETAIL_PRICE_SOURCE_COL=1 (the additive price_source column from
+  // supabase/retail/20260614_add_price_source.sql has been applied and both
+  // writers are stamping it — see workers/iress-ingest/src/retail-ingest.ts
+  // and /api/cron/yahoo-fundamentals), count rows by provenance directly:
+  // price_source='yahoo'. That is the honest number, because a plain
+  // staleness count (updated_at older than the fallback window) UNDERCOUNTS
+  // — the Yahoo cron itself refreshes updated_at on every write it makes for
+  // a symbol it owns, so a symbol can be 100% Yahoo-served for weeks and
+  // still never show up as "stale". Fall back to the old staleness count
+  // when the column isn't there yet, so this cron never errors pre-migration.
   let yahooServing: number | null = null;
   try {
     const retail = createRetailServiceRoleClient();
-    const { count } = await retail
-      .from("securities_c")
-      .select("id", { count: "exact", head: true })
-      .eq("is_active", true)
-      .lt("updated_at", new Date(now - IRESS_STALE_FALLBACK_MS).toISOString());
+    const priceSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
+    const base = retail.from("securities_c").select("id", { count: "exact", head: true }).eq("is_active", true);
+    const { count } = priceSourceCol
+      ? await base.eq("price_source", "yahoo")
+      : await base.lt("updated_at", new Date(now - IRESS_STALE_FALLBACK_MS).toISOString());
     yahooServing = count ?? null;
   } catch {
     // Retail db optional for this cron — embed just shows "—".
