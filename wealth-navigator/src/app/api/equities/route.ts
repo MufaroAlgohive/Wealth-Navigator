@@ -443,7 +443,7 @@ export async function GET() {
   }
   const fallbackSummary = summariseResolvedPrices(resolved);
   // 1M / 6M trailing returns from Yahoo daily closes (bounded, best-effort).
-  const { coverage: returnsCoverage, asOf: returnsAsOf } = await attachPeriodReturns(securities);
+  const { coverage: returnsCoverage, asOf: returnsAsOf } = await attachPeriodReturns(securities, supabase);
   const source: EquitiesResponse["source"] =
     securities.length === 0 ? "unavailable" : iressOverlay > 0 || yahooFallback > 0 ? "hybrid" : "yahoo";
   return Response.json({
