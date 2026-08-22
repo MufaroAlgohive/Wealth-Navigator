@@ -4,6 +4,7 @@ import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 import { iressPriceOverlayEnabled, iressQuoteMaxAgeMs } from "@/lib/iress/overlay-policy";
 import { anchorHistoryToRands } from "@/lib/iress/price-scale";
 import { callWorker } from "@/lib/iress/worker-api";
+import { type SecurityPriceRow, resolveSecurityPrices } from "@/lib/market-prices/fallback";
 /**
  * GET /api/analysis/[sym]?range=1Y
  *
@@ -262,9 +263,51 @@ async function loadRetailIntraday(
       };
     }
     const sec = (secRows ?? [])[0] as
-      | { id: string; last_price: number | null; change_percent: number | null }
+      | {
+          id: string;
+          symbol: string;
+          last_price: number | null;
+          change_percent: number | null;
+          updated_at: string | null;
+        }
       | undefined;
     if (!sec) {
+      // No securities_c row at all → try the Yahoo live fallback so the
+      // chart header still anchors to a real ZAc last + prev close. Cents-safe
+      // via yahooPriceToCents: .JO instruments are stored verbatim, non-JSE ×100.
+      try {
+        const resolved = await resolveSecurityPrices({
+          rows: [
+            {
+              id: sym,
+              symbol: sym,
+              name: null,
+              logo_url: null,
+              last_price: null,
+              change_percent: null,
+              updated_at: null,
+            } as SecurityPriceRow,
+          ],
+          intradayBySecurityId: new Map(),
+          maxYahoo: 1,
+          concurrency: 1,
+        });
+        const r = resolved[0];
+        if (r && r.price_rands != null) {
+          const lastRands = r.price_rands;
+          const pct = r.day_pct ?? 0;
+          const prevClose = pct !== 0 ? lastRands / (1 + pct / 100) : lastRands;
+          return {
+            prevClose,
+            points: [],
+            source: "yahoo",
+            reason: undefined,
+            message: `securities_c has no row for ${sym}; serving live Yahoo snapshot.`,
+          };
+        }
+      } catch {
+        /* fall through to empty state */
+      }
       return {
         prevClose: null,
         points: [],
@@ -275,8 +318,46 @@ async function loadRetailIntraday(
     }
     const lastRands = (Number(sec.last_price) || 0) / 100;
     const pct = Number(sec.change_percent) || 0;
-    const prevClose =
+    let prevClose =
       lastRands > 0 && pct !== 0 ? lastRands / (1 + pct / 100) : lastRands > 0 ? lastRands : null;
+    let source: "supabase" | "yahoo" = "supabase";
+    // Stale-or-missing seam: when the DB row's last_price/change_percent is
+    // empty (BHG hollow-row pattern, missing reference, or stale past
+    // IRESS_STALE_FALLBACK_HOURS), resolve via Yahoo live in-memory so the
+    // chart header still anchors to a real last + prev close. Reads only —
+    // never writes back. IRESS-back-online re-sync is automatic: the moment
+    // securities_c.updated_at lands inside the freshness window the gate
+    // flips the row back to its DB value on the next call.
+    if (prevClose == null || !Number.isFinite(prevClose)) {
+      try {
+        const resolved = await resolveSecurityPrices({
+          rows: [
+            {
+              id: sec.id,
+              symbol: sec.symbol,
+              name: null,
+              logo_url: null,
+              last_price: sec.last_price,
+              change_percent: sec.change_percent,
+              updated_at: sec.updated_at ?? null,
+            },
+          ],
+          intradayBySecurityId: new Map(),
+          maxYahoo: 1,
+          concurrency: 1,
+        });
+        const r = resolved[0];
+        if (r && r.price_rands != null && r.day_pct != null) {
+          prevClose = r.price_rands / (1 + r.day_pct / 100);
+          source = "yahoo";
+        } else if (r && r.price_rands != null) {
+          prevClose = r.price_rands;
+          source = "yahoo";
+        }
+      } catch {
+        /* keep DB-derived prevClose */
+      }
+    }
     const { data: tickRows, error: tickErr } = await sb
       .from("stock_intraday_c")
       .select("current_price, timestamp")
@@ -299,12 +380,17 @@ async function loadRetailIntraday(
     return {
       prevClose,
       points,
-      source: points.length > 0 ? "supabase" : "unavailable",
-      reason: points.length === 0 ? "empty" : undefined,
+      // "yahoo" when the prev-close fallback fired (with or without ticks),
+      // "supabase" when both came from DB, "unavailable" only when neither
+      // ticks nor a Yahoo-resolved prevClose exist.
+      source: source === "yahoo" ? "yahoo" : points.length > 0 ? "supabase" : "unavailable",
+      reason: points.length === 0 && source !== "yahoo" ? "empty" : undefined,
       message:
-        points.length === 0
+        points.length === 0 && source !== "yahoo"
           ? `No intraday ticks for ${sym} yet — worker hasn't polled this symbol (BHG hollow-row pattern).`
-          : undefined,
+          : source === "yahoo"
+            ? `securities_c was stale or missing — served from Yahoo live fallback.`
+            : undefined,
     };
   } catch (e) {
     return {
@@ -497,6 +583,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
       [
         snap.source === "supabase" && "iress",
         intraday.source === "supabase" && "supabase-intraday",
+        intraday.source === "yahoo" && "yahoo-fallback",
         history.source === "iress" && "iress-history",
         history.source === "yahoo" && "yahoo-history",
         fundamentals.source === "supabase" && "yahoo",

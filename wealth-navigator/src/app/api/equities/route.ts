@@ -1,5 +1,10 @@
 import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { IRESS_DIVERGENCE, iressPriceOverlayEnabled, iressQuoteMaxAgeMs } from "@/lib/iress/overlay-policy";
+import {
+  type SecurityPriceRow,
+  resolveSecurityPrices,
+  summariseResolvedPrices,
+} from "@/lib/market-prices/fallback";
 /**
  * GET /api/equities
  *
@@ -42,6 +47,8 @@ interface SecurityRow {
   isin: string | null;
   ytd_performance: number | null;
   is_active: boolean | null;
+  /** Worker / cron updated_at — feeds the Yahoo fallback freshness gate. */
+  updated_at: string | null;
   /** Trailing 1M / 6M returns — Yahoo daily closes (see `attachPeriodReturns`). */
   return_1m?: number | null;
   return_6m?: number | null;
@@ -154,6 +161,9 @@ interface EquitiesResponse {
   count: number;
   /** How many board rows had their price/change overlaid from live IRESS. */
   iressOverlay?: number;
+  /** How many board rows had their price/change served by the Yahoo live
+   *  fallback (DB row was missing or stale past `IRESS_STALE_FALLBACK_HOURS`). */
+  yahooFallback?: number;
   /** How many board rows carry Yahoo-derived 1M/6M returns. */
   returnsCoverage?: number;
   /** Latest daily close used for the period returns. */
@@ -166,7 +176,7 @@ interface EquitiesResponse {
 }
 
 const SELECT =
-  "symbol,name,sector,industry,last_price,change_price,change_percent,pe,eps,dividend_yield,beta,market_cap,isin,ytd_performance,is_active";
+  "symbol,name,sector,industry,last_price,change_price,change_percent,pe,eps,dividend_yield,beta,market_cap,isin,ytd_performance,is_active,updated_at";
 
 /**
  * Trailing 1M / 6M returns for the board. `securities_c` carries no period
@@ -313,12 +323,48 @@ export async function GET() {
   // IRESS-first: overlay live IRESS last + change% before computing the sector
   // heatmap, so movers / heatmaps / board all reflect IRESS where available.
   const iressOverlay = await overlayIressQuotes(securities);
+  // Yahoo live fallback: for any row the IRESS overlay didn't flip (still on
+  // the retail securities_c value) and that is missing or stale past
+  // IRESS_STALE_FALLBACK_HOURS, resolve a fresh price from Yahoo in-memory.
+  // Reads only — never writes back. The IRESS-back-online seam is automatic:
+  // once securities_c.updated_at lands inside the freshness window, the
+  // freshness gate flips the row back to its DB value on the next call.
+  const priceRows: SecurityPriceRow[] = securities.map((r) => ({
+    id: r.symbol,
+    symbol: r.symbol,
+    name: r.name,
+    logo_url: null,
+    last_price: r.last_price,
+    change_percent: r.change_percent,
+    updated_at: r.updated_at ?? null,
+  }));
+  const resolved = await resolveSecurityPrices({
+    rows: priceRows,
+    intradayBySecurityId: new Map(),
+    maxYahoo: 60,
+    concurrency: 4,
+  });
+  const fallbackBySymbol = new Map(resolved.map((row) => [String(row.symbol).toUpperCase(), row] as const));
+  let yahooFallback = 0;
+  for (const row of securities) {
+    const r = fallbackBySymbol.get(String(row.symbol).toUpperCase());
+    if (!r || r.price_source !== "yahoo") continue;
+    if (r.price_rands == null) continue;
+    row.last_price = Math.round(r.price_rands * 100);
+    row.change_percent = r.day_pct == null ? row.change_percent : r.day_pct;
+    row.price_source = "yahoo";
+    yahooFallback += 1;
+  }
+  const fallbackSummary = summariseResolvedPrices(resolved);
   // 1M / 6M trailing returns from Yahoo daily closes (bounded, best-effort).
   const { coverage: returnsCoverage, asOf: returnsAsOf } = await attachPeriodReturns(securities);
+  const source: EquitiesResponse["source"] =
+    securities.length === 0 ? "unavailable" : iressOverlay > 0 || yahooFallback > 0 ? "hybrid" : "yahoo";
   return Response.json({
-    source: securities.length === 0 ? "unavailable" : iressOverlay > 0 ? "hybrid" : "yahoo",
+    source,
     count: securities.length,
     iressOverlay,
+    yahooFallback,
     returnsCoverage,
     returnsAsOf,
     securities,

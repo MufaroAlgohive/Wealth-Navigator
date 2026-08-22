@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
-import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
 import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
+import { applyYahooFallback } from "@/lib/market-prices/fallback";
+import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
@@ -72,13 +73,13 @@ export async function GET(req: Request) {
   let canonicalAum;
   let liveScope;
   try {
-    [canonicalAum, liveScope] = await Promise.all([
-      loadCanonicalRetailAum(db),
-      loadRetailLiveScope(db),
-    ]);
+    [canonicalAum, liveScope] = await Promise.all([loadCanonicalRetailAum(db), loadRetailLiveScope(db)]);
   } catch (error) {
     return NextResponse.json(
-      { ok: false, error: `Canonical LIVE AUM unavailable: ${error instanceof Error ? error.message : String(error)}` },
+      {
+        ok: false,
+        error: `Canonical LIVE AUM unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      },
       { status: 503 },
     );
   }
@@ -128,27 +129,37 @@ export async function GET(req: Request) {
     }
     for (const row of returns ?? []) {
       const id = String(row.user_id);
-      if (liveScope.excludedUserIds.has(id) || liveScope.excludedStrategyIds.has(String(row.strategy_id))) continue;
+      if (liveScope.excludedUserIds.has(id) || liveScope.excludedStrategyIds.has(String(row.strategy_id)))
+        continue;
       const current = money.get(id) ?? { aumCents: 0, ytdPnlCents: 0 };
       const basketCents = Number(row.basket_value_cents) || 0;
       const ytdPct = row.ytd_pct != null && Number.isFinite(Number(row.ytd_pct)) ? Number(row.ytd_pct) : null;
       current.ytdPnlCents += ytdPct != null ? basketCents - basketCents / (1 + ytdPct / 100) : 0;
       money.set(id, current);
     }
-    const clients = (profiles ?? []).filter((profile) => !liveScope.excludedUserIds.has(String(profile.id))).map((profile) => {
-      const id = String(profile.id);
-      const m = money.get(id) ?? { aumCents: 0, ytdPnlCents: 0 };
-      return {
-        ...profile,
-        name:
-          `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() || profile.email || id.slice(0, 8),
-        kyc: resolveKyc(ob.get(id), ra.get(id)),
-        bankLinked: ra.get(id)?.bank_linked === true,
-        aumCents: m.aumCents,
-        ytdPct: m.aumCents ? (m.ytdPnlCents / (m.aumCents - m.ytdPnlCents || m.aumCents)) * 100 : null,
-      };
+    const clients = (profiles ?? [])
+      .filter((profile) => !liveScope.excludedUserIds.has(String(profile.id)))
+      .map((profile) => {
+        const id = String(profile.id);
+        const m = money.get(id) ?? { aumCents: 0, ytdPnlCents: 0 };
+        return {
+          ...profile,
+          name:
+            `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() ||
+            profile.email ||
+            id.slice(0, 8),
+          kyc: resolveKyc(ob.get(id), ra.get(id)),
+          bankLinked: ra.get(id)?.bank_linked === true,
+          aumCents: m.aumCents,
+          ytdPct: m.aumCents ? (m.ytdPnlCents / (m.aumCents - m.ytdPnlCents || m.aumCents)) * 100 : null,
+        };
+      });
+    return NextResponse.json({
+      ok: true,
+      source: "canonical-live-retail-aum",
+      asOf: canonicalAum.asOf,
+      clients,
     });
-    return NextResponse.json({ ok: true, source: "canonical-live-retail-aum", asOf: canonicalAum.asOf, clients });
   }
 
   if (liveScope.excludedUserIds.has(userId)) {
@@ -209,7 +220,7 @@ export async function GET(req: Request) {
     { data: aumFeeState },
   ] = await Promise.all([
     securityIds.length
-      ? db.from("securities_c").select("id,symbol,name,sector,last_price").in("id", securityIds)
+      ? db.from("securities_c").select("id,symbol,name,sector,last_price,updated_at").in("id", securityIds)
       : Promise.resolve({ data: [] }),
     securityIds.length
       ? db
@@ -245,7 +256,9 @@ export async function GET(req: Request) {
     strategyIds.length
       ? db
           .from("strategy_aum_fee_state")
-          .select("user_id,family_member_id,strategy_id,aum_fee_consumed_cents,aum_fee_receivable_cents,low_cash_flag")
+          .select(
+            "user_id,family_member_id,strategy_id,aum_fee_consumed_cents,aum_fee_receivable_cents,low_cash_flag",
+          )
           .in("user_id", linkedUserIds)
           .in("strategy_id", strategyIds)
       : Promise.resolve({ data: [] }),
@@ -255,6 +268,39 @@ export async function GET(req: Request) {
   for (const row of intraday ?? []) {
     const id = String(row.security_id);
     if (!intradayMap.has(id) && Number(row.current_price) > 0) intradayMap.set(id, Number(row.current_price));
+  }
+  // Yahoo fallback: if neither stock_intraday_c nor securities_c has a
+  // positive price, resolve via Yahoo live in-memory so the WM client view
+  // shows a live mark during an IRESS outage. Reads only — never writes back.
+  // Cents-safe via yahooPriceToCents (.JO verbatim, non-JSE ×100).
+  const missingSecurities = (securities ?? []).filter((s) => {
+    const id = String(s.id);
+    return !intradayMap.has(id) && Number(s.last_price) <= 0;
+  });
+  if (missingSecurities.length > 0) {
+    const fallbackRows = missingSecurities.map((s) => ({
+      symbol: s.symbol as string,
+      last_price: (s.last_price as number | null) ?? null,
+      change_percent: null,
+      updated_at: (s.updated_at as string | null | undefined) ?? null,
+    }));
+    await applyYahooFallback({ rows: fallbackRows, maxYahoo: 60, concurrency: 4 });
+    for (const row of fallbackRows as Array<{
+      symbol: string;
+      last_price: number | null;
+      price_source?: string;
+    }>) {
+      if (row.price_source === "yahoo" && row.last_price != null && row.last_price > 0) {
+        const sym = String(row.symbol).toUpperCase();
+        for (const id of Object.keys(secMap)) {
+          const entry = secMap.get(id) as { symbol?: string } | undefined;
+          if (entry && String(entry.symbol ?? "").toUpperCase() === sym) {
+            (entry as { last_price?: number | null }).last_price = row.last_price;
+            break;
+          }
+        }
+      }
+    }
   }
   const strategyMap = new Map((strategies ?? []).map((row) => [String(row.id), row]));
   const enrichedHoldings = (holdings ?? []).map((holding) => {
@@ -280,9 +326,8 @@ export async function GET(req: Request) {
     // client actually saw). Lowercase kept as a defensive fallback.
     const expected = Number(holding.Expected_fill ?? holding.expected_fill) || 0;
     if (expected > 0) {
-      const expectedAsCents = Math.abs(expected - priceCents) <= Math.abs(expected * 100 - priceCents)
-        ? expected
-        : expected * 100;
+      const expectedAsCents =
+        Math.abs(expected - priceCents) <= Math.abs(expected * 100 - priceCents) ? expected : expected * 100;
       costCents = expectedAsCents;
     }
     return {

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
+import { applyYahooFallback } from "@/lib/market-prices/fallback";
 import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -23,7 +24,8 @@ function costRands(h: { avg_fill?: number | null; Expected_fill?: number | null 
 
 export async function GET(req: Request) {
   const auth = await getAdminContext();
-  if (auth.status === "no-session") return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
+  if (auth.status === "no-session")
+    return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
   if (auth.status !== "ok") return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
 
   const url = new URL(req.url);
@@ -39,7 +41,9 @@ export async function GET(req: Request) {
 
   const { data: holds } = await db
     .from("stock_holdings_c")
-    .select("id, user_id, security_id, quantity, avg_fill, Expected_fill, trade_side, Status, Fill_date, strategy_name_snapshot")
+    .select(
+      "id, user_id, security_id, quantity, avg_fill, Expected_fill, trade_side, Status, Fill_date, strategy_name_snapshot",
+    )
     .eq("is_active", status === "active")
     .order("created_at", { ascending: false })
     .limit(3000);
@@ -50,7 +54,10 @@ export async function GET(req: Request) {
   // the wallet, so checking profiles alone leaks their orders into the live
   // book. Mirrors MyMintAdmin orderbook.html's getTestUserIdSet.
   const userIds = [...new Set(rows.map((h) => h.user_id).filter(Boolean))];
-  const profMap: Record<string, { email: string | null; is_test: boolean | null; first_name: string | null; last_name: string | null }> = {};
+  const profMap: Record<
+    string,
+    { email: string | null; is_test: boolean | null; first_name: string | null; last_name: string | null }
+  > = {};
   const testUserIds = new Set<string>();
   if (userIds.length) {
     const [{ data: profs }, { data: testWallets }] = await Promise.all([
@@ -69,10 +76,53 @@ export async function GET(req: Request) {
   });
 
   const secIds = [...new Set(rows.map((h) => h.security_id).filter(Boolean))];
-  const secMap: Record<string, { symbol: string; name: string | null; isin: string | null; last_price: number | null }> = {};
+  const secMap: Record<
+    string,
+    {
+      symbol: string;
+      name: string | null;
+      isin: string | null;
+      last_price: number | null;
+      updated_at?: string | null;
+    }
+  > = {};
   if (secIds.length) {
-    const { data: secs } = await db.from("securities_c").select("id, symbol, name, isin, last_price").in("id", secIds);
+    const { data: secs } = await db
+      .from("securities_c")
+      .select("id, symbol, name, isin, last_price, updated_at")
+      .in("id", secIds);
     for (const s of secs ?? []) secMap[s.id as string] = s as never;
+    // Yahoo fallback for the orderbook DISPLAY only (this route renders a list,
+    // not order-pricing). `/api/admin/orderbook/send-to-market` is the order-
+    // pricing path and intentionally does NOT use the fallback — IRESS is the
+    // single source of truth there.
+    const missing = (secs ?? [])
+      .filter((s) => Number((s as Record<string, unknown>).last_price) <= 0)
+      .map((s) => ({
+        symbol: s.symbol as string,
+        last_price: ((s as Record<string, unknown>).last_price as number | null) ?? null,
+        change_percent: null,
+        updated_at: ((s as Record<string, unknown>).updated_at as string | null | undefined) ?? null,
+      }));
+    if (missing.length > 0) {
+      await applyYahooFallback({ rows: missing, maxYahoo: 40, concurrency: 4 });
+      for (const row of missing as Array<{
+        symbol: string;
+        last_price: number | null;
+        price_source?: string;
+      }>) {
+        if (row.price_source === "yahoo" && row.last_price != null && row.last_price > 0) {
+          const sym = String(row.symbol).toUpperCase();
+          for (const id of Object.keys(secMap)) {
+            const entry = secMap[id]!;
+            if (String(entry.symbol).toUpperCase() === sym) {
+              entry.last_price = row.last_price;
+              break;
+            }
+          }
+        }
+      }
+    }
   }
 
   const out = rows.map((h) => {
@@ -82,7 +132,8 @@ export async function GET(req: Request) {
     const avgRands = (Number(h.avg_fill) || 0) / 100;
     const expectedRands = costRands(h);
     // securities_c.last_price is stored in CENTS; convert to rands (avgRands/expectedRands are already rands).
-    const liveRands = sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) / 100 : expectedRands;
+    const liveRands =
+      sec?.last_price != null && Number(sec.last_price) > 0 ? Number(sec.last_price) / 100 : expectedRands;
     return {
       id: h.id,
       security_id: (h.security_id as string) ?? null,
@@ -111,5 +162,13 @@ export async function GET(req: Request) {
 export async function POST() {
   // Price/fill edits, reverse investor, snapshot capture, Strate BIR export —
   // all mutate live trade/settlement data → deferred to the data phase.
-  return NextResponse.json({ ok: false, error: "Order Book settlement actions (price/fill/reverse/snapshot/Strate BIR) are deferred to the data phase.", deferred: true }, { status: 501 });
+  return NextResponse.json(
+    {
+      ok: false,
+      error:
+        "Order Book settlement actions (price/fill/reverse/snapshot/Strate BIR) are deferred to the data phase.",
+      deferred: true,
+    },
+    { status: 501 },
+  );
 }

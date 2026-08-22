@@ -1,3 +1,7 @@
+import { getAdminContext } from "@/lib/admin/rbac";
+import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
+import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { applyYahooFallback } from "@/lib/market-prices/fallback";
 /**
  * GET /api/strategies
  *
@@ -22,14 +26,11 @@
  *   }
  */
 import {
-  createServiceRoleClient,
-  isSupabaseConfigured,
   createRetailServiceRoleClient,
+  createServiceRoleClient,
   isRetailSupabaseConfigured,
+  isSupabaseConfigured,
 } from "@/lib/supabase/server";
-import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
-import { getAdminContext } from "@/lib/admin/rbac";
-import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,7 +64,13 @@ interface RetailStrategyRow {
 async function loadRetailStrategies(
   retail: ReturnType<typeof createRetailServiceRoleClient>,
   part: "full" | "core" | "market" = "full",
-): Promise<{ strategies: Array<Record<string, unknown>>; market: Array<{ symbol: string; price: number | null; changePct: number | null }>; source: string; count: number; lastUpdatedAt: string | null }> {
+): Promise<{
+  strategies: Array<Record<string, unknown>>;
+  market: Array<{ symbol: string; price: number | null; changePct: number | null }>;
+  source: string;
+  count: number;
+  lastUpdatedAt: string | null;
+}> {
   // Both stock_intraday_c reads are bounded to the last 2 days — the table
   // holds months of ticks (3.5M+ rows) and an unbounded DESC scan was
   // measured at ~7.5s on the saturated Micro tier (production-readiness
@@ -74,14 +81,27 @@ async function loadRetailStrategies(
   // Stage 1 — every read here is independent; run them concurrently. The
   // previous fully-sequential chain (9 round trips) multiplied the pegged
   // DB's per-query latency into a page-blocking wait.
-  const [stratRes, testProfileRows, testWalletRows, clientHoldingsRes, residualRes, strategyReturnRes, canonicalAum, certifiedLedgerRes] = await Promise.all([
+  const [
+    stratRes,
+    testProfileRows,
+    testWalletRows,
+    clientHoldingsRes,
+    residualRes,
+    strategyReturnRes,
+    canonicalAum,
+    certifiedLedgerRes,
+  ] = await Promise.all([
     retail
       .from("strategies_c")
       .select(
         "id,name,slug,short_name,description,objective,risk_level,sector,base_currency,provider_name,benchmark_name,benchmark_symbol,status,is_public,is_featured,investor_environment,holdings,updated_at",
       ),
-    wantCore ? retail.from("profiles").select("id").eq("is_test", true) : Promise.resolve({ data: [] as Array<{ id: string }> }),
-    wantCore ? retail.from("wallets").select("user_id").eq("status", "test") : Promise.resolve({ data: [] as Array<{ user_id: string }> }),
+    wantCore
+      ? retail.from("profiles").select("id").eq("is_test", true)
+      : Promise.resolve({ data: [] as Array<{ id: string }> }),
+    wantCore
+      ? retail.from("wallets").select("user_id").eq("status", "test")
+      : Promise.resolve({ data: [] as Array<{ user_id: string }> }),
     wantCore
       ? retail
           .from("stock_holdings_c")
@@ -90,7 +110,9 @@ async function loadRetailStrategies(
           .eq("trade_side", "BUY")
       : Promise.resolve({ data: [] }),
     wantCore
-      ? retail.from("strategy_rebalance_residuals").select("user_id,family_member_id,strategy_id,balance_cents")
+      ? retail
+          .from("strategy_rebalance_residuals")
+          .select("user_id,family_member_id,strategy_id,balance_cents")
       : Promise.resolve({ data: [] }),
     wantCore
       ? retail
@@ -107,7 +129,9 @@ async function loadRetailStrategies(
     wantCore
       ? retail
           .from("strategy_canonical_daily_ledger_c")
-          .select("strategy_id,as_of_date,period_metrics,continuity_cash_cents,securities_value_cents,complete_value_cents")
+          .select(
+            "strategy_id,as_of_date,period_metrics,continuity_cash_cents,securities_value_cents,complete_value_cents",
+          )
           .eq("certification_status", "CERTIFIED")
           .order("as_of_date", { ascending: false })
       : Promise.resolve({ data: [], error: null }),
@@ -115,15 +139,22 @@ async function loadRetailStrategies(
   const { data: stratData, error: stratErr } = stratRes;
   if (stratErr) throw stratErr;
   const strategies = (stratData ?? []) as RetailStrategyRow[];
-  const holdingSymbols = Array.from(new Set(strategies.flatMap((strategy) => {
-    if (!Array.isArray(strategy.holdings)) return [];
-    return strategy.holdings.map((holding) => {
-      if (typeof holding === "string") return holding;
-      if (!holding || typeof holding !== "object") return "";
-      const row = holding as Record<string, unknown>;
-      return String(row.ticker ?? row.symbol ?? "");
-    });
-  }).map((symbol) => symbol.trim()).filter(Boolean)));
+  const holdingSymbols = Array.from(
+    new Set(
+      strategies
+        .flatMap((strategy) => {
+          if (!Array.isArray(strategy.holdings)) return [];
+          return strategy.holdings.map((holding) => {
+            if (typeof holding === "string") return holding;
+            if (!holding || typeof holding !== "object") return "";
+            const row = holding as Record<string, unknown>;
+            return String(row.ticker ?? row.symbol ?? "");
+          });
+        })
+        .map((symbol) => symbol.trim())
+        .filter(Boolean),
+    ),
+  );
   // Test/UAT exclusion (both classifiers — same dual check as
   // api/investors/data.js): a single is_test-only check let internal team
   // test-wallets leak real AUM into finances.html/investors.html.
@@ -152,7 +183,10 @@ async function loadRetailStrategies(
   // Stage 2 — everything here depends only on stage 1; run concurrently.
   const [securitiesRes, liveRowsRes, txnRowsRes] = await Promise.all([
     holdingSymbols.length
-      ? retail.from("securities_c").select("id,symbol,last_price,change_percent,logo_url").in("symbol", holdingSymbols)
+      ? retail
+          .from("securities_c")
+          .select("id,symbol,last_price,change_percent,logo_url,updated_at")
+          .in("symbol", holdingSymbols)
       : Promise.resolve({ data: [] }),
     wantCore && holdingSecurityIds.length
       ? retail
@@ -170,19 +204,23 @@ async function loadRetailStrategies(
   const securities = securitiesRes.data ?? [];
 
   const market: Array<{ symbol: string; price: number | null; changePct: number | null }> = [];
-  const securityBySymbol = new Map<string, { symbol: string; logoUrl: string | null; priceR: number | null }>();
+  const securityBySymbol = new Map<
+    string,
+    { symbol: string; logoUrl: string | null; priceR: number | null }
+  >();
   {
     // Stage 3 — the ticker's intraday quotes need the securities ids.
     const securityIds = securities.map((security) => security.id).filter(Boolean);
-    const { data: intraday } = wantMarket && securityIds.length
-      ? await retail
-          .from("stock_intraday_c")
-          .select('security_id,current_price,"1d_pct",timestamp')
-          .in("security_id", securityIds)
-          .gte("timestamp", sinceIso)
-          .order("timestamp", { ascending: false })
-          .limit(5000)
-      : { data: [] };
+    const { data: intraday } =
+      wantMarket && securityIds.length
+        ? await retail
+            .from("stock_intraday_c")
+            .select('security_id,current_price,"1d_pct",timestamp')
+            .in("security_id", securityIds)
+            .gte("timestamp", sinceIso)
+            .order("timestamp", { ascending: false })
+            .limit(5000)
+        : { data: [] };
     const latest = new Map<string, Record<string, unknown>>();
     for (const quote of (intraday ?? []) as Array<Record<string, unknown>>) {
       const id = String(quote.security_id ?? "");
@@ -199,10 +237,79 @@ async function loadRetailStrategies(
           changePct: Number.isFinite(rawChange) ? rawChange : null,
         });
       }
-      const normalizedSymbol = String(security.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
-      securityBySymbol.set(normalizedSymbol, { symbol: normalizedSymbol, logoUrl: security.logo_url ? String(security.logo_url) : null, priceR: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null });
+      const normalizedSymbol = String(security.symbol ?? "")
+        .replace(/\.JO$/i, "")
+        .toUpperCase();
+      securityBySymbol.set(normalizedSymbol, {
+        symbol: normalizedSymbol,
+        logoUrl: security.logo_url ? String(security.logo_url) : null,
+        priceR: Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice / 100 : null,
+      });
     }
     market.sort((a, b) => a.symbol.localeCompare(b.symbol));
+    // Stale-or-missing seam: for any holding symbol still missing a price
+    // (no DB row, or row present but last_price=0 / stale past
+    // IRESS_STALE_FALLBACK_HOURS), resolve via Yahoo live in-memory. Reads
+    // only — never writes back. The result is patched into securityBySymbol
+    // so downstream MV/PnL math sees the resolved price. Cents-safe via
+    // yahooPriceToCents (.JO verbatim, non-JSE ×100). IRESS-back-online
+    // re-sync is automatic: the moment securities_c.updated_at lands
+    // inside the freshness window the next request resolves from DB.
+    if (wantMarket && securityBySymbol.size > 0) {
+      const missing = [...securityBySymbol.entries()].filter(([, v]) => v.priceR == null).map(([k]) => k);
+      if (missing.length > 0) {
+        const secRowsForFallback = missing.map((sym) => {
+          const original = (securities as Array<Record<string, unknown>>).find(
+            (s) =>
+              String(s.symbol ?? "")
+                .replace(/\.JO$/i, "")
+                .toUpperCase() === sym,
+          );
+          const lp = original?.last_price;
+          const cp = original?.change_percent;
+          return {
+            symbol: sym,
+            last_price: typeof lp === "number" || typeof lp === "string" ? (lp as number | null) : null,
+            change_percent: typeof cp === "number" || typeof cp === "string" ? (cp as number | null) : null,
+            updated_at: typeof original?.updated_at === "string" ? (original.updated_at as string) : null,
+          };
+        });
+        const { yahooFallback } = await applyYahooFallback({
+          rows: secRowsForFallback,
+          maxYahoo: 60,
+          concurrency: 4,
+        });
+        for (let i = 0; i < secRowsForFallback.length; i++) {
+          const row = secRowsForFallback[i] as {
+            symbol: string;
+            last_price: number | null;
+            change_percent: number | null;
+            updated_at: string | null;
+            price_source?: "iress" | "yahoo" | "securities_c" | "stock_intraday_c" | "supabase";
+          };
+          const sym = missing[i]!;
+          if (row.price_source !== "yahoo") continue;
+          const priceR =
+            row.last_price != null && Number(row.last_price) > 0 ? Number(row.last_price) / 100 : null;
+          const entry = securityBySymbol.get(sym);
+          if (entry && priceR != null) entry.priceR = priceR;
+          // Mirror into market[] so the market endpoint shows the resolved price.
+          const marketRow = market.find((m) => m.symbol === sym);
+          if (marketRow && priceR != null) {
+            marketRow.price = priceR;
+            if (row.change_percent != null) marketRow.changePct = Number(row.change_percent);
+          }
+        }
+        if (yahooFallback > 0) {
+          // No response field to surface this on today — the price itself is the
+          // only signal. Logged for operator diagnostics without leaking per-symbol
+          // data into telemetry.
+          console.info(
+            `[api/strategies] yahoo fallback resolved ${yahooFallback} holding symbol(s) (no fresh IRESS / DB price).`,
+          );
+        }
+      }
+    }
   }
   if (part === "market") {
     return { strategies: [], market, source: "supabase", count: 0, lastUpdatedAt: new Date().toISOString() };
@@ -298,7 +405,10 @@ async function loadRetailStrategies(
   // Overrides the manual holdings-price sum used for `minValue`, which only
   // summed securities and never added the strategy's own cash sleeve.
   const completeValueRandsByStrategy = new Map<string, number>();
-  const { data: strategyReturnRows, error: strategyReturnErr } = strategyReturnRes as { data: Array<Record<string, unknown>> | null; error: unknown };
+  const { data: strategyReturnRows, error: strategyReturnErr } = strategyReturnRes as {
+    data: Array<Record<string, unknown>> | null;
+    error: unknown;
+  };
   if (!strategyReturnErr) {
     for (const r of (strategyReturnRows ?? []) as Array<Record<string, unknown>>) {
       const k = String(r["strategy_id"] ?? "");
@@ -338,12 +448,15 @@ async function loadRetailStrategies(
       const metrics = r.period_metrics ?? {};
       const certifiedYtd = metrics.YTD?.return_pct;
       const certifiedDay1 = metrics["1D"]?.return_pct;
-      if (certifiedYtd != null && Number.isFinite(Number(certifiedYtd))) ytdByStrategy.set(k, Number(certifiedYtd));
-      if (certifiedDay1 != null && Number.isFinite(Number(certifiedDay1))) day1PctByStrategy.set(k, Number(certifiedDay1));
+      if (certifiedYtd != null && Number.isFinite(Number(certifiedYtd)))
+        ytdByStrategy.set(k, Number(certifiedYtd));
+      if (certifiedDay1 != null && Number.isFinite(Number(certifiedDay1)))
+        day1PctByStrategy.set(k, Number(certifiedDay1));
       const continuityCash = toNumber(r.continuity_cash_cents);
       const securitiesValue = toNumber(r.securities_value_cents);
       const strategyValue = continuityCash + securitiesValue;
-      if (continuityCash > 0 && strategyValue > 0) cashPctByStrategy.set(k, (continuityCash / strategyValue) * 100);
+      if (continuityCash > 0 && strategyValue > 0)
+        cashPctByStrategy.set(k, (continuityCash / strategyValue) * 100);
       const completeValue = toNumber(r.complete_value_cents);
       if (completeValue > 0) completeValueRandsByStrategy.set(k, completeValue / 100);
     }
@@ -368,21 +481,30 @@ async function loadRetailStrategies(
           ? "balanced"
           : "equity";
     const st = String(s.status ?? "").toLowerCase();
-    const previewSymbols = Array.isArray(s.holdings) ? s.holdings.map((holding) => {
-      if (typeof holding === "string") return holding;
-      if (!holding || typeof holding !== "object") return "";
-      const row = holding as Record<string, unknown>;
-      return String(row.ticker ?? row.symbol ?? "");
-    }).map((symbol) => symbol.replace(/\.JO$/i, "").toUpperCase()).filter(Boolean) : [];
+    const previewSymbols = Array.isArray(s.holdings)
+      ? s.holdings
+          .map((holding) => {
+            if (typeof holding === "string") return holding;
+            if (!holding || typeof holding !== "object") return "";
+            const row = holding as Record<string, unknown>;
+            return String(row.ticker ?? row.symbol ?? "");
+          })
+          .map((symbol) => symbol.replace(/\.JO$/i, "").toUpperCase())
+          .filter(Boolean)
+      : [];
     // Manual fallback: securities only, live-priced, from the model's own
     // holdings — used only when no certified per-lot value exists yet.
-    const minValueFromHoldings = Array.isArray(s.holdings) ? s.holdings.reduce((total, holding) => {
-      const row = typeof holding === "object" && holding ? holding as Record<string, unknown> : {};
-      const symbol = String(typeof holding === "string" ? holding : row.ticker ?? row.symbol ?? "").replace(/\.JO$/i, "").toUpperCase();
-      const units = Number(row.shares ?? row.quantity ?? row.units ?? 1);
-      const price = securityBySymbol.get(symbol)?.priceR;
-      return total + (price != null && Number.isFinite(units) ? price * units : 0);
-    }, 0) : 0;
+    const minValueFromHoldings = Array.isArray(s.holdings)
+      ? s.holdings.reduce((total, holding) => {
+          const row = typeof holding === "object" && holding ? (holding as Record<string, unknown>) : {};
+          const symbol = String(typeof holding === "string" ? holding : (row.ticker ?? row.symbol ?? ""))
+            .replace(/\.JO$/i, "")
+            .toUpperCase();
+          const units = Number(row.shares ?? row.quantity ?? row.units ?? 1);
+          const price = securityBySymbol.get(symbol)?.priceR;
+          return total + (price != null && Number.isFinite(units) ? price * units : 0);
+        }, 0)
+      : 0;
     // Prefer the CERTIFIED canonical complete value (securities + continuity
     // cash) — the manual sum above never included the strategy's cash sleeve,
     // understating "Min value" by exactly the CA the strategy is holding.
@@ -415,7 +537,9 @@ async function loadRetailStrategies(
       cashWeight: cashPct,
       nav: aumR,
       investorCount: canonical?.users.size ?? 0,
-      holdingsCount: (Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0) + (cashPct != null && cashPct > 0 ? 1 : 0),
+      holdingsCount:
+        (Array.isArray(s.holdings) ? (s.holdings as unknown[]).length : 0) +
+        (cashPct != null && cashPct > 0 ? 1 : 0),
       holdingsPreview: [
         ...previewSymbols.map((symbol) => securityBySymbol.get(symbol) ?? { symbol, logoUrl: null }),
         ...(cashPct != null && cashPct > 0 ? [{ symbol: "CA", logoUrl: null, isCash: true }] : []),
@@ -488,8 +612,8 @@ function mapRow(r: StrategyRow) {
         : r.asset_class === "balanced"
           ? "balanced"
           : "equity") as "equity" | "money_market" | "balanced" | "fixed_income",
-    manager: r.manager ?? payload.manager as string ?? "—",
-    benchmark: r.benchmark ?? payload.benchmark as string ?? "—",
+    manager: r.manager ?? (payload.manager as string) ?? "—",
+    benchmark: r.benchmark ?? (payload.benchmark as string) ?? "—",
     aum: centsToRands(r.aum_cents),
     dayPnl: centsToRands(r.pnl_today_cents),
     // Preserve a genuine "not provided" (null) as null so it shows "—";
@@ -500,23 +624,17 @@ function mapRow(r: StrategyRow) {
     nav: centsToRands(r.nav_value_cents),
     investorCount: r.investor_count ?? 0,
     holdingsCount: r.holdings_count ?? 0,
-    lastRebalanced: r.last_rebalanced_at
-      ? new Date(r.last_rebalanced_at).toISOString().slice(0, 10)
-      : "—",
+    lastRebalanced: r.last_rebalanced_at ? new Date(r.last_rebalanced_at).toISOString().slice(0, 10) : "—",
     deployedAt: r.deployed_at,
     // Optional seed fields — these live on the seed `Strategy` view-model
     // for the mock UI. We surface a payload passthrough so future
     // schema columns don't require a BFF change.
     sharpe: typeof payload.sharpe === "number" ? (payload.sharpe as number) : 0,
     maxDD: typeof payload.maxDD === "number" ? (payload.maxDD as number) : 0,
-    trackingError:
-      typeof payload.trackingError === "number" ? (payload.trackingError as number) : 0,
-    weightedAvgYield:
-      typeof payload.weightedAvgYield === "number" ? (payload.weightedAvgYield as number) : 0,
+    trackingError: typeof payload.trackingError === "number" ? (payload.trackingError as number) : 0,
+    weightedAvgYield: typeof payload.weightedAvgYield === "number" ? (payload.weightedAvgYield as number) : 0,
     weightedAvgDuration:
-      typeof payload.weightedAvgDuration === "number"
-        ? (payload.weightedAvgDuration as number)
-        : 0,
+      typeof payload.weightedAvgDuration === "number" ? (payload.weightedAvgDuration as number) : 0,
   };
 }
 
@@ -543,7 +661,11 @@ export async function GET(req: Request) {
       const visibleStrategies = isDev
         ? retailResult.strategies
         : retailResult.strategies.filter((s) => s.investorEnvironment !== "UAT");
-      const filteredResult = { ...retailResult, strategies: visibleStrategies, count: visibleStrategies.length };
+      const filteredResult = {
+        ...retailResult,
+        strategies: visibleStrategies,
+        count: visibleStrategies.length,
+      };
       if (part === "market" || filteredResult.strategies.length > 0) {
         return Response.json(filteredResult);
       }
