@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 
-import { getAdminContext } from "@/lib/admin/rbac";
 import { isAdminRole } from "@/lib/admin/pages";
+import { getAdminContext } from "@/lib/admin/rbac";
+import { applyYahooFallback } from "@/lib/market-prices/fallback";
 import { createAnonServerClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -14,8 +15,10 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const auth = await getAdminContext();
-  if (auth.status === "no-session") return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
-  if (auth.status === "not-member") return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
+  if (auth.status === "no-session")
+    return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
+  if (auth.status === "not-member")
+    return NextResponse.json({ ok: false, error: "forbidden" }, { status: 403 });
 
   const url = new URL(req.url);
   const action = url.searchParams.get("action") || "list";
@@ -24,7 +27,12 @@ export async function GET(req: Request) {
   try {
     db = createRetailServiceRoleClient();
   } catch {
-    return NextResponse.json({ ok: true, strategies: [], securities: {}, notice: "RETAIL database not configured." });
+    return NextResponse.json({
+      ok: true,
+      strategies: [],
+      securities: {},
+      notice: "RETAIL database not configured.",
+    });
   }
 
   if (action === "search-securities") {
@@ -39,7 +47,10 @@ export async function GET(req: Request) {
   }
 
   if (action === "list") {
-    const { data: strategies, error } = await db.from("strategies_c").select("*").order("created_at", { ascending: false });
+    const { data: strategies, error } = await db
+      .from("strategies_c")
+      .select("*")
+      .order("created_at", { ascending: false });
     if (error) return NextResponse.json({ ok: true, strategies: [], securities: {}, notice: error.message });
     const rows = strategies ?? [];
     const symbols = new Set<string>();
@@ -52,8 +63,40 @@ export async function GET(req: Request) {
     }
     const securities: Record<string, unknown> = {};
     if (symbols.size) {
-      const { data: secs } = await db.from("securities_c").select("symbol, name, logo_url, last_price, change_percent").in("symbol", [...symbols]);
+      const { data: secs } = await db
+        .from("securities_c")
+        .select("symbol, name, logo_url, last_price, change_percent, updated_at")
+        .in("symbol", [...symbols]);
       for (const sec of secs ?? []) securities[sec.symbol as string] = sec;
+      // Yahoo fallback for any holding symbol with no fresh DB price.
+      // Reads only — never writes back.
+      const fallbackRows = (secs ?? [])
+        .filter((s) => Number((s as Record<string, unknown>).last_price) <= 0)
+        .map((s) => ({
+          symbol: s.symbol as string,
+          last_price: (s as Record<string, unknown>).last_price as number | null,
+          change_percent: (s as Record<string, unknown>).change_percent as number | null,
+          updated_at: ((s as Record<string, unknown>).updated_at as string | null | undefined) ?? null,
+        }));
+      if (fallbackRows.length > 0) {
+        await applyYahooFallback({ rows: fallbackRows, maxYahoo: 40, concurrency: 4 });
+        for (const row of fallbackRows as Array<{
+          symbol: string;
+          last_price: number | null;
+          change_percent: number | null;
+          updated_at: string | null;
+          price_source?: "iress" | "yahoo" | "securities_c" | "stock_intraday_c" | "supabase";
+        }>) {
+          if (row.price_source === "yahoo") {
+            securities[row.symbol] = {
+              ...(securities[row.symbol] as Record<string, unknown>),
+              last_price: row.last_price,
+              change_percent: row.change_percent,
+              price_source: "yahoo",
+            };
+          }
+        }
+      }
     }
     return NextResponse.json({ ok: true, strategies: rows, securities });
   }
@@ -63,9 +106,16 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   const auth = await getAdminContext();
-  if (auth.status === "no-session") return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
-  if (auth.status !== "ok" || !isAdminRole(auth.ctx)) return NextResponse.json({ ok: false, error: "Admin access required" }, { status: 403 });
-  const body = ((await req.json().catch(() => ({}))) ?? {}) as { action?: string; id?: string; password?: string; patch?: Record<string, unknown> };
+  if (auth.status === "no-session")
+    return NextResponse.json({ ok: false, error: "no-session" }, { status: 401 });
+  if (auth.status !== "ok" || !isAdminRole(auth.ctx))
+    return NextResponse.json({ ok: false, error: "Admin access required" }, { status: 403 });
+  const body = ((await req.json().catch(() => ({}))) ?? {}) as {
+    action?: string;
+    id?: string;
+    password?: string;
+    patch?: Record<string, unknown>;
+  };
   const action = String(body.action || "");
   const password = String(body.password || "");
   if (!password) return NextResponse.json({ ok: false, error: "Password is required" }, { status: 400 });
@@ -86,30 +136,69 @@ export async function POST(req: Request) {
   }
 
   try {
-    const { error: passwordError } = await verifier.auth.signInWithPassword({ email: auth.ctx.email, password });
+    const { error: passwordError } = await verifier.auth.signInWithPassword({
+      email: auth.ctx.email,
+      password,
+    });
     if (passwordError) return NextResponse.json({ ok: false, error: "Incorrect password" }, { status: 403 });
   } catch (e) {
-    return NextResponse.json({ ok: false, error: `Password verification failed: ${(e as Error).message}` }, { status: 502 });
+    return NextResponse.json(
+      { ok: false, error: `Password verification failed: ${(e as Error).message}` },
+      { status: 502 },
+    );
   }
 
   if (action === "details") {
-    const { data, error } = await db.from("strategies_c").select("*").eq("id", body.id || "").maybeSingle();
+    const { data, error } = await db
+      .from("strategies_c")
+      .select("*")
+      .eq("id", body.id || "")
+      .maybeSingle();
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true, strategy: data });
   }
   if (action === "delete") {
-    const { error } = await db.from("strategies_c").delete().eq("id", body.id || "");
+    const { error } = await db
+      .from("strategies_c")
+      .delete()
+      .eq("id", body.id || "");
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true });
   }
   if (action === "create" || action === "update" || action === "rename") {
-    const allowed = new Set(["name","short_name","description","objective","risk_level","sector","base_currency","is_public","is_featured","investor_environment","status","holdings","min_investment"]);
+    const allowed = new Set([
+      "name",
+      "short_name",
+      "description",
+      "objective",
+      "risk_level",
+      "sector",
+      "base_currency",
+      "is_public",
+      "is_featured",
+      "investor_environment",
+      "status",
+      "holdings",
+      "min_investment",
+    ]);
     const patch = Object.fromEntries(Object.entries(body.patch ?? {}).filter(([key]) => allowed.has(key)));
-    if (action === "rename" && (!patch.name || !String(patch.name).trim())) return NextResponse.json({ ok: false, error: "Strategy name is required" }, { status: 400 });
-    if (action !== "rename" && patch.investor_environment && !["LIVE","UAT"].includes(String(patch.investor_environment).toUpperCase())) return NextResponse.json({ ok: false, error: "Invalid investor environment" }, { status: 400 });
-    const query = action === "create"
-      ? db.from("strategies_c").insert(patch).select().maybeSingle()
-      : db.from("strategies_c").update(patch).eq("id", body.id || "").select().maybeSingle();
+    if (action === "rename" && (!patch.name || !String(patch.name).trim()))
+      return NextResponse.json({ ok: false, error: "Strategy name is required" }, { status: 400 });
+    if (
+      action !== "rename" &&
+      patch.investor_environment &&
+      !["LIVE", "UAT"].includes(String(patch.investor_environment).toUpperCase())
+    )
+      return NextResponse.json({ ok: false, error: "Invalid investor environment" }, { status: 400 });
+    const query =
+      action === "create"
+        ? db.from("strategies_c").insert(patch).select().maybeSingle()
+        : db
+            .from("strategies_c")
+            .update(patch)
+            .eq("id", body.id || "")
+            .select()
+            .maybeSingle();
     const { data, error } = await query;
     if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
     return NextResponse.json({ ok: true, strategy: data });

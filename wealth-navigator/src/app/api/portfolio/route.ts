@@ -25,8 +25,13 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { createRetailServiceRoleClient, createServiceRoleClient, isSupabaseConfigured } from "@/lib/supabase/server";
-import { isSupabaseSchemaMissing, type BffUnavailableReason } from "@/lib/bff-reasons";
+import { type BffUnavailableReason, isSupabaseSchemaMissing } from "@/lib/bff-reasons";
+import { type SecurityPriceRow, resolveSecurityPrices } from "@/lib/market-prices/fallback";
+import {
+  createRetailServiceRoleClient,
+  createServiceRoleClient,
+  isSupabaseConfigured,
+} from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -111,8 +116,8 @@ function driftForPosition(
 ): { drift: number; hasTarget: boolean } {
   // 1) IRESS payload win
   const payload = (p.payload ?? {}) as Record<string, unknown>;
-  const target = Number(payload.Target ?? payload.target ?? NaN);
-  const actual = Number(payload.Actual ?? payload.actual ?? NaN);
+  const target = Number(payload.Target ?? payload.target ?? Number.NaN);
+  const actual = Number(payload.Actual ?? payload.actual ?? Number.NaN);
   if (Number.isFinite(target) && Number.isFinite(actual)) {
     return { drift: Math.abs(target - actual), hasTarget: true };
   }
@@ -169,7 +174,9 @@ export async function GET() {
     // `20260613000001_oems_ips_portfolio.sql`) we surface a specific
     // hint in the payload so the UI can render the migration name
     // verbatim. Audit #5.
-    const reason: BffUnavailableReason = isSupabaseSchemaMissing(firstErrObj) ? "supabase_query_failed" : "supabase_query_failed";
+    const reason: BffUnavailableReason = isSupabaseSchemaMissing(firstErrObj)
+      ? "supabase_query_failed"
+      : "supabase_query_failed";
     return Response.json(
       {
         error: firstError,
@@ -217,9 +224,18 @@ export async function GET() {
     }
     const symbols = [...new Set(positions.map((p) => p.security_code).filter(Boolean))];
     const { data: secRows } = prices
-      ? await prices.from("securities_c").select("id, symbol, last_price").in("symbol", symbols)
+      ? await prices
+          .from("securities_c")
+          .select("id, symbol, last_price, change_percent, updated_at")
+          .in("symbol", symbols)
       : { data: null };
-    const secList = (secRows ?? []) as { id: string; symbol: string; last_price: number | null }[];
+    const secList = (secRows ?? []) as {
+      id: string;
+      symbol: string;
+      last_price: number | null;
+      change_percent: number | null;
+      updated_at: string | null;
+    }[];
     // Prefer FRESH stock_intraday_c over the denormalised securities_c.last_price
     // (which can lag / freeze). Both are stored in cents. Latest tick per security
     // via the (security_id, timestamp DESC) index.
@@ -239,11 +255,48 @@ export async function GET() {
       }
     }
     const priceCentsBySymbol = new Map<string, number>();
+    const priceSourceBySymbol = new Map<string, "securities_c" | "stock_intraday_c" | "yahoo">();
     for (const s of secList) {
       const intra = intradayCentsById.get(String(s.id));
       const last = Number(s.last_price);
-      const c = intra != null ? intra : (Number.isFinite(last) && last > 0 ? last : NaN);
-      if (Number.isFinite(c) && c > 0) priceCentsBySymbol.set(s.symbol, c);
+      const c = intra != null ? intra : Number.isFinite(last) && last > 0 ? last : Number.NaN;
+      if (Number.isFinite(c) && c > 0) {
+        priceCentsBySymbol.set(s.symbol, c);
+        priceSourceBySymbol.set(s.symbol, intra != null ? "stock_intraday_c" : "securities_c");
+      }
+    }
+    // Stale-or-missing seam: for any holding still missing a price after the
+    // DB lookup, try the Yahoo live fallback. Reads only — never writes back.
+    // IRESS-back-online re-sync is automatic: when securities_c.updated_at
+    // lands inside the freshness window the next request resolves from DB.
+    const missingSymbols = symbols.filter((s) => !priceCentsBySymbol.has(s));
+    if (missingSymbols.length > 0) {
+      try {
+        const resolved = await resolveSecurityPrices({
+          rows: missingSymbols.map((sym) => {
+            const row = secList.find((s) => s.symbol === sym);
+            return {
+              id: row?.id ?? sym,
+              symbol: sym,
+              name: null,
+              logo_url: null,
+              last_price: row?.last_price ?? null,
+              change_percent: row?.change_percent ?? null,
+              updated_at: row?.updated_at ?? null,
+            } satisfies SecurityPriceRow;
+          }),
+          intradayBySecurityId: new Map(),
+          maxYahoo: 40,
+          concurrency: 4,
+        });
+        for (const r of resolved) {
+          if (r.price_rands == null) continue;
+          priceCentsBySymbol.set(r.symbol, Math.round(r.price_rands * 100));
+          priceSourceBySymbol.set(r.symbol, "yahoo");
+        }
+      } catch {
+        /* keep DB-only prices; positions keep null MV → UI renders "—" */
+      }
     }
     for (const p of positions) {
       if (p.market_value != null) continue; // worker already supplied a mark
@@ -324,8 +377,7 @@ export async function GET() {
     const tt = new Date(t.ingested_at ?? 0).getTime();
     if (Number.isFinite(tt)) candidates.push(tt);
   }
-  const lastUpdatedAt =
-    candidates.length > 0 ? new Date(Math.max(...candidates)).toISOString() : null;
+  const lastUpdatedAt = candidates.length > 0 ? new Date(Math.max(...candidates)).toISOString() : null;
 
   const summary: PortfolioSummary = {
     accounts,
@@ -337,12 +389,8 @@ export async function GET() {
     rebalanceDrift,
     rebalanceLocked,
     lastUpdatedAt,
-    source: accounts.length > 0 || positions.length > 0 || recentTx.length > 0
-      ? "supabase"
-      : "unavailable",
-    reason: accounts.length === 0 && positions.length === 0 && recentTx.length === 0
-      ? "empty"
-      : undefined,
+    source: accounts.length > 0 || positions.length > 0 || recentTx.length > 0 ? "supabase" : "unavailable",
+    reason: accounts.length === 0 && positions.length === 0 && recentTx.length === 0 ? "empty" : undefined,
   };
 
   return Response.json(summary);

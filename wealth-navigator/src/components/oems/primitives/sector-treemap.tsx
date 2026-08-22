@@ -135,7 +135,7 @@ export function SectorTreemap({ data }: { data: SectorDatum[] }) {
   return (
     <div className="flex h-full w-full select-none flex-col gap-2">
       <div
-        className="grid min-h-0 flex-1 auto-rows-[minmax(0,1fr)] gap-1.5"
+        className="grid min-h-0 flex-1 auto-rows-[minmax(0,1fr)] grid-flow-row-dense gap-1.5"
         style={{ gridTemplateColumns: `repeat(${GRID_COLS}, minmax(0, 1fr))` }}
       >
         {ordered.map((s) => {

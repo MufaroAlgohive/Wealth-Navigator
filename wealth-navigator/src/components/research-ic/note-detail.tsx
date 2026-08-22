@@ -120,6 +120,7 @@ export function NoteDetail({
 
   const peers = note.valuation?.peers ?? [];
   const fundamentals = th.fundamentals ?? [];
+  const hasForecastYears = fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0);
   const icLog = th.icLog ?? [];
   const canSubmit = perms.createNote && (note.status === "draft" || note.status === "in_review");
 
@@ -316,7 +317,7 @@ export function NoteDetail({
       <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
         <GlassSection
           title={
-            fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0)
+            hasForecastYears
               ? "Fundamentals · multi-year (Year 1 / Year 2 / Year 3)"
               : "Fundamentals · latest vs forecast"
           }
@@ -325,23 +326,45 @@ export function NoteDetail({
           noPadding
         >
           {fundamentals.length ? (
+            // `table-fixed` columns are sized in PERCENT, not px, so they
+            // always sum to exactly 100% of the panel's real rendered
+            // width (which varies — this sits in a 1.4fr/1fr grid cell
+            // inside a 3-column [320px_1fr_260px] page grid, so the
+            // panel itself can be as narrow as ~300px on a real screen).
+            // Percent widths make horizontal scroll impossible to trigger
+            // by accident; `overflow-x-auto` stays only as a defensive
+            // fallback. Two width sets, one per column count:
+            //   latest-vs-forecast (5 cols): Metric 48 / Prior 13 / Current 13 / Forecast 16 / Trend 10
+            //   multi-year (7 cols):         Metric 32 / Prior 12 / Current 12 / Y1 12 / Y2 12 / Y3 12 / Trend 8
+            // Trend only needs to fit a 14px icon (+ 16px cell padding),
+            // so it gets the smallest share; Metric gets the rest so
+            // longer names ("Net debt/EBITDA (x)") truncate gracefully
+            // instead of being squeezed to a couple of characters.
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full table-fixed text-[11px]">
                 <thead>
-                  <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[10px] uppercase tracking-wide text-muted-foreground">
-                    <th className="px-5 py-2 font-medium">Metric</th>
-                    <th className="px-3 py-2 text-right font-medium">Prior</th>
-                    <th className="px-3 py-2 text-right font-medium">Current</th>
-                    {fundamentals.some((f) => Array.isArray(f.forecastYears) && f.forecastYears.length > 0) ? (
+                  <tr className="border-b border-[hsl(var(--glass-border))] text-left text-[9px] uppercase tracking-wide text-muted-foreground">
+                    <th className={cn("px-2 py-1 font-semibold", hasForecastYears ? "w-[32%]" : "w-[48%]")}>
+                      Metric
+                    </th>
+                    <th className={cn("px-2 py-1 text-right font-semibold", hasForecastYears ? "w-[12%]" : "w-[13%]")}>
+                      Prior
+                    </th>
+                    <th className={cn("px-2 py-1 text-right font-semibold", hasForecastYears ? "w-[12%]" : "w-[13%]")}>
+                      Current
+                    </th>
+                    {hasForecastYears ? (
                       <>
-                        <th className="px-3 py-2 text-right font-medium">Year 1</th>
-                        <th className="px-3 py-2 text-right font-medium">Year 2</th>
-                        <th className="px-3 py-2 text-right font-medium">Year 3</th>
+                        <th className="w-[12%] px-2 py-1 text-right font-semibold">Y1</th>
+                        <th className="w-[12%] px-2 py-1 text-right font-semibold">Y2</th>
+                        <th className="w-[12%] px-2 py-1 text-right font-semibold">Y3</th>
                       </>
                     ) : (
-                      <th className="px-3 py-2 text-right font-medium">Forecast</th>
+                      <th className="w-[16%] px-2 py-1 text-right font-semibold">Forecast</th>
                     )}
-                    <th className="px-5 py-2 text-right font-medium">Trend</th>
+                    <th className={cn("px-2 py-1 text-right font-semibold", hasForecastYears ? "w-[8%]" : "w-[10%]")}>
+                      Trend
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -352,34 +375,34 @@ export function NoteDetail({
                         key={f.metric}
                         className="border-b border-[hsl(var(--glass-border))] last:border-0"
                       >
-                        <td className="px-5 py-2 text-foreground/85">
+                        <td className="truncate px-2 py-1 text-foreground/85" title={`${f.metric}${f.unit ? ` (${f.unit})` : ""}`}>
                           {f.metric}
                           {f.unit ? ` (${f.unit})` : ""}
                         </td>
-                        <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                        <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                           {fmtFundCell(f.prior, f.unit)}
                         </td>
-                        <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums">
+                        <td className="whitespace-nowrap px-2 py-1 text-right font-mono font-semibold tabular-nums">
                           {fmtFundCell(f.current, f.unit)}
                         </td>
                         {years.length > 0 ? (
                           <>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[0], f.unit)}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[1], f.unit)}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                            <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                               {fmtFundCell(years[2], f.unit)}
                             </td>
                           </>
                         ) : (
-                          <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                          <td className="whitespace-nowrap px-2 py-1 text-right font-mono tabular-nums text-muted-foreground">
                             {fmtFundCell(f.forecast, f.unit)}
                           </td>
                         )}
-                        <td className="px-5 py-2">
+                        <td className="px-2 py-1">
                           <span className="flex justify-end">
                             <TrendArrow trend={f.trend} />
                           </span>
@@ -391,7 +414,7 @@ export function NoteDetail({
               </table>
             </div>
           ) : (
-            <p className="p-5 text-caption">No fundamentals captured.</p>
+            <p className="p-3 text-caption">No fundamentals captured.</p>
           )}
         </GlassSection>
         <GlassSection
@@ -434,11 +457,11 @@ export function NoteDetail({
               },
             ]}
           />
-          <div className="border-t border-[hsl(var(--glass-border))] p-5">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="border-t border-[hsl(var(--glass-border))] p-2.5">
+            <p className="text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
               P/E bars
             </p>
-            <div className="mt-2 h-[140px]">
+            <div className="mt-1.5 h-[110px]">
               <PeerPeBars
                 peers={peers}
                 subjectPe={note.valuation?.pe_multiple ?? null}
@@ -464,21 +487,24 @@ export function NoteDetail({
       {/* IC log */}
       <GlassSection title="Investment committee log" dataSource="supabase" db="institutional">
         {icLog.length ? (
-          <ol className="space-y-3">
+          <ol className="space-y-1.5">
             {icLog.map((e) => (
-              <li key={`${e.at}-${e.action}`} className="flex gap-3">
-                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.06)] text-[10px] font-semibold text-muted-foreground">
+              <li
+                key={`${e.at}-${e.action}`}
+                className="flex items-start gap-2 border-b border-[hsl(var(--glass-border))] pb-1.5 last:border-0 last:pb-0"
+              >
+                <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--foreground)/0.06)] text-[9px] font-semibold text-muted-foreground">
                   {e.initials ?? initialsOf(e.actor)}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-semibold">{e.actor}</span>
-                    <span className="rounded border border-[hsl(var(--glass-border))] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="text-[11px] font-semibold">{e.actor}</span>
+                    <span className="rounded border border-[hsl(var(--glass-border))] px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
                       {e.action}
                     </span>
-                    <span className="text-[10px] text-muted-foreground">{e.at}</span>
+                    <span className="text-[9px] text-muted-foreground">{e.at}</span>
                   </div>
-                  {e.note && <p className="mt-0.5 text-xs text-foreground/80">{e.note}</p>}
+                  {e.note && <p className="mt-0.5 text-[11px] text-foreground/80">{e.note}</p>}
                 </div>
               </li>
             ))}

@@ -29,7 +29,7 @@ export interface NormalisedQuoteRow {
   changePct?: number;
   volume?: number;
   vwap?: number;
-  source: "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "unavailable";
+  source: "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "yahoo" | "unavailable";
 }
 
 /** BFF `/api/quotes` response (subset). */
@@ -45,13 +45,17 @@ export interface BffQuotesResponse {
     change?: number;
     change_pct?: number;
     ts?: number;
-    source: "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "unavailable";
+    source: "live" | "iress" | "seed-fallback" | "mock" | "supabase" | "yahoo" | "unavailable";
   }>;
   liveCount: number;
   fallbackCount: number;
+  /** Count of quotes served by the live Yahoo fallback this call. */
+  yahooCount?: number;
   mockCount?: number;
   supabaseCount?: number;
   unavailableCount?: number;
+  /** Count of quotes served by the retail DB (supabase) this call. */
+  dbCount?: number;
 }
 
 /** Legacy `/api/iress/quotes` response (subset). */
@@ -137,7 +141,8 @@ export function deriveDataSource(
   const freshCutoff = opts?.freshTickMs ?? 30_000;
   const now = Date.now();
   const hasFreshTick = rows.some(
-    (r) => typeof (r as { ts?: number }).ts === "number" && now - ((r as { ts?: number }).ts ?? 0) < freshCutoff,
+    (r) =>
+      typeof (r as { ts?: number }).ts === "number" && now - ((r as { ts?: number }).ts ?? 0) < freshCutoff,
   );
   if (workerLive && hasFreshTick && (supabase > 0 || live > 0)) return "live";
   if (workerLive && (supabase > 0 || live > 0)) return "supabase";

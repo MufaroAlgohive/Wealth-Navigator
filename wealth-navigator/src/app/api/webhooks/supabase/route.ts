@@ -94,20 +94,35 @@ export async function POST(req: Request) {
       } else if (t.email_type === "trade_confirmation") {
         const userId = rec[t.user_id_field || "user_id"] as string | undefined;
         if (!userId) throw new Error("No user_id in record");
-        const { data: profs } = await db.from("profiles").select("email, first_name").eq("id", userId).limit(1);
+        const { data: profs } = await db.from("profiles").select("email, first_name, mint_number").eq("id", userId).limit(1);
         const profile = profs?.[0];
         if (!profile?.email) throw new Error("No profile/email for user");
-        let symbol = "", name = "";
+        let symbol = "";
         if (rec.security_id) {
           const { data: secs } = await db.from("securities_c").select("symbol, name").eq("id", rec.security_id).limit(1);
           symbol = (secs?.[0]?.symbol as string) || "";
-          name = (secs?.[0]?.name as string) || symbol;
         }
         const priceRands = rec.avg_fill ? Number(rec.avg_fill) / 100 : Number(rec.Expected_fill) || 0;
+        // stock_holdings_c.trade_side is the only side field this record carries
+        // (see admin/orderbook/route.ts's own read of the same column); default
+        // to "Buy" only if it's genuinely missing/unrecognised.
+        const action = String(rec.trade_side ?? "").toUpperCase() === "SELL" ? "Sell" : "Buy";
+        // Client-facing reference: {mint_number}-{bare ticker} (e.g.
+        // "AND0930090326-SHP") instead of the internal holding row id — falls
+        // back to that id only when mint_number is missing.
+        const bareSymbol = symbol.replace(/\.(JO|JSE)$/i, "");
+        const reference = profile.mint_number ? `${profile.mint_number as string}-${bareSymbol}` : String(rec.id ?? "");
         await sendEmail({
           to: profile.email as string,
           subject: `Trade confirmed${symbol ? ` — ${symbol}` : ""}`,
-          html: buildTradeConfirmationHtml({ firstName: profile.first_name as string, symbol, name, quantity: Number(rec.quantity) || 0, price: priceRands }),
+          html: buildTradeConfirmationHtml({
+            firstName: profile.first_name as string,
+            action,
+            symbol,
+            orderId: reference,
+            quantity: Number(rec.quantity) || 0,
+            avgPriceRands: priceRands,
+          }),
           emailType: "trade_confirmation",
           source: "webhook",
           metadata: { holding_id: rec.id, user_id: userId },

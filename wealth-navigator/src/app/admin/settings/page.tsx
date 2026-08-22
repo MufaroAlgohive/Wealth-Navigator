@@ -3,7 +3,7 @@
 import type { ElementType } from "react";
 import Link from "next/link";
 import type { Route } from "next";
-import { ChevronRight, MonitorSmartphone, ShieldCheck, SlidersHorizontal } from "lucide-react";
+import { ChevronRight, MonitorSmartphone, RefreshCw, ShieldCheck, SlidersHorizontal } from "lucide-react";
 
 import { useAdmin } from "@/lib/admin/context";
 import { isAdminRole } from "@/lib/admin/pages";
@@ -65,6 +65,7 @@ export default function AdminSettingsPage() {
           <NavRow href={"/admin/studio" as Route} icon={MonitorSmartphone} title="Client View Studio" subtitle="Preview the app as any client" />
           <NavRow href={"/admin/app-settings" as Route} icon={SlidersHorizontal} title="App Settings" subtitle="Platform fees & configuration" />
           <NavRow href={"/admin/team" as Route} icon={ShieldCheck} title="Team" subtitle="Members, roles & page access" />
+          <NavRow href={"/admin/dev-tools" as Route} icon={RefreshCw} title="Dev Tools" subtitle="Recompute canonical ledger returns" />
         </section>
       )}
 

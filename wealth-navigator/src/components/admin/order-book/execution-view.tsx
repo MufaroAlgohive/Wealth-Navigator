@@ -313,6 +313,15 @@ interface ParsedFillRow {
   priceCents: number;
 }
 
+/** One order matched against a parsed broker sheet, for the bulk manual-fill
+ *  review dialog — see bulkManualFillFromFile in ExecutionView. */
+interface BulkFillMatch {
+  row: ExecutionRow;
+  priceCents: number;
+  nominal: number | null;
+  fileSide: string;
+}
+
 /** Parses a broker fill workbook (.xlsx/.xls/.csv) into [{ side, code,
  *  nominal, priceCents }] — same flexible header-detection MyMintAdmin's
  *  broker-fills uploader uses: scans the first 15 rows for one containing
@@ -751,6 +760,11 @@ interface OrderActions {
   retryInFlight: Record<string, boolean>;
   retryError: Record<string, string>;
   handleRetry: (row: ExecutionRow) => void;
+  /** Emergency manual fill, bulk — pencil icon on ANY row opens the same file
+   *  picker, but the uploaded broker sheet is matched against every fillable
+   *  row in the WHOLE book (not just this one), reviewed in one dialog, then
+   *  applied sequentially. See handleBulkManualFillFile in ExecutionView. */
+  bulkManualFillFromFile: (file: File) => void;
 }
 
 /**
@@ -810,67 +824,15 @@ function GroupRow({
     retryInFlight,
     retryError,
     handleRetry,
+    bulkManualFillFromFile,
   } = actions;
 
   // Emergency manual fill — for when IRESS itself is down and there is a
   // real broker confirmation for this order but nothing left to poll it.
-  // Same Master ★ gate as Send to Market (mirrored client-side here as a
-  // courtesy; the server — manual-fill/route.ts via requireMasterPassword —
-  // is the actual boundary, not this check).
-  const { ctx } = useAdmin();
-  const isMaster = ctx.approverTier === "master";
+  // The pencil stays per-row (visibility gate + tooltip unchanged), but the
+  // uploaded sheet is matched against the WHOLE book, not just this row —
+  // see bulkManualFillFromFile / the bulk confirm dialog in ExecutionView.
   const manualFillInputRef = React.useRef<HTMLInputElement | null>(null);
-  const [manualFillMatch, setManualFillMatch] = React.useState<{
-    priceCents: number;
-    nominal: number | null;
-    side: string;
-  } | null>(null);
-  const [manualFillDialogOpen, setManualFillDialogOpen] = React.useState(false);
-  const [manualFillPending, setManualFillPending] = React.useState(false);
-  const [manualFillErr, setManualFillErr] = React.useState("");
-
-  const handleManualFillFile = async (file: File) => {
-    setManualFillErr("");
-    try {
-      const rows = await parseFillWorkbook(file);
-      const code = normalizeFillTicker(r.symbol);
-      const match = rows.find((row) => row.code === code);
-      if (!match) {
-        setManualFillErr(`No price found for ${code} in that file.`);
-        return;
-      }
-      setManualFillMatch({ priceCents: match.priceCents, nominal: match.nominal, side: match.side });
-      setManualFillDialogOpen(true);
-    } catch (err) {
-      setManualFillErr(err instanceof Error ? err.message : "Could not read that file.");
-    }
-  };
-
-  const confirmManualFill = async () => {
-    if (!manualFillMatch) return;
-    setManualFillPending(true);
-    try {
-      const res = await fetch("/api/admin/orderbook/manual-fill", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ order_audit_id: r.id, fill_price_cents: manualFillMatch.priceCents }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-      if (!res.ok || body.ok === false) {
-        const msg = body.error ?? `Fill failed (${res.status}).`;
-        setManualFillErr(msg);
-        toast.error(msg);
-        return;
-      }
-      toast.success(`Filled ${r.symbol} at ${fmtMoney(manualFillMatch.priceCents / 100)}.`);
-      setManualFillDialogOpen(false);
-      setManualFillMatch(null);
-    } catch (err) {
-      setManualFillErr(err instanceof Error ? err.message : "Manual fill failed.");
-    } finally {
-      setManualFillPending(false);
-    }
-  };
 
   return (
     <React.Fragment key={`grp:${groupKey}`}>
@@ -965,21 +927,20 @@ function GroupRow({
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     e.target.value = "";
-                    if (file) void handleManualFillFile(file);
+                    if (file) bulkManualFillFromFile(file);
                   }}
                 />
                 <button
                   type="button"
                   onClick={() => manualFillInputRef.current?.click()}
                   className="rounded p-0.5 text-muted-foreground hover:bg-[hsl(var(--foreground)/0.08)] hover:text-foreground"
-                  title="Emergency manual fill — upload a broker fill sheet (xlsx/xls/csv) for when IRESS is down. Requires Master ★."
+                  title="Emergency manual fill — upload a broker fill sheet (xlsx/xls/csv) for when IRESS is down. Matches EVERY fillable order in this book, reviewed before applying. Requires Master ★."
                 >
                   <Pencil className="h-3 w-3" />
                 </button>
               </>
             ) : null}
           </span>
-          {manualFillErr ? <div className="text-[9px] text-destructive">{manualFillErr}</div> : null}
         </td>
         <td className="px-2 py-1 text-[12px] text-foreground whitespace-nowrap">
           {typeof liveLast === "number" && Number.isFinite(liveLast) ? fmtMoney(liveLast) : "—"}
@@ -1373,44 +1334,6 @@ function GroupRow({
           </td>
         </tr>
       ) : null}
-      <MasterSendConfirmDialog
-        open={manualFillDialogOpen}
-        onOpenChange={(next) => {
-          setManualFillDialogOpen(next);
-          if (!next) setManualFillMatch(null);
-        }}
-        isMaster={isMaster}
-        title={`Fill ${r.client_account} at ${manualFillMatch ? fmtMoney(manualFillMatch.priceCents / 100) : "—"} for ${r.symbol}?`}
-        description="This does NOT go to the broker — it writes the fill directly into this client's holdings and wallet, exactly as if IRESS had reported it, and cannot be undone from this system."
-        nonMasterDescription="Only a Master ★ account can apply an emergency manual fill. Your account does not hold that approver tier, so this cannot be applied from here."
-        summary={
-          manualFillMatch ? (
-            <div className="space-y-1">
-              <div>
-                {r.side} {r.qty.toLocaleString()} {r.symbol} @ {fmtMoney(manualFillMatch.priceCents / 100)}
-              </div>
-              {manualFillMatch.nominal != null && manualFillMatch.nominal !== r.qty ? (
-                <div className="text-warning">
-                  File shows {manualFillMatch.nominal.toLocaleString()} — order is {r.qty.toLocaleString()}. Filling
-                  the order's own quantity regardless.
-                </div>
-              ) : null}
-              {manualFillMatch.side && manualFillMatch.side !== r.side ? (
-                <div className="text-warning">
-                  File says {manualFillMatch.side}, order is {r.side}.
-                </div>
-              ) : null}
-              <div className="text-muted-foreground">
-                No broker confirmation behind this — settled exactly like a real IRESS fill, straight into this
-                client&apos;s holdings and wallet.
-              </div>
-            </div>
-          ) : null
-        }
-        confirmLabel="Yes, fill this order"
-        pending={manualFillPending}
-        onConfirm={() => void confirmManualFill()}
-      />
     </React.Fragment>
   );
 }
@@ -2061,6 +1984,106 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     [amendForm, closeAmend],
   );
 
+  // Emergency manual fill, BULK — for when IRESS itself is down and a broker
+  // has sent back one confirmation sheet covering some/all of this book. Any
+  // row's pencil opens the same file picker (unchanged UI), but the sheet is
+  // now matched against every currently-fillable order in the WHOLE book —
+  // not just the row that was clicked — reviewed in one dialog, then applied
+  // ONE AT A TIME through the existing single-order endpoint (sequential, not
+  // Promise.all: avoids hammering settlement concurrently for the same book,
+  // and keeps a partial failure part-way through easy to reason about).
+  const [bulkFillOpen, setBulkFillOpen] = React.useState(false);
+  const [bulkFillMatches, setBulkFillMatches] = React.useState<BulkFillMatch[]>([]);
+  const [bulkFillUnmatchedSheet, setBulkFillUnmatchedSheet] = React.useState<ParsedFillRow[]>([]);
+  const [bulkFillUnmatchedBookCount, setBulkFillUnmatchedBookCount] = React.useState(0);
+  const [bulkFillPending, setBulkFillPending] = React.useState(false);
+
+  const bulkManualFillFromFile = React.useCallback(
+    (file: File) => {
+      void (async () => {
+        try {
+          const sheetRows = await parseFillWorkbook(file);
+          // First occurrence per ticker wins — same ambiguity the old
+          // single-row `.find()` had for a sheet with a duplicated code.
+          const sheetByCode = new Map<string, ParsedFillRow>();
+          for (const sr of sheetRows) {
+            if (!sheetByCode.has(sr.code)) sheetByCode.set(sr.code, sr);
+          }
+          // "Current book's full row list" = one entry per logical order
+          // (liveGroupedRows' parents) — the same set the table renders one
+          // pencil for. Matching against the raw pre-group `rows` instead
+          // would risk matching a child lifecycle-event audit row too and
+          // double-posting a fill for the same OrderNumber.
+          const fillableRows = liveGroupedRows
+            .map((g) => g.parent)
+            .filter((row) => !MANUAL_FILL_BLOCKED_STATES.has(row.state));
+          const matches: BulkFillMatch[] = [];
+          const usedCodes = new Set<string>();
+          for (const row of fillableRows) {
+            const code = normalizeFillTicker(row.symbol);
+            const sr = sheetByCode.get(code);
+            if (!sr) continue;
+            matches.push({ row, priceCents: sr.priceCents, nominal: sr.nominal, fileSide: sr.side });
+            usedCodes.add(code);
+          }
+          if (!matches.length) {
+            toast.error("No rows in that file matched any fillable order in this book.");
+            return;
+          }
+          setBulkFillMatches(matches);
+          setBulkFillUnmatchedSheet(sheetRows.filter((sr) => !usedCodes.has(sr.code)));
+          setBulkFillUnmatchedBookCount(fillableRows.length - matches.length);
+          setBulkFillOpen(true);
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Could not read that file.");
+        }
+      })();
+    },
+    [liveGroupedRows],
+  );
+
+  const confirmBulkFill = async () => {
+    setBulkFillPending(true);
+    const results: Array<{ match: BulkFillMatch; ok: boolean; error?: string }> = [];
+    // Sequential on purpose — see the doc comment above bulkManualFillFromFile.
+    for (const m of bulkFillMatches) {
+      try {
+        const res = await fetch("/api/admin/orderbook/manual-fill", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ order_audit_id: m.row.id, fill_price_cents: m.priceCents }),
+        });
+        const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+        if (!res.ok || body.ok === false) {
+          results.push({ match: m, ok: false, error: body.error ?? `Fill returned ${res.status}` });
+        } else {
+          results.push({ match: m, ok: true });
+        }
+      } catch (err) {
+        results.push({ match: m, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    setBulkFillPending(false);
+    setBulkFillOpen(false);
+    setBulkFillMatches([]);
+    const okCount = results.filter((x) => x.ok).length;
+    const failCount = results.length - okCount;
+    if (failCount === 0) {
+      toast.success(`Filled ${okCount} of ${results.length} order${results.length === 1 ? "" : "s"} from that sheet.`);
+    } else {
+      toast.error(`Filled ${okCount} of ${results.length} orders — ${failCount} failed.`);
+      for (const failure of results.filter((x) => !x.ok)) {
+        console.warn(
+          `[bulk-manual-fill] ${failure.match.row.symbol} (${failure.match.row.client_account}) failed:`,
+          failure.error,
+        );
+        toast.error(`${failure.match.row.symbol} — ${failure.match.row.client_account}: ${failure.error}`);
+      }
+    }
+    void executions.refresh();
+    void orderBooks.refresh();
+  };
+
   const orderActions: OrderActions = {
     cancelInFlight,
     cancelError,
@@ -2080,6 +2103,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     retryInFlight,
     retryError,
     handleRetry,
+    bulkManualFillFromFile,
   };
 
   // "Send to Market (N)" — releases parked mint client-orders. Ported from
@@ -2269,6 +2293,62 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
         confirmLabel="Yes, execute order"
         pending={releasing}
         onConfirm={() => void handleRelease()}
+      />
+
+      <MasterSendConfirmDialog
+        open={bulkFillOpen}
+        onOpenChange={(next) => {
+          setBulkFillOpen(next);
+          if (!next) setBulkFillMatches([]);
+        }}
+        isMaster={isMaster}
+        title={`${bulkFillMatches.length} order${bulkFillMatches.length === 1 ? "" : "s"} will be filled from this sheet.`}
+        description="This does NOT go to the broker — it writes each fill directly into that client's holdings and wallet, exactly as if IRESS had reported it, and cannot be undone from this system."
+        nonMasterDescription="Only a Master ★ account can apply an emergency manual fill. Your account does not hold that approver tier, so this cannot be applied from here."
+        summary={
+          bulkFillMatches.length > 0 ? (
+            <div className="space-y-2">
+              <div className="max-h-64 space-y-1 overflow-y-auto">
+                {bulkFillMatches.map((m) => (
+                  <div key={m.row.id} className="flex items-center justify-between gap-2 border-b border-border/30 py-1 last:border-0">
+                    <div>
+                      <span className="font-semibold">{m.row.side}</span> {m.row.symbol} · {m.row.client_account || "—"} ·{" "}
+                      {m.row.qty.toLocaleString()} @ {fmtMoney(m.priceCents / 100)}
+                    </div>
+                    {m.nominal != null && m.nominal !== m.row.qty ? (
+                      <span className="shrink-0 text-warning" title="File nominal does not match this order's own quantity — the order's own quantity is filled regardless.">
+                        file: {m.nominal.toLocaleString()}
+                      </span>
+                    ) : null}
+                    {m.fileSide && m.fileSide !== m.row.side ? (
+                      <span className="shrink-0 text-warning" title="File side does not match this order's side.">
+                        file: {m.fileSide}
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              <div className="text-muted-foreground">
+                Total notional{" "}
+                {fmtMoney(bulkFillMatches.reduce((s, m) => s + (m.priceCents / 100) * m.row.qty, 0))}
+                {bulkFillUnmatchedSheet.length > 0
+                  ? ` · ${bulkFillUnmatchedSheet.length} sheet row${bulkFillUnmatchedSheet.length === 1 ? "" : "s"} unmatched (${bulkFillUnmatchedSheet.map((sr) => sr.code).join(", ")})`
+                  : ""}
+                {bulkFillUnmatchedBookCount > 0
+                  ? ` · ${bulkFillUnmatchedBookCount} fillable order${bulkFillUnmatchedBookCount === 1 ? "" : "s"} in this book had no match in the sheet`
+                  : ""}
+              </div>
+              <div className="text-muted-foreground">
+                No broker confirmation behind these — each is settled exactly like a real IRESS fill, straight into
+                that client&apos;s holdings and wallet. Applied one at a time; a failure partway through does not
+                undo the ones already filled.
+              </div>
+            </div>
+          ) : null
+        }
+        confirmLabel="Yes, fill these orders"
+        pending={bulkFillPending}
+        onConfirm={() => void confirmBulkFill()}
       />
 
       {hasNotice && (

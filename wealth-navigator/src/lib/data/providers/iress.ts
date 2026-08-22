@@ -29,6 +29,7 @@ const SOURCE_MAP: Record<QuoteWithSource["source"], ProviderQuote["source"]> = {
   "seed-fallback": "mock",
   mock: "mock",
   supabase: "supabase",
+  yahoo: "yahoo",
   unavailable: "iress",
 };
 

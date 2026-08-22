@@ -1,12 +1,20 @@
 "use client";
 
-import { ChevronDown, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ChevronsLeft, ChevronsRight, Filter } from "lucide-react";
 import type { Route } from "next";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useAuth } from "@/lib/auth/store";
 import { cn } from "@/lib/cn";
@@ -28,6 +36,12 @@ import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
  *    top-bar persona switcher can still demo each role's surface.
  * Per-role page-access gating replaces the `showAll` shortcut once RBAC lands.
  */
+const FILTER_ALL = "All";
+/** Deliberate business default (not Overview, not All) — see the Filter dropdown. */
+const DEFAULT_FILTER = "Markets";
+/** Idle time within the sidebar before it auto-collapses to icon-only. */
+const IDLE_COLLAPSE_MS = 10_000;
+
 export function PlatformNav() {
   const pathname = usePathname() ?? "";
   const persona = usePersona();
@@ -37,6 +51,11 @@ export function PlatformNav() {
   const [ccCount, setCcCount] = React.useState(0);
   // Signed-in email, for the per-user restriction (see lib/platform/access.ts).
   const [email, setEmail] = React.useState<string | null>(null);
+  // Section filter: "All" restores the current collapsible-groups behavior;
+  // any other value shows only that section's items, flat, un-collapsible.
+  // Defaults to "Markets" per an explicit business decision — see DEFAULT_FILTER.
+  const [filter, setFilter] = React.useState<string>(DEFAULT_FILTER);
+  const filterTouchedRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!isSupabaseAuthConfigured()) return;
@@ -69,6 +88,46 @@ export function PlatformNav() {
     })).filter((s) => s.items.length > 0);
     return [overview, ...rest];
   }, [persona, isAuthenticated, email]);
+
+  const filterOptions = React.useMemo(() => sections.map((s) => s.title), [sections]);
+
+  // Resolve the default filter to "Markets" once its section is known to have
+  // visible items; fall back to "All" if it never does (e.g. a role that can't
+  // see Markets). Only runs until the user makes an explicit choice, so it
+  // doesn't fight a deliberate "All" selection made before sections settle.
+  React.useEffect(() => {
+    if (filterTouchedRef.current) return;
+    if (filterOptions.includes(DEFAULT_FILTER)) {
+      setFilter(DEFAULT_FILTER);
+    } else if (filterOptions.length > 0 && !filterOptions.includes(filter)) {
+      setFilter(FILTER_ALL);
+    }
+  }, [filterOptions, filter]);
+
+  const selectFilter = React.useCallback((next: string) => {
+    filterTouchedRef.current = true;
+    setFilter(next);
+  }, []);
+
+  const visibleSections = React.useMemo(
+    () => (filter === FILTER_ALL ? sections : sections.filter((s) => s.title === filter)),
+    [sections, filter],
+  );
+
+  // Sidebar-scoped idle auto-collapse: any interaction WITHIN the <aside> (not
+  // page-wide) resets a 10s timer; on expiry, collapse to icon-only. Reuses the
+  // existing `collapsed` state rather than a second collapse mechanism.
+  const idleTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetIdleTimer = React.useCallback(() => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => setCollapsed(true), IDLE_COLLAPSE_MS);
+  }, []);
+  React.useEffect(() => {
+    resetIdleTimer();
+    return () => {
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    };
+  }, [resetIdleTimer]);
 
   const showCc = sections.some((s) => s.items.some((i) => i.badge === "cc"));
   const expandedSections = React.useMemo(
@@ -120,36 +179,74 @@ export function PlatformNav() {
     };
   }, [showCc]);
 
+  const isFiltered = filter !== FILTER_ALL;
+
   return (
     <aside
+      onMouseMove={resetIdleTimer}
+      onPointerMove={resetIdleTimer}
+      onClick={resetIdleTimer}
+      onKeyDown={resetIdleTimer}
+      onFocus={resetIdleTimer}
       className={cn(
         "isolate flex shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 [contain:paint]",
         collapsed ? "w-[60px]" : "w-[216px]",
       )}
     >
+      <div className={cn("border-b border-sidebar-border", collapsed ? "px-1.5 py-2" : "px-2 py-2")}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            {collapsed ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label={`Filter navigation: ${filter}`}
+                className="h-7 w-full justify-center text-muted-foreground hover:text-foreground"
+              >
+                <Filter className="h-3.5 w-3.5" />
+              </Button>
+            ) : (
+              <button
+                type="button"
+                aria-label={`Filter navigation, currently ${filter}`}
+                className="flex w-full items-center justify-between gap-1 rounded-md border border-border bg-card px-2 py-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+              >
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <Filter className="h-3 w-3 shrink-0" aria-hidden="true" />
+                  <span className="truncate">{filter}</span>
+                </span>
+                <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
+              </button>
+            )}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-48">
+            <DropdownMenuLabel>Filter sections</DropdownMenuLabel>
+            <DropdownMenuItem
+              onSelect={() => selectFilter(FILTER_ALL)}
+              className={cn("justify-between", filter === FILTER_ALL && "bg-accent")}
+            >
+              <span>All</span>
+              {filter === FILTER_ALL && <Check className="h-3 w-3" aria-hidden="true" />}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            {filterOptions.map((title) => (
+              <DropdownMenuItem
+                key={title}
+                onSelect={() => selectFilter(title)}
+                className={cn("justify-between", filter === title && "bg-accent")}
+              >
+                <span className="truncate">{title}</span>
+                {filter === title && <Check className="h-3 w-3 shrink-0" aria-hidden="true" />}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       <nav className="flex-1 overflow-y-auto overscroll-contain py-3 scrollbar-thin [contain:paint]">
-        {sections.map((section) => {
-          const sectionOpen = collapsed || expandedSections.has(section.title);
-          const sectionId = `platform-nav-${section.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-          return (
-            <div key={section.title} className="mb-4">
-              {!collapsed && (
-                <button
-                  type="button"
-                  aria-expanded={sectionOpen}
-                  aria-controls={sectionId}
-                  onClick={() => toggleSection(section.title)}
-                  className="flex w-full items-center gap-1 px-3.5 pb-1 text-left text-[9.5px] font-semibold uppercase tracking-wider text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                >
-                  {sectionOpen ? (
-                    <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
-                  ) : (
-                    <ChevronRight className="h-3 w-3 shrink-0" aria-hidden="true" />
-                  )}
-                  <span className="truncate">{section.title}</span>
-                </button>
-              )}
-              <ul id={sectionId} hidden={!sectionOpen} className="space-y-0.5 px-1.5">
+        {isFiltered
+          ? // Filtered to one section: flat item list, no header, nothing to collapse.
+            visibleSections.map((section) => (
+              <ul key={section.title} className="space-y-0.5 px-1.5">
                 {section.items.map((item) => (
                   <li key={item.href}>
                     <NavLinkItem
@@ -161,9 +258,43 @@ export function PlatformNav() {
                   </li>
                 ))}
               </ul>
-            </div>
-          );
-        })}
+            ))
+          : sections.map((section) => {
+              const sectionOpen = collapsed || expandedSections.has(section.title);
+              const sectionId = `platform-nav-${section.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+              return (
+                <div key={section.title} className="mb-4">
+                  {!collapsed && (
+                    <button
+                      type="button"
+                      aria-expanded={sectionOpen}
+                      aria-controls={sectionId}
+                      onClick={() => toggleSection(section.title)}
+                      className="flex w-full items-center gap-1 px-3.5 pb-1 text-left text-[9.5px] font-semibold uppercase tracking-wider text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                    >
+                      {sectionOpen ? (
+                        <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      ) : (
+                        <ChevronRight className="h-3 w-3 shrink-0" aria-hidden="true" />
+                      )}
+                      <span className="truncate">{section.title}</span>
+                    </button>
+                  )}
+                  <ul id={sectionId} hidden={!sectionOpen} className="space-y-0.5 px-1.5">
+                    {section.items.map((item) => (
+                      <li key={item.href}>
+                        <NavLinkItem
+                          item={item}
+                          active={item.href === active}
+                          collapsed={collapsed}
+                          badgeCount={item.badge === "cc" ? ccCount : 0}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })}
       </nav>
       <div className="border-t border-sidebar-border p-2">
         <Button

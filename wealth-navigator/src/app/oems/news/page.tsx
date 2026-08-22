@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Search, AlertCircle } from "lucide-react";
 
 import { GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
+import { NewsArticleDialog, type NewsArticleDialogItem } from "@/components/oems/primitives/news-article-dialog";
 import { Pill } from "@/components/oems/primitives/pill";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { Input } from "@/components/ui/input";
@@ -172,16 +173,11 @@ export default function NewsPage() {
   // realDataOnly flips (e.g. ?mock=1), which would trip a hydration mismatch.
   const [tab, setTab] = useState<"all" | "sens" | "wire">("all");
   const [q, setQ] = useState("");
-  // Alliance wire items have no external URL (licensed full-text); clicking
-  // them expands the body in-app. RSS items link out instead.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const toggleExpanded = (id: string) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // Clicking any headline opens the shared "full read" popup (matches the
+  // CRM's click-to-read UX) rather than expanding in place or navigating
+  // away immediately — the "Open source" link inside the modal still lets
+  // the operator jump to the original article when one is available.
+  const [active, setActive] = useState<NewsArticleDialogItem | null>(null);
 
   if (!realDataOnly) {
     return (
@@ -359,42 +355,32 @@ export default function NewsPage() {
                       "mt-1 text-[13px] leading-snug",
                       a.severity === "high" || a.severity === "regulatory" ? "font-semibold" : "font-medium",
                     );
-                    if (a.url) {
-                      // RSS / web article → open the source in a new tab.
-                      return (
-                        <a
-                          href={a.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={cn(headlineClass, "block hover:text-primary hover:underline")}
-                        >
-                          {headlineText} <span className="text-[10px] text-muted-foreground">↗</span>
-                        </a>
-                      );
-                    }
-                    if (a.body) {
-                      // Alliance wire (no external URL) → expand the body in-app.
-                      const isOpen = expanded.has(a.id);
-                      return (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => toggleExpanded(a.id)}
-                            className={cn(headlineClass, "block w-full text-left hover:text-primary")}
-                            aria-expanded={isOpen}
-                          >
-                            {headlineText}{" "}
-                            <span className="text-[10px] font-normal text-muted-foreground">{isOpen ? "▲ less" : "▾ read"}</span>
-                          </button>
-                          {isOpen ? (
-                            <p className="mt-1.5 whitespace-pre-line text-[11.5px] leading-relaxed text-muted-foreground">
-                              {decodeIressHeadlineEntities(a.body ?? "")}
-                            </p>
-                          ) : null}
-                        </>
-                      );
-                    }
-                    return <p className={headlineClass}>{headlineText}</p>;
+                    // Every headline opens the shared "full read" popup — it
+                    // shows whatever the source gives us (headline, full
+                    // available body/snippet, source, date) plus an "Open
+                    // source" link when the item carries an external URL.
+                    return (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setActive({
+                            headline: headlineText,
+                            body: a.body ? decodeIressHeadlineEntities(a.body) : a.body,
+                            source: a.source,
+                            ts: a.ts,
+                            publishedAt: a.publishedAt,
+                            url: a.url,
+                            category: a.category,
+                            tickers: a.tickers,
+                            wire: isSens ? "SENS" : "ALLIANCE",
+                            regulatory: isSens || a.severity === "regulatory",
+                          })
+                        }
+                        className={cn(headlineClass, "block w-full text-left hover:text-primary")}
+                      >
+                        {headlineText} <span className="text-[10px] font-normal text-muted-foreground">▾ read</span>
+                      </button>
+                    );
                   })()}
                 </li>
               );
@@ -413,6 +399,8 @@ export default function NewsPage() {
           The wire tape reads the <span className="font-mono">News_articles</span> feed (Alliance News) from the retail DB — live. The <span className="font-mono">SENS</span> tab is the JSE regulatory announcement tape, which needs a separate JSE SENS Web Feed subscription, so it stays empty until that lands.
         </p>
       </div>
+
+      <NewsArticleDialog item={active} open={active != null} onOpenChange={(o) => !o && setActive(null)} />
     </PageCanvas>
   );
 }
