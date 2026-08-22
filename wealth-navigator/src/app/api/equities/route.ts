@@ -285,11 +285,24 @@ async function attachPeriodReturns(
       const slice = batch.slice(i, i + EQUITIES_RETURNS_CONCURRENCY);
       const results = await Promise.all(
         slice.map(async (r) => {
+          // Explicit .JO — every securities_c row IS a JSE listing (see the
+          // module doc comment above), so there's no cross-exchange
+          // ambiguity to resolve here. fetchYahooHistory's underlying
+          // toYahooSymbol() only auto-appends .JO for 3-4 letter codes or a
+          // short hardcoded ETF-root allowlist (it's a shared heuristic built
+          // for genuinely mixed-exchange callers); passing the bare code
+          // here sent long fund codes (27FGMF, 91DINC, AAGEET, FNBWDM, ...)
+          // to Yahoo with NO suffix at all, which 404s — confirmed live via
+          // Vercel logs: 3 successful history fetches followed by dozens of
+          // clean 404s in ~50ms each (not Yahoo rate-limiting, just an
+          // unresolvable bare symbol). Appending .JO explicitly short-
+          // circuits the heuristic (toYahooSymbol keeps any symbol that
+          // already contains a ".") for every row, regardless of length.
           const {
             bars,
             asOf: barAsOf,
             error,
-          } = await fetchYahooHistory(bareCode(r.symbol), {
+          } = await fetchYahooHistory(`${bareCode(r.symbol)}.JO`, {
             range: "1y",
             interval: "1d",
           });

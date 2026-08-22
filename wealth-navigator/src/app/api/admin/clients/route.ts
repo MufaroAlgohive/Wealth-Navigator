@@ -632,6 +632,28 @@ export async function GET(req: Request) {
       ? await db.from("profiles").select("first_name,last_name,email").eq("id", linkedParentId).maybeSingle()
       : { data: null };
 
+    // This user's own children (family_members rows they guard) — powers the
+    // Documents panel's "Certificate · {child name}" links (client-book.tsx)
+    // so an admin viewing the PARENT can see/open a child's birth certificate
+    // without knowing to separately filter the client list to "Children" and
+    // find that child's own row. Was previously never populated at all — the
+    // Documents component read `detail.children` but nothing ever set it.
+    const { data: ownChildren } = await db
+      .from("family_members")
+      .select("id,first_name,last_name,certificate_url,certificate_verification_status,kyc_status,kyc_reviewed_at,mint_number")
+      .or(`primary_user_id.eq.${userId},parent_id.eq.${userId}`)
+      .eq("relationship", "child");
+    const children = await Promise.all(
+      (ownChildren ?? []).map(async (child) => ({
+        family_member_id: String(child.id),
+        first_name: child.first_name ?? null,
+        last_name: child.last_name ?? null,
+        mint_number: child.mint_number ?? null,
+        kyc: deriveChildKyc(child as Record<string, unknown>),
+        certificate_url: await resolveCertificateUrl(db, child.certificate_url),
+      })),
+    );
+
     const secIds = [...new Set((holds ?? []).map((h) => h.security_id).filter(Boolean))];
     const strategyIds = [...new Set((holds ?? []).map((h) => h.strategy_id).filter(Boolean))];
     const secMap: Record<
@@ -742,6 +764,7 @@ export async function GET(req: Request) {
       kyc: deriveKyc(onboarding ?? undefined, required ?? undefined, pack?.pack_details),
       holdings,
       transactions: txns ?? [],
+      children,
       child_family_member_id: linkedChild?.id ?? null,
       child_certificate: linkedChild
         ? {
