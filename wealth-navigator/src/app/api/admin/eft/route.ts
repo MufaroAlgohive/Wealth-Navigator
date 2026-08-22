@@ -177,12 +177,12 @@ async function handleApprove(db: SupabaseClient, transactionId: string): Promise
   // 1. Fetch the pending transaction
   const { data: txn, error: txnErr } = await db
     .from("wallet_transactions")
-    .select("id, user_id, amount, status, metadata")
+    .select("id, user_id, amount, status")
     .eq("id", transactionId)
     .maybeSingle();
   if (txnErr) return NextResponse.json({ ok: false, error: txnErr.message }, { status: 500 });
   if (!txn) return NextResponse.json({ ok: false, error: "Transaction not found." }, { status: 404 });
-  const row = txn as { id: string; user_id: string; amount: number | string | null; status: string | null; metadata: Record<string, unknown> | null };
+  const row = txn as { id: string; user_id: string; amount: number | string | null; status: string | null; };
   if (row.status !== "pending") {
     return NextResponse.json({ ok: false, error: `Transaction is already ${row.status ?? "unknown"} — cannot approve.` }, { status: 409 });
   }
@@ -199,12 +199,6 @@ async function handleApprove(db: SupabaseClient, transactionId: string): Promise
     .from("wallet_transactions")
     .update({
       status: "approved",
-      processed_at: now,
-      metadata: {
-        ...(row.metadata ?? {}),
-        approved_at: now,
-        approved_by: "admin",
-      },
     })
     .eq("id", transactionId);
   if (updErr) return NextResponse.json({ ok: false, error: updErr.message }, { status: 500 });
@@ -290,8 +284,6 @@ async function handleReject(db: SupabaseClient, transactionId: string): Promise<
     .from("wallet_transactions")
     .update({
       status: "rejected",
-      processed_at: now,
-      metadata: { rejected_at: now, rejected_by: "admin" },
     })
     .eq("id", transactionId);
   if (updErr) return NextResponse.json({ ok: false, error: updErr.message }, { status: 500 });
