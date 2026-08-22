@@ -211,11 +211,13 @@ async function handleApprove(db: SupabaseClient, transactionId: string): Promise
 
   // 3. Credit the wallet balance (RANDS)
   let walletNotice: string | null = null;
-  const { data: wallet, error: walletReadErr } = await db
+  const { data: wallets, error: walletReadErr } = await db
     .from("wallets")
     .select("id, balance")
     .eq("user_id", row.user_id)
-    .maybeSingle();
+    .limit(1);
+
+  const wallet = wallets?.[0];
 
   if (walletReadErr) {
     walletNotice = `Wallet read failed: ${walletReadErr.message}`;
@@ -309,14 +311,16 @@ async function handleAddWallet(db: SupabaseClient, body: Record<string, unknown>
   if (isNaN(amount) || amount <= 0) return NextResponse.json({ ok: false, error: "valid amount is required" }, { status: 400 });
 
   // Make sure the wallet exists
-  const { data: existingWallet, error: wErr } = await db
+  const { data: existingWallets, error: wErr } = await db
     .from("wallets")
     .select("id")
     .eq("user_id", userId)
-    .maybeSingle();
+    .limit(1);
 
   if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
   
+  const existingWallet = existingWallets?.[0];
+
   if (!existingWallet) {
     const { error: insErr } = await db
       .from("wallets")
