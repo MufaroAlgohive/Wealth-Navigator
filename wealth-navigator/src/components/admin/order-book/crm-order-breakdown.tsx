@@ -4,6 +4,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { OrderBookMember } from "./execution-view";
 
@@ -25,6 +26,7 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
   const [investorLoading, setInvestorLoading] = React.useState(false);
   const [investorError, setInvestorError] = React.useState<string | null>(null);
   const [sending, setSending] = React.useState<Record<string, boolean>>({});
+  const [sent, setSent] = React.useState<Record<string, boolean>>({});
 
   // key is the investor.id or allocation.id (a UI key, not necessarily a
   // stock_holdings_c.id) so the two tables' loading states never collide.
@@ -65,6 +67,7 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
         toast.success(`Confirmation sent for ${label} — ${clients} client, ${desk} desk.`);
         if (body.email_notice) toast.warning(body.email_notice);
       }
+      setSent((p) => ({ ...p, [key]: true }));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Send Confirmation failed");
     } finally {
@@ -220,6 +223,11 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
                         <td className="py-1.5 pr-3 text-right tabular-nums">{investor.holdings_count}</td>
                         <td className="py-1.5 pr-3 text-right tabular-nums">{money(investor.market_value_rands)}</td>
                         <td className="py-1.5 text-right">
+                          {sent[investor.id] ? (
+                            <Badge variant="success" className="h-6 text-[10px] px-2 py-0.5">
+                              Sent ✓
+                            </Badge>
+                          ) : (
                           <Button
                             variant="outline"
                             size="sm"
@@ -234,6 +242,7 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
                           >
                             {isSending ? "Sending…" : "Send Confirm"}
                           </Button>
+                          )}
                         </td>
                       </tr>
                     )})}
@@ -279,6 +288,11 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
                     <td className="py-1.5 pr-3">{allocation.instruction_type ?? "Market"}</td>
                     <td className="py-1.5 pr-3">{allocation.settlement_ref ?? "—"}</td>
                     <td className="py-1.5 text-right">
+                      {sent[allocation.id] ? (
+                        <Badge variant="success" className="h-6 text-[10px] px-2 py-0.5">
+                          Sent ✓
+                        </Badge>
+                      ) : (
                       <Button
                         variant="outline"
                         size="sm"
@@ -299,6 +313,7 @@ export function CrmOrderBreakdown({ member, bookId }: { member: OrderBookMember;
                       >
                         {isSending ? "Sending…" : "Send Confirm"}
                       </Button>
+                      )}
                     </td>
                   </tr>
                 );})}

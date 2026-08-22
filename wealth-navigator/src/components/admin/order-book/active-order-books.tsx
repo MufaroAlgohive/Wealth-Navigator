@@ -67,6 +67,7 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
     });
 
   const [sending, setSending] = React.useState<Record<string, boolean>>({});
+  const [sent, setSent] = React.useState<Record<string, boolean>>({});
   const sendConfirmation = async (member: OrderBookMember, book: OrderBookSummary) => {
     const key = member.id;
     setSending((p) => ({ ...p, [key]: true }));
@@ -112,6 +113,7 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
         );
         if (body.email_notice) toast.warning(body.email_notice);
       }
+      setSent((p) => ({ ...p, [key]: true }));
       await refresh?.();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Send Confirmation failed");
@@ -280,6 +282,11 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                               <td className="py-1.5 pr-3 text-muted-foreground">{fmtReleasedAt(m.filled_at ?? "")}</td>
                               <td className="py-1.5 pr-3 text-right">
                                 {m.status === "filled" ? (
+                                  (m.confirmation_sent_at || sent[m.id]) ? (
+                                    <Badge variant="success" className="text-[10px] px-2 py-0.5">
+                                      Sent ✓
+                                    </Badge>
+                                  ) : (
                                   <Button
                                     variant="outline"
                                     size="sm"
@@ -290,6 +297,7 @@ export function ActiveOrderBooks({ sources }: { sources?: string[] } = {}) {
                                   >
                                     {sending[m.id] ? "Sending…" : "Send Confirm"}
                                   </Button>
+                                  )
                                 ) : (
                                   <span className="text-[10px] text-muted-foreground">—</span>
                                 )}
