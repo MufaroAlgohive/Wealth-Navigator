@@ -17,8 +17,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
-const DEFER = "Wallet credit / deposit approval / notice email is deferred — it mutates live client balances (data/backend phase).";
-
 async function gate(): Promise<{ db: SupabaseClient | null; member: boolean; err: NextResponse | null }> {
   const auth = await getAdminContext();
   if (auth.status === "no-session") return { db: null, member: false, err: NextResponse.json({ ok: false, error: "no-session" }, { status: 401 }) };
@@ -145,8 +143,200 @@ export async function GET(req: Request) {
   return NextResponse.json({ ok: false, error: `Unknown action: ${action}` }, { status: 400 });
 }
 
-export async function POST() {
-  // add-wallet / approve-deposit / reject-deposit / send-notice — all mutate
-  // live client balances and/or send email → deferred to the data/backend phase.
-  return NextResponse.json({ ok: false, error: DEFER, deferred: true }, { status: 501 });
+export async function POST(req: Request) {
+  const g = await gate();
+  if (g.err) return g.err;
+  const { db } = g;
+  if (!db) return NextResponse.json({ ok: false, error: "RETAIL database not configured." }, { status: 503 });
+
+  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const url = new URL(req.url);
+  // The EFT page sends the action as a query param: POST /api/admin/eft?action=approved-deposit
+  const action = (typeof body.action === "string" ? body.action : url.searchParams.get("action") ?? "").trim();
+  if (action === "add-wallet") {
+    return handleAddWallet(db, body);
+  }
+
+  const transactionId = typeof body.transaction_id === "string" ? body.transaction_id.trim() : "";
+
+  if (!transactionId) {
+    return NextResponse.json({ ok: false, error: "transaction_id is required" }, { status: 400 });
+  }
+
+  if (action === "approved-deposit" || action === "approve-deposit") {
+    return handleApprove(db, transactionId);
+  }
+  if (action === "rejected-deposit" || action === "reject-deposit") {
+    return handleReject(db, transactionId);
+  }
+
+  return NextResponse.json({ ok: false, error: `Unknown POST action: ${action}` }, { status: 400 });
+}
+
+async function handleApprove(db: SupabaseClient, transactionId: string): Promise<NextResponse> {
+  // 1. Fetch the pending transaction
+  const { data: txn, error: txnErr } = await db
+    .from("wallet_transactions")
+    .select("id, user_id, amount, status, metadata")
+    .eq("id", transactionId)
+    .maybeSingle();
+  if (txnErr) return NextResponse.json({ ok: false, error: txnErr.message }, { status: 500 });
+  if (!txn) return NextResponse.json({ ok: false, error: "Transaction not found." }, { status: 404 });
+  const row = txn as { id: string; user_id: string; amount: number | string | null; status: string | null; metadata: Record<string, unknown> | null };
+  if (row.status !== "pending") {
+    return NextResponse.json({ ok: false, error: `Transaction is already ${row.status ?? "unknown"} — cannot approve.` }, { status: 409 });
+  }
+
+  const amountRands = Number(row.amount) || 0;
+  if (amountRands <= 0) {
+    return NextResponse.json({ ok: false, error: "Transaction has no positive amount." }, { status: 400 });
+  }
+
+  const now = new Date().toISOString();
+
+  // 2. Update wallet_transactions status → approved
+  const { error: updErr } = await db
+    .from("wallet_transactions")
+    .update({
+      status: "approved",
+      processed_at: now,
+      metadata: {
+        ...(row.metadata ?? {}),
+        approved_at: now,
+        approved_by: "admin",
+      },
+    })
+    .eq("id", transactionId);
+  if (updErr) return NextResponse.json({ ok: false, error: updErr.message }, { status: 500 });
+
+  // 3. Credit the wallet balance (RANDS)
+  let walletNotice: string | null = null;
+  const { data: wallet, error: walletReadErr } = await db
+    .from("wallets")
+    .select("id, balance")
+    .eq("user_id", row.user_id)
+    .maybeSingle();
+
+  if (walletReadErr) {
+    walletNotice = `Wallet read failed: ${walletReadErr.message}`;
+  } else if (!wallet) {
+    walletNotice = "No wallet row found for this user — balance not credited.";
+  } else {
+    const currentBalance = Number(wallet.balance) || 0;
+    const newBalance = currentBalance + amountRands;
+    const { error: walletUpdErr } = await db
+      .from("wallets")
+      .update({ balance: newBalance, updated_at: now })
+      .eq("id", wallet.id);
+    if (walletUpdErr) {
+      walletNotice = `Wallet credit failed: ${walletUpdErr.message}`;
+    }
+  }
+
+  // 4. Send "Wallet Funded" email
+  let emailStatus: "sent" | "skipped" | "failed" = "skipped";
+  try {
+    const { buildWalletFundedHtml, sendEmail } = await import("@/lib/admin/email");
+    const { data: profile } = await db
+      .from("profiles")
+      .select("email, first_name")
+      .eq("id", row.user_id)
+      .maybeSingle();
+    const prof = profile as { email: string | null; first_name: string | null } | null;
+    if (prof?.email) {
+      await sendEmail({
+        to: prof.email,
+        subject: "Your MINT wallet has been funded",
+        html: buildWalletFundedHtml({ firstName: prof.first_name ?? undefined, amount: amountRands }),
+        emailType: "wallet_funded",
+        source: "eft_approve",
+        metadata: { transaction_id: transactionId, amount_rands: amountRands, user_id: row.user_id },
+      });
+      emailStatus = "sent";
+    }
+  } catch (e) {
+    emailStatus = "failed";
+    // eslint-disable-next-line no-console
+    console.warn("[eft/approve] email send failed (non-fatal):", e instanceof Error ? e.message : e);
+  }
+
+  return NextResponse.json({
+    ok: true,
+    transaction_id: transactionId,
+    status: "approved",
+    amount_rands: amountRands,
+    wallet_notice: walletNotice,
+    email_status: emailStatus,
+  });
+}
+
+async function handleReject(db: SupabaseClient, transactionId: string): Promise<NextResponse> {
+  const { data: txn, error: txnErr } = await db
+    .from("wallet_transactions")
+    .select("id, status")
+    .eq("id", transactionId)
+    .maybeSingle();
+  if (txnErr) return NextResponse.json({ ok: false, error: txnErr.message }, { status: 500 });
+  if (!txn) return NextResponse.json({ ok: false, error: "Transaction not found." }, { status: 404 });
+  const row = txn as { id: string; status: string | null };
+  if (row.status !== "pending") {
+    return NextResponse.json({ ok: false, error: `Transaction is already ${row.status ?? "unknown"} — cannot reject.` }, { status: 409 });
+  }
+
+  const now = new Date().toISOString();
+  const { error: updErr } = await db
+    .from("wallet_transactions")
+    .update({
+      status: "rejected",
+      processed_at: now,
+      metadata: { rejected_at: now, rejected_by: "admin" },
+    })
+    .eq("id", transactionId);
+  if (updErr) return NextResponse.json({ ok: false, error: updErr.message }, { status: 500 });
+
+  return NextResponse.json({
+    ok: true,
+    transaction_id: transactionId,
+    status: "rejected",
+  });
+}
+
+async function handleAddWallet(db: SupabaseClient, body: Record<string, unknown>): Promise<NextResponse> {
+  const userId = typeof body.user_id === "string" ? body.user_id.trim() : "";
+  const amount = typeof body.amount === "number" ? body.amount : parseFloat(String(body.amount));
+  
+  if (!userId) return NextResponse.json({ ok: false, error: "user_id is required" }, { status: 400 });
+  if (isNaN(amount) || amount <= 0) return NextResponse.json({ ok: false, error: "valid amount is required" }, { status: 400 });
+
+  // Make sure the wallet exists
+  const { data: existingWallet, error: wErr } = await db
+    .from("wallets")
+    .select("id")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
+  
+  if (!existingWallet) {
+    const { error: insErr } = await db
+      .from("wallets")
+      .insert({ user_id: userId, balance: 0 });
+    if (insErr) return NextResponse.json({ ok: false, error: `Failed to create wallet: ${insErr.message}` }, { status: 500 });
+  }
+
+  // Insert a pending manual transaction
+  const storeReference = `EFT-MANUAL-${Date.now()}`;
+  const { error: tErr } = await db
+    .from("wallet_transactions")
+    .insert({
+      user_id: userId,
+      amount,
+      transaction_type: "manual",
+      status: "pending",
+      store_reference: storeReference,
+    });
+    
+  if (tErr) return NextResponse.json({ ok: false, error: `Failed to create pending deposit: ${tErr.message}` }, { status: 500 });
+
+  return NextResponse.json({ ok: true, message: "Added pending deposit for approval." });
 }

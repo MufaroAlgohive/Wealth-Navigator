@@ -58,6 +58,10 @@ export interface BookMember {
   last_action: string | null;
   filled_at: string | null;
   iress_error: string | null;
+  /** ISO timestamp when a trade-confirmation email was sent for this member.
+   *  OEM: stamped in oems_order_audit.result_payload.confirmation_sent_at.
+   *  CRM: stamped in the snapshot row's confirmationSentAt field. */
+  confirmation_sent_at: string | null;
   crm_details?: {
     is_strategy: boolean;
     strategy_name: string | null;
@@ -148,6 +152,7 @@ export function toMember(r: MemberAuditRow): BookMember {
     last_action: str(p.lastAction) ?? str(rp.lastAction),
     filled_at: str(p.lastFillAt) ?? str(rp.lastActionAt) ?? r.updated_at,
     iress_error: errNo != null || errDesc ? `${errNo ?? "?"}: ${errDesc ?? "no detail"}` : null,
+    confirmation_sent_at: str(rp.confirmation_sent_at),
   };
 }
 
@@ -229,6 +234,7 @@ function crmMember(row: Record<string, unknown>, index: number, bookId: string):
     last_action: str(row.notificationStatus),
     filled_at: str(row.fillDate) ?? null,
     iress_error: null,
+    confirmation_sent_at: str(row.confirmationSentAt),
     crm_details: {
       is_strategy: isStrategy,
       strategy_name: str(row.strategyName) ?? (isStrategy ? str(row.instrumentName) : null),

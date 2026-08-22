@@ -563,6 +563,9 @@ export interface OrderBookMember {
   last_action: string | null;
   filled_at: string | null;
   iress_error: string | null;
+  /** ISO timestamp when a trade-confirmation email was sent for this member.
+   *  null = no confirmation sent yet. */
+  confirmation_sent_at?: string | null;
   crm_details?: {
     is_strategy: boolean;
     strategy_name: string | null;
