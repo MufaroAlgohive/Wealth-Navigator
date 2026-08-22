@@ -13,8 +13,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, FlaskConical, RefreshCw, ShieldCheck, X } from "lucide-react";
 import * as React from "react";
 
+import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { GlassKpi, GlassSection, ResearchLabCanvas } from "@/components/oems/primitives/glass";
 import { cn } from "@/lib/cn";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
+import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
+import { pickPrimaryWorker, useWorkerHealth } from "@/lib/hooks/use-worker-health";
+import { deriveDbFresh, isWorkerAlive, resolveActiveDataSource } from "@/lib/market-prices/active-source";
 
 type Bucket = "approved" | "validated" | "watch" | "breach" | "no-data";
 
@@ -45,7 +50,9 @@ interface Resp {
 }
 
 const R = (cents: number | null | undefined) =>
-  cents == null ? "—" : `R${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  cents == null
+    ? "—"
+    : `R${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const BUCKET_STYLE: Record<Bucket, string> = {
   approved: "border-[hsl(var(--up)/0.5)] bg-[hsl(var(--up)/0.14)] text-[hsl(var(--up))]",
@@ -56,7 +63,28 @@ const BUCKET_STYLE: Record<Bucket, string> = {
 };
 
 export function IressMigrationClient() {
+  const realDataOnly = isRealDataOnlyClient();
   const qc = useQueryClient();
+  const workerQ = useWorkerHealth(realDataOnly);
+  const liveQuotes = useLiveQuotes(["NPN", "PRX", "FSR"], realDataOnly);
+  const primaryWorker = pickPrimaryWorker(workerQ.data?.workers);
+  const latestTickTs = (liveQuotes.data?.rows ?? []).reduce((max: number, row) => {
+    const ts = (row as { ts?: number }).ts;
+    return typeof ts === "number" && ts > max ? ts : max;
+  }, 0 as number);
+  const activeSource = resolveActiveDataSource({
+    iressMode: primaryWorker?.iress_mode ?? null,
+    workerAlive: isWorkerAlive(primaryWorker?.last_heartbeat_at ?? null),
+    lastQuoteSyncAt: primaryWorker?.last_quote_sync_at ?? null,
+    fallbackCount: (liveQuotes.data as { fallbackCount?: number } | undefined)?.fallbackCount ?? 0,
+    dbFresh: deriveDbFresh(latestTickTs ? new Date(latestTickTs).toISOString() : null),
+    iressEvents: (primaryWorker?.recent_events ?? []) as Array<{
+      ts: string;
+      service?: string | null;
+      level?: string | null;
+    }>,
+  });
+
   const q = useQuery<Resp>({
     queryKey: ["iress-validation"],
     refetchInterval: 60_000,
@@ -89,19 +117,28 @@ export function IressMigrationClient() {
         <div className="space-y-1">
           <h1 className="text-xl font-semibold tracking-tight">Yahoo → IRESS migration</h1>
           <p className="text-caption">
-            Per-symbol cutover. A symbol only leaves Yahoo once the backend has <b>validated</b> it
-            (stable in-tolerance streak) and you <b>approve</b> it. Nothing overwrites Yahoo before that.
+            Per-symbol cutover. A symbol only leaves Yahoo once the backend has <b>validated</b> it (stable
+            in-tolerance streak) and you <b>approve</b> it. Nothing overwrites Yahoo before that.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => sample.mutate()}
-          disabled={sample.isPending}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
-        >
-          <RefreshCw className={cn("h-3.5 w-3.5", sample.isPending && "animate-spin")} />
-          {sample.isPending ? "Sampling…" : "Run sample now"}
-        </button>
+        <div className="flex items-center gap-2">
+          <span
+            title={activeSource.reason}
+            aria-label={activeSource.reason}
+            className="inline-flex items-center"
+          >
+            <DataSourceBadge source={activeSource.kind} db="retail" />
+          </span>
+          <button
+            type="button"
+            onClick={() => sample.mutate()}
+            disabled={sample.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--glass-border))] px-3 py-1.5 text-xs hover:bg-[hsl(var(--foreground)/0.05)] disabled:opacity-50"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", sample.isPending && "animate-spin")} />
+            {sample.isPending ? "Sampling…" : "Run sample now"}
+          </button>
+        </div>
       </header>
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -128,8 +165,8 @@ export function IressMigrationClient() {
           <p className="px-5 py-4 text-caption">{q.data.notice}</p>
         ) : rows.length === 0 ? (
           <p className="px-5 py-4 text-caption">
-            No samples yet. The validation cron runs on a schedule, or hit “Run sample now”. During UAT
-            (2nd seat off) IRESS returns test prices, so expect large divergence until the PROD seat is live.
+            No samples yet. The validation cron runs on a schedule, or hit “Run sample now”. During UAT (2nd
+            seat off) IRESS returns test prices, so expect large divergence until the PROD seat is live.
           </p>
         ) : (
           <div className="overflow-x-auto">
@@ -150,11 +187,17 @@ export function IressMigrationClient() {
                   <tr key={r.symbol} className="border-b border-[hsl(var(--glass-border))] last:border-0">
                     <td className="px-5 py-2 font-semibold text-primary">{r.symbol}</td>
                     <td className="px-3 py-2 text-right font-mono tabular-nums">{R(r.last_iress_cents)}</td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">{R(r.last_yahoo_cents)}</td>
+                    <td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+                      {R(r.last_yahoo_cents)}
+                    </td>
                     <td
                       className={cn(
                         "px-3 py-2 text-right font-mono tabular-nums",
-                        r.last_severity === "breach" ? "text-down" : r.last_severity === "watch" ? "text-amber-600 dark:text-amber-400" : "text-up",
+                        r.last_severity === "breach"
+                          ? "text-down"
+                          : r.last_severity === "watch"
+                            ? "text-amber-600 dark:text-amber-400"
+                            : "text-up",
                       )}
                     >
                       {r.last_divergence_pct == null ? "—" : `${r.last_divergence_pct.toFixed(2)}%`}
@@ -163,9 +206,16 @@ export function IressMigrationClient() {
                       {r.consecutive_ok}/{minStreak}
                     </td>
                     <td className="px-3 py-2">
-                      <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase", BUCKET_STYLE[r.bucket])}>
+                      <span
+                        className={cn(
+                          "inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase",
+                          BUCKET_STYLE[r.bucket],
+                        )}
+                      >
                         {r.bucket === "approved" ? (
-                          <span className="inline-flex items-center gap-1"><FlaskConical className="h-3 w-3" /> live iress</span>
+                          <span className="inline-flex items-center gap-1">
+                            <FlaskConical className="h-3 w-3" /> live iress
+                          </span>
                         ) : (
                           r.bucket
                         )}
@@ -185,7 +235,11 @@ export function IressMigrationClient() {
                         <button
                           type="button"
                           disabled={approve.isPending || !r.validated}
-                          title={r.validated ? "Approve this symbol for IRESS" : "Not validated yet — needs a stable in-tolerance streak"}
+                          title={
+                            r.validated
+                              ? "Approve this symbol for IRESS"
+                              : "Not validated yet — needs a stable in-tolerance streak"
+                          }
                           onClick={() => approve.mutate({ symbol: r.symbol, approved: true })}
                           className="inline-flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground disabled:opacity-40"
                         >

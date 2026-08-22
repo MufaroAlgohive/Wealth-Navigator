@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
-import { buildCanonicalYtdSeries } from "@/lib/returns/canonical-index";
-import { createRetailServiceRoleClient } from "@/lib/supabase/server";
-import { strategyCashAssetFromCanonicalReturns } from "@/lib/strategy-cash-asset";
 import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
+import { resolveSecurityPrices } from "@/lib/market-prices/fallback";
+import { buildCanonicalYtdSeries } from "@/lib/returns/canonical-index";
+import { strategyCashAssetFromCanonicalReturns } from "@/lib/strategy-cash-asset";
+import { createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
  * Factsheets (read-only). Gallery + single-strategy detail over strategies_c,
@@ -43,7 +44,21 @@ interface ReturnRow {
 }
 
 type CertifiedOverlay = Partial<
-  Pick<ReturnRow, "ytd_pct" | "all_pct" | "1d_pct" | "5d_pct" | "1m_pct" | "mtd_pct" | "6m_pct" | "basket_value" | "complete_value_cents" | "continuity_cash_cents" | "securities_value_cents" | "source_kind">
+  Pick<
+    ReturnRow,
+    | "ytd_pct"
+    | "all_pct"
+    | "1d_pct"
+    | "5d_pct"
+    | "1m_pct"
+    | "mtd_pct"
+    | "6m_pct"
+    | "basket_value"
+    | "complete_value_cents"
+    | "continuity_cash_cents"
+    | "securities_value_cents"
+    | "source_kind"
+  >
 >;
 
 /**
@@ -61,7 +76,9 @@ async function loadCertifiedOverlay(
   if (!strategyIds.length) return map;
   const { data } = await db
     .from("strategy_canonical_daily_ledger_c")
-    .select("strategy_id,as_of_date,period_metrics,complete_value_cents,continuity_cash_cents,securities_value_cents")
+    .select(
+      "strategy_id,as_of_date,period_metrics,complete_value_cents,continuity_cash_cents,securities_value_cents",
+    )
     .eq("certification_status", "CERTIFIED")
     .in("strategy_id", strategyIds);
   for (const r of (data ?? []) as Array<{
@@ -126,7 +143,10 @@ function applyCertifiedOverlay(
     certifiedDates.add(key);
   }
   const merged = rows
-    .filter((r) => !certifiedStrategyIds.has(r.strategy_id) || certifiedDates.has(`${r.strategy_id}|${r.as_of_date}`))
+    .filter(
+      (r) =>
+        !certifiedStrategyIds.has(r.strategy_id) || certifiedDates.has(`${r.strategy_id}|${r.as_of_date}`),
+    )
     .map((r) => {
       const cert = overlay.get(`${r.strategy_id}|${r.as_of_date}`);
       if (!cert) return r;
@@ -200,10 +220,33 @@ export async function GET(req: Request) {
     }
     const out: Record<string, unknown> = {};
     if (symbols.size) {
-      const { data } = await db!
+      // price_source is an OPTIONAL provenance column (additive migration
+      // supabase/retail/20260614_add_price_source.sql) — only select it once
+      // the worker's own gate (RETAIL_PRICE_SOURCE_COL=1) confirms both
+      // writers are stamping it, so an unmigrated securities_c never errors
+      // on an unknown column. resolveSecurityPrices() falls back to plain
+      // recency when the field is absent (see isIressConfirmedFresh).
+      const priceSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
+      const { data: rawSecurities } = await db!
         .from("securities_c")
-        .select("id, symbol, name, logo_url, last_price, change_percent")
+        .select(
+          `id, symbol, name, logo_url, last_price, change_percent, updated_at${priceSourceCol ? ", price_source" : ""}`,
+        )
         .in("symbol", [...symbols]);
+      // Cast via unknown: the dynamic select() string (price_source is
+      // optional) defeats supabase-js's compile-time column parser, so
+      // `rawSecurities` is inferred as ParserError[] (same pattern as
+      // workers/iress-ingest/src/retail-ingest.ts's loadRetailUniverse).
+      const data = rawSecurities as unknown as Array<{
+        id: string;
+        symbol: string;
+        name?: string | null;
+        logo_url?: string | null;
+        last_price?: number | null;
+        change_percent?: number | null;
+        updated_at?: string | null;
+        price_source?: "iress" | "yahoo" | null;
+      }> | null;
       const securityIds = (data ?? []).map((row) => row.id).filter(Boolean);
       const { data: intraday } = securityIds.length
         ? await db!
@@ -218,25 +261,22 @@ export async function GET(req: Request) {
         const securityId = String(row.security_id || "");
         if (securityId && !latestIntraday.has(securityId)) latestIntraday.set(securityId, row);
       }
-      for (const sec of data ?? []) {
-        const live = latestIntraday.get(String(sec.id));
-        const priceCents =
-          live?.current_price != null ? Number(live.current_price) : Number(sec.last_price || 0);
-        out[sec.symbol as string] = {
-          symbol: sec.symbol,
-          name: sec.name,
-          logo_url: sec.logo_url,
-          price_rands: priceCents > 0 ? priceCents / 100 : null,
-          day_pct:
-            live?.["1d_pct"] != null
-              ? Number(live["1d_pct"])
-              : sec.change_percent == null
-                ? null
-                : Number(sec.change_percent),
-          price_as_of: live?.timestamp ?? null,
-          price_source: live ? "stock_intraday_c" : "securities_c",
-        };
-      }
+      // IRESS→Yahoo fallback: anything with a missing/stale DB price (worker
+      // offline, `IRESS_STALE_FALLBACK_HOURS` elapsed) is resolved live from
+      // Yahoo in-memory — cents-safe via yahooPriceToCents (JSE ZAc stored
+      // verbatim), never written back. Holdings with no securities_c row at
+      // all (symbol-form mismatch or never-enriched) are Yahoo-filled too.
+      const found = new Set((data ?? []).map((row) => String(row.symbol).toUpperCase()));
+      const missing = [...symbols].filter((symbol) => !found.has(String(symbol).toUpperCase()));
+      const resolved = await resolveSecurityPrices({
+        rows: data ?? [],
+        intradayBySecurityId: latestIntraday as unknown as Map<
+          string,
+          { current_price?: number | null; "1d_pct"?: number | null; timestamp?: string | null }
+        >,
+        missingSymbols: missing,
+      });
+      for (const entry of resolved) out[entry.symbol] = entry;
     }
     return out;
   };
@@ -259,7 +299,8 @@ export async function GET(req: Request) {
     const id = url.searchParams.get("id") || "";
     if (!id) return NextResponse.json({ ok: false, error: "id required" }, { status: 400 });
     const { data: strategy } = await db.from("strategies_c").select("*").eq("id", id).maybeSingle();
-    if (!strategy || liveScope.excludedStrategyIds.has(id)) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
+    if (!strategy || liveScope.excludedStrategyIds.has(id))
+      return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
     const { data: recentReturns } = await db
       .from("strategy_returns_effective_c")
       .select(
@@ -272,7 +313,11 @@ export async function GET(req: Request) {
       .order("as_of_date", { ascending: false })
       .limit(800);
     const certifiedOverlay = await loadCertifiedOverlay(db, [id]);
-    const returns = applyCertifiedOverlay([...(recentReturns ?? [])].reverse() as ReturnRow[], certifiedOverlay, "asc");
+    const returns = applyCertifiedOverlay(
+      [...(recentReturns ?? [])].reverse() as ReturnRow[],
+      certifiedOverlay,
+      "asc",
+    );
     const securities = await securitiesFor([strategy]);
     const testIds = await testUserIds();
     const { data: clientRows } = await db
@@ -364,7 +409,9 @@ export async function GET(req: Request) {
         investors: {},
         notice: error.message,
       });
-    const rows = (strategies ?? []).filter((strategy) => !liveScope.excludedStrategyIds.has(String(strategy.id)));
+    const rows = (strategies ?? []).filter(
+      (strategy) => !liveScope.excludedStrategyIds.has(String(strategy.id)),
+    );
 
     // Recent returns series grouped by strategy (newest-first fetch → ascending series).
     const { data: ret } = await db
@@ -374,7 +421,10 @@ export async function GET(req: Request) {
       )
       .order("as_of_date", { ascending: false })
       .limit(4000);
-    const certifiedOverlay = await loadCertifiedOverlay(db, rows.map((s) => String(s.id)));
+    const certifiedOverlay = await loadCertifiedOverlay(
+      db,
+      rows.map((s) => String(s.id)),
+    );
     const overlaidRet = applyCertifiedOverlay((ret ?? []) as ReturnRow[], certifiedOverlay, "desc");
     const groupedReturns: Record<string, ReturnRow[]> = {};
     for (const r of overlaidRet) {

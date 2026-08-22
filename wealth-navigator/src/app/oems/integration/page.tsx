@@ -1,37 +1,34 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, AlertTriangle, XCircle, Loader2, Cable, Server, Activity, Globe2 } from "lucide-react";
+import { Activity, AlertTriangle, Cable, CheckCircle2, Globe2, Loader2, Server, XCircle } from "lucide-react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-import {
-  GlassBadge,
-  GlassSection,
-  PageCanvas,
-} from "@/components/oems/primitives/glass";
-import { Pill } from "@/components/oems/primitives/pill";
+import type { WorkerEvent } from "@/app/api/worker-health/route";
+import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
+import { LiveDataFlowPanel } from "@/components/oems/integration/live-data-flow-panel";
+import { GlassBadge, GlassSection, PageCanvas } from "@/components/oems/primitives/glass";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
+import { Pill } from "@/components/oems/primitives/pill";
+import { cn } from "@/lib/cn";
+import { isRealDataOnlyClient } from "@/lib/data-policy";
+import { formatTime } from "@/lib/format";
+import { pickPrimaryWorker, useWorkerHealth } from "@/lib/hooks/use-worker-health";
 import { iressConfig } from "@/lib/iress";
 import { useIress } from "@/lib/iress/provider";
-import { useWorkerHealth, pickPrimaryWorker } from "@/lib/hooks/use-worker-health";
-import { isRealDataOnlyClient } from "@/lib/data-policy";
-import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
-import { formatTime } from "@/lib/format";
-import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
-import type { WorkerEvent } from "@/app/api/worker-health/route";
 
 const STATUS_ICON = {
-  ok:      CheckCircle2,
-  lag:     Loader2,
-  warn:    AlertTriangle,
-  error:   XCircle,
+  ok: CheckCircle2,
+  lag: Loader2,
+  warn: AlertTriangle,
+  error: XCircle,
 };
 
 const STATUS_TONE = {
-  ok:    "success",
-  lag:   "warning",
-  warn:  "warning",
+  ok: "success",
+  lag: "warning",
+  warn: "warning",
   error: "destructive",
 } as const;
 
@@ -101,9 +98,7 @@ function IntegrationKpi({
 
 function GlassScrollBody({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={cn("min-h-0 flex-1 overflow-y-auto scrollbar-thin px-5 pb-5", className)}>
-      {children}
-    </div>
+    <div className={cn("min-h-0 flex-1 overflow-y-auto scrollbar-thin px-5 pb-5", className)}>{children}</div>
   );
 }
 
@@ -142,9 +137,8 @@ export default function IntegrationPage() {
   const workerAlive = primaryWorker
     ? Date.now() - new Date(primaryWorker.last_heartbeat_at).getTime() < 60_000
     : false;
-  const effectiveMode = workerAlive && primaryWorker?.iress_mode
-    ? primaryWorker.iress_mode
-    : iressConfig.mode;
+  const effectiveMode =
+    workerAlive && primaryWorker?.iress_mode ? primaryWorker.iress_mode : iressConfig.mode;
   const ghostRowsHidden = workerQ.data?.ghostRowsHidden ?? 0;
 
   return (
@@ -166,12 +160,15 @@ export default function IntegrationPage() {
       {ghostRowsHidden > 0 ? (
         <div className="glass-inset flex items-center justify-between border-warning/30 bg-warning/5 px-3 py-2 text-[11px] text-warning">
           <span>
-            <strong>{ghostRowsHidden}</strong> stale data records hidden by the
-            stale data filter. Contact your administrator to clear stale records.
+            <strong>{ghostRowsHidden}</strong> stale data records hidden by the stale data filter. Contact
+            your administrator to clear stale records.
           </span>
         </div>
       ) : null}
 
+      {/* Reduced top KPI strip: only the two actionable KPIs (Adapter mode +
+          Worker status). Endpoint groups + Region moved into a small footer
+          chip below — static info that doesn't need the prime real-estate. */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <IntegrationKpi
           icon={<Cable className="h-3.5 w-3.5" />}
@@ -181,50 +178,61 @@ export default function IntegrationPage() {
           accent={effectiveMode === "live" ? "positive" : "default"}
         />
         <IntegrationKpi
-          icon={<Server className="h-3.5 w-3.5" />}
-          label="Endpoint groups"
-          value={`${iressConfig.methods.length} groups`}
-          sub="IRESSSession + ServiceSession scoped"
-        />
-        <IntegrationKpi
           icon={<Activity className="h-3.5 w-3.5" />}
-          label={realDataOnly ? "Worker status" : "Healthy / Total"}
-          value={
-            realDataOnly
-              ? (primaryWorker?.status?.toUpperCase() ?? "—")
-              : `${endpoints.filter((e) => e.status === "ok").length} / ${endpoints.length}`
-          }
+          label="Worker status"
+          value={primaryWorker?.status?.toUpperCase() ?? "—"}
           sub={
-            realDataOnly
-              ? primaryWorker
-                ? `Last heartbeat ${formatTime(new Date(primaryWorker.last_heartbeat_at).getTime())}`
-                : "No heartbeat row yet"
-              : undefined
+            primaryWorker
+              ? `Last heartbeat ${formatTime(new Date(primaryWorker.last_heartbeat_at).getTime())}`
+              : "No heartbeat row yet"
           }
           accent={
-            realDataOnly
-              ? primaryWorker?.status === "healthy"
-                ? "positive"
-                : primaryWorker
-                  ? "warning"
-                  : "default"
-              : endpoints.some((e) => e.status === "error")
-                ? "negative"
-                : "positive"
+            primaryWorker?.status === "healthy"
+              ? "positive"
+              : primaryWorker
+                ? "warning"
+                : "default"
           }
         />
-        <IntegrationKpi
-          icon={<Globe2 className="h-3.5 w-3.5" />}
-          label="Region"
-          value={iressConfig.region}
-          sub="ZA production"
-        />
+        <div className="hidden lg:flex glass-kpi group relative items-center">
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 w-5 items-center justify-center rounded-lg bg-muted/30 text-muted-foreground">
+              <Cable className="h-3.5 w-3.5" />
+            </span>
+            <p className="text-caption">Endpoint groups</p>
+          </div>
+          <p className="text-metric mt-1.5">{iressConfig.methods.length}</p>
+          <p className="mt-1 font-mono text-xs tabular-nums text-muted-foreground/80">
+            IRESSSession · ServiceSession scoped
+          </p>
+        </div>
+        <div className="hidden lg:flex glass-kpi group relative items-center">
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 w-5 items-center justify-center rounded-lg bg-muted/30 text-muted-foreground">
+              <Globe2 className="h-3.5 w-3.5" />
+            </span>
+            <p className="text-caption">Region</p>
+          </div>
+          <p className="text-metric mt-1.5">{iressConfig.region}</p>
+          <p className="mt-1 font-mono text-xs tabular-nums text-muted-foreground/80">
+            ZA production
+          </p>
+        </div>
       </div>
+
+      {/* Live Data Flow — the new headline panel: animated pipeline + live
+          counter tiles + rolling worker-events ticker. Replaces the static
+          info-card pattern that was on top. */}
+      <LiveDataFlowPanel />
 
       <div className="grid grid-cols-12 gap-3">
         {realDataOnly ? (
           workerQ.isLoading ? (
-            <PanelSkeleton rows={4} height="h-[420px]" className="col-span-12 glass-panel rounded-2xl lg:col-span-8" />
+            <PanelSkeleton
+              rows={4}
+              height="h-[420px]"
+              className="col-span-12 glass-panel rounded-2xl lg:col-span-8"
+            />
           ) : (
             <GlassSection
               title="Worker health"
@@ -269,7 +277,9 @@ export default function IntegrationPage() {
                               </td>
                               <td className="px-2.5 py-1.5 text-muted-foreground">{w.iress_mode ?? "—"}</td>
                               <td className="px-2.5 py-1.5 text-muted-foreground">
-                                {w.last_quote_sync_at ? formatTime(new Date(w.last_quote_sync_at).getTime()) : "—"}
+                                {w.last_quote_sync_at
+                                  ? formatTime(new Date(w.last_quote_sync_at).getTime())
+                                  : "—"}
                               </td>
                               <td className="px-2.5 py-1.5 text-muted-foreground">
                                 {formatTime(new Date(w.last_heartbeat_at).getTime())}
@@ -300,7 +310,11 @@ export default function IntegrationPage() {
             </GlassSection>
           )
         ) : healthQ.isLoading ? (
-          <PanelSkeleton rows={8} height="h-[420px]" className="col-span-12 glass-panel rounded-2xl lg:col-span-8" />
+          <PanelSkeleton
+            rows={8}
+            height="h-[420px]"
+            className="col-span-12 glass-panel rounded-2xl lg:col-span-8"
+          />
         ) : (
           <GlassSection
             title="Worker health"
@@ -336,7 +350,14 @@ export default function IntegrationPage() {
                           <td className="px-2.5 py-1.5 text-right tabular-nums">{e.p50}ms</td>
                           <td className="px-2.5 py-1.5 text-right tabular-nums">{e.p95}ms</td>
                           <td className="px-2.5 py-1.5 text-right tabular-nums">{e.rps}/s</td>
-                          <td className={cn("px-2.5 py-1.5 text-right tabular-nums", e.errPct > 1 && "text-destructive")}>{e.errPct.toFixed(2)}</td>
+                          <td
+                            className={cn(
+                              "px-2.5 py-1.5 text-right tabular-nums",
+                              e.errPct > 1 && "text-destructive",
+                            )}
+                          >
+                            {e.errPct.toFixed(2)}
+                          </td>
                           <td className="px-2.5 py-1.5">
                             <Pill tone={STATUS_TONE[e.status]} size="xs" dot>
                               <Icon className="h-2.5 w-2.5" /> {e.status}
@@ -382,10 +403,33 @@ export default function IntegrationPage() {
                         </linearGradient>
                       </defs>
                       <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                      <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => formatTime(String(v))} interval={Math.max(1, Math.floor(series.length / 6))} />
-                      <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="ms" />
-                      <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
-                      <Area type="monotone" dataKey="ms" stroke="hsl(38 95% 56%)" fill="url(#lat)" strokeWidth={1.8} />
+                      <XAxis
+                        dataKey="t"
+                        tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                        stroke="hsl(var(--border))"
+                        tickFormatter={(v) => formatTime(String(v))}
+                        interval={Math.max(1, Math.floor(series.length / 6))}
+                      />
+                      <YAxis
+                        tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                        stroke="hsl(var(--border))"
+                        unit="ms"
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          fontSize: 11,
+                          background: "hsl(var(--popover))",
+                          border: "1px solid hsl(var(--border))",
+                          borderRadius: 6,
+                        }}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="ms"
+                        stroke="hsl(38 95% 56%)"
+                        fill="url(#lat)"
+                        strokeWidth={1.8}
+                      />
                     </AreaChart>
                   </ResponsiveContainer>
                 );
@@ -393,7 +437,10 @@ export default function IntegrationPage() {
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
-                  data={Array.from({ length: 60 }, (_, i) => ({ t: i, ms: 220 + Math.sin(i / 6) * 30 + Math.cos(i / 18) * 18 }))}
+                  data={Array.from({ length: 60 }, (_, i) => ({
+                    t: i,
+                    ms: 220 + Math.sin(i / 6) * 30 + Math.cos(i / 18) * 18,
+                  }))}
                   margin={{ top: 8, right: 8, left: -20, bottom: 0 }}
                 >
                   <defs>
@@ -403,10 +450,33 @@ export default function IntegrationPage() {
                     </linearGradient>
                   </defs>
                   <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="2 4" vertical={false} />
-                  <XAxis dataKey="t" tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" tickFormatter={(v) => `${v}m`} interval={9} />
-                  <YAxis tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }} stroke="hsl(var(--border))" unit="ms" />
-                  <Tooltip contentStyle={{ fontSize: 11, background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 6 }} />
-                  <Area type="monotone" dataKey="ms" stroke="hsl(38 95% 56%)" fill="url(#lat-mock)" strokeWidth={1.8} />
+                  <XAxis
+                    dataKey="t"
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    stroke="hsl(var(--border))"
+                    tickFormatter={(v) => `${v}m`}
+                    interval={9}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
+                    stroke="hsl(var(--border))"
+                    unit="ms"
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      fontSize: 11,
+                      background: "hsl(var(--popover))",
+                      border: "1px solid hsl(var(--border))",
+                      borderRadius: 6,
+                    }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey="ms"
+                    stroke="hsl(38 95% 56%)"
+                    fill="url(#lat-mock)"
+                    strokeWidth={1.8}
+                  />
                 </AreaChart>
               </ResponsiveContainer>
             )}
@@ -428,7 +498,8 @@ export default function IntegrationPage() {
               {!primaryWorker ? (
                 <p className="text-[12px] text-muted-foreground">
                   No worker heartbeat yet — start the Railway{" "}
-                  <span className="font-mono text-foreground">background service</span> to begin syncing orders.
+                  <span className="font-mono text-foreground">background service</span> to begin syncing
+                  orders.
                 </p>
               ) : primaryWorker.account_configured ? (
                 <ul className="space-y-2 text-[12px] text-muted-foreground">
@@ -441,27 +512,27 @@ export default function IntegrationPage() {
                   </li>
                   <li>
                     <span className="font-mono text-foreground">OrderPadGetByAccount</span> every{" "}
-                    <span className="font-mono text-foreground">order polling interval</span>{" "}
-                    (default 60s) → upserts into{" "}
-                    <span className="font-mono text-foreground">the order audit table</span>. Cockpit Open
-                    Orders + Blotter read from this table.
+                    <span className="font-mono text-foreground">order polling interval</span> (default 60s) →
+                    upserts into <span className="font-mono text-foreground">the order audit table</span>.
+                    Cockpit Open Orders + Blotter read from this table.
                   </li>
                 </ul>
               ) : (
                 <div className="space-y-2 text-[12px]">
                   <div className="glass-inset border-warning/30 bg-warning/10 px-3 py-2 text-[12px]">
-                    <p className="font-medium text-warning">Configure account code to enable order tracking</p>
+                    <p className="font-medium text-warning">
+                      Configure account code to enable order tracking
+                    </p>
                     <p className="mt-1 text-muted-foreground">
-                      The order service is running but the account code is not configured{" "}
-                      yet, so order tracking returns
-                      no rows. The Cockpit Open Orders panel will stay empty until this is set.
+                      The order service is running but the account code is not configured yet, so order
+                      tracking returns no rows. The Cockpit Open Orders panel will stay empty until this is
+                      set.
                     </p>
                   </div>
                   <p className="text-muted-foreground">
-                    Enter your account code in the quote service configuration{" "}
-                    as a comma-separated list of account codes (e.g.{" "}
-                    <span className="font-mono text-foreground">Z12345,Z67890</span>), then restart.
-                    Quote ingest keeps running independently of this env.
+                    Enter your account code in the quote service configuration as a comma-separated list of
+                    account codes (e.g. <span className="font-mono text-foreground">Z12345,Z67890</span>),
+                    then restart. Quote ingest keeps running independently of this env.
                   </p>
                 </div>
               )}
@@ -476,26 +547,31 @@ export default function IntegrationPage() {
             >
               <ul className="space-y-2 text-[12px] text-muted-foreground">
                 <li>
-                  Vercel reads worker snapshots via <span className="font-mono text-foreground">GET /api/quotes</span> (~15s poll) and optional Realtime on{" "}
-                  <span className="font-mono text-foreground">the intraday quote table</span>.
+                  Vercel reads worker snapshots via{" "}
+                  <span className="font-mono text-foreground">GET /api/quotes</span> (~15s poll) and optional
+                  Realtime on <span className="font-mono text-foreground">the intraday quote table</span>.
                 </li>
                 <li>
                   Watchlist:{" "}
                   <span className="font-mono text-foreground">
                     {primaryWorker?.symbols_covered?.length ?? "—"}
                   </span>{" "}
-                  ({primaryWorker
+                  (
+                  {primaryWorker
                     ? `${(primaryWorker.symbols_covered ?? []).filter((s) => !["USDZAR", "JIBAR_3M"].includes(s)).length} JSE equities`
                     : "—"}
                   {" · "}
                   {primaryWorker
                     ? `${(primaryWorker.symbols_covered ?? []).filter((s) => ["USDZAR", "JIBAR_3M"].includes(s)).length} rate codes (FX/MM)`
                     : "—"}
-                  ). Rate codes (USDZAR → <span className="font-mono text-foreground">FX</span>, JIBAR_3M → <span className="font-mono text-foreground">MM</span>)
-                  ride the same <span className="font-mono text-foreground">pricing update cycle</span>, no extra entitlement needed.
+                  ). Rate codes (USDZAR → <span className="font-mono text-foreground">FX</span>, JIBAR_3M →{" "}
+                  <span className="font-mono text-foreground">MM</span>) ride the same{" "}
+                  <span className="font-mono text-foreground">pricing update cycle</span>, no extra
+                  entitlement needed.
                 </li>
                 <li>
-                  Connection pill shows <span className="font-mono text-foreground">SUPABASE OK</span> when the last quote tick is under 20s old;{" "}
+                  Connection pill shows <span className="font-mono text-foreground">SUPABASE OK</span> when
+                  the last quote tick is under 20s old;{" "}
                   <span className="font-mono text-foreground">/api/ticks</span> SSE is disabled in this mode.
                 </li>
               </ul>
@@ -529,7 +605,9 @@ export default function IntegrationPage() {
             <div className="grid grid-cols-1 gap-1.5 text-xs">
               {(iressConfig.methods.length > 0 ? iressConfig.methods : DEFAULT_V4_METHODS).map((m) => (
                 <div key={m.group} className="glass-inset p-2">
-                  <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">{m.group}</p>
+                  <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    {m.group}
+                  </p>
                   <p className="mt-0.5 text-[10.5px] font-mono">{m.methods.join(" · ")}</p>
                 </div>
               ))}
@@ -539,17 +617,40 @@ export default function IntegrationPage() {
       </div>
 
       {realDataOnly ? (
-        <WorkerDiagnosticEventsPanel events={primaryWorker?.recent_events ?? []} hasWorker={Boolean(primaryWorker)} />
+        <WorkerDiagnosticEventsPanel
+          events={primaryWorker?.recent_events ?? []}
+          hasWorker={Boolean(primaryWorker)}
+        />
       ) : null}
     </PageCanvas>
   );
 }
 
 const DEFAULT_V4_METHODS: ReadonlyArray<{ group: string; methods: string[] }> = [
-  { group: "iress",  methods: ["IRESSSessionStart", "IRESSSessionEnd", "PricingQuoteGet", "InstrumentSearch", "StaticReferenceDataGet"] },
-  { group: "ios",    methods: ["ServiceSessionStart", "ServiceSessionEnd", "OrderAdd", "OrderAmend", "OrderDelete", "OrderPadGetByAccount", "OrderPadGetByAccountUpdates"] },
-  { group: "ips",    methods: ["IPSAccountGetAll1", "IPSPositionGetAll1", "IPSTransactionGetByAccount5"] },
-  { group: "fix",    methods: ["FixSessionStart", "FixSessionEnd", "FixOrderReplace"] },
+  {
+    group: "iress",
+    methods: [
+      "IRESSSessionStart",
+      "IRESSSessionEnd",
+      "PricingQuoteGet",
+      "InstrumentSearch",
+      "StaticReferenceDataGet",
+    ],
+  },
+  {
+    group: "ios",
+    methods: [
+      "ServiceSessionStart",
+      "ServiceSessionEnd",
+      "OrderAdd",
+      "OrderAmend",
+      "OrderDelete",
+      "OrderPadGetByAccount",
+      "OrderPadGetByAccountUpdates",
+    ],
+  },
+  { group: "ips", methods: ["IPSAccountGetAll1", "IPSPositionGetAll1", "IPSTransactionGetByAccount5"] },
+  { group: "fix", methods: ["FixSessionStart", "FixSessionEnd", "FixOrderReplace"] },
 ];
 
 function ProductionStatusGrid({
@@ -562,15 +663,17 @@ function ProductionStatusGrid({
   const lastByService = (svc: "iress" | "ios" | "ips" | "fix") => {
     const e = events.find((ev) => String(ev.data?.service ?? "").toLowerCase() === svc);
     if (!e) return { tone: "default" as const, msg: "No calls recorded yet." };
-    if (e.level === "error") return { tone: "destructive" as const, msg: `Last error: ${e.event} — ${e.msg ?? ""}` };
-    if (e.level === "warn")  return { tone: "warning" as const, msg: `Last warn: ${e.event} — ${e.msg ?? ""}` };
+    if (e.level === "error")
+      return { tone: "destructive" as const, msg: `Last error: ${e.event} — ${e.msg ?? ""}` };
+    if (e.level === "warn")
+      return { tone: "warning" as const, msg: `Last warn: ${e.event} — ${e.msg ?? ""}` };
     return { tone: "positive" as const, msg: `Last ok: ${e.event}${e.msg ? ` — ${e.msg}` : ""}` };
   };
   const svcs: Array<{ name: "iress" | "ios" | "ips" | "fix"; label: string }> = [
     { name: "iress", label: "IRESS" },
-    { name: "ios",   label: "IOS+"  },
-    { name: "ips",   label: "IPS"   },
-    { name: "fix",   label: "FIX+"  },
+    { name: "ios", label: "IOS+" },
+    { name: "ips", label: "IPS" },
+    { name: "fix", label: "FIX+" },
   ];
   const seatCount = primaryWorker ? 1 : 0;
   return (
@@ -581,8 +684,24 @@ function ProductionStatusGrid({
           <div key={s.name} className="glass-inset p-2.5">
             <div className="flex items-center justify-between">
               <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider">{s.label}</p>
-              <Pill tone={st.tone === "default" ? "neutral" : st.tone === "positive" ? "success" : (st.tone as "warning" | "destructive")} size="xs" dot>
-                {st.tone === "default" ? "NO DATA" : st.tone === "positive" ? "OK" : st.tone === "warning" ? "WARN" : "ERROR"}
+              <Pill
+                tone={
+                  st.tone === "default"
+                    ? "neutral"
+                    : st.tone === "positive"
+                      ? "success"
+                      : (st.tone as "warning" | "destructive")
+                }
+                size="xs"
+                dot
+              >
+                {st.tone === "default"
+                  ? "NO DATA"
+                  : st.tone === "positive"
+                    ? "OK"
+                    : st.tone === "warning"
+                      ? "WARN"
+                      : "ERROR"}
               </Pill>
             </div>
             <p className="mt-1 text-[10.5px] text-muted-foreground">{st.msg}</p>
@@ -592,14 +711,48 @@ function ProductionStatusGrid({
       <div className="glass-inset col-span-2 p-2.5">
         <div className="flex items-center justify-between">
           <p className="font-mono text-[10.5px] font-semibold uppercase tracking-wider">Last sync</p>
-          <Pill tone="neutral" size="xs">IRESS single-seat</Pill>
+          <Pill tone="neutral" size="xs">
+            IRESS single-seat
+          </Pill>
         </div>
         <ul className="mt-1 grid grid-cols-3 gap-2 text-[10.5px] text-muted-foreground">
-          <li>Quotes: <span className="font-mono text-foreground">{primaryWorker?.last_quote_sync_at ? formatTime(new Date(primaryWorker.last_quote_sync_at).getTime()) : "—"}</span></li>
-          <li>Orders: <span className="font-mono text-foreground">{(primaryWorker?.metadata as Record<string, unknown> | undefined)?.last_order_sync_at ? formatTime(new Date(String((primaryWorker!.metadata as Record<string, unknown>).last_order_sync_at)).getTime()) : "—"}</span></li>
-          <li>IPS:    <span className="font-mono text-foreground">{(primaryWorker?.metadata as Record<string, unknown> | undefined)?.last_ips_sync_at ? formatTime(new Date(String((primaryWorker!.metadata as Record<string, unknown>).last_ips_sync_at)).getTime()) : "—"}</span></li>
+          <li>
+            Quotes:{" "}
+            <span className="font-mono text-foreground">
+              {primaryWorker?.last_quote_sync_at
+                ? formatTime(new Date(primaryWorker.last_quote_sync_at).getTime())
+                : "—"}
+            </span>
+          </li>
+          <li>
+            Orders:{" "}
+            <span className="font-mono text-foreground">
+              {(primaryWorker?.metadata as Record<string, unknown> | undefined)?.last_order_sync_at
+                ? formatTime(
+                    new Date(
+                      String((primaryWorker!.metadata as Record<string, unknown>).last_order_sync_at),
+                    ).getTime(),
+                  )
+                : "—"}
+            </span>
+          </li>
+          <li>
+            IPS:{" "}
+            <span className="font-mono text-foreground">
+              {(primaryWorker?.metadata as Record<string, unknown> | undefined)?.last_ips_sync_at
+                ? formatTime(
+                    new Date(
+                      String((primaryWorker!.metadata as Record<string, unknown>).last_ips_sync_at),
+                    ).getTime(),
+                  )
+                : "—"}
+            </span>
+          </li>
         </ul>
-        <p className="mt-1 text-[10.5px] text-muted-foreground">License seat: <span className="font-mono text-foreground">{seatCount}/1</span>. Only one concurrent connection is allowed; additional connections will return a licensing error.</p>
+        <p className="mt-1 text-[10.5px] text-muted-foreground">
+          License seat: <span className="font-mono text-foreground">{seatCount}/1</span>. Only one concurrent
+          connection is allowed; additional connections will return a licensing error.
+        </p>
       </div>
     </div>
   );
@@ -623,9 +776,7 @@ function WorkerDiagnosticEventsPanel({
   const hasEvents = ordered.length > 0;
   const lastWarnOrError = ordered.find((e) => e.level === "warn" || e.level === "error");
   const displayEvents =
-    lastWarnOrError == null && ordered.length > 5
-      ? ordered.slice(0, 5)
-      : ordered.slice(0, 25);
+    lastWarnOrError == null && ordered.length > 5 ? ordered.slice(0, 5) : ordered.slice(0, 25);
 
   return (
     <GlassSection
@@ -655,13 +806,13 @@ function WorkerDiagnosticEventsPanel({
     >
       {!hasWorker ? (
         <p className="text-[12px] text-muted-foreground">
-          No worker heartbeat row yet — start the Railway <span className="font-mono text-foreground">Iress-Worker</span>{" "}
-          service to begin ingesting.
+          No worker heartbeat row yet — start the Railway{" "}
+          <span className="font-mono text-foreground">Iress-Worker</span> service to begin ingesting.
         </p>
       ) : !hasEvents ? (
         <p className="text-[12px] text-muted-foreground">
-          Worker has not emitted any structured events since the last restart — that usually means the
-          IRESS session hasn&apos;t started yet, or the first quote sync is in flight.
+          Worker has not emitted any structured events since the last restart — that usually means the IRESS
+          session hasn&apos;t started yet, or the first quote sync is in flight.
         </p>
       ) : (
         <div className="glass-inset overflow-x-auto">
@@ -693,7 +844,11 @@ function WorkerDiagnosticEventsPanel({
                   <td className="px-2.5 py-1.5 font-semibold">{e.event}</td>
                   <td className="px-2.5 py-1.5 text-muted-foreground">{e.msg ?? ""}</td>
                   <td className="px-2.5 py-1.5 text-muted-foreground">
-                    {e.data ? <pre className="whitespace-pre-wrap break-words">{JSON.stringify(e.data)}</pre> : ""}
+                    {e.data ? (
+                      <pre className="whitespace-pre-wrap break-words">{JSON.stringify(e.data)}</pre>
+                    ) : (
+                      ""
+                    )}
                   </td>
                 </tr>
               ))}
@@ -701,15 +856,19 @@ function WorkerDiagnosticEventsPanel({
           </table>
           {lastWarnOrError == null && ordered.length > 0 && (
             <p className="mt-2 px-2.5 text-[11px] text-muted-foreground">
-              Last 25 events · all <span className="font-mono text-foreground">info</span> ·
-              worker is healthy.
+              Last 25 events · all <span className="font-mono text-foreground">info</span> · worker is
+              healthy.
             </p>
           )}
           {ordered.length > displayEvents.length && (
             <p className="mt-2 px-2.5 text-[11px] text-muted-foreground">
-              Showing {displayEvents.length} newest events of {ordered.length} total. Older events
-              are still in
-              <span className="font-mono text-foreground"> integration_worker_health.metadata.recent_events</span>.
+              Showing {displayEvents.length} newest events of {ordered.length} total. Older events are still
+              in
+              <span className="font-mono text-foreground">
+                {" "}
+                integration_worker_health.metadata.recent_events
+              </span>
+              .
             </p>
           )}
         </div>

@@ -27,22 +27,32 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const asOfDate = url.searchParams.get("asOf") ?? sastDate();
+
+  // IMPORTANT: do NOT early-return when draft.ok is false. publishCanonicalLedgerDraft
+  // writes real per-strategy DRAFT rows independently — one strategy hitting a
+  // data gap (e.g. a missing stored close) must not block certification, and
+  // therefore corrected YTD, for every OTHER healthy strategy on a given
+  // night. Certification is itself per-strategy and will naturally only
+  // fail the strategies that have no valid draft row for today. See the
+  // matching comment on the admin recompute route for the full reasoning.
   const draft = await publishCanonicalLedgerDraft({ asOfDate, apply: true, replaceExistingDraft: true });
-  if (!draft.ok)
-    return NextResponse.json(
-      { ok: false, asOf: asOfDate, phase: "draft", draft, certification: null },
-      { status: 502 },
-    );
 
   const certification = await publishCanonicalLedgerCertification({ asOfDate });
+
+  const certifiedCount = certification.summary.certified + certification.summary.alreadyCertified;
+  const anyCertified = certifiedCount > 0;
+  const allOk = draft.ok && certification.ok;
+  const phase = allOk ? "complete" : anyCertified ? "partial" : "certification";
+  const status = allOk || anyCertified ? 200 : 502;
+
   return NextResponse.json(
     {
-      ok: certification.ok,
+      ok: allOk,
       asOf: asOfDate,
-      phase: certification.ok ? "complete" : "certification",
+      phase,
       draft,
       certification,
     },
-    { status: certification.ok ? 200 : 502 },
+    { status },
   );
 }

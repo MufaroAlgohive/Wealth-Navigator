@@ -10,6 +10,10 @@
       "schedule": "*/5 * * * 1-5"
     },
     {
+      "path": "/api/cron/iress-monitor",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/iress-validation",
       "schedule": "0 13 * * 1-5"
     },

@@ -95,8 +95,11 @@ function wireToItem(r: NewsRow): NewsItem {
     headline: stripHtml(r.title),
     // Alliance News wire bodies routinely contain embedded HTML tables (e.g.
     // "Global economic events calendar"), which previously rendered as raw
-    // markup in the 2-line preview instead of readable text.
-    body: r.body_text ? stripHtml(r.body_text).slice(0, 200) : null,
+    // markup in the preview instead of readable text — `stripHtml` handles
+    // that. Full text is returned uncapped; list-card callers apply their
+    // own CSS line-clamp for a short preview, and the "full read" dialog
+    // (PR #147) shows the whole thing.
+    body: r.body_text ? stripHtml(r.body_text) : null,
     url: null,
     publishedAt: r.published_at,
     ts: new Date(r.published_at).getTime(),
@@ -116,7 +119,8 @@ function sensRowToItem(r: SensRow): NewsItem {
     ticker: r.ticker ?? tickers[0] ?? null,
     issuer: null,
     headline: stripHtml(r.headline),
-    body: r.body ? stripHtml(r.body).slice(0, 200) : null,
+    // Full SENS body text, uncapped — see the RSS/wire note above.
+    body: r.body ? stripHtml(r.body) : null,
     url: r.url ?? null,
     publishedAt: r.published_at,
     ts: new Date(r.published_at).getTime(),
@@ -146,7 +150,12 @@ async function fetchRss(url: string, publisher: string): Promise<NewsItem[]> {
         ticker: null,
         issuer: null,
         headline: title,
-        body: typeof i.description === "string" ? stripHtml(i.description).slice(0, 200) : null,
+        // Full RSS description, uncapped. Neither configured feed (Moneyweb,
+        // BusinessTech) carries a `content:encoded` full-article field —
+        // confirmed by inspecting both feeds' raw XML — so `description` is
+        // the fullest text available here; list cards apply their own
+        // CSS line-clamp, the "full read" dialog (PR #147) shows it all.
+        body: typeof i.description === "string" ? stripHtml(i.description) : null,
         url: link,
         publishedAt: new Date(ts).toISOString(),
         ts,

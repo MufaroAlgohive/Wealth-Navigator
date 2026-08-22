@@ -1,3 +1,6 @@
+import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
+import { callWorker } from "@/lib/iress/worker-api";
+import { type SecurityPriceRow, resolveSecurityPrices } from "@/lib/market-prices/fallback";
 /**
  * GET /api/intraday/[sym]
  *
@@ -33,8 +36,6 @@
  * oldest-first by the chart wrapper for the line series.
  */
 import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
-import { callWorker } from "@/lib/iress/worker-api";
-import { isUseSupabaseQuotesEnabled } from "@/lib/data-policy";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -53,6 +54,7 @@ interface SecurityRow {
   // Retail securities_c has last_price + change_percent (Yahoo), not prev_close.
   last_price: number | null;
   change_percent: number | null;
+  updated_at: string | null;
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ sym: string }> }) {
@@ -82,7 +84,12 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
       points?: Array<{ t: number; v: number }>;
       count?: number;
       attemptedFrequencies?: string[];
-      lastFault?: { frequency: string; errorNumber: number | null; errorDescription: string | null; rawFault: string | null };
+      lastFault?: {
+        frequency: string;
+        errorNumber: number | null;
+        errorDescription: string | null;
+        rawFault: string | null;
+      };
       error?: string;
     }>({
       path: `/intraday?sym=${encodeURIComponent(sym)}&days=${days}&limit=${limit}&exchange=JSE`,
@@ -122,9 +129,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
     }
     // IRESS returned empty — surface the reason so the UI can show it.
     const lastFault = body.lastFault ?? null;
-    const reason = lastFault && (lastFault.errorNumber === 25010 || lastFault.errorNumber === 25034)
-      ? "iress_entitlement_blocked"
-      : "iress_no_data";
+    const reason =
+      lastFault && (lastFault.errorNumber === 25010 || lastFault.errorNumber === 25034)
+        ? "iress_entitlement_blocked"
+        : "iress_no_data";
     return Response.json(
       {
         symbol: sym,
@@ -134,7 +142,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
         asOf: null,
         source: "unavailable",
         reason,
-        message: body.error ?? `IRESS returned no points for ${sym} (attempted ${(body.attemptedFrequencies ?? []).join(", ") || "no frequency"})`,
+        message:
+          body.error ??
+          `IRESS returned no points for ${sym} (attempted ${(body.attemptedFrequencies ?? []).join(", ") || "no frequency"})`,
         attemptedFrequencies: body.attemptedFrequencies ?? null,
         lastFault,
       },
@@ -144,13 +154,29 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
 
   if (!isUseSupabaseQuotesEnabled()) {
     return Response.json(
-      { symbol: sym, securityId: null, prevClose: null, points: [], asOf: null, source: "unavailable", reason: "supabase_quotes_disabled" },
+      {
+        symbol: sym,
+        securityId: null,
+        prevClose: null,
+        points: [],
+        asOf: null,
+        source: "unavailable",
+        reason: "supabase_quotes_disabled",
+      },
       { status: 200 },
     );
   }
   if (!isRetailSupabaseConfigured()) {
     return Response.json(
-      { symbol: sym, securityId: null, prevClose: null, points: [], asOf: null, source: "unavailable", reason: "supabase_not_configured" },
+      {
+        symbol: sym,
+        securityId: null,
+        prevClose: null,
+        points: [],
+        asOf: null,
+        source: "unavailable",
+        reason: "supabase_not_configured",
+      },
       { status: 503 },
     );
   }
@@ -159,7 +185,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
   // Retail securities_c stores JSE tickers with a `.JO` suffix — match both forms.
   const { data: secRows, error: secErr } = await supabase
     .from("securities_c")
-    .select("id, symbol, last_price, change_percent")
+    .select("id, symbol, last_price, change_percent, updated_at")
     .in("symbol", [sym, `${sym}.JO`])
     .limit(1);
   if (secErr) {
@@ -192,9 +218,43 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
   }
 
   // Retail has no prev_close column — derive the prior close from change_percent.
+  // Stale-or-missing seam: when securities_c is missing or stale past
+  // IRESS_STALE_FALLBACK_HOURS, resolve via Yahoo live in-memory so the chart's
+  // prevClose reference line still anchors to a real ZAc value. Reads only —
+  // never writes back. IRESS-back-online re-sync is automatic: the moment
+  // securities_c.updated_at lands inside the freshness window the gate flips
+  // the row back to its DB value on the next call.
   const lastR = (Number(security.last_price) || 0) / 100;
   const pct = Number(security.change_percent) || 0;
-  const prevCloseRands = lastR > 0 ? (pct !== 0 ? lastR / (1 + pct / 100) : lastR) : null;
+  let prevCloseRands: number | null = lastR > 0 ? (pct !== 0 ? lastR / (1 + pct / 100) : lastR) : null;
+  let priceSource: "supabase" | "yahoo" = "supabase";
+  if (prevCloseRands == null || !Number.isFinite(prevCloseRands)) {
+    try {
+      const resolved = await resolveSecurityPrices({
+        rows: [
+          {
+            id: security.id,
+            symbol: security.symbol,
+            name: null,
+            logo_url: null,
+            last_price: security.last_price,
+            change_percent: security.change_percent,
+            updated_at: security.updated_at ?? null,
+          } satisfies SecurityPriceRow,
+        ],
+        intradayBySecurityId: new Map(),
+        maxYahoo: 1,
+        concurrency: 1,
+      });
+      const r = resolved[0];
+      if (r && r.price_rands != null) {
+        prevCloseRands = r.day_pct != null ? r.price_rands / (1 + r.day_pct / 100) : r.price_rands;
+        priceSource = "yahoo";
+      }
+    } catch {
+      /* keep DB-derived prevCloseRands */
+    }
+  }
 
   const { data: tickRows, error: tickErr } = await supabase
     .from("stock_intraday_c")
@@ -231,11 +291,16 @@ export async function GET(req: Request, { params }: { params: Promise<{ sym: str
     prevClose: prevCloseRands,
     points,
     asOf: rows.length > 0 ? new Date(rows[0]!.timestamp).toISOString() : null,
-    source: points.length > 0 ? "supabase" : "unavailable",
-    reason: points.length === 0 ? "empty" : undefined,
+    // "yahoo" when prevClose came from the live fallback; "supabase" when
+    // DB-derived; "unavailable" only when both ticks and the fallback
+    // came back empty (truly no data anywhere).
+    source: priceSource === "yahoo" ? "yahoo" : points.length > 0 ? "supabase" : "unavailable",
+    reason: points.length === 0 && priceSource !== "yahoo" ? "empty" : undefined,
     message:
-      points.length === 0
+      points.length === 0 && priceSource !== "yahoo"
         ? `No intraday ticks yet for ${sym} — worker has not polled this symbol, or the row was filtered (BHG hollow-row pattern).`
-        : undefined,
+        : priceSource === "yahoo"
+          ? `securities_c was stale or missing — served from Yahoo live fallback.`
+          : undefined,
   });
 }

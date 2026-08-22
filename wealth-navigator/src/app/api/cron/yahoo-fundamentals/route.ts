@@ -60,6 +60,40 @@ async function yahooCrumb(): Promise<{ cookie: string; crumb: string } | null> {
   }
 }
 
+/**
+ * Bounded-concurrency worker pool: N workers pull from a shared cursor over
+ * `items`, each fully awaiting `work()` before taking the next item. Same
+ * pattern already proven in `src/lib/market-prices/fallback.ts`'s
+ * `resolveSecurityPrices` (Yahoo-fallback read path) — reused here rather
+ * than reinvented so the two Yahoo-calling paths share one battle-tested
+ * concurrency mechanism. Safe for the plain-number counters and the `sample`
+ * array below: Node is single-threaded per microtask, so `covered++` /
+ * `sample.push` / the `sample.length < 8` check-then-push are each atomic —
+ * no worker can interleave inside them.
+ */
+// Exported (only) so the batching/concurrency behaviour can be unit tested in
+// isolation from real Yahoo calls — see src/__tests__/yahoo-fundamentals-concurrency.test.ts.
+export async function runBounded<T>(items: T[], concurrency: number, work: (item: T) => Promise<void>) {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor] as T;
+      cursor += 1;
+      await work(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
+// Sequential (concurrency 1) took ~1s/security -> 360 securities routinely
+// blew past the 300s maxDuration, killing the run partway through the
+// alphabetically-sorted-by-default securities_c page and leaving most of the
+// universe permanently at "—" on /oems/equities. 4 concurrent workers is the
+// same level already proven against Yahoo by fallback.ts's runBounded usage
+// (resolveSecurityPrices) without tripping Yahoo's own rate limiting — reuse
+// that number rather than guessing a more aggressive one.
+const YAHOO_FUNDAMENTALS_CONCURRENCY = 4;
+
 interface YahooModule { raw?: number }
 interface YahooResult {
   price?: {
@@ -98,6 +132,14 @@ export async function GET(req: Request) {
     /* fail-closed */
   }
   const staleFallbackMs = (Number(process.env.IRESS_STALE_FALLBACK_HOURS) || 3) * 3_600_000;
+  // Same gate the retail-ingest worker uses to stamp price_source='iress'
+  // (workers/iress-ingest/src/retail-ingest.ts). Sharing the flag keeps the
+  // read side (isIressConfirmedFresh in lib/market-prices/fallback.ts) and
+  // both write sides in lock-step: either every writer stamps provenance, or
+  // none of them select/write the column, so an unmigrated securities_c
+  // (price_source not yet added by supabase/retail/20260614_add_price_source.sql)
+  // never errors on an unknown column.
+  const setSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
 
   const session = await yahooCrumb();
   if (!session) return NextResponse.json({ ok: false, error: "Could not establish a Yahoo session (cookie/crumb)" }, { status: 502 });
@@ -110,26 +152,26 @@ export async function GET(req: Request) {
   // IRESS UAT test tick left in the table.
   const tickTs = new Date().toISOString();
 
-  for (const sec of securities ?? []) {
+  await runBounded(securities ?? [], YAHOO_FUNDAMENTALS_CONCURRENCY, async (sec) => {
     const sym = String(sec.symbol || "").trim();
-    if (!sym) continue;
+    if (!sym) return;
     const ySym = toYahooJseSymbol(sym);
     try {
       const r = await fetch(
         `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ySym)}?modules=price,summaryDetail,defaultKeyStatistics&crumb=${encodeURIComponent(session.crumb)}`,
         { headers: { "User-Agent": "Mozilla/5.0", cookie: session.cookie, Accept: "application/json" } },
       );
-      if (!r.ok) { failed++; continue; }
+      if (!r.ok) { failed++; return; }
       const j = (await r.json()) as { quoteSummary?: { result?: YahooResult[] } };
       const res = j?.quoteSummary?.result?.[0];
-      if (!res) { failed++; continue; }
+      if (!res) { failed++; return; }
       // Reject a same-named non-JSE listing: only the Johannesburg quote is in
       // ZAc. If Yahoo reports a currency and it is not ZAc, this resolved to the
       // wrong entity (a US/global collision), so skip rather than write garbage.
       const cur = res.price?.currency;
-      if (cur && cur !== "ZAc") { failed++; continue; }
+      if (cur && cur !== "ZAc") { failed++; return; }
 
-      const update: Record<string, number> = {};
+      const update: Record<string, number | string> = {};
       const mc = res.price?.marketCap?.raw;
       if (mc != null) update.market_cap = Math.round(mc);
       const pe = res.summaryDetail?.trailingPE?.raw ?? res.defaultKeyStatistics?.trailingPE?.raw;
@@ -166,6 +208,11 @@ export async function GET(req: Request) {
         if (px != null && px > 0) {
           const pxCents = Math.round(px);
           update.last_price = pxCents;
+          // Provenance stamp: lets the read-side switch-back check
+          // (isIressConfirmedFresh, lib/market-prices/fallback.ts) tell a
+          // fresh IRESS write apart from Yahoo's own upkeep write, which
+          // otherwise refreshes updated_at and looks identically "fresh".
+          if (setSourceCol) update.price_source = "yahoo";
           let pct: number | null = null;
           let abs: number | null = null;
           if (chg != null) {
@@ -179,13 +226,13 @@ export async function GET(req: Request) {
         }
       }
 
-      if (Object.keys(update).length === 0) { continue; }
+      if (Object.keys(update).length === 0) { return; }
       covered++;
       if (sample.length < 8) sample.push({ symbol: sym, ...update });
 
       if (writesOn) {
         const { error: upErr } = await db.from("securities_c").update(update).eq("id", sec.id);
-        if (upErr) { failed++; continue; }
+        if (upErr) { failed++; return; }
         updated++;
         if (tickRow) {
           const { error: tickErr } = await db
@@ -199,7 +246,7 @@ export async function GET(req: Request) {
       failed++;
     }
     await new Promise((r) => setTimeout(r, 150));
-  }
+  });
 
   return NextResponse.json({
     ok: true,

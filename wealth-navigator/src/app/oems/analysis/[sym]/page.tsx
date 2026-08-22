@@ -39,7 +39,7 @@ import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { AnalysisChart, type ChartMode, type IndicatorKey } from "@/components/analysis/analysis-chart";
+import { AnalysisChart, type ChartMode } from "@/components/analysis/analysis-chart";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { EmptyDataState } from "@/components/oems/primitives/empty-data-state";
 import { EntitlementRequired } from "@/components/oems/primitives/entitlement-required";
@@ -168,16 +168,6 @@ function AnalysisPageContent() {
 
   const [range, setRange] = useState<RangeId>("1Y");
   const [mode, setMode] = useState<ChartMode>("line");
-  const [activeIndicators, setActiveIndicators] = useState<Set<IndicatorKey>>(new Set(["sma20"]));
-
-  const toggleIndicator = (k: IndicatorKey) => {
-    setActiveIndicators((prev) => {
-      const n = new Set(prev);
-      if (n.has(k)) n.delete(k);
-      else n.add(k);
-      return n;
-    });
-  };
 
   const analysisQ = useQuery<AnalysisResponse>({
     queryKey: ["bff-analysis", sym, RANGE_TO_BFF[range]],
@@ -413,8 +403,6 @@ function AnalysisPageContent() {
               setRange={setRange}
               mode={mode}
               setMode={setMode}
-              activeIndicators={activeIndicators}
-              toggleIndicator={toggleIndicator}
               hasLiveTick={hasLiveTick}
             />
           )}
@@ -491,8 +479,6 @@ function OverviewTab({
   setRange,
   mode,
   setMode,
-  activeIndicators,
-  toggleIndicator,
   hasLiveTick: _hasLiveTick,
 }: {
   sym: string;
@@ -503,8 +489,6 @@ function OverviewTab({
   setRange: (r: RangeId) => void;
   mode: ChartMode;
   setMode: (m: ChartMode) => void;
-  activeIndicators: Set<IndicatorKey>;
-  toggleIndicator: (k: IndicatorKey) => void;
   hasLiveTick: boolean;
 }) {
   const snap = (data.snapshot ?? {}) as {
@@ -615,39 +599,7 @@ function OverviewTab({
         }
       >
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-          {/* Indicator toggles */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-caption font-mono text-muted-foreground">Indicators:</span>
-            {(
-              [
-                ["sma20", "SMA 20"],
-                ["sma50", "SMA 50"],
-                ["sma200", "SMA 200"],
-                ["ema20", "EMA 20"],
-                ["rsi", "RSI 14"],
-                ["macd", "MACD 12·26·9"],
-              ] as Array<[IndicatorKey, string]>
-            ).map(([k, label]) => {
-              const on = activeIndicators.has(k);
-              return (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => toggleIndicator(k)}
-                  className={cn(
-                    "rounded-md border px-1.5 py-0.5 font-mono text-[10px] transition-colors",
-                    on
-                      ? "border-primary/40 bg-primary/10 text-primary"
-                      : "border-[hsl(var(--glass-border))] text-muted-foreground hover:border-[hsl(var(--glass-border-strong))] hover:text-foreground",
-                  )}
-                  aria-pressed={on}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-          <div className="glass-inset min-h-[420px] flex-1 p-2">
+          <div className="glass-inset min-h-[500px] flex-1 p-3">
             {data.sub.history.entitlementBlocked ? (
               <EntitlementRequired
                 method="TimeSeriesGet2"
@@ -660,8 +612,7 @@ function OverviewTab({
                 message="No price points for this range."
                 hint={
                   usingHistory
-                    ? (data.sub.history.message ??
-                      "Price history not yet available for this security.")
+                    ? (data.sub.history.message ?? "Price history not yet available for this security.")
                     : (data.sub.intraday.message ??
                       "No intraday ticks — worker has not polled this symbol yet.")
                 }
@@ -673,8 +624,7 @@ function OverviewTab({
                 points={points}
                 prevClose={prevClose}
                 mode={mode}
-                indicators={activeIndicators}
-                height={usingHistory ? 360 : 320}
+                height={usingHistory ? 440 : 400}
               />
             )}
           </div>
@@ -952,14 +902,13 @@ function FinancialsTab({ sym: _sym, data }: { sym: string; data: AnalysisRespons
         </div>
         <p className="mt-2 text-caption">
           Full per-period statements require a fundamentals vendor (Refinitiv / FactSet). Only the
-          current-period snapshot (EPS, P/E, market cap) is available. Multi-period data requires additional entitlements. The time-series panels
-          elsewhere in the desk remain unavailable until those entitlements are enabled.
+          current-period snapshot (EPS, P/E, market cap) is available. Multi-period data requires additional
+          entitlements. The time-series panels elsewhere in the desk remain unavailable until those
+          entitlements are enabled.
         </p>
         {data.sub.history.entitlementBlocked ? (
           <div className="mt-2">
-            <BlockedNote>
-              Multi-period financial statements require data entitlements.
-            </BlockedNote>
+            <BlockedNote>Multi-period financial statements require data entitlements.</BlockedNote>
           </div>
         ) : null}
       </GlassSection>

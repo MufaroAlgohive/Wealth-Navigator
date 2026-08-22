@@ -169,6 +169,39 @@ export function rebuildLegsAcrossSettledBoundary(input: {
 
   const executionCostCents = input.previousCashCents + grossCashDeltaCents - input.currentCashCents;
   if (executionCostCents < -0.5) throw new Error("BOUNDARY_REQUIRES_UNEXPLAINED_EXTERNAL_CAPITAL");
+
+  // Value-continuity invariant. The published return calculation (publish-canonical-ledger-draft.ts)
+  // chain-links complete_value_cents straight across every boundary, which is only correct if total
+  // portfolio value is preserved across the boundary except for the real execution cost - i.e.
+  // nothing is silently lost or double-counted when legs are relabeled. Legs for tickers that did NOT
+  // trade at this boundary (delta === 0) are carried over untouched: identical units at the identical
+  // market price on effective_date, so they contribute identically to the "before" and "after" totals
+  // and cancel out of any before/after comparison. The invariant therefore reduces to a pure cash
+  // identity over the tickers that actually traded:
+  //   previousCashCents + (sold-leg exit proceeds) = currentCashCents + (bought-leg entry cost) + executionCostCents
+  // executionCostCents above was derived from the netted grossCashDeltaCents accumulator; here we
+  // independently recompute both sides directly from the per-ticker sold/bought fill values as a
+  // defensive check that the two computations agree (guards against a future edit desynchronizing
+  // them). This is in addition to - not a replacement for - the reconciliation identity already
+  // validated above (model_capital_cents === securities_value_cents + strategy_ca_cents, and
+  // strategy_ca_cents === currentCashCents), which separately certifies the POST-boundary total
+  // against the strategy's independently-sourced authoritative valuation.
+  let soldExitValueCents = 0;
+  let boughtEntryValueCents = 0;
+  for (const [ticker, delta] of deltas) {
+    if (delta < 0) {
+      soldExitValueCents += Math.abs(delta) * Number(fillPriceByTickerSide.get(`${ticker}:SELL`) ?? 0);
+    } else if (delta > 0) {
+      boughtEntryValueCents += delta * Number(fillPriceByTickerSide.get(`${ticker}:BUY`) ?? 0);
+    }
+  }
+  const beforeTotalCents = input.previousCashCents + soldExitValueCents;
+  const afterTotalCents = input.currentCashCents + boughtEntryValueCents;
+  const impliedExecutionCostCents = beforeTotalCents - afterTotalCents;
+  if (Math.abs(impliedExecutionCostCents - executionCostCents) > 2) {
+    throw new Error("BOUNDARY_VALUE_CONTINUITY_VIOLATED");
+  }
+
   const legs = input.previousLegs.map((leg) => ({ ...leg }));
   for (const [ticker, delta] of deltas) {
     if (delta >= 0) continue;
