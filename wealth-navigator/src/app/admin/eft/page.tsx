@@ -25,6 +25,8 @@ const th = "px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-w
 const tdc = "px-4 py-3 align-middle text-[13px] text-foreground";
 
 export default function EftPage() {
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => setMounted(true), []);
   const [tab, setTab] = React.useState("active");
 
   const [wallets, setWallets] = React.useState<Wallet[] | null>(null);
@@ -92,7 +94,11 @@ export default function EftPage() {
       const d = await fetch("/api/admin/eft?action=add-wallet", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       }).then((r) => r.json());
-      if (d.ok) { toast.success("Added"); setAmount(""); }
+      if (d.ok) { 
+        toast.success("Added to Pending Approvals"); 
+        setAmount(""); 
+        loadPending();
+      }
       else toast.message(d.error || "Deferred");
     } finally { setBusy(false); }
   };
@@ -111,6 +117,11 @@ export default function EftPage() {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transaction_id: t.id, reason }),
     }).then((r) => r.json());
     toast.message(d.error || (d.ok ? "Done" : "Deferred"));
+    if (d.ok) {
+      loadPending();
+      loadWallets("active");
+      loadWallets("test");
+    }
   };
 
   return (
@@ -123,7 +134,7 @@ export default function EftPage() {
         </div>
         <div className={cn(card, "px-5 py-4")}>
           <div className="flex items-center justify-between gap-2"><span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Total Wallet Amount</span><DataSourceBadge source="supabase" db="retail" /></div>
-          <div className="mt-1 text-2xl font-bold text-foreground">{ZAR(stats.total)}</div>
+          <div className="mt-1 text-2xl font-bold text-foreground">{mounted ? ZAR(stats.total) : "..."}</div>
         </div>
       </div>
 
