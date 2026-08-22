@@ -321,11 +321,15 @@ async function handleAddWallet(db: SupabaseClient, body: Record<string, unknown>
   
   const existingWallet = existingWallets?.[0];
 
-  if (!existingWallet) {
-    const { error: insErr } = await db
+  let walletId = existingWallet?.id;
+  if (!walletId) {
+    const { data: newWallet, error: insErr } = await db
       .from("wallets")
-      .insert({ user_id: userId, balance: 0 });
+      .insert({ user_id: userId, balance: 0 })
+      .select("id")
+      .single();
     if (insErr) return NextResponse.json({ ok: false, error: `Failed to create wallet: ${insErr.message}` }, { status: 500 });
+    walletId = newWallet.id;
   }
 
   // Insert a pending manual transaction
@@ -333,11 +337,12 @@ async function handleAddWallet(db: SupabaseClient, body: Record<string, unknown>
   const { error: tErr } = await db
     .from("wallet_transactions")
     .insert({
+      wallet_id: walletId,
       user_id: userId,
       amount,
       transaction_type: "manual",
       status: "pending",
-      store_reference: storeReference,
+      reference: storeReference,
     });
     
   if (tErr) return NextResponse.json({ ok: false, error: `Failed to create pending deposit: ${tErr.message}` }, { status: 500 });
