@@ -96,20 +96,28 @@ export function buildWelcomeHtml(firstName?: string): string {
 export function buildWalletFundedHtml(opts: { firstName?: string; amount: number }): string {
   const fmt = (n: number) => "R " + Number(n).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return shell(`
-  <tr><td style="background:linear-gradient(135deg,#31005e 0%,#5b21b6 50%,#7c3aed 100%);padding:36px;">
-    <div style="display:inline-block;width:36px;height:36px;background:#fff;border-radius:10px;text-align:center;line-height:36px;font-weight:700;color:#7c3aed;font-size:18px;">M</div>
-    <h1 style="margin:20px 0 0;color:#fff;font-size:26px;font-weight:800;">Funds Received</h1>
+  <!-- Brand fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@700;800&family=Outfit:wght@300;600&display=swap" rel="stylesheet" />
+  
+  <tr><td style="background:#31005E;padding:36px;text-align:center;">
+    <h1 style="margin:0;color:#FFFFFF;font-family:'Inter', -apple-system, sans-serif;font-size:26px;font-weight:800;letter-spacing:-0.5px;">Funds Received</h1>
   </td></tr>
-  <tr><td style="padding:32px 36px;">
-    <p style="margin:0 0 8px;font-size:16px;font-weight:600;color:#1e293b;">Hi ${opts.firstName || "there"},</p>
-    <p style="margin:0 0 24px;font-size:14px;color:#475569;line-height:1.6;">Your Mint wallet has been funded. The amount is ready to invest.</p>
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#faf7ff;border:1px solid #ede5ff;border-radius:12px;margin-bottom:24px;"><tr><td style="padding:20px;text-align:center;">
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#7c3aed;margin-bottom:6px;">Amount Added</div>
-      <div style="font-size:28px;font-weight:800;color:#0f172a;">${fmt(opts.amount)}</div>
-    </td></tr></table>
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr><td style="border-radius:999px;background:#5c3bcf;">
-      <a href="https://app.mymint.co.za" style="display:inline-block;padding:14px 32px;font-size:14px;font-weight:700;color:#fff;text-decoration:none;border-radius:999px;">View Portfolio</a>
-    </td></tr></table>
+  <tr><td style="padding:32px 36px;background:#FFFFFF;">
+    <p style="margin:0 0 16px;font-family:'Outfit', -apple-system, sans-serif;font-size:16px;font-weight:600;color:#3A3448;">Hi ${opts.firstName || "there"},</p>
+    <p style="margin:0 0 24px;font-family:'Outfit', -apple-system, sans-serif;font-size:16px;color:#3A3448;line-height:1.6;font-weight:300;">Your myMINT wallet has been funded. The amount is now ready to invest.</p>
+    
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F9F8FB;border:1px solid #E4E0EC;border-radius:12px;margin-bottom:32px;">
+      <tr><td style="padding:24px;text-align:center;">
+        <div style="font-family:'Outfit', -apple-system, sans-serif;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#31005E;margin-bottom:8px;">Amount Added</div>
+        <div style="font-family:'Inter', -apple-system, sans-serif;font-size:32px;font-weight:800;color:#3A3448;">${fmt(opts.amount)}</div>
+      </td></tr>
+    </table>
+    
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+      <tr><td align="center">
+        <a href="https://app.mymint.co.za" style="display:inline-block;background:#31005E;color:#DDC357;text-decoration:none;text-align:center;padding:16px 32px;border-radius:6px;font-family:'Outfit', -apple-system, sans-serif;font-size:14px;font-weight:600;letter-spacing:1px;text-transform:uppercase;transition:opacity 0.2s ease;">Open myMINT</a>
+      </td></tr>
+    </table>
   </td></tr>`);
 }
 
