@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 
 import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
-import { settleRebalanceCashForClients } from "@/lib/rebalance/settle-rebalance-cash";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
@@ -45,14 +44,13 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
   if (String(requestRes.data.environment_scope ?? "live").toLowerCase() !== "uat") {
     return NextResponse.json({ ok: false, error: "retry settlement is UAT-only" }, { status: 403 });
   }
-  if (requestRes.data.status !== "executed") {
-    return NextResponse.json({ ok: false, error: "rebalance is not on the Rebalance tab" }, { status: 409 });
+  if (!["executed", "completing"].includes(requestRes.data.status)) {
+    return NextResponse.json({ ok: false, error: "rebalance is not ready to complete" }, { status: 409 });
   }
 
   const completion = await maybeCompleteRebalance(retail, institutional, id, auth.ctx.userId);
   if (!completion.completed) {
     return NextResponse.json({ ok: false, completion, error: completion.error ?? "rebalance is not ready for settlement" }, { status: 409 });
   }
-  const cashSettlement = await settleRebalanceCashForClients(retail, institutional, id, completion.settlementBatchId);
-  return NextResponse.json({ ok: true, completion, cashSettlement });
+  return NextResponse.json({ ok: true, completion, cashSettlement: completion.cashSettlement });
 }

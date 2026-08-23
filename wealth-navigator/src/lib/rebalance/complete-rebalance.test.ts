@@ -5,11 +5,17 @@ const settlementMocks = vi.hoisted(() => ({
   recordRebalanceSettlement: vi.fn(),
   recordRebalanceExecutionEvidence: vi.fn(),
 }));
+const cashMocks = vi.hoisted(() => ({
+  settleRebalanceCashForClients: vi.fn(),
+}));
 
 vi.mock("@/lib/returns/seal-rebalance-boundary", () => ({
   sealRebalanceBoundary: settlementMocks.sealRebalanceBoundary,
   recordRebalanceSettlement: settlementMocks.recordRebalanceSettlement,
   recordRebalanceExecutionEvidence: settlementMocks.recordRebalanceExecutionEvidence,
+}));
+vi.mock("@/lib/rebalance/settle-rebalance-cash", () => ({
+  settleRebalanceCashForClients: cashMocks.settleRebalanceCashForClients,
 }));
 
 import { maybeCompleteRebalance } from "./complete-rebalance";
@@ -25,11 +31,23 @@ function chain(result: unknown) {
 /** rebalance_request_c mock covering both the idempotency claim
  * (.update().eq().eq().select().maybeSingle(), needs a truthy .data) and the
  * release update (.update().eq(), bare-awaited — only .error matters). */
-function rebalanceRequestChain(selectResult: { data: unknown; error: null }) {
+function rebalanceRequestChain(
+  selectResult: { data: unknown; error: null },
+  state = { status: "completing", completion_batch_id: "batch-1" },
+  onUpdate?: (value: unknown) => void,
+) {
   const api: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "in"]) api[method] = () => api;
-  api.update = () => chain({ data: { id: "claimed" }, error: null });
-  api.maybeSingle = () => Promise.resolve(selectResult);
+  let selected = "";
+  api.select = (columns: string) => {
+    selected = columns;
+    return api;
+  };
+  for (const method of ["eq", "in"]) api[method] = () => api;
+  api.update = (value: unknown) => {
+    onUpdate?.(value);
+    return chain({ data: { id: "claimed", completion_batch_id: state.completion_batch_id }, error: null });
+  };
+  api.maybeSingle = () => Promise.resolve(selected.includes("completion_batch_id") ? { data: state, error: null } : selectResult);
   api.then = (resolve: (value: unknown) => unknown) => Promise.resolve(selectResult).then(resolve);
   return api;
 }
@@ -37,6 +55,7 @@ function rebalanceRequestChain(selectResult: { data: unknown; error: null }) {
 describe("maybeCompleteRebalance", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    cashMocks.settleRebalanceCashForClients.mockResolvedValue({ settledUserIds: [], errors: [] });
   });
 
   it("records execution events for a completed single-client rebalance", async () => {
@@ -45,18 +64,25 @@ describe("maybeCompleteRebalance", () => {
     const retailDb = {
       from: vi.fn(() => ({ select: () => chain({ data: { id: "strategy-1" }, error: null }) })),
     };
+    const updates: Array<Record<string, unknown>> = [];
     const institutionalDb = {
       from: vi.fn((table: string) => {
         if (table === "oems_order_audit") {
           return chain({ data: [{ status: "filled", side: "sell", quantity: 1, payload: { user_id: "user-1", security_id: "security-1", filled: 1, lastFillAt: "2026-08-14T12:00:00.000Z" }, result_payload: { avgFillPrice: 1000 } }], error: null });
         }
-        return rebalanceRequestChain({ data: { strategy_id: "Strategy Name", affected_investors: { scope: "single_user" }, proposed_composition: [] }, error: null });
+        return rebalanceRequestChain(
+          { data: { strategy_id: "Strategy Name", affected_investors: { scope: "single_user" }, proposed_composition: [] }, error: null },
+          { status: "executed", completion_batch_id: "batch-1" },
+          (value) => updates.push(value as Record<string, unknown>),
+        );
       }),
     };
 
     const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
 
     expect(outcome).toMatchObject({ completed: true, scope: "single_user", settlementBatchId: "batch-1" });
+    expect(updates).toContainEqual(expect.objectContaining({ status: "completing", completion_batch_id: "batch-1" }));
+    expect(updates).toContainEqual(expect.objectContaining({ status: "completed" }));
     expect(settlementMocks.recordRebalanceExecutionEvidence).toHaveBeenCalledWith(
       retailDb,
       "batch-1",
@@ -106,7 +132,7 @@ describe("maybeCompleteRebalance", () => {
               proposed_composition: [],
             },
             error: null,
-          });
+          }, { status: "completing", completion_batch_id: "batch-child" });
       }),
     };
 
@@ -143,6 +169,37 @@ describe("maybeCompleteRebalance", () => {
 
     expect(outcome).toEqual({ completed: false });
     expect(settlementMocks.sealRebalanceBoundary).not.toHaveBeenCalled();
+  });
+
+  it("keeps the request completing when cash settlement fails", async () => {
+    settlementMocks.recordRebalanceSettlement.mockResolvedValue({ batchId: "batch-1" });
+    settlementMocks.recordRebalanceExecutionEvidence.mockResolvedValue(null);
+    cashMocks.settleRebalanceCashForClients.mockResolvedValue({
+      settledUserIds: [],
+      errors: ["insufficient reserve"],
+    });
+    const updates: Array<Record<string, unknown>> = [];
+    const retailDb = {
+      from: vi.fn(() => ({ select: () => chain({ data: { id: "strategy-1" }, error: null }) })),
+    };
+    const institutionalDb = {
+      from: vi.fn((table: string) => {
+        if (table === "oems_order_audit") {
+          return chain({ data: [{ status: "filled", side: "sell", quantity: 1, payload: { user_id: "user-1", security_id: "security-1", filled: 1, lastFillAt: "2026-08-14T12:00:00.000Z" }, result_payload: { avgFillPrice: 1000 } }], error: null });
+        }
+        return rebalanceRequestChain(
+          { data: { strategy_id: "Strategy Name", affected_investors: { scope: "single_user" }, proposed_composition: [] }, error: null },
+          { status: "completing", completion_batch_id: "batch-1" },
+          (value) => updates.push(value as Record<string, unknown>),
+        );
+      }),
+    };
+
+    const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
+
+    expect(outcome).toMatchObject({ completed: false, error: expect.stringContaining("cash settlement failed") });
+    expect(updates).toContainEqual(expect.objectContaining({ completion_error: expect.stringContaining("insufficient reserve") }));
+    expect(updates).not.toContainEqual(expect.objectContaining({ status: "completed" }));
   });
 
   it("does not complete until every required order is fully filled", async () => {

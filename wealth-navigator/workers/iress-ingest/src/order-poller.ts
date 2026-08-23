@@ -29,7 +29,6 @@ import type { Order, OrderState } from "../../../src/types/iress";
 import { productionOrdersEnabled, type WorkerEnv } from "./env";
 import { observedFillFromAudit, settleFill, voidUnfilledRemainder } from "./settlement";
 import { maybeCompleteRebalance } from "../../../src/lib/rebalance/complete-rebalance";
-import { settleRebalanceCashForClients } from "../../../src/lib/rebalance/settle-rebalance-cash";
 import {
   findGiftAuthorization,
   applyGiftFill,
@@ -756,23 +755,15 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
             );
             continue;
           }
-          if (completion.completed) {
-            const cash = await settleRebalanceCashForClients(
-              opts.retailSupabase as never,
-              opts.supabase as never,
-              rebalanceRequestId,
-              completion.settlementBatchId,
+          if (completion.cashSettlement?.errors.length) {
+            console.error(
+              JSON.stringify({
+                level: "error",
+                event: "rebalance_cash_settlement_blocked",
+                rebalance_request_id: rebalanceRequestId,
+                errors: completion.cashSettlement.errors,
+              }),
             );
-            if (cash.errors.length > 0) {
-              console.error(
-                JSON.stringify({
-                  level: "error",
-                  event: "rebalance_cash_settlement_blocked",
-                  rebalance_request_id: rebalanceRequestId,
-                  errors: cash.errors,
-                }),
-              );
-            }
           }
         } catch (err) {
           console.error(

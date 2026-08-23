@@ -141,7 +141,14 @@ export interface ResearchNote {
   approved_at: string | null;
 }
 
-export type RebalanceStatus = "pending" | "ic_approved" | "rejected" | "executed" | "cancelled";
+export type RebalanceStatus =
+  | "pending"
+  | "ic_approved"
+  | "rejected"
+  | "executed"
+  | "completing"
+  | "completed"
+  | "cancelled";
 
 export type VoteValue = "yes" | "no" | "abstain";
 
