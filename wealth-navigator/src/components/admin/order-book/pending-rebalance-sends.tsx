@@ -103,12 +103,30 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
     `/api/rebalance/requests?status=executed&scope=${scope}`,
     { interval: 15_000 },
   );
+  const completingQuery = usePolling<{ requests?: RebalanceRequestRow[] }>(
+    `/api/rebalance/requests?status=completing&scope=${scope}`,
+    { interval: 15_000 },
+  );
+  const completedQuery = usePolling<{ requests?: RebalanceRequestRow[] }>(
+    `/api/rebalance/requests?status=completed&scope=${scope}`,
+    { interval: 15_000 },
+  );
 
   const inScope = (r: RebalanceRequestRow) =>
     scope === "uat" ? testStrategyNames.has(r.strategy_id) : !testStrategyNames.has(r.strategy_id);
 
   const pending = (approvedQuery.data?.requests ?? []).filter(inScope);
-  const history = (executedQuery.data?.requests ?? []).filter(inScope).slice(0, 10);
+  const history = [
+    ...(executedQuery.data?.requests ?? []),
+    ...(completingQuery.data?.requests ?? []),
+    ...(completedQuery.data?.requests ?? []),
+  ]
+    .filter(inScope)
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
+    .slice(0, 10);
+
+  const refreshHistory = () =>
+    Promise.all([executedQuery.refresh(), completingQuery.refresh(), completedQuery.refresh()]);
 
   async function transition(id: string, toStatus: "executed" | "cancelled") {
     const res = await fetch(`/api/rebalance/requests/${id}/transition`, {
@@ -122,7 +140,7 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
         body.error ?? `Failed to ${toStatus === "executed" ? "release to the Rebalance tab" : "cancel"}.`,
       );
     }
-    await Promise.all([approvedQuery.refresh(), executedQuery.refresh()]);
+    await Promise.all([approvedQuery.refresh(), refreshHistory()]);
   }
 
   async function releaseToRebalanceTab(id: string) {
@@ -160,7 +178,7 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
       if (!res.ok || !body.ok) {
         window.alert(body.error ?? "Failed to send to order book.");
       }
-      await executedQuery.refresh();
+      await refreshHistory();
     } finally {
       setReleasingId(null);
     }
@@ -176,7 +194,7 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
       } else {
         window.alert("UAT rebalance settlement completed. Refresh the strategy to see the updated model basket.");
       }
-      await executedQuery.refresh();
+      await refreshHistory();
     } finally {
       setCompletingId(null);
     }
@@ -292,9 +310,9 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                   })
                 }
                 releasing={releasingId === r.id}
-                onRelease={() => releaseToOrderBook(r.id)}
+                onRelease={r.status === "executed" ? () => releaseToOrderBook(r.id) : undefined}
                 completing={completingId === r.id}
-                onRetrySettlement={scope === "uat" ? () => retryUatSettlement(r.id) : undefined}
+                onRetrySettlement={scope === "uat" && r.status !== "completed" ? () => retryUatSettlement(r.id) : undefined}
                 // Mirrors release-to-orderbook/route.ts, which only applies the
                 // master step-up when the request is NOT uat-scoped. Demanding
                 // master on a UAT release here would block something the server
@@ -325,7 +343,7 @@ function BookedRebalanceRow({
   open: boolean;
   onToggle: () => void;
   releasing: boolean;
-  onRelease: () => Promise<void>;
+  onRelease?: () => Promise<void>;
   completing: boolean;
   onRetrySettlement?: () => Promise<void>;
   /** false for UAT-scoped requests, which the server releases without step-up. */
@@ -348,6 +366,7 @@ function BookedRebalanceRow({
   // otherwise reflect the release for a few seconds, making a successful
   // click look like it did nothing and inviting a second one.
   async function handleRelease() {
+    if (!onRelease) return;
     try {
       await onRelease();
       await ordersQuery.refresh();
@@ -368,13 +387,13 @@ function BookedRebalanceRow({
           <span className="truncate">Rebalance · {r.strategy_id}</span>
         </button>
         <div className="flex items-center gap-2">
-          <Badge variant={released ? "success" : "outline"}>
-            {released ? "In Order Book" : "On Rebalance Tab"}
+          <Badge variant={r.status === "completed" ? "success" : "outline"}>
+            {r.status === "completed" ? "Completed" : r.status === "completing" ? "Completing" : released ? "In Order Book" : "On Rebalance Tab"}
           </Badge>
           <span className="text-[11px] text-muted-foreground">
             {r.executed_at ? new Date(r.executed_at).toLocaleString("en-ZA") : "—"}
           </span>
-          {!released && stillParked.length > 0 ? (
+          {onRelease && !released && stillParked.length > 0 ? (
             <Button
               type="button"
               size="sm"

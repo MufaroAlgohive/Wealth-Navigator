@@ -138,6 +138,8 @@ export async function recordRebalanceExecutionEvidence(
 export async function recordRebalanceSettlement(
   retailDb: SupabaseClient,
   params: {
+    /** Stable id allocated by the institutional completion claim. */
+    batchId?: string;
     strategyId: string;
     strategyName: string;
     holdings: BoundaryHolding[];
@@ -157,9 +159,32 @@ export async function recordRebalanceSettlement(
     .filter((o) => o.userId)
     .map((o) => ({ userId: o.userId, familyMemberId: o.familyMemberId ?? null }));
 
+  if (params.batchId) {
+    const existing = await retailDb
+      .from("rebalance_batch")
+      .select("id,strategy_id,status,settlement_state,created_by")
+      .eq("id", params.batchId)
+      .maybeSingle();
+    if (existing.error) return { error: `rebalance_batch lookup failed: ${existing.error.message}` };
+    if (existing.data) {
+      if (
+        existing.data.strategy_id !== params.strategyId ||
+        existing.data.status !== "SETTLED" ||
+        existing.data.settlement_state !== "COMPLETE"
+      ) {
+        return { error: "existing rebalance_batch does not match this completion" };
+      }
+      return {
+        batchId: existing.data.id as string,
+        actorId: (existing.data.created_by as string | null) ?? settlementActorId,
+      };
+    }
+  }
+
   const res = await retailDb
     .from("rebalance_batch")
     .insert({
+      ...(params.batchId ? { id: params.batchId } : {}),
       strategy_id: params.strategyId,
       strategy_name_snapshot: params.strategyName,
       status: "SETTLED",
@@ -238,6 +263,8 @@ async function latestPrices(
 export async function sealRebalanceBoundary(
   retailDb: SupabaseClient,
   params: {
+    /** Stable id allocated by the institutional completion claim. */
+    batchId?: string;
     strategyId: string;
     strategyName: string;
     /** The composition the strategy is moving TO. */
@@ -294,6 +321,7 @@ export async function sealRebalanceBoundary(
   // The RPC resolves the strategy from its batch, so the settlement needs one.
   // The same batch doubles as the client-side boundary for the owners it moved.
   const recorded = await recordRebalanceSettlement(retailDb, {
+    batchId: params.batchId,
     strategyId,
     strategyName,
     holdings,

@@ -6,6 +6,10 @@ import {
   sealRebalanceBoundary,
   type RebalanceExecutionEvidence,
 } from "@/lib/returns/seal-rebalance-boundary";
+import {
+  settleRebalanceCashForClients,
+  type SettleRebalanceCashResult,
+} from "@/lib/rebalance/settle-rebalance-cash";
 
 /**
  * Once every order booked for a rebalance (reconcile-parked-holdings.ts /
@@ -55,6 +59,7 @@ export interface CompleteRebalanceResult {
   scope?: "strategy" | "single_user";
   /** The SETTLED rebalance_batch recorded so affected owners' return series can chain across. */
   settlementBatchId?: string;
+  cashSettlement?: SettleRebalanceCashResult;
   /** Return-boundary outcome, when the rebalance reached the flip step. */
   boundary?: {
     sealed: boolean;
@@ -109,38 +114,103 @@ export async function maybeCompleteRebalance(
   // retryable (per this module's doc comment: unfinished-and-retryable is
   // recoverable, a corrupted return chain is not) — only genuine success
   // marks it "executed".
-  const claim = await institutionalDb
+  const stateRes = await institutionalDb
     .from("rebalance_request_c")
-    .update({ status: "completing" })
+    .select("status, completion_batch_id")
     .eq("id", rebalanceRequestId)
-    .eq("status", "ic_approved")
-    .select("id")
     .maybeSingle();
-  if (claim.error) return { completed: false, error: `rebalance claim failed: ${claim.error.message}` };
-  if (!claim.data) return { completed: false };
+  if (stateRes.error) return { completed: false, error: stateRes.error.message };
+  if (!stateRes.data) return { completed: false, error: "rebalance request not found" };
 
-  const result = await runCompletion(retailDb, institutionalDb, rebalanceRequestId, actorId, siblings);
-
-  const releaseRes = await institutionalDb
-    .from("rebalance_request_c")
-    .update({
-      status: result.completed ? "executed" : "ic_approved",
-      executed_at: result.completed ? new Date().toISOString() : null,
-    })
-    .eq("id", rebalanceRequestId);
-  if (releaseRes.error) {
-    console.error(
-      JSON.stringify({
-        level: "error",
-        event: "rebalance_claim_release_failed",
-        rebalanceRequestId,
-        completed: result.completed,
-        error: releaseRes.error.message,
-      }),
-    );
+  const currentStatus = String(stateRes.data.status ?? "");
+  let settlementBatchId = stateRes.data.completion_batch_id as string | null;
+  if (currentStatus === "completed") {
+    return { completed: true, settlementBatchId: settlementBatchId ?? undefined };
   }
 
-  return result;
+  if (currentStatus === "executed" || currentStatus === "ic_approved") {
+    settlementBatchId = settlementBatchId ?? crypto.randomUUID();
+    const claim = await institutionalDb
+      .from("rebalance_request_c")
+      .update({
+        status: "completing",
+        completion_batch_id: settlementBatchId,
+        completion_error: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", rebalanceRequestId)
+      .eq("status", currentStatus)
+      .select("id, completion_batch_id")
+      .maybeSingle();
+    if (claim.error) return { completed: false, error: `rebalance claim failed: ${claim.error.message}` };
+    if (!claim.data) return { completed: false };
+    settlementBatchId = claim.data.completion_batch_id as string;
+  } else if (currentStatus !== "completing") {
+    return { completed: false, error: `rebalance cannot complete from status ${currentStatus}` };
+  }
+
+  if (!settlementBatchId) {
+    return { completed: false, error: "completing rebalance has no stable completion batch id" };
+  }
+
+  const boundaryResult = await runCompletion(
+    retailDb,
+    institutionalDb,
+    rebalanceRequestId,
+    actorId,
+    siblings,
+    settlementBatchId,
+  );
+  if (!boundaryResult.completed) {
+    await recordCompletionError(institutionalDb, rebalanceRequestId, boundaryResult.error ?? "completion failed");
+    return boundaryResult;
+  }
+
+  const cashSettlement = await settleRebalanceCashForClients(
+    retailDb,
+    institutionalDb,
+    rebalanceRequestId,
+    settlementBatchId,
+  );
+  if (cashSettlement.errors.length > 0) {
+    const error = `cash settlement failed: ${cashSettlement.errors.join("; ")}`;
+    await recordCompletionError(institutionalDb, rebalanceRequestId, error);
+    return { ...boundaryResult, completed: false, error, cashSettlement };
+  }
+
+  const finalise = await institutionalDb
+    .from("rebalance_request_c")
+    .update({
+      status: "completed",
+      completed_at: new Date().toISOString(),
+      completion_error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", rebalanceRequestId)
+    .eq("status", "completing")
+    .eq("completion_batch_id", settlementBatchId)
+    .select("id")
+    .maybeSingle();
+  if (finalise.error || !finalise.data) {
+    const error = `rebalance finalisation failed: ${finalise.error?.message ?? "claim no longer owned"}`;
+    await recordCompletionError(institutionalDb, rebalanceRequestId, error);
+    return { ...boundaryResult, completed: false, error, cashSettlement };
+  }
+
+  return { ...boundaryResult, completed: true, cashSettlement };
+}
+
+async function recordCompletionError(
+  institutionalDb: SupabaseClient,
+  rebalanceRequestId: string,
+  error: string,
+): Promise<void> {
+  const result = await institutionalDb
+    .from("rebalance_request_c")
+    .update({ completion_error: error, updated_at: new Date().toISOString() })
+    .eq("id", rebalanceRequestId)
+    .eq("status", "completing");
+  if (result.error) console.error("rebalance completion error could not be recorded", result.error.message);
 }
 
 async function runCompletion(
@@ -149,6 +219,7 @@ async function runCompletion(
   rebalanceRequestId: string,
   actorId: string | undefined,
   siblings: SiblingOrder[],
+  settlementBatchId: string,
 ): Promise<CompleteRebalanceResult> {
   // Owners whose own holdings this rebalance moved. Derived from the holdings
   // the orders reference rather than the order payload, because the payload
@@ -243,8 +314,8 @@ async function runCompletion(
   // strategy's published value on one account's trade.
   //
   // Everything client-level still runs: the fills already moved their holdings
-  // with cost basis intact, settleRebalanceCashForClients (the caller's next
-  // step, gated on `completed`) applies their reserve-funded fees and
+  // with cost basis intact, settleRebalanceCashForClients (the completion
+  // step below) applies their reserve-funded fees and
   // residual, and the settlement batch recorded below lets their own return
   // series (publish-client-eod-returns.ts) chain across the composition change
   // instead of jamming on it.
@@ -263,6 +334,7 @@ async function runCompletion(
       return { completed: false, error: `strategy "${strategyName}" not found` };
     }
     const recorded = await recordRebalanceSettlement(retailDb, {
+      batchId: settlementBatchId,
       strategyId: singleStrategyId,
       strategyName,
       holdings: [],
@@ -353,6 +425,7 @@ async function runCompletion(
   // doc comment: the publisher prices whatever `strategies_c.holdings` says,
   // so a flip that outruns its boundary is an unrecoverable YTD corruption.
   const boundary = await sealRebalanceBoundary(retailDb, {
+    batchId: settlementBatchId,
     strategyId,
     strategyName,
     holdings: holdings.map((h) => ({ symbol: h.symbol, shares: h.shares })),
