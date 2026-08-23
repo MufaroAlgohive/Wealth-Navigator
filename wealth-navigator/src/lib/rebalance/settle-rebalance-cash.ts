@@ -219,6 +219,11 @@ export async function settleRebalanceCashForClients(
         reserveCents,
         residualCents,
       });
+      if (bridge.shortfall) {
+        throw new Error(
+          `rebalance cash shortfall for ${userId}: requires ${Math.abs(bridge.cashAfterCents)} additional cents`,
+        );
+      }
 
       // Draw the rebalance's fees from the execution reserve. This adds to the
       // transaction's consumed total rather than assigning one, because the

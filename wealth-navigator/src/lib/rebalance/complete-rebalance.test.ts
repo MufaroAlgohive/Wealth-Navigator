@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const settlementMocks = vi.hoisted(() => ({
   sealRebalanceBoundary: vi.fn(),
@@ -16,13 +16,29 @@ import { maybeCompleteRebalance } from "./complete-rebalance";
 
 function chain(result: unknown) {
   const api: Record<string, unknown> = {};
-  for (const method of ["select", "eq", "in"]) api[method] = () => api;
+  for (const method of ["select", "eq", "in", "update"]) api[method] = () => api;
   api.maybeSingle = () => Promise.resolve(result);
   api.then = (resolve: (value: unknown) => unknown) => Promise.resolve(result).then(resolve);
   return api;
 }
 
+/** rebalance_request_c mock covering both the idempotency claim
+ * (.update().eq().eq().select().maybeSingle(), needs a truthy .data) and the
+ * release update (.update().eq(), bare-awaited — only .error matters). */
+function rebalanceRequestChain(selectResult: { data: unknown; error: null }) {
+  const api: Record<string, unknown> = {};
+  for (const method of ["select", "eq", "in"]) api[method] = () => api;
+  api.update = () => chain({ data: { id: "claimed" }, error: null });
+  api.maybeSingle = () => Promise.resolve(selectResult);
+  api.then = (resolve: (value: unknown) => unknown) => Promise.resolve(selectResult).then(resolve);
+  return api;
+}
+
 describe("maybeCompleteRebalance", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("records execution events for a completed single-client rebalance", async () => {
     settlementMocks.recordRebalanceSettlement.mockResolvedValue({ batchId: "batch-1" });
     settlementMocks.recordRebalanceExecutionEvidence.mockResolvedValue(null);
@@ -34,7 +50,7 @@ describe("maybeCompleteRebalance", () => {
         if (table === "oems_order_audit") {
           return chain({ data: [{ status: "filled", side: "sell", quantity: 1, payload: { user_id: "user-1", security_id: "security-1", filled: 1, lastFillAt: "2026-08-14T12:00:00.000Z" }, result_payload: { avgFillPrice: 1000 } }], error: null });
         }
-        return { select: () => chain({ data: { strategy_id: "Strategy Name", affected_investors: { scope: "single_user" }, proposed_composition: [] }, error: null }) };
+        return rebalanceRequestChain({ data: { strategy_id: "Strategy Name", affected_investors: { scope: "single_user" }, proposed_composition: [] }, error: null });
       }),
     };
 
@@ -83,16 +99,14 @@ describe("maybeCompleteRebalance", () => {
             error: null,
           });
         }
-        return {
-          select: () => chain({
+        return rebalanceRequestChain({
             data: {
               strategy_id: "Strategy Name",
               affected_investors: { scope: "single_user" },
               proposed_composition: [],
             },
             error: null,
-          }),
-        };
+          });
       }),
     };
 
@@ -127,7 +141,33 @@ describe("maybeCompleteRebalance", () => {
 
     const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
 
-    expect(outcome).toMatchObject({ completed: false, error: "rebalance has no filled execution evidence" });
+    expect(outcome).toEqual({ completed: false });
+    expect(settlementMocks.sealRebalanceBoundary).not.toHaveBeenCalled();
+  });
+
+  it("does not complete until every required order is fully filled", async () => {
+    const retailDb = { from: vi.fn() };
+    const institutionalDb = {
+      from: vi.fn(() =>
+        chain({
+          data: [
+            { status: "filled", quantity: 2, payload: { filled: 2 } },
+            { status: "filled", quantity: 3, payload: { filled: 2 } },
+          ],
+          error: null,
+        }),
+      ),
+    };
+
+    const outcome = await maybeCompleteRebalance(
+      retailDb as never,
+      institutionalDb as never,
+      "request-partial",
+      "actor-1",
+    );
+
+    expect(outcome).toEqual({ completed: false });
+    expect(settlementMocks.recordRebalanceSettlement).not.toHaveBeenCalled();
     expect(settlementMocks.sealRebalanceBoundary).not.toHaveBeenCalled();
   });
 
@@ -166,16 +206,14 @@ describe("maybeCompleteRebalance", () => {
           });
         }
         if (table === "rebalance_request_c") {
-          return {
-            select: () => chain({
+          return rebalanceRequestChain({
               data: {
                 strategy_id: "Strategy Name",
                 affected_investors: { scope: "strategy" },
                 proposed_composition: [{ ticker: "ABC.JO", shares: 2, action: "increase" }],
               },
               error: null,
-            }),
-          };
+            });
         }
         throw new Error(`unexpected institutional table: ${table}`);
       }),

@@ -28,6 +28,8 @@ import { getIressClient } from "../../../src/lib/iress/index";
 import type { Order, OrderState } from "../../../src/types/iress";
 import { productionOrdersEnabled, type WorkerEnv } from "./env";
 import { observedFillFromAudit, settleFill, voidUnfilledRemainder } from "./settlement";
+import { maybeCompleteRebalance } from "../../../src/lib/rebalance/complete-rebalance";
+import { settleRebalanceCashForClients } from "../../../src/lib/rebalance/settle-rebalance-cash";
 import {
   findGiftAuthorization,
   applyGiftFill,
@@ -497,7 +499,21 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
      here are logged and retried next cycle; they never fail the poll, because a
      settlement problem must not stop fills being recorded. */
   if (opts.retailSupabase && opts.supabase && opts.env.retailSettlementEnabled) {
+    const rebalanceIdsToCheck = new Map<string, string>();
+    const failedRebalanceIds = new Set<string>();
     for (const u of updates) {
+      const updatePayload = (u.settleRow.payload ?? {}) as Record<string, unknown>;
+      const updateRebalanceId =
+        typeof updatePayload.rebalance_request_id === "string" ? updatePayload.rebalance_request_id : null;
+      if (updateRebalanceId) {
+        const actor =
+          typeof updatePayload.sent_by === "string"
+            ? updatePayload.sent_by
+            : typeof updatePayload.trader === "string"
+              ? updatePayload.trader
+              : "iress-worker";
+        rebalanceIdsToCheck.set(updateRebalanceId, actor);
+      }
       /* A terminal order with unfilled quantity must be REVERSED, not settled.
          settleFill only ever adds what happened; nothing undid what did not.
          An app-raised order that is rejected — or a DAY order that expires
@@ -515,6 +531,7 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
           u.settleRow,
         );
       } catch (err) {
+        if (updateRebalanceId) failedRebalanceIds.add(updateRebalanceId);
         const msg = err instanceof Error ? err.message : String(err);
         console.error(
           JSON.stringify({ level: "error", event: "settlement_void_threw", order: u.settleRow.order_id, error: msg }),
@@ -695,7 +712,7 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
       // ── END GIFT LIFECYCLE ───────────────────────────────────────────────
 
       try {
-        await settleFill(
+        const settlement = await settleFill(
           {
             institutional: opts.supabase,
             retail: opts.retailSupabase,
@@ -704,11 +721,69 @@ export async function pollUatForFills(opts: UatOrderPollOptions): Promise<UatOrd
           },
           fill,
         );
+        if (settlement.error && updateRebalanceId) failedRebalanceIds.add(updateRebalanceId);
       } catch (err) {
+        if (updateRebalanceId) failedRebalanceIds.add(updateRebalanceId);
         const msg = err instanceof Error ? err.message : String(err);
         console.error(
           JSON.stringify({ level: "error", event: "settlement_threw", order: fill.orderId, error: msg }),
         );
+      }
+    }
+
+    // The audit rows are already stamped and every observed client fill above
+    // has settled successfully. Only now may a resolved rebalance flip the
+    // strategy model and seal its return/cash boundary. Dry-run must never
+    // perform these completion writes.
+    if (!opts.env.retailSettlementDryRun) {
+      for (const [rebalanceRequestId, actor] of rebalanceIdsToCheck) {
+        if (failedRebalanceIds.has(rebalanceRequestId)) continue;
+        try {
+          const completion = await maybeCompleteRebalance(
+            opts.retailSupabase as never,
+            opts.supabase as never,
+            rebalanceRequestId,
+            actor,
+          );
+          if (completion.error) {
+            console.error(
+              JSON.stringify({
+                level: "error",
+                event: "rebalance_completion_blocked",
+                rebalance_request_id: rebalanceRequestId,
+                error: completion.error,
+              }),
+            );
+            continue;
+          }
+          if (completion.completed) {
+            const cash = await settleRebalanceCashForClients(
+              opts.retailSupabase as never,
+              opts.supabase as never,
+              rebalanceRequestId,
+              completion.settlementBatchId,
+            );
+            if (cash.errors.length > 0) {
+              console.error(
+                JSON.stringify({
+                  level: "error",
+                  event: "rebalance_cash_settlement_blocked",
+                  rebalance_request_id: rebalanceRequestId,
+                  errors: cash.errors,
+                }),
+              );
+            }
+          }
+        } catch (err) {
+          console.error(
+            JSON.stringify({
+              level: "error",
+              event: "rebalance_completion_threw",
+              rebalance_request_id: rebalanceRequestId,
+              error: err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
       }
     }
   }

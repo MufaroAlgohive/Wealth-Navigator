@@ -432,6 +432,11 @@ export async function reconcileParkedHoldings(
           reserveCents,
           residualCents,
         });
+        if (bridge.shortfall) {
+          throw new Error(
+            `parked rebalance cash shortfall for ${userId}: requires ${Math.abs(bridge.cashAfterCents)} additional cents`,
+          );
+        }
 
         let remainingReserveUse = bridge.reserveUsedCents;
         for (const t of transactionsForReserve) {

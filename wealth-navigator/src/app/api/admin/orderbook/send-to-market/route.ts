@@ -476,6 +476,7 @@ export async function POST(req: Request) {
   const bookId = typeof body.book_id === "string" ? body.book_id.trim() : "";
   const broker = typeof body.broker === "string" ? body.broker.trim() : "";
   const orderType = body.order_type === "market" ? "market" : "limit";
+  const proposedComposition = Array.isArray(body.proposed_composition) ? body.proposed_composition : null;
   // UAT escape hatch — only honoured when IRESS_UAT_MODE is set on Vercel.
   // When false, the audit rows are still written but the worker is never
   // called (existing audit-only path is preserved bit-for-bit).
@@ -490,6 +491,12 @@ export async function POST(req: Request) {
 
   if (!bookId) return NextResponse.json({ ok: false, error: "book_id is required" }, { status: 400 });
   if (!broker) return NextResponse.json({ ok: false, error: "broker is required" }, { status: 400 });
+  if (!proposedComposition || proposedComposition.length === 0) {
+    return NextResponse.json(
+      { ok: false, error: "proposed_composition is required to create a safe rebalance completion contract" },
+      { status: 400 },
+    );
+  }
   if (orderType !== "limit" && orderType !== "market") {
     return NextResponse.json({ ok: false, error: "order_type must be 'limit' or 'market'" }, { status: 400 });
   }
@@ -541,7 +548,7 @@ export async function POST(req: Request) {
   // excluded; only a holding with NO prior order_audit row (or a purely
   // terminal-and-never-traded one, e.g. rejected/cancelled/expired/failed) is
   // eligible to be sent.
-  const ALREADY_DISPATCHED_STATUSES = new Set([...IN_FLIGHT_STATUSES, "filled"]);
+  const ALREADY_DISPATCHED_STATUSES = new Set([...IN_FLIGHT_STATUSES, "parked", "filled"]);
   const institutional = openInstitutional();
   if (!institutional) {
     return NextResponse.json({ ok: false, error: "INSTITUTIONAL database not configured" }, { status: 503 });
@@ -728,6 +735,48 @@ export async function POST(req: Request) {
     );
   }
 
+  // Create the completion contract BEFORE any order can be dispatched. The
+  // real fill path keys on this id to flip the model, seal the return boundary,
+  // and settle cash after every sibling order resolves.
+  const strategyRes = await retail
+    .from("strategies_c")
+    .select("holdings,investor_environment")
+    .eq("name", bookId)
+    .maybeSingle();
+  if (strategyRes.error || !strategyRes.data) {
+    return NextResponse.json(
+      { ok: false, error: `Cannot create rebalance completion contract: strategy '${bookId}' was not found.` },
+      { status: 409 },
+    );
+  }
+  const { data: rbRow, error: rbErr } = await institutional
+    .from("rebalance_request_c")
+    .insert({
+      strategy_id: bookId,
+      requested_by: auth.ctx.email,
+      current_composition: Array.isArray(strategyRes.data.holdings) ? strategyRes.data.holdings : [],
+      proposed_composition: proposedComposition,
+      affected_investors: { scope: "strategy", user_ids: userIds },
+      status: "ic_approved",
+      environment_scope:
+        String(strategyRes.data.investor_environment ?? "LIVE").toUpperCase() === "UAT" ? "uat" : "live",
+    })
+    .select("id")
+    .maybeSingle();
+  if (rbErr || !rbRow?.id) {
+    const missing = rbErr && isSupabaseSchemaMissing(rbErr);
+    return NextResponse.json(
+      {
+        ok: false,
+        error: missing
+          ? "rebalance_request_c is unavailable; dispatch is blocked because completion would be impossible."
+          : `Could not create rebalance completion contract: ${rbErr?.message ?? "no id returned"}`,
+      },
+      { status: missing ? 409 : 500 },
+    );
+  }
+  const rebalanceId = String(rbRow.id);
+
   // Build execution rows (one per ISIN per holding). order_id is the strategy
   // book so the desk can group/aggregate on the front-end.
   // limitsCheckedAt was declared above so we can echo it in the 422
@@ -774,6 +823,8 @@ export async function POST(req: Request) {
         sent_by: auth.ctx.email,
         sent_at: new Date().toISOString(),
         holding_id: h.id,
+        rebalance_request_id: rebalanceId,
+        client_treatment: "settled",
         // ATTRIBUTION. Without this the fill is unattributable and settlement
         // drops it — `observedFillFromAudit` returns null on a missing
         // payload.user_id, which is not even the `blocked` path, so nothing is
@@ -822,49 +873,14 @@ export async function POST(req: Request) {
     .select("id, order_id");
 
   if (insertErr) {
+    await institutional
+      .from("rebalance_request_c")
+      .update({ status: "cancelled", updated_at: new Date().toISOString() })
+      .eq("id", rebalanceId);
     return NextResponse.json({ ok: false, error: insertErr.message }, { status: 500 });
   }
 
-  // Optional rebalance_request_c mirror. Degrade softly if the table is missing.
-  let rebalanceId: string | null = null;
-  let rebalanceNotice: string | null = null;
-  try {
-    const proposedComposition = holdings.map((h) => {
-      const sec = secMap[h.security_id];
-      return {
-        symbol: sec?.symbol ?? null,
-        isin: sec?.isin ?? null,
-        side: (h.trade_side ?? "buy").toLowerCase(),
-        qty: Number(h.quantity) || 0,
-        limit_cents: orderType === "limit" ? Math.round(Number(h.Expected_fill ?? 0)) : null,
-      };
-    });
-    const { data: rbRow, error: rbErr } = await institutional
-      .from("rebalance_request_c")
-      .insert({
-        strategy_id: bookId,
-        requested_by: auth.ctx.email,
-        current_composition: [],
-        proposed_composition: proposedComposition,
-        affected_investors: userIds,
-        status: "ic_approved",
-      })
-      .select("id")
-      .maybeSingle();
-
-    if (rbErr) {
-      if (isSupabaseSchemaMissing(rbErr)) {
-        rebalanceNotice =
-          "rebalance_request_c table not migrated yet — apply 20260710000004_rebalance_request_c.sql. Execution rows written to oems_order_audit only.";
-      } else {
-        rebalanceNotice = `rebalance_request_c insert failed: ${rbErr.message}`;
-      }
-    } else {
-      rebalanceId = (rbRow?.id as string) ?? null;
-    }
-  } catch (e) {
-    rebalanceNotice = `rebalance_request_c insert failed: ${(e as Error).message}`;
-  }
+  const rebalanceNotice: string | null = null;
 
   // ── UAT worker fanout ─────────────────────────────────────────────
   // Gated by: (a) `IRESS_UAT_MODE=true` on Vercel, (b) `IRESS_WORKER_URL`
