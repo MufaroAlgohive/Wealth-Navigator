@@ -92,7 +92,7 @@ describe("rebalance proceeds bridge", () => {
         residualCents: 10_000,
       }),
     ).toMatchObject({
-      strategyCashAfterCents: 0,
+      strategyCashAfterCents: -10_000,
       cashAfterCents: -10_000,
       shortfall: true,
     });

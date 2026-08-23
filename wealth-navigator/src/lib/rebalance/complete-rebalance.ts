@@ -65,6 +65,15 @@ export interface CompleteRebalanceResult {
   };
 }
 
+interface SiblingOrder {
+  status: string;
+  side?: string | null;
+  quantity?: number | null;
+  order_id?: string | null;
+  payload: Record<string, unknown> | null;
+  result_payload?: Record<string, unknown> | null;
+}
+
 export async function maybeCompleteRebalance(
   retailDb: SupabaseClient,
   institutionalDb: SupabaseClient,
@@ -73,20 +82,74 @@ export async function maybeCompleteRebalance(
 ): Promise<CompleteRebalanceResult> {
   const siblingsRes = await institutionalDb
     .from("oems_order_audit")
-    .select("status,side,quantity,payload,result_payload")
+    .select("status,side,quantity,order_id,payload,result_payload")
     .eq("payload->>rebalance_request_id", rebalanceRequestId);
   if (siblingsRes.error) return { completed: false, error: siblingsRes.error.message };
-  const siblings = (siblingsRes.data ?? []) as Array<{
-    status: string;
-    side?: string | null;
-    quantity?: number | null;
-    payload: Record<string, unknown> | null;
-    result_payload?: Record<string, unknown> | null;
-  }>;
+  const siblings = (siblingsRes.data ?? []) as SiblingOrder[];
   if (siblings.length === 0) return { completed: false };
-  const allDone = siblings.every((r) => ["filled", "cancelled", "rejected"].includes(r.status));
-  if (!allDone) return { completed: false };
+  // The target model is valid only once every required client order has its
+  // full broker fill. Terminal failures remain operationally resolved, but
+  // they are not a completed rebalance and must never publish the target.
+  const allFullyFilled = siblings.every((r) => {
+    const expected = Number(r.quantity);
+    const observed = Number(r.payload?.filled);
+    return (
+      r.status === "filled" &&
+      Number.isFinite(expected) &&
+      expected > 0 &&
+      Number.isFinite(observed) &&
+      observed >= expected
+    );
+  });
+  if (!allFullyFilled) return { completed: false };
 
+  // Claim before doing any real work: a repeated poller pass over the same
+  // resolved group must be a no-op, not a re-sealed boundary or re-settled
+  // cash. Reverted to "ic_approved" on any failure below so the group stays
+  // retryable (per this module's doc comment: unfinished-and-retryable is
+  // recoverable, a corrupted return chain is not) — only genuine success
+  // marks it "executed".
+  const claim = await institutionalDb
+    .from("rebalance_request_c")
+    .update({ status: "completing" })
+    .eq("id", rebalanceRequestId)
+    .eq("status", "ic_approved")
+    .select("id")
+    .maybeSingle();
+  if (claim.error) return { completed: false, error: `rebalance claim failed: ${claim.error.message}` };
+  if (!claim.data) return { completed: false };
+
+  const result = await runCompletion(retailDb, institutionalDb, rebalanceRequestId, actorId, siblings);
+
+  const releaseRes = await institutionalDb
+    .from("rebalance_request_c")
+    .update({
+      status: result.completed ? "executed" : "ic_approved",
+      executed_at: result.completed ? new Date().toISOString() : null,
+    })
+    .eq("id", rebalanceRequestId);
+  if (releaseRes.error) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "rebalance_claim_release_failed",
+        rebalanceRequestId,
+        completed: result.completed,
+        error: releaseRes.error.message,
+      }),
+    );
+  }
+
+  return result;
+}
+
+async function runCompletion(
+  retailDb: SupabaseClient,
+  institutionalDb: SupabaseClient,
+  rebalanceRequestId: string,
+  actorId: string | undefined,
+  siblings: SiblingOrder[],
+): Promise<CompleteRebalanceResult> {
   // Owners whose own holdings this rebalance moved. Derived from the holdings
   // the orders reference rather than the order payload, because the payload
   // hardcodes family_member_id to null while the holding carries the real one
@@ -228,7 +291,11 @@ export async function maybeCompleteRebalance(
         scope: "single_user",
       };
     }
-    return { completed: true, scope: "single_user", settlementBatchId: recorded.batchId };
+    return {
+      completed: true,
+      scope: "single_user",
+      settlementBatchId: recorded.batchId,
+    };
   }
   const proposed = (
     Array.isArray(reqRes.data.proposed_composition) ? reqRes.data.proposed_composition : []

@@ -2114,7 +2114,25 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
   // already-reconciled `rows` (zero extra fetch), release POSTs to the
   // existing release-to-market route and relies on the 2s poll to reflect
   // the new state (no manual refetch needed).
-  const parkedCount = React.useMemo(() => rows.filter((r) => r.state === "PARKED").length, [rows]);
+  const parkedBookIds = React.useMemo(
+    () =>
+      Array.from(
+        new Set(
+          rows
+            .filter((r) => r.state === "PARKED" && typeof r.strategy === "string" && r.strategy.trim())
+            .map((r) => String(r.strategy).trim()),
+        ),
+      ).sort(),
+    [rows],
+  );
+  const [releaseBookId, setReleaseBookId] = React.useState("");
+  React.useEffect(() => {
+    if (!parkedBookIds.includes(releaseBookId)) setReleaseBookId(parkedBookIds[0] ?? "");
+  }, [parkedBookIds, releaseBookId]);
+  const parkedCount = React.useMemo(
+    () => rows.filter((r) => r.state === "PARKED" && r.strategy === releaseBookId).length,
+    [releaseBookId, rows],
+  );
   const [releasing, setReleasing] = React.useState(false);
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   // Mirrors the server's own gate exactly (lib/admin/step-up.ts requires
@@ -2147,7 +2165,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
       const res = await fetch("/api/admin/orderbook/release-to-market", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ book_id: releaseBookId }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -2246,10 +2264,23 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
             </span>
           )}
           {allowsMarketRelease(scope) ? (
+            <div className="flex items-center gap-2">
+            {parkedBookIds.length > 1 ? (
+              <select
+                className="h-8 max-w-48 rounded-md border border-input bg-background px-2 text-xs"
+                value={releaseBookId}
+                onChange={(event) => setReleaseBookId(event.target.value)}
+                aria-label="Parked order book to release"
+              >
+                {parkedBookIds.map((bookId) => (
+                  <option key={bookId} value={bookId}>{bookId}</option>
+                ))}
+              </select>
+            ) : null}
             <Button
               variant="secondary"
               size="sm"
-              disabled={SEND_TO_MARKET_LOCKED || parkedCount === 0 || releasing}
+              disabled={SEND_TO_MARKET_LOCKED || !releaseBookId || parkedCount === 0 || releasing}
               onClick={openReleaseConfirm}
               title={
                 SEND_TO_MARKET_LOCKED
@@ -2266,6 +2297,7 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                   ? "Send to Market (locked)"
                   : `Send to Market (${parkedCount})`}
             </Button>
+            </div>
           ) : null}
           <Button
             variant="ghost"
