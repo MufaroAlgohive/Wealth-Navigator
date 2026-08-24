@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { cn } from "@/lib/cn";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
+import { buildWealthIndex, calculateMonthlyReturns, calculateRisk, valueWeightedReturn } from "@/lib/investors/analytics";
 
 /* ── Types (raw payload) ── */
 interface Holding { user_id: string; family_member_id: string | null; security_id: string; strategy_id: string | null; quantity: number; avg_fill: number | null; Expected_fill: number | null; transaction_id?: string | null; }
@@ -17,8 +18,8 @@ interface NavRow { user_id: string; family_member_id?: string | null; strategy_i
 interface Profile { id: string; first_name: string | null; last_name: string | null; email: string | null; mint_number: string | null; computershare_number: string | null; }
 interface FamilyMember { id: string; first_name: string | null; last_name: string | null; computershare_number: string | null; primary_user_id?: string | null; parent_id?: string | null; }
 interface SecMeta { id: string; symbol: string; name: string | null; sector: string | null; logo_url: string | null; }
-interface SecLive { security_id: string; current_price: number | null; }
-interface Txn { id: string; user_id: string; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_cents: number | null; buffer_consumed_cents: number | null; }
+interface SecLive { security_id: string; current_price: number | null; price_source?: string; price_as_of?: string | null; stale?: boolean; age_seconds?: number | null; }
+interface Txn { id: string; user_id: string; family_member_id?: string | null; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_cents: number | null; buffer_consumed_cents: number | null; }
 interface Residual { user_id: string; family_member_id?: string | null; strategy_id?: string | null; balance_cents: number | null; }
 interface Strategy { id: string; name: string; short_name: string | null; }
 interface CanonicalPosition { user_id: string; family_member_id: string | null; strategy_id: string; aum_cents: number; securities_cents: number; reserve_cents: number; residual_cents: number; consumed_aum_fee_cents: number; }
@@ -45,8 +46,9 @@ function costCentsPerShare(h: Holding): number {
 interface HoldingView { securityId: string; symbol: string; name: string; sector: string; qty: number; priceCents: number; costCents: number; valueCents: number; investedCents: number; pnlCents: number; }
 interface Investor {
   key: string; userId: string; familyMemberId: string | null; strategyId: string | null; strategy: string | null; name: string; parentName: string | null; email: string; mintNumber: string | null; computershare: string | null;
-  investedCents: number; currentCents: number; residualCents: number; bufferCents: number; realizedCents: number; valueCents: number; pnlCents: number; retPct: number;
+  investedCents: number; currentCents: number; residualCents: number; bufferCents: number; realizedCents: number; unrealizedCents: number; feesCents: number; reconciliationDeltaCents: number; valueCents: number; pnlCents: number; retPct: number;
   ytdPct: number | null; inceptionPct: number | null;
+  returnAsOf: string | null;
   nav: { date: string; v: number }[]; holdings: HoldingView[]; txns: Txn[];
 }
 interface InvestorGroup extends Investor {
@@ -56,36 +58,6 @@ interface InvestorGroup extends Investor {
   groupCount: number;
 }
 
-function computeRisk(nav: { v: number }[]) {
-  const series = nav.map((p) => p.v).filter((v) => v > 0);
-  if (series.length < 3) return { sharpe: null, sortino: null, vol: null, maxDD: null, annRet: null };
-  const rets: number[] = [];
-  for (let i = 1; i < series.length; i++) rets.push(series[i]! / series[i - 1]! - 1);
-  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
-  const variance = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / rets.length;
-  const std = Math.sqrt(variance);
-  const downside = Math.sqrt(rets.filter((r) => r < 0).reduce((a, b) => a + b * b, 0) / rets.length);
-  let peak = series[0]!, maxDD = 0;
-  for (const v of series) { if (v > peak) peak = v; const dd = (v - peak) / peak; if (dd < maxDD) maxDD = dd; }
-  return {
-    sharpe: std > 0 ? (mean / std) * Math.sqrt(252) : null,
-    sortino: downside > 0 ? (mean / downside) * Math.sqrt(252) : null,
-    vol: std * Math.sqrt(252) * 100,
-    maxDD: maxDD * 100,
-    annRet: mean * 252 * 100,
-  };
-}
-function computeCalendar(nav: { date: string; v: number }[]) {
-  const monthEnd: Record<string, number> = {};
-  for (const p of nav) if (p.v > 0) monthEnd[p.date.slice(0, 7)] = p.v;
-  const yms = Object.keys(monthEnd).sort();
-  const out: Record<string, Record<number, number>> = {};
-  for (let i = 1; i < yms.length; i++) {
-    const [y, m] = yms[i]!.split("-").map(Number);
-    (out[String(y)] ||= {})[m! - 1] = (monthEnd[yms[i]!]! / monthEnd[yms[i - 1]!]! - 1) * 100;
-  }
-  return out;
-}
 function classifyTxn(t: Txn): string {
   const n = `${t.name || ""} ${t.description || ""}`.toLowerCase();
   if (n.includes("withdraw")) return "Withdrawal";
@@ -110,6 +82,10 @@ function groupStrategyInvestors(rows: Investor[], selectedKey: string | null): I
     const valueCents = ordered.reduce((sum, item) => sum + item.valueCents, 0);
     const investedCents = ordered.reduce((sum, item) => sum + item.investedCents, 0);
     const pnlCents = ordered.reduce((sum, item) => sum + item.pnlCents, 0);
+    const unrealizedCents = ordered.reduce((sum, item) => sum + item.unrealizedCents, 0);
+    const realizedCents = ordered.reduce((sum, item) => sum + item.realizedCents, 0);
+    const feesCents = ordered.reduce((sum, item) => sum + item.feesCents, 0);
+    const reconciliationDeltaCents = ordered.reduce((sum, item) => sum + item.reconciliationDeltaCents, 0);
     // Was a naive pnlCents/investedCents ratio recomputed from the summed
     // cents -- which discarded each strategy's own canonicalRetPct (the
     // published/certified return) even for the common case of ONE strategy,
@@ -134,6 +110,10 @@ function groupStrategyInvestors(rows: Investor[], selectedKey: string | null): I
       valueCents,
       investedCents,
       pnlCents,
+      unrealizedCents,
+      realizedCents,
+      feesCents,
+      reconciliationDeltaCents,
       retPct,
     };
   }).filter((group): group is InvestorGroup => group !== null).sort((a, b) => b.valueCents - a.valueCents);
@@ -141,13 +121,24 @@ function groupStrategyInvestors(rows: Investor[], selectedKey: string | null): I
 
 export default function InvestorsPage() {
   const [data, setData] = React.useState<Payload | null>(null);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [search, setSearch] = React.useState("");
   const [selId, setSelId] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState("performance");
   const [bookType, setBookType] = React.useState<"strategies" | "single">("strategies");
 
   React.useEffect(() => {
-    fetch("/api/admin/investors/data").then((r) => r.json()).then((d) => setData(d.ok ? d : { holdings: [], strategies: [], profiles: [], familyMembers: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] })).catch(() => setData({ holdings: [], strategies: [], profiles: [], familyMembers: [], secMeta: [], secLive: [], txns: [], residuals: [], closedHoldings: [], stratHist: [] } as Payload));
+    fetch("/api/admin/investors/data", { cache: "no-store" })
+      .then(async (response) => {
+        const body = await response.json().catch(() => null);
+        if (!response.ok || !body?.ok) throw new Error(body?.error || `Investor data HTTP ${response.status}`);
+        setData(body);
+        setLoadError(null);
+      })
+      .catch((error) => {
+        setData(null);
+        setLoadError(error instanceof Error ? error.message : "Investor data unavailable");
+      });
   }, []);
 
   const investors = React.useMemo<Investor[]>(() => {
@@ -182,8 +173,6 @@ export default function InvestorsPage() {
     }
     const navByUser: Record<string, NavRow[]> = {};
     for (const r of data.stratHist) (navByUser[scope(r.user_id,r.family_member_id,r.strategy_id)] ||= []).push(r);
-    const txnByUser: Record<string, Txn[]> = {};
-    for (const t of data.txns) (txnByUser[t.user_id] ||= []).push(t);
     const holdsByUser: Record<string, Holding[]> = {};
     for (const h of data.holdings) (holdsByUser[scope(h.user_id,h.family_member_id,h.strategy_id)] ||= []).push(h);
 
@@ -194,7 +183,8 @@ export default function InvestorsPage() {
       const bysecurity: Record<string, HoldingView> = {};
       let investedCents = 0, currentCents = 0;
       for (const h of hs) {
-        const live = liveById.get(h.security_id) || costCentsPerShare(h);
+        const live = liveById.get(h.security_id);
+        if (live == null) continue; // The API fails closed before this can occur.
         const qty = Number(h.quantity) || 0;
         const mv = qty * live;
         const inv = costCentsPerShare(h) * qty;
@@ -207,19 +197,20 @@ export default function InvestorsPage() {
       const residualCents = canonical?.residual_cents ?? residualByUser[key] ?? 0;
       const bufferCents = canonical?.reserve_cents ?? bufferByUser[key] ?? 0;
       const realizedCents = realizedByUser[key] || 0;
-      /* Value = positions + cash (residual + reserve). The buffer is
-         contributed cash, not a gain, so P&L excludes it; Invested is
-         derived (value − P&L = cost basis + buffer) so Invested + P&L =
-         Value — identical to MyMintAdmin's investors.html and dashboard. */
+      /* Value comes from the canonical retail AUM scope. Accounting components
+         below are reconstructed independently and checked against that value. */
       currentCents = canonical?.securities_cents ?? currentCents;
       const valueCents = canonical?.aum_cents ?? currentCents + residualCents + bufferCents;
+      const feesCents = canonical?.consumed_aum_fee_cents ?? 0;
+      const unrealizedCents = currentCents - investedCents;
       const navKey=scope(userId,familyMemberId,strategyId);
       const canonicalRows = navByUser[navKey] || [];
-      // Plot the canonical chain-linked return, never absolute basket value:
-      // cash flows and rebalance composition changes are not performance.
-      const nav = canonicalRows
-        .filter((r) => r.inception_pct != null && Number.isFinite(Number(r.inception_pct)))
-        .map((r) => ({ date: r.as_of_date, v: Number(r.inception_pct) }));
+      // Build a positive wealth index from the canonical daily chain. Risk and
+      // calendar maths must operate on wealth, never on cumulative percentages.
+      const nav = buildWealthIndex(canonicalRows.map((r) => ({
+        date: r.as_of_date,
+        dailyPct: r["1d_pct"] == null ? null : Number(r["1d_pct"]),
+      }))).map((point) => ({ date: point.date, v: point.value }));
       const latestNav = canonicalRows[canonicalRows.length - 1];
       // Prefer the canonical published return (same field YTD reads) over the
       // self-computed live-price retPct below — mirrors MyMintAdmin's
@@ -237,9 +228,13 @@ export default function InvestorsPage() {
       // silently disagree with the same row's own canonicalRetPct — two
       // different numbers for "how did this investment do" shown side by
       // side on the same card.
-      const rawPnlCents = currentCents - investedCents + realizedCents - (canonical?.consumed_aum_fee_cents ?? 0);
+      const rawPnlCents = unrealizedCents + realizedCents - feesCents;
       const pnlCents = latestNav?.inception_pnl != null ? Number(latestNav.inception_pnl) : rawPnlCents;
-      const investedStableCents = valueCents - pnlCents;
+      // Reconstruct basis independently. If canonical P&L disagrees with the
+      // component ledger, the delta remains visible instead of being hidden by
+      // defining basis as value minus P&L.
+      const investedStableCents = investedCents + residualCents + bufferCents - realizedCents;
+      const reconciliationDeltaCents = valueCents - investedStableCents - pnlCents;
       const prof = profById.get(userId);
       const familyMember = familyMemberId ? familyById.get(familyMemberId) : null;
       const parentId = familyMember?.primary_user_id || familyMember?.parent_id;
@@ -262,9 +257,9 @@ export default function InvestorsPage() {
       out.push({
         key,userId,familyMemberId,strategyId,strategy:strategyId?(strategyById.get(strategyId)?.short_name||strategyById.get(strategyId)?.name||"Strategy"):null, name:displayName,parentName,
         email: prof?.email || "", mintNumber: prof?.mint_number || null, computershare: familyMember?.computershare_number || prof?.computershare_number || null,
-        investedCents: investedStableCents, currentCents, residualCents, bufferCents, realizedCents, valueCents, pnlCents,
+        investedCents: investedStableCents, currentCents, residualCents, bufferCents, realizedCents, unrealizedCents, feesCents, reconciliationDeltaCents, valueCents, pnlCents,
         retPct: canonicalRetPct != null ? Number(canonicalRetPct) : (investedStableCents > 0 ? (pnlCents / investedStableCents) * 100 : 0),
-        ytdPct: latestNav?.ytd_pct ?? null, inceptionPct: latestNav?.inception_pct ?? null,
+        ytdPct: latestNav?.ytd_pct ?? null, inceptionPct: latestNav?.inception_pct ?? null, returnAsOf: latestNav?.as_of_date ?? null,
         nav,
         // Cash (residual + reserve) is part of the client's holding, not a
         // footnote below it -- shown here as its own block/row exactly like a
@@ -287,7 +282,14 @@ export default function InvestorsPage() {
               }]
             : []),
         ],
-        txns: txnByUser[userId] || [],
+        txns: (() => {
+          const holdingTransactionIds = new Set(hs.map((holding) => holding.transaction_id).filter(Boolean));
+          return data.txns.filter((transaction) => {
+          if (transaction.user_id !== userId) return false;
+          if ((transaction.family_member_id ?? null) !== (familyMemberId ?? null)) return false;
+          return holdingTransactionIds.has(transaction.id);
+          });
+        })(),
       });
     }
     return out.sort((a, b) => b.valueCents - a.valueCents);
@@ -297,10 +299,11 @@ export default function InvestorsPage() {
     const aum = data?.canonicalSummary?.total_aum_cents ?? investors.reduce((s, i) => s + i.valueCents, 0);
     const invested = investors.reduce((s, i) => s + i.investedCents, 0);
     const pnl = investors.reduce((s, i) => s + i.pnlCents, 0);
-    const avgRet = investors.length ? investors.reduce((s, i) => s + i.retPct, 0) / investors.length : 0;
-    const sorted = [...investors].filter((i) => i.investedCents > 0).sort((a, b) => b.retPct - a.retPct);
+    const avgRet = valueWeightedReturn(investors.map((i) => ({ valueCents: i.valueCents, returnPct: i.ytdPct }))) ?? 0;
+    const sorted = [...investors].filter((i) => i.ytdPct != null).sort((a, b) => Number(b.ytdPct) - Number(a.ytdPct));
     return { aum, invested, pnl, avgRet, best: sorted[0] || null, worst: sorted[sorted.length - 1] || null };
   }, [data?.canonicalSummary?.total_aum_cents, investors]);
+  const stalePrices = data?.secLive.filter((price) => price.stale) ?? [];
 
   const filtered = investors.filter((i) => (bookType === "strategies" ? !!i.strategyId : !i.strategyId) && (!search.trim() || `${i.name} ${i.parentName || ""} ${i.email} ${i.strategy || ""}`.toLowerCase().includes(search.toLowerCase())));
   const listRows = bookType === "strategies" ? groupStrategyInvestors(filtered, selId) : filtered.map((i) => ({ ...i, ownerKey: ownerKeyOf(i), selectedKey: i.key, strategies: [i], groupCount: 1 }));
@@ -309,15 +312,17 @@ export default function InvestorsPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
+      {loadError ? <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive"><b>Investor analytics unavailable.</b> {loadError} Values are hidden because a partial financial view is unsafe.</div> : null}
+      {data ? <div className={cn("rounded-xl border px-4 py-3 text-xs", stalePrices.length ? "border-warning/40 bg-warning/10 text-warning" : "border-success/30 bg-success/5 text-success")}><b>{stalePrices.length ? "Price warning" : "Data reconciled"}.</b> AUM evidence as of {data.canonicalSummary?.as_of ? new Date(data.canonicalSummary.as_of).toLocaleString("en-ZA") : "unknown"}. {stalePrices.length ? `${stalePrices.length} security price(s) are stale; Yahoo fallback was unavailable, so values are marked provisional.` : "All active securities have usable price evidence."}</div> : null}
       {/* KPI bar */}
       <div className="flex justify-end"><DataSourceBadge source="hybrid" db="retail" /></div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
         <Kpi label="Total AUM" value={R(kpi.aum)} />
-        <Kpi label="Invested" value={R(kpi.invested)} />
+        <Kpi label="Reconciled basis" value={R(kpi.invested)} />
         <Kpi label="Total P&L" value={R(kpi.pnl)} valueCls={pctCls(kpi.pnl)} />
-        <Kpi label="Avg Return" value={pctStr(kpi.avgRet)} valueCls={pctCls(kpi.avgRet)} />
-        <Kpi label="Best" value={kpi.best ? kpi.best.name.split(" ")[0]! : "—"} sub={kpi.best ? pctStr(kpi.best.retPct) : undefined} subCls={pctCls(kpi.best?.retPct ?? null)} />
-        <Kpi label="Worst" value={kpi.worst ? kpi.worst.name.split(" ")[0]! : "—"} sub={kpi.worst ? pctStr(kpi.worst.retPct) : undefined} subCls={pctCls(kpi.worst?.retPct ?? null)} />
+        <Kpi label="AUM-weighted YTD" value={pctStr(kpi.avgRet)} valueCls={pctCls(kpi.avgRet)} />
+        <Kpi label="Best YTD" value={kpi.best ? kpi.best.name.split(" ")[0]! : "—"} sub={kpi.best ? pctStr(kpi.best.ytdPct) : undefined} subCls={pctCls(kpi.best?.ytdPct ?? null)} />
+        <Kpi label="Worst YTD" value={kpi.worst ? kpi.worst.name.split(" ")[0]! : "—"} sub={kpi.worst ? pctStr(kpi.worst.ytdPct) : undefined} subCls={pctCls(kpi.worst?.ytdPct ?? null)} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
@@ -358,8 +363,8 @@ export default function InvestorsPage() {
 }
 
 function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab }: { inv: Investor; siblingStrategies: Investor[]; onSelectInvestor: (key: string) => void; tab: string; setTab: (v: string) => void }) {
-  const risk = React.useMemo(() => computeRisk(inv.nav), [inv]);
-  const calendar = React.useMemo(() => computeCalendar(inv.nav), [inv]);
+  const risk = React.useMemo(() => calculateRisk(inv.nav.map((point) => ({ date: point.date, value: point.v }))), [inv]);
+  const calendar = React.useMemo(() => calculateMonthlyReturns(inv.nav.map((point) => ({ date: point.date, value: point.v }))), [inv]);
   const years = Object.keys(calendar).sort().reverse();
   const [year, setYear] = React.useState<number | null>(null);
   const activeYear = year ?? (years.length ? Number(years[0]) : null);
@@ -390,16 +395,20 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
           <div className={cn("text-[11px] font-semibold", pctCls(inv.inceptionPct ?? inv.ytdPct))}>
             {pctStr(inv.inceptionPct ?? inv.ytdPct)} all-time
           </div>
+          <div className="text-[10px] text-muted-foreground">Returns as of {inv.returnAsOf || "unavailable"}</div>
           <div className="text-[11px] text-muted-foreground">Holdings {R(inv.currentCents)} · Residual {R(inv.residualCents)} · Reserve {R(inv.bufferCents)}</div>
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-3">
-        <Kpi label="Invested" value={R(inv.investedCents)} />
-        <Kpi label="P&L" value={R(inv.pnlCents)} valueCls={pctCls(inv.pnlCents)} />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+        <Kpi label="Reconciled basis" value={R(inv.investedCents)} />
+        <Kpi label="Unrealised P&L" value={R(inv.unrealizedCents)} valueCls={pctCls(inv.unrealizedCents)} />
+        <Kpi label="Realised P&L" value={R(inv.realizedCents)} valueCls={pctCls(inv.realizedCents)} />
+        <Kpi label="Fees" value={R(inv.feesCents)} />
         <Kpi label="YTD" value={pctStr(inv.ytdPct)} valueCls={pctCls(inv.ytdPct)} />
         <Kpi label="Inception" value={pctStr(inv.inceptionPct)} valueCls={pctCls(inv.inceptionPct)} />
       </div>
+      {Math.abs(inv.reconciliationDeltaCents) > 1 ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">Accounting mismatch: value differs from basis plus P&amp;L by {R(inv.reconciliationDeltaCents)}.</div> : null}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex-wrap">
