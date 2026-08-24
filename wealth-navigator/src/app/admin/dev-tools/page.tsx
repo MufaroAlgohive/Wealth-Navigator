@@ -224,6 +224,152 @@ function RecomputePanel() {
   );
 }
 
+type ClientPublishRow = {
+  client: string;
+  strategy: string;
+  action: "published" | "plan" | "skip" | "failed";
+  reason?: string;
+  dailyPct?: number | null;
+  error?: string;
+};
+
+type ClientPublishResponse = {
+  ok: boolean;
+  asOf: string;
+  apply: boolean;
+  summary?: { published: number; skipped: number; failed: number; total: number };
+  results?: ClientPublishRow[];
+  note?: string;
+  error?: string;
+};
+
+function ClientReturnsPublishPanel() {
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState<ClientPublishResponse | null>(null);
+
+  const runPublish = async () => {
+    setPending(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/cron/client-returns-publish?apply=1");
+      const body = (await res.json().catch(() => ({}))) as ClientPublishResponse;
+      setResult(body);
+      if (!res.ok || body.ok === false) {
+        toast.error(body.error ?? body.note ?? `Publish failed (${res.status}).`);
+      } else {
+        const s = body.summary;
+        toast.success(
+          s
+            ? `Published for ${body.asOf}: ${s.published} written, ${s.skipped} skipped, ${s.failed} failed.`
+            : `Published for ${body.asOf}.`,
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setResult({ ok: false, asOf: "", apply: true, error: msg });
+      toast.error(msg);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <Panel
+      title="Client returns publish"
+      endpoint="cron.client-returns-publish"
+      right={
+        <Button size="sm" onClick={runPublish} disabled={pending}>
+          {pending ? "Publishing…" : "Publish Now"}
+        </Button>
+      }
+    >
+      <div className="space-y-3 text-xs">
+        <p className="text-muted-foreground">
+          Manually runs today&apos;s per-client EOD return publish — the same job that normally only fires
+          from the scheduled 17:20 UTC cron. This writes one guarded row per (client, family member,
+          strategy) into <span className="font-mono">client_strategy_return_publication_audit_c</span>,
+          which is what Day P&amp;L / per-client YTD read from.
+        </p>
+        <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-600 dark:text-amber-400">
+          <strong>Coordinate before running this.</strong> The CRM (MyMintAdmin, a separate app) has its
+          own daily cron for this exact job at 16:00 UTC, and this route is intentionally opt-in
+          (<span className="font-mono">CLIENT_RETURNS_PUBLISH_APPLY</span> unset) specifically because two
+          publishers writing the same (owner, date) row can fork that client&apos;s return chain. Only use
+          this button once you&apos;ve confirmed the CRM&apos;s cron did <em>not</em> already publish
+          today&apos;s date, or you&apos;re intentionally taking over publication from it.
+        </p>
+        {result && (
+          <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
+            {result.error && <p className="text-destructive">{result.error}</p>}
+            {result.note && (
+              <p className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-600 dark:text-amber-400">
+                {result.note}
+              </p>
+            )}
+            {result.asOf && (
+              <p className="mb-2 text-muted-foreground">
+                As of <span className="font-mono text-foreground">{result.asOf}</span>
+                {result.summary && (
+                  <>
+                    {" "}
+                    · <span className="font-mono text-foreground">{result.summary.published}</span> published,{" "}
+                    <span className="font-mono text-foreground">{result.summary.skipped}</span> skipped,{" "}
+                    <span className="font-mono text-foreground">{result.summary.failed}</span> failed
+                  </>
+                )}
+              </p>
+            )}
+            {result.results && result.results.length > 0 ? (
+              <table className="w-full font-mono text-[11px]">
+                <thead>
+                  <tr className="text-left text-muted-foreground">
+                    <th className="pb-1 pr-2 font-normal">Client</th>
+                    <th className="pb-1 pr-2 font-normal">Strategy</th>
+                    <th className="pb-1 pr-2 font-normal">Action</th>
+                    <th className="pb-1 text-right font-normal">1D</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {result.results.map((r, i) => (
+                    <tr key={`${r.client}-${r.strategy}-${i}`}>
+                      <td className="py-1 pr-2 font-sans">{r.client}</td>
+                      <td className="py-1 pr-2 font-sans">{r.strategy}</td>
+                      <td className="py-1 pr-2">
+                        <span title={r.reason ?? r.error} className="inline-flex items-center gap-1">
+                          <Pill
+                            tone={
+                              r.action === "published"
+                                ? "success"
+                                : r.action === "failed"
+                                  ? "destructive"
+                                  : "neutral"
+                            }
+                            size="xs"
+                          >
+                            {r.action}
+                          </Pill>
+                          {(r.reason || r.error) && (
+                            <span className="text-muted-foreground">({r.reason ?? r.error})</span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="py-1 text-right">
+                        {r.dailyPct == null ? "—" : `${r.dailyPct >= 0 ? "+" : ""}${r.dailyPct.toFixed(2)}%`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              !result.error && <p className="text-muted-foreground">No owners returned.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 export default function DevToolsPage() {
   const { ctx } = useAdmin();
   const admin = isAdminRole(ctx);
@@ -239,6 +385,7 @@ export default function DevToolsPage() {
       </p>
 
       <RecomputePanel />
+      <ClientReturnsPublishPanel />
     </div>
   );
 }
