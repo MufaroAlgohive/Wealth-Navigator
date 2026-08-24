@@ -361,7 +361,7 @@ export default function EquitiesPage() {
                     }
                   >
                     <div className="grid grid-cols-3 gap-2 text-xs">
-                      <Stat label="AUM" value={s.aum > 0 ? formatZAR(s.aum) : "—"} />
+                      <Stat label="AUM" value={s.aum > 0 ? formatZARExact(s.aum) : "—"} />
                       <Stat label="YTD" value={formatPct(s.ytd)} positive={s.ytd >= 0} />
                       <Stat label="Sharpe" value={s.sharpe.toFixed(2)} />
                       <Stat label="Max DD" value={formatPct(s.maxDD)} negative />

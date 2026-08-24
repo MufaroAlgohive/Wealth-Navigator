@@ -2607,7 +2607,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           note={
             realDataOnly
               ? clientBookAvailable && clientBook
-                ? `${clientBook.investors.toLocaleString()} LIVE investors · contribution measured against ${formatZAR(clientBook.aum)} canonical AUM.`
+                ? `${clientBook.investors.toLocaleString()} LIVE investors · contribution measured against ${formatZARExact(clientBook.aum)} canonical AUM.`
                 : undefined
               : "Showing strategies as stand-ins — per-investor list wires in the data phase."
           }
