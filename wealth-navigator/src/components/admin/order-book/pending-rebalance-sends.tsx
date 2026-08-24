@@ -86,7 +86,10 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
   const [completingId, setCompletingId] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
   const [expandedHistory, setExpandedHistory] = React.useState<Set<string>>(new Set());
-  const [showHistory, setShowHistory] = React.useState(false);
+  // Expanded by default — this is where a completed real rebalance actually
+  // lives, and it must not sit hidden behind an extra click below a list of
+  // pending approvals that may be nothing but stale UAT test proposals.
+  const [showHistory, setShowHistory] = React.useState(true);
 
   const strategiesQuery = usePolling<{ strategies?: Strategy[] }>("/api/strategies", {
     interval: 60_000,
@@ -204,7 +207,59 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card/40">
+      {/* On Rebalance Tab (real, executed/completing/completed rebalances) is
+          the important surface — a real trade that actually moved client
+          money — so it renders first and open by default, ahead of the
+          pending-approval queue below, which can otherwise fill up with
+          stale test proposals that crowd out the one thing that matters. */}
       <div className="border-b border-border px-4 py-3">
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 text-left text-xs font-semibold uppercase text-muted-foreground"
+          onClick={() => setShowHistory((v) => !v)}
+        >
+          <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 transition-transform", showHistory && "rotate-90")} />
+          On Rebalance Tab ({history.length})
+        </button>
+      </div>
+      {showHistory ? (
+        <div className="divide-y divide-border/50">
+          {history.length === 0 ? (
+            <div className="px-4 py-4 text-center text-xs text-muted-foreground">Nothing released yet.</div>
+          ) : (
+            history.map((r) => (
+              <BookedRebalanceRow
+                key={r.id}
+                r={r}
+                open={expandedHistory.has(r.id)}
+                onToggle={() =>
+                  setExpandedHistory((current) => {
+                    const next = new Set(current);
+                    if (next.has(r.id)) next.delete(r.id);
+                    else next.add(r.id);
+                    return next;
+                  })
+                }
+                releasing={releasingId === r.id}
+                onRelease={r.status === "executed" ? () => releaseToOrderBook(r.id) : undefined}
+                completing={completingId === r.id}
+                onRetrySettlement={
+                  r.status !== "completed" && (scope === "uat" || isMaster)
+                    ? () => retrySettlement(r.id)
+                    : undefined
+                }
+                // Mirrors release-to-orderbook/route.ts, which only applies the
+                // master step-up when the request is NOT uat-scoped. Demanding
+                // master on a UAT release here would block something the server
+                // would have happily allowed.
+                requiresMaster={scope !== "uat"}
+                isMaster={isMaster}
+              />
+            ))
+          )}
+        </div>
+      ) : null}
+      <div className="border-b border-t border-border px-4 py-3">
         <h2 className="text-xs font-semibold uppercase text-muted-foreground">
           Ready to Release to Rebalance Tab
         </h2>
@@ -285,51 +340,6 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
           })}
         </div>
       )}
-      <button
-        type="button"
-        className="flex w-full items-center gap-2 border-t border-border px-4 py-2 text-left text-[11px] text-muted-foreground hover:bg-accent/30"
-        onClick={() => setShowHistory((v) => !v)}
-      >
-        <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", showHistory && "rotate-90")} />
-        On Rebalance Tab ({history.length})
-      </button>
-      {showHistory ? (
-        <div className="divide-y divide-border/50 border-t border-border/40">
-          {history.length === 0 ? (
-            <div className="px-4 py-4 text-center text-xs text-muted-foreground">Nothing released yet.</div>
-          ) : (
-            history.map((r) => (
-              <BookedRebalanceRow
-                key={r.id}
-                r={r}
-                open={expandedHistory.has(r.id)}
-                onToggle={() =>
-                  setExpandedHistory((current) => {
-                    const next = new Set(current);
-                    if (next.has(r.id)) next.delete(r.id);
-                    else next.add(r.id);
-                    return next;
-                  })
-                }
-                releasing={releasingId === r.id}
-                onRelease={r.status === "executed" ? () => releaseToOrderBook(r.id) : undefined}
-                completing={completingId === r.id}
-                onRetrySettlement={
-                  r.status !== "completed" && (scope === "uat" || isMaster)
-                    ? () => retrySettlement(r.id)
-                    : undefined
-                }
-                // Mirrors release-to-orderbook/route.ts, which only applies the
-                // master step-up when the request is NOT uat-scoped. Demanding
-                // master on a UAT release here would block something the server
-                // would have happily allowed.
-                requiresMaster={scope !== "uat"}
-                isMaster={isMaster}
-              />
-            ))
-          )}
-        </div>
-      ) : null}
     </div>
   );
 }

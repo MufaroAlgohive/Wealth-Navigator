@@ -45,7 +45,7 @@ async function authorized(req: Request): Promise<boolean> {
   return auth.status === "ok" && isAdminRole(auth.ctx);
 }
 
-async function yahooCrumb(): Promise<{ cookie: string; crumb: string } | null> {
+async function yahooCrumbOnce(): Promise<{ cookie: string; crumb: string } | null> {
   try {
     const c = await fetch("https://fc.yahoo.com/", { headers: { "User-Agent": "Mozilla/5.0" } });
     const cookie = c.headers.get("set-cookie")?.split(";")[0] ?? "";
@@ -58,6 +58,22 @@ async function yahooCrumb(): Promise<{ cookie: string; crumb: string } | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * A single failed cookie/crumb handshake used to kill the entire 5-minute
+ * run silently — every symbol this route owns (the ETFs IRESS can't quote,
+ * e.g. SYGEMF.JO, STXNDQ.JO) then goes stale with nothing logged anywhere
+ * to say why. Yahoo's unauthenticated crumb endpoint is exactly the kind of
+ * dependency that has occasional bad responses; one retry after a short
+ * backoff clears most of those without meaningfully lengthening a run that
+ * already has a 300s budget for ~360 securities.
+ */
+async function yahooCrumb(): Promise<{ cookie: string; crumb: string } | null> {
+  const first = await yahooCrumbOnce();
+  if (first) return first;
+  await new Promise((r) => setTimeout(r, 1500));
+  return yahooCrumbOnce();
 }
 
 /**
@@ -142,7 +158,13 @@ export async function GET(req: Request) {
   const setSourceCol = process.env.RETAIL_PRICE_SOURCE_COL === "1";
 
   const session = await yahooCrumb();
-  if (!session) return NextResponse.json({ ok: false, error: "Could not establish a Yahoo session (cookie/crumb)" }, { status: 502 });
+  if (!session) {
+    // Previously silent — a run that failed here left every Yahoo-owned
+    // symbol (the ETFs IRESS can't quote) stale with no server-side trace
+    // of why, only this JSON response that nothing was reading.
+    console.warn("[yahoo-fundamentals] session establishment failed after retry — run aborted, no prices written");
+    return NextResponse.json({ ok: false, error: "Could not establish a Yahoo session (cookie/crumb)" }, { status: 502 });
+  }
 
   let updated = 0, failed = 0, covered = 0, ticks = 0;
   const sample: Array<Record<string, unknown>> = [];
