@@ -402,8 +402,8 @@ type ReturnSet = Partial<Record<ReturnPeriodKey, number | null>>;
 interface StrategyReturnInsightsResponse {
   ok: boolean;
   strategy?: { name: string; asOf: string | null; source: string; returns: ReturnSet };
-  constituents?: Array<{ symbol: string; name: string | null; asOf: string | null; source: string; returns: ReturnSet }>;
-  cash?: { symbol: string; name: string; source: string; returns: null };
+  constituents?: Array<{ symbol: string; name: string | null; asOf: string | null; source: string; error?: string | null; returns: ReturnSet }>;
+  cash?: { symbol: string; name: string; source: string; returns: ReturnSet };
   benchmark?: { symbol: string; asOf: string | null; source: string; returns: ReturnSet | null } | null;
 }
 
@@ -427,9 +427,12 @@ function ReturnInsightsCard({ strategy }: { strategy: StrategyRow }) {
     .map((row) => ({ ...row, value: row.returns[period] }))
     .sort((a, b) => (b.value ?? Number.NEGATIVE_INFINITY) - (a.value ?? Number.NEGATIVE_INFINITY));
   const alerts = rows.filter((row) => row.value != null && row.value <= returnAlertFloor(period));
-  const strategyValue = query.data?.strategy?.returns[period] ?? null;
-  const benchmarkValue = query.data?.benchmark?.returns?.[period] ?? null;
   const asOf = rows.map((row) => row.asOf).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+  const strategyAsOf = query.data?.strategy?.asOf ?? null;
+  const strategyIsAligned = period !== "1d_pct" || !asOf || !strategyAsOf || asOf.slice(0, 10) === strategyAsOf.slice(0, 10);
+  const strategyValue = strategyIsAligned ? query.data?.strategy?.returns[period] ?? null : null;
+  const benchmarkValue = query.data?.benchmark?.returns?.[period] ?? null;
+  const cashValue = query.data?.cash?.returns[period] ?? 0;
   return (
     <section className="glass-panel overflow-hidden">
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
@@ -442,13 +445,13 @@ function ReturnInsightsCard({ strategy }: { strategy: StrategyRow }) {
       </header>
       <div className="p-3">
         {query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading focused returns…</p> : rows.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No return data for these strategy securities.</p> : <>
-          <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border border-border/70 bg-background/25 p-2.5">
-            <div><p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">{strategy.name} · certified</p><p className={cn("mt-1 font-mono text-sm font-bold", strategyValue == null ? "text-muted-foreground" : strategyValue >= 0 ? "text-success" : "text-destructive")}>{strategyValue == null ? "—" : `${strategyValue >= 0 ? "+" : ""}${strategyValue.toFixed(2)}%`}</p></div>
-            <div className="text-right"><p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Benchmark {query.data?.benchmark?.symbol ?? "—"}</p><p className={cn("mt-1 font-mono text-sm font-bold", benchmarkValue == null ? "text-muted-foreground" : benchmarkValue >= 0 ? "text-success" : "text-destructive")}>{benchmarkValue == null ? "—" : `${benchmarkValue >= 0 ? "+" : ""}${benchmarkValue.toFixed(2)}%`}</p></div>
+          <div className={cn("mb-3 grid gap-2 rounded-lg border border-border/70 bg-background/25 p-2.5", query.data?.benchmark ? "grid-cols-2" : "grid-cols-1")}>
+            <div><p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Certified strategy return · as of {strategyAsOf ?? "—"}</p><p className={cn("mt-1 font-mono text-sm font-bold", strategyValue == null ? "text-muted-foreground" : strategyValue >= 0 ? "text-success" : "text-destructive")}>{strategyValue == null ? (strategyIsAligned ? "—" : "Awaiting today's certification") : `${strategyValue >= 0 ? "+" : ""}${strategyValue.toFixed(2)}%`}</p></div>
+            {query.data?.benchmark ? <div className="text-right"><p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Benchmark {query.data.benchmark.symbol}</p><p className={cn("mt-1 font-mono text-sm font-bold", benchmarkValue == null ? "text-muted-foreground" : benchmarkValue >= 0 ? "text-success" : "text-destructive")}>{benchmarkValue == null ? "—" : `${benchmarkValue >= 0 ? "+" : ""}${benchmarkValue.toFixed(2)}%`}</p></div> : null}
           </div>
           <p className="mb-1.5 text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Constituent returns</p>
-          <div className="grid grid-cols-2 gap-2">{rows.map((row) => <div key={row.symbol} className="flex min-w-0 items-center rounded-lg border border-border px-2.5 py-2"><div className="min-w-0"><span className="font-mono text-[10px] font-bold">{row.symbol}</span>{row.name ? <p className="truncate text-[8px] text-muted-foreground">{row.name}</p> : null}</div><span className={cn("ml-auto font-mono text-[10px] font-bold", row.value == null ? "text-muted-foreground" : row.value >= 0 ? "text-success" : "text-destructive")}>{row.value == null ? "—" : `${row.value >= 0 ? "+" : ""}${row.value.toFixed(2)}%`}</span></div>)}</div>
-          {strategy.holdingsPreview.some((holding) => holding.isCash) ? <div className="mt-2 flex items-center rounded-lg border border-border px-2.5 py-2"><div><span className="font-mono text-[10px] font-bold">CA</span><p className="text-[8px] text-muted-foreground">Continuity cash · non-market asset</p></div><span className="ml-auto font-mono text-[10px] text-muted-foreground">n/a</span></div> : null}
+          <div className="grid grid-cols-2 gap-2">{rows.map((row) => <div key={row.symbol} title={row.error ?? `${row.source} as of ${row.asOf ?? "unknown"}`} className="flex min-w-0 items-center rounded-lg border border-border px-2.5 py-2"><div className="min-w-0"><span className="font-mono text-[10px] font-bold">{row.symbol}</span><p className="truncate text-[8px] text-muted-foreground">{row.name ?? (row.source === "supabase-stored-close" ? "Stored-close fallback" : row.source === "unavailable" ? "No market history available" : "Yahoo")}</p></div><span className={cn("ml-auto font-mono text-[10px] font-bold", row.value == null ? "text-muted-foreground" : row.value >= 0 ? "text-success" : "text-destructive")}>{row.value == null ? "—" : `${row.value >= 0 ? "+" : ""}${row.value.toFixed(2)}%`}</span></div>)}</div>
+          {strategy.holdingsPreview.some((holding) => holding.isCash) ? <div className="mt-2 flex items-center rounded-lg border border-border px-2.5 py-2"><div><span className="font-mono text-[10px] font-bold">CA</span><p className="text-[8px] text-muted-foreground">Continuity cash · nominal return</p></div><span className="ml-auto font-mono text-[10px] font-bold text-muted-foreground">{`${cashValue >= 0 ? "+" : ""}${cashValue.toFixed(2)}%`}</span></div> : null}
           <p className="mt-2 text-right font-mono text-[8px] text-muted-foreground">Yahoo as of {asOf ? new Date(asOf).toLocaleString("en-ZA") : "—"} · refreshes every 60s</p>
         </>}
       </div>
