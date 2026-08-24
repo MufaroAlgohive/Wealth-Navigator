@@ -58,7 +58,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { FEED_NOT_CONFIGURED, isRealDataOnlyClient } from "@/lib/data-policy";
 import { mapSource } from "@/lib/data-source";
-import { formatPct, formatTime, formatZAR } from "@/lib/format";
+import { formatPct, formatTime, formatZAR, formatZARExact } from "@/lib/format";
 import { deriveDbFresh, isWorkerAlive, resolveActiveDataSource } from "@/lib/market-prices/active-source";
 import { deriveDataSource } from "@/lib/hooks/quote-routing";
 import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
@@ -208,7 +208,7 @@ function CockpitKpi({
   db?: DbName;
 }) {
   return (
-    <div className="glass-kpi relative">
+    <div className="glass-kpi group relative">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           {icon && (
@@ -274,6 +274,12 @@ function CockpitKpi({
           <ArrowUpRight className="h-3 w-3" />
         </Link>
       ) : null}
+      <div
+        className={cn(
+          "pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100",
+          accent === "primary" ? "bg-primary/20" : "bg-primary/10",
+        )}
+      />
     </div>
   );
 }
@@ -1263,7 +1269,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               label="Platform AUM"
               dataSource="supabase"
               db="retail"
-              value={clientBookAvailable ? formatZAR(clientBook!.aum) : "—"}
+              value={clientBookAvailable ? formatZARExact(clientBook!.aum) : "—"}
               sub={
                 clientBookAvailable
                   ? `${clientBook!.investors} investors · ${clientBook!.holdings} holdings`
@@ -1379,7 +1385,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Layers className="h-3.5 w-3.5" />}
               label="Platform AUM"
-              value={formatZAR(totalAum)}
+              value={formatZARExact(totalAum)}
               sub={`${strategies.length} strategies · ${liveStrats} live`}
             />
             {/*

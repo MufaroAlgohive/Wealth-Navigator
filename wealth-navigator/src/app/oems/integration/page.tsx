@@ -51,7 +51,7 @@ function IntegrationKpi({
   accent?: IntegrationKpiAccent;
 }) {
   return (
-    <div className="glass-kpi relative">
+    <div className="glass-kpi group relative">
       <div className="flex items-center gap-2">
         {icon && (
           <div
@@ -91,6 +91,7 @@ function IntegrationKpi({
           {sub}
         </p>
       )}
+      <div className="pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full bg-primary/10 opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100" />
     </div>
   );
 }

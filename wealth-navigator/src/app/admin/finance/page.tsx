@@ -49,7 +49,7 @@ const rand = (n: number): string =>
   new Intl.NumberFormat("en-ZA", {
     style: "currency",
     currency: "ZAR",
-    maximumFractionDigits: 0,
+    maximumFractionDigits: 2,
   }).format(Number.isFinite(n) ? n : 0);
 
 export default function FinancePage() {
