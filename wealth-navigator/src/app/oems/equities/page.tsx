@@ -28,7 +28,7 @@ import type { BffUnavailableReason } from "@/lib/bff-reasons";
 import { cn } from "@/lib/cn";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { mapSource } from "@/lib/data-source";
-import { formatNumber, formatPct, formatZAR } from "@/lib/format";
+import { formatNumber, formatPct, formatZAR, formatZARExact } from "@/lib/format";
 import { useLiveQuotes } from "@/lib/hooks/use-live-quotes";
 import { usePortfolio } from "@/lib/hooks/use-portfolio";
 import { useIress } from "@/lib/iress/provider";
@@ -255,7 +255,7 @@ export default function EquitiesPage() {
                 label="Platform AUM"
                 dataSource="supabase"
                 db="retail"
-                value={clientBookQ.data?.source === "retail-supabase" ? formatZAR(clientBookQ.data.aum) : "—"}
+                value={clientBookQ.data?.source === "retail-supabase" ? formatZARExact(clientBookQ.data.aum) : "—"}
                 sub={
                   clientBookQ.data?.source === "retail-supabase"
                     ? `${clientBookQ.data.holdings} LIVE holdings`
@@ -318,7 +318,7 @@ export default function EquitiesPage() {
             <>
               <GlassKpi
                 label="Equity AUM"
-                value={formatZAR(totalAum)}
+                value={formatZARExact(totalAum)}
                 sub={`${strategies.length} mandates`}
               />
               <GlassKpi
