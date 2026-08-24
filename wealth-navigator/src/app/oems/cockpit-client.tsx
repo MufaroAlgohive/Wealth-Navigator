@@ -7,6 +7,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Banknote,
+  CalendarDays,
   FileText,
   Layers,
   Lock,
@@ -55,6 +56,7 @@ import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { StrategyPerfChart } from "@/components/oems/primitives/strategy-perf-chart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/cn";
 import { FEED_NOT_CONFIGURED, isRealDataOnlyClient } from "@/lib/data-policy";
 import { mapSource } from "@/lib/data-source";
@@ -163,6 +165,49 @@ interface ClientBookBffResponse {
   }>;
   reason?: string;
   error?: string;
+}
+
+interface DayPnlResponse {
+  ok: boolean;
+  today: {
+    date: string;
+    pnl: number | null;
+    status: "live" | "stale";
+    source: string;
+    asOf: string | null;
+    coveredHoldings: number;
+    totalHoldings: number;
+    feesIncluded: boolean;
+  };
+  history: Array<{ date: string; pnl: number; strategies: number; investors: number }>;
+}
+
+function CockpitDayPnlHistory({ open, onOpenChange, data }: { open: boolean; onOpenChange: (open: boolean) => void; data?: DayPnlResponse }) {
+  const [range, setRange] = useState<"7D" | "1M" | "3M" | "YTD">("1M");
+  const days = range === "7D" ? 7 : range === "1M" ? 31 : range === "3M" ? 93 : 370;
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const rows = (data?.history ?? []).filter((row) => row.date >= cutoff);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[82vh] max-w-3xl overflow-hidden">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><CalendarDays className="h-4 w-4 text-primary" />Daily P&amp;L history</DialogTitle>
+          <DialogDescription>Gross market P&amp;L across LIVE client assets. Today ticks from current prices; prior days use stored return snapshots. Fees are currently excluded.</DialogDescription>
+        </DialogHeader>
+        <div className="flex gap-1">{(["7D", "1M", "3M", "YTD"] as const).map((item) => <button key={item} type="button" onClick={() => setRange(item)} className={cn("rounded-md border px-3 py-1 text-xs", range === item ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground")}>{item}</button>)}</div>
+        <div className="rounded-lg border border-border/70 bg-background/35 p-4">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Today · {data?.today.date ?? "—"}</p>
+          <p className={cn("mt-1 font-mono text-2xl font-bold", (data?.today.pnl ?? 0) > 0 ? "text-success" : (data?.today.pnl ?? 0) < 0 ? "text-destructive" : "text-foreground")}>{data?.today.pnl == null ? "Pending complete market coverage" : formatZAR(data.today.pnl)}</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">{data?.today.status === "live" ? `Gross · ${data.today.coveredHoldings}/${data.today.totalHoldings} positions · refreshes every 30 seconds` : "A stale or partial value is never presented as today."}</p>
+        </div>
+        <div className="max-h-[45vh] overflow-y-auto rounded-lg border border-border/70">
+          <div className="grid grid-cols-[1fr_1fr_80px_80px] border-b border-border/70 px-3 py-2 text-[10px] uppercase text-muted-foreground"><span>Date</span><span className="text-right">P&amp;L</span><span className="text-right">Strategies</span><span className="text-right">Investors</span></div>
+          {rows.map((row) => <div key={row.date} className="grid grid-cols-[1fr_1fr_80px_80px] border-b border-border/40 px-3 py-2 text-xs last:border-0"><span>{row.date}</span><span className={cn("text-right font-mono font-semibold", row.pnl > 0 ? "text-success" : row.pnl < 0 ? "text-destructive" : "text-muted-foreground")}>{formatZAR(row.pnl)}</span><span className="text-right text-muted-foreground">{row.strategies}</span><span className="text-right text-muted-foreground">{row.investors}</span></div>)}
+          {rows.length === 0 && <p className="p-6 text-center text-xs text-muted-foreground">No stored P&amp;L rows in this range.</p>}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 /** Strip the JSE `.JO` suffix for display (`NPN.JO` → `NPN`). */
@@ -445,6 +490,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // Portfolio Accounts horizon — investor-snippet performance window.
   // Defaults to YTD per Lonwabo (1D / MTD / YTD).
   const [accountsHorizon, setAccountsHorizon] = useState<AccountsHorizon>("YTD");
+  const [dayPnlHistoryOpen, setDayPnlHistoryOpen] = useState(false);
   // JSE All Share panel view: intraday tape vs normalized strategy performance.
   const [alsiView, setAlsiView] = useState<"intraday" | "strategies">("intraday");
   // Restricted external accounts (e.g. IRESS) must not see strategy data, so
@@ -813,10 +859,18 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     enabled: realDataOnly,
     ...queryOpts("live"),
   });
+  const dayPnlQ = useQuery<DayPnlResponse>({
+    queryKey: ["cockpit-live-day-pnl"],
+    queryFn: () => fetchJson<DayPnlResponse>("/api/strategies/day-pnl"),
+    enabled: realDataOnly,
+    refetchInterval: 30_000,
+    ...queryOpts("live"),
+  });
   const equitiesData = equitiesQ.data;
   const equitiesAvailable = !!equitiesData && equitiesData.source !== "unavailable";
   const clientBook = clientBookQ.data;
   const clientBookAvailable = clientBook?.source === "retail-supabase";
+  const liveDayPnl = dayPnlQ.data?.today.status === "live" ? dayPnlQ.data.today.pnl : null;
   // Cap-weighted broad-market proxy from the JSE constituent universe (real data
   // already loaded). IRESS has no official J203/ALSI index on this account, so
   // we surface this clearly-labelled proxy rather than an empty index panel.
@@ -1283,19 +1337,19 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               aggregate); the sub-label calls out the scope, then the as-of
               timestamp. Honest "—" when the client book is unavailable.
             */}
-            <CockpitKpi
-              icon={<Activity className="h-3.5 w-3.5" />}
-              label="Day P&L"
-              dataSource="supabase"
-              db="retail"
-              value={clientBookAvailable ? formatZAR(clientBook!.dayPnl) : "—"}
-              sub={
-                clientBookAvailable
-                  ? `across all strategies · as of ${clientBook!.asOf ?? "—"}`
-                  : "Across all strategies — client book unavailable"
-              }
-              accent={clientBookAvailable ? (clientBook!.dayPnl >= 0 ? "positive" : "negative") : "default"}
-            />
+            <button type="button" onClick={() => setDayPnlHistoryOpen(true)} className="min-w-0 text-left" title="Open daily P&L history">
+              <CockpitKpi
+                icon={<Activity className="h-3.5 w-3.5" />}
+                label={liveDayPnl == null ? "Day P&L · pending" : "Day P&L · live"}
+                dataSource="supabase"
+                db="retail"
+                value={liveDayPnl == null ? "—" : formatZAR(liveDayPnl)}
+                sub={liveDayPnl == null
+                  ? "Awaiting complete current-price coverage"
+                  : `gross asset P&L · ${dayPnlQ.data?.today.coveredHoldings ?? 0}/${dayPnlQ.data?.today.totalHoldings ?? 0} positions · 30s`}
+                accent={liveDayPnl == null ? "default" : liveDayPnl >= 0 ? "positive" : "negative"}
+              />
+            </button>
             <CockpitKpi
               icon={<Lock className="h-3.5 w-3.5" />}
               label="Rebalance Locked"
@@ -2786,6 +2840,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           )}
         </div>
       )}
+      <CockpitDayPnlHistory open={dayPnlHistoryOpen} onOpenChange={setDayPnlHistoryOpen} data={dayPnlQ.data} />
     </ResearchLabCanvas>
   );
 }

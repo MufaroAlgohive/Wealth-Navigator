@@ -66,7 +66,7 @@ interface StrategiesResponse {
 
 interface DayPnlResponse {
   ok: boolean;
-  today: { date: string; pnl: number | null; byStrategy: Record<string, number>; status: "live" | "stale"; source: string; asOf: string | null; coveredHoldings: number; totalHoldings: number };
+  today: { date: string; pnl: number | null; byStrategy: Record<string, number>; status: "live" | "stale"; source: string; asOf: string | null; coveredHoldings: number; totalHoldings: number; feesIncluded: boolean };
   history: Array<{ date: string; pnl: number; strategies: number; investors: number }>;
 }
 
@@ -122,7 +122,7 @@ function DayPnlHistoryDialog({ open, onOpenChange, data }: { open: boolean; onOp
       <DialogContent className="max-h-[82vh] max-w-3xl overflow-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2"><CalendarDays className="h-4 w-4 text-primary" />Daily P&amp;L history</DialogTitle>
-          <DialogDescription>Live clients only. Today uses current prices versus previous close; earlier dates use stored return snapshots.</DialogDescription>
+          <DialogDescription>Gross market P&amp;L across LIVE client assets. Opening units use previous close; intraday trades use actual fills. Earlier dates use stored return snapshots. Fees are currently excluded.</DialogDescription>
         </DialogHeader>
         <div className="flex gap-1">{(["7D", "1M", "3M", "YTD"] as const).map((item) => <button key={item} type="button" onClick={() => setRange(item)} className={cn("rounded-md border px-3 py-1 text-xs", range === item ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground")}>{item}</button>)}</div>
         <div className="rounded-lg border border-border/70 bg-background/35 p-4">
@@ -188,8 +188,9 @@ export function StrategiesMonitor() {
   });
   const strategies = useMemo(() => {
     const rows = strategiesQ.data?.strategies ?? [];
-    if (dayPnlQ.data?.today.status !== "live") return rows.map((row) => ({ ...row, dayPnl: 0 }));
-    return rows.map((row) => ({ ...row, dayPnl: dayPnlQ.data.today.byStrategy[row.id] ?? 0 }));
+    const today = dayPnlQ.data?.today;
+    if (today?.status !== "live") return rows.map((row) => ({ ...row, dayPnl: 0 }));
+    return rows.map((row) => ({ ...row, dayPnl: today.byStrategy[row.id] ?? 0 }));
   }, [strategiesQ.data?.strategies, dayPnlQ.data]);
   const focusId = useSearchParams().get("focus");
   const [selected, setSelected] = useState("");
