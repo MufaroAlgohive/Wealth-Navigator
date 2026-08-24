@@ -5,6 +5,7 @@ import { ExternalLink } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Pill } from "@/components/oems/primitives/pill";
 import { formatTime } from "@/lib/format";
+import { newsWireLabel, type NewsWire } from "@/lib/news-source";
 
 /**
  * Canonical "full read" shape for the click-to-expand news popup shared by
@@ -32,7 +33,7 @@ export interface NewsArticleDialogItem {
   category?: string | null;
   tickers?: string[] | null;
   /** "ALLIANCE" | "SENS" — drives the wire pill when present. */
-  wire?: string | null;
+  wire?: NewsWire | null;
   regulatory?: boolean;
 }
 
@@ -57,7 +58,7 @@ export function NewsArticleDialog({
               <div className="flex flex-wrap items-center gap-1.5">
                 {item.wire && (
                   <Pill tone={item.wire === "SENS" ? "primary" : "neutral"} size="xs">
-                    {item.wire === "SENS" ? "SENS" : "Alliance"}
+                    {newsWireLabel(item.wire)}
                   </Pill>
                 )}
                 {item.regulatory && (
@@ -91,12 +92,13 @@ export function NewsArticleDialog({
                 </div>
               )}
 
-              {/* Honest gap: the underlying feeds are headline + snippet only
-                  for most items — no full article body is available to show. */}
+              {/* Honest gap: some feeds expose only a headline/link even when
+                  the publisher's own page contains a full article. */}
               {(!item.body || item.body.trim().length === 0) && (
                 <p className="text-[11px] text-muted-foreground">
-                  Full article text isn&apos;t provided by this source — only the headline
-                  {item.url ? " and a link to the original are available." : " is available."}
+                  {item.url
+                    ? "This feed did not provide article text. Open the publisher’s page to read the available article."
+                    : "This feed provided only the headline; no article text or publisher link is available."}
                 </p>
               )}
 

@@ -71,6 +71,7 @@ import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
 import { useIress } from "@/lib/iress/provider";
 import { isRestrictedEmail } from "@/lib/platform/access";
 import { queryOpts } from "@/lib/store/query-provider";
+import { classifyNewsWire } from "@/lib/news-source";
 import { useTick } from "@/lib/store/tick-stream-provider";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
@@ -620,6 +621,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       source: string;
       category: string;
       tickers: string[];
+      body: string | null;
       url: string | null;
     }>;
     source: string;
@@ -928,7 +930,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       headline: n.headline,
       ts: n.ts,
       source: n.source,
-      wire: n.source === "SENS" ? "SENS" : "ALLIANCE",
+      wire: classifyNewsWire(n.source, n.category),
       category: n.category,
       tickers: n.tickers,
       regulatory: n.source === "SENS",
@@ -949,18 +951,20 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // News Flow (real-data) — from the `/api/news` BFF. The BFF already merges
   // live RSS (Moneyweb / BusinessTech) + the Alliance wire; SENS regulatory
   // announcements still need the paid feed, so any item whose source reads
-  // "SENS" is tagged accordingly and everything else is the Alliance wire.
+  // Preserve each publisher wire so the feed can be filtered accurately.
   const realNewsFlow = useMemo<NewsFlowItem[]>(() => {
     return (newsBffQ.data?.items ?? []).map((n) => {
-      const isSens = /sens/i.test(n.source);
+      const wire = classifyNewsWire(n.source, n.category);
+      const isSens = wire === "SENS";
       return {
         id: n.id,
         headline: n.headline,
         ts: n.ts,
         source: n.source,
-        wire: isSens ? "SENS" : "ALLIANCE",
+        wire,
         category: n.category,
         tickers: n.tickers,
+        body: n.body,
         url: n.url,
         regulatory: isSens,
       };

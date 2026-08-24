@@ -9,6 +9,7 @@ import { NewsArticleDialog } from "@/components/oems/primitives/news-article-dia
 import { Pill } from "@/components/oems/primitives/pill";
 import { cn } from "@/lib/cn";
 import { formatTime } from "@/lib/format";
+import { newsWireLabel, type NewsWire } from "@/lib/news-source";
 
 /**
  * Normalised headline used by the Cockpit news flow. Both the seed feed
@@ -28,7 +29,7 @@ export interface NewsFlowItem {
   ts: number;
   /** Display source label, e.g. "Reuters", "SENS", "Naspers Ltd". */
   source: string;
-  wire: "ALLIANCE" | "SENS";
+  wire: NewsWire;
   category?: string;
   tickers?: string[];
   body?: string | null;
@@ -37,11 +38,12 @@ export interface NewsFlowItem {
   regulatory?: boolean;
 }
 
-type SourceFilter = "ALL" | "ALLIANCE" | "SENS";
+type SourceFilter = "ALL" | "ALLIANCE" | "MONEYWEB" | "SENS";
 
 const SOURCE_TABS: ReadonlyArray<{ key: SourceFilter; label: string }> = [
   { key: "ALL", label: "All" },
   { key: "ALLIANCE", label: "Alliance" },
+  { key: "MONEYWEB", label: "Moneyweb" },
   { key: "SENS", label: "SENS" },
 ];
 
@@ -143,7 +145,7 @@ export function CockpitNewsFlow({
                         <span>{formatTime(n.ts)}</span>
                         <span className="text-muted-foreground/50">·</span>
                         <Pill tone={n.wire === "SENS" ? "primary" : "neutral"} size="xs">
-                          {n.wire === "SENS" ? "SENS" : "Alliance"}
+                          {newsWireLabel(n.wire)}
                         </Pill>
                         <span className="text-muted-foreground/70">{n.source}</span>
                         {n.regulatory && (
