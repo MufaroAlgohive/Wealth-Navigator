@@ -24,6 +24,7 @@
  * the tiles honestly while IPS is unavailable.
  */
 import type { BffUnavailableReason } from "@/lib/bff-reasons";
+import { getAdminContext } from "@/lib/admin/rbac";
 import { loadCanonicalRetailAum } from "@/lib/aum/canonical-retail-aum";
 import { createRetailServiceRoleClient, isRetailSupabaseConfigured } from "@/lib/supabase/server";
 
@@ -54,6 +55,16 @@ interface ClientBookResponse {
   investors: number;
   holdings: number;
   asOf: string | null;
+  investorRows?: Array<{
+    id: string;
+    name: string;
+    accountCode: string | null;
+    aum: number;
+    dayPnl: number;
+    ytdPnl: number;
+    holdings: number;
+    strategies: string[];
+  }>;
   reason?: BffUnavailableReason;
   error?: string;
 }
@@ -66,6 +77,12 @@ function num(value: number | null | undefined): number {
 }
 
 export async function GET() {
+  const auth = await getAdminContext();
+  if (auth.status === "no-session")
+    return Response.json({ source: "unavailable", error: "no-session" }, { status: 401 });
+  if (auth.status !== "ok")
+    return Response.json({ source: "unavailable", error: "forbidden" }, { status: 403 });
+
   if (!isRetailSupabaseConfigured()) {
     return Response.json(
       {
@@ -153,11 +170,12 @@ export async function GET() {
   // test data. Excluded on BOTH axes, because they don't fully overlap: a
   // test account can hold a LIVE strategy (a tester buying MyGrowthFund) and
   // a real client can appear against a UAT strategy.
-  const [{ data: rows, error: rowsError }, stratRes, testProfileRes, testWalletRes] = await Promise.all([
+  const [{ data: rows, error: rowsError }, stratRes, testProfileRes, testWalletRes, profilesRes] = await Promise.all([
     supabase.from("client_strategy_returns_effective_c").select(RETURNS_SELECT).eq("as_of_date", asOf),
-    supabase.from("strategies_c").select("id, investor_environment"),
+    supabase.from("strategies_c").select("id, name, investor_environment"),
     supabase.from("profiles").select("id").eq("is_test", true),
     supabase.from("wallets").select("user_id").eq("status", "test"),
+    supabase.from("profiles").select("id,first_name,last_name,email,mint_number"),
   ]);
 
   if (rowsError) {
@@ -180,7 +198,7 @@ export async function GET() {
   // Fail CLOSED on the exclusion sets: if we can't tell which strategies are
   // UAT or which accounts are test, publishing an unfiltered total would
   // overstate real AUM. Better to show the tile unavailable than a wrong number.
-  if (stratRes.error || testProfileRes.error || testWalletRes.error) {
+  if (stratRes.error || testProfileRes.error || testWalletRes.error || profilesRes.error) {
     return Response.json(
       {
         source: "unavailable",
@@ -192,7 +210,10 @@ export async function GET() {
         asOf,
         reason: "supabase_query_failed",
         error: `LIVE/test classification unavailable: ${
-          stratRes.error?.message ?? testProfileRes.error?.message ?? testWalletRes.error?.message
+          stratRes.error?.message ??
+          testProfileRes.error?.message ??
+          testWalletRes.error?.message ??
+          profilesRes.error?.message
         }`,
       } satisfies ClientBookResponse,
       { status: 200 },
@@ -200,7 +221,7 @@ export async function GET() {
   }
 
   const uatStrategyIds = new Set(
-    ((stratRes.data ?? []) as Array<{ id: string; investor_environment: string | null }>)
+    ((stratRes.data ?? []) as Array<{ id: string; name: string | null; investor_environment: string | null }>)
       .filter((s) => String(s.investor_environment ?? "LIVE").toUpperCase() === "UAT")
       .map((s) => s.id),
   );
@@ -239,6 +260,64 @@ export async function GET() {
     ytdPnl += pnlCentsFromPct(basketValueCents, r.ytd_pct);
   }
 
+  const strategyNameById = new Map(
+    ((stratRes.data ?? []) as Array<{ id: string; name: string | null }>).map((row) => [
+      row.id,
+      row.name?.trim() || "Unnamed strategy",
+    ]),
+  );
+  const profileById = new Map(
+    ((profilesRes.data ?? []) as Array<{
+      id: string;
+      first_name: string | null;
+      last_name: string | null;
+      email: string | null;
+      mint_number: string | null;
+    }>).map((row) => [row.id, row]),
+  );
+  const investorById = new Map<
+    string,
+    { aumCents: number; dayPnlCents: number; ytdPnlCents: number; holdings: number; strategies: Set<string> }
+  >();
+
+  for (const position of canonicalAum.byPosition.values()) {
+    const investor = investorById.get(position.userId) ?? {
+      aumCents: 0,
+      dayPnlCents: 0,
+      ytdPnlCents: 0,
+      holdings: 0,
+      strategies: new Set<string>(),
+    };
+    investor.aumCents += position.aumCents;
+    investor.holdings += position.holdingCount;
+    investor.strategies.add(strategyNameById.get(position.strategyId) ?? "Unnamed strategy");
+    investorById.set(position.userId, investor);
+  }
+  for (const row of returns) {
+    const investor = investorById.get(row.user_id);
+    if (!investor) continue;
+    const basketValueCents = num(row.basket_value_cents);
+    investor.dayPnlCents += pnlCentsFromPct(basketValueCents, row["1d_pct"]);
+    investor.ytdPnlCents += pnlCentsFromPct(basketValueCents, row.ytd_pct);
+  }
+
+  const investorRows = [...investorById.entries()]
+    .map(([id, investor]) => {
+      const profile = profileById.get(id);
+      const name = `${profile?.first_name ?? ""} ${profile?.last_name ?? ""}`.trim();
+      return {
+        id,
+        name: name || profile?.email || `Investor ${id.slice(0, 8)}`,
+        accountCode: profile?.mint_number ?? null,
+        aum: investor.aumCents / 100,
+        dayPnl: investor.dayPnlCents / 100,
+        ytdPnl: investor.ytdPnlCents / 100,
+        holdings: investor.holdings,
+        strategies: [...investor.strategies].sort((a, b) => a.localeCompare(b)),
+      };
+    })
+    .sort((a, b) => b.aum - a.aum || a.name.localeCompare(b.name));
+
   // basket_value / 1d_pnl / ytd_pnl are integer CENTS in retail (they match the
   // holdings_snapshot prices), despite the legacy docs saying Rands — convert.
   return Response.json({
@@ -249,5 +328,6 @@ export async function GET() {
     investors: canonicalAum.investorCount,
     holdings: canonicalAum.holdingCount,
     asOf: canonicalAum.asOf.slice(0, 10),
+    investorRows,
   } satisfies ClientBookResponse);
 }
