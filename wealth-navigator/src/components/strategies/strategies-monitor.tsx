@@ -15,7 +15,7 @@ import { NewsArticleDialog, type NewsArticleDialogItem } from "@/components/oems
 import { CashAssetIcon } from "@/components/strategies/cash-asset-icon";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
-import { formatPct, formatZAR } from "@/lib/format";
+import { formatPct, formatZAR, formatZARExact } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 
@@ -89,7 +89,7 @@ function StrategiesHero({ strategies }: { strategies: StrategyRow[] }) {
         <div className="grid grid-cols-5 divide-x divide-border/60 rounded-xl border border-border/70 bg-background/35">
           <SlimStat label="Mandates" value={String(strategies.length)} tone="primary" />
           <SlimStat label="Live" value={String(stats.live)} tone={stats.live > 0 ? "positive" : "default"} />
-          <SlimStat label="Total AUM" value={stats.totalAum > 0 ? formatZAR(stats.totalAum) : "—"} />
+          <SlimStat label="Total AUM" value={stats.totalAum > 0 ? formatZARExact(stats.totalAum) : "—"} />
           <SlimStat label="Investors" value={String(stats.totalInvestors)} />
           <SlimStat label="Day P&L" value={stats.dayPnl !== 0 ? formatZAR(stats.dayPnl) : "—"} tone={stats.dayPnl > 0 ? "positive" : stats.dayPnl < 0 ? "negative" : "default"} />
         </div>

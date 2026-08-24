@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge";
 import { CASH_ASSET_NAME, CASH_ASSET_SYMBOL, CashAssetIcon } from "@/components/strategies/cash-asset-icon";
 import { cn } from "@/lib/cn";
-import { formatPct, formatZAR } from "@/lib/format";
+import { formatPct, formatZAR, formatZARExact } from "@/lib/format";
 
 type Kyc = "not_initiated" | "pending" | "verified" | "rejected" | "resubmission_required";
 interface ClientRow {
@@ -124,7 +124,7 @@ export function WealthManagerClientBook() {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi label="Client book" value={formatZAR(totalAum)} sub={`${clients.length} clients`} />
+        <Kpi label="Client book" value={formatZARExact(totalAum)} sub={`${clients.length} clients`} />
         <Kpi label="Verified" value={String(count("verified"))} sub="KYC complete" tone="positive" />
         <Kpi
           label="Pending review"
@@ -208,7 +208,7 @@ export function WealthManagerClientBook() {
                   {client.email ?? client.phone_number ?? "—"}
                 </div>
                 <div className="hidden text-right font-mono text-[11px] lg:block">
-                  {formatZAR(client.aumCents / 100)}
+                  {formatZARExact(client.aumCents / 100)}
                 </div>
                 <div className="hidden text-right font-mono text-[11px] lg:block">
                   {client.ytdPct == null ? "—" : formatPct(client.ytdPct, 2)}
