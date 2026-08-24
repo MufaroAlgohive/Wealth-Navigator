@@ -151,6 +151,16 @@ interface ClientBookBffResponse {
   investors: number;
   holdings: number;
   asOf: string | null;
+  investorRows?: Array<{
+    id: string;
+    name: string;
+    accountCode: string | null;
+    aum: number;
+    dayPnl: number;
+    ytdPnl: number;
+    holdings: number;
+    strategies: string[];
+  }>;
   reason?: string;
   error?: string;
 }
@@ -1059,34 +1069,26 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     });
   }, [strategies, accountsHorizon]);
 
-  // Real-data Portfolio Accounts. The per-investor list (≈3,000 investors with
-  // their own holdings + returns) is a genuine data-phase wire-up — the
-  // client-book BFF only exposes book-level aggregates today, so we render a
-  // SINGLE honest aggregate "book" row from the already-live client-book feed
-  // (AUM, investor / holding counts, and a real performance figure for the
-  // selected horizon) rather than an empty panel. 1D ← dayPnl as % of AUM;
-  // YTD ← ytdPnl as % of AUM; MTD has no month-to-date field yet → null ("—").
+  // Each investor row uses the same canonical LIVE AUM calculation as the
+  // book-level KPI. Performance comes from that investor's guarded returns.
   const realAccountRows = useMemo<PortfolioAccountRow[]>(() => {
     if (!clientBookAvailable || !clientBook) return [];
-    const aum = clientBook.aum;
-    const perf =
-      accountsHorizon === "YTD"
-        ? aum > 0
-          ? (clientBook.ytdPnl / aum) * 100
-          : null
-        : accountsHorizon === "1D"
-          ? aum > 0
-            ? (clientBook.dayPnl / aum) * 100
-            : null
-          : null; // MTD — no month-to-date field on the client book yet
-    return [
-      {
-        name: "All investors",
-        sublabel: `${clientBook.investors.toLocaleString()} investors · ${clientBook.holdings.toLocaleString()} holdings`,
-        holdings: aum,
-        perf,
-      },
-    ];
+    return (clientBook.investorRows ?? []).map((investor) => ({
+      id: investor.id,
+      name: investor.name,
+      sublabel: [
+        investor.accountCode,
+        `${investor.holdings.toLocaleString()} holding${investor.holdings === 1 ? "" : "s"}`,
+        investor.strategies.join(", "),
+      ].filter(Boolean).join(" · "),
+      holdings: investor.aum,
+      perf:
+        accountsHorizon === "YTD"
+          ? investor.aum > 0 ? (investor.ytdPnl / investor.aum) * 100 : null
+          : accountsHorizon === "1D"
+            ? investor.aum > 0 ? (investor.dayPnl / investor.aum) * 100 : null
+            : null,
+    }));
   }, [clientBook, clientBookAvailable, accountsHorizon]);
 
   const intraday = useMemo(() => {
@@ -2589,11 +2591,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       {/* Row 5: Portfolio Accounts — investor snippet (name + holdings +
           performance) with a 1D / MTD / YTD horizon toggle defaulting to YTD.
           Mock mode derives rows from the strategy seed (one row per strategy);
-          real-data mode renders a single aggregate "book" row from the live
-          client-book feed (AUM + investor/holding counts + real horizon
-          performance) and falls back to an honest empty state when that feed
-          is unconfigured. The per-investor ≈3,000-row breakdown is a
-          data-phase wire-up — we never fabricate investor numbers. */}
+          real-data mode renders every canonical LIVE investor with their AUM
+          contribution and guarded horizon performance. */}
       <div className="grid grid-cols-12 gap-2">
         <CockpitPortfolioAccounts
           rows={realDataOnly ? realAccountRows : mockAccountRows}
@@ -2603,20 +2602,18 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           dataSource={realDataOnly ? (clientBookAvailable ? "supabase" : "unconfigured") : "seed"}
           endpoint={realDataOnly ? "GET /api/client-book" : "Investors view (seed)"}
           // Mock mode shows strategies as investor stand-ins; tag each row
-          // "strategy" so the list isn't mistaken for the real per-investor
-          // book. Real-data mode shows one genuine "All investors" aggregate
-          // row from the live client book.
+          // "strategy" so the list isn't mistaken for the real investor book.
           rowTag={realDataOnly ? undefined : "strategy"}
           note={
             realDataOnly
               ? clientBookAvailable && clientBook
-                ? `Book-level aggregate. Per-investor breakdown (≈${clientBook.investors.toLocaleString()} investors) wires in the data phase.`
+                ? `${clientBook.investors.toLocaleString()} LIVE investors · contribution measured against ${formatZAR(clientBook.aum)} canonical AUM.`
                 : undefined
               : "Showing strategies as stand-ins — per-investor list wires in the data phase."
           }
           emptyMessage={
             realDataOnly
-              ? "Per-investor holdings + returns wire in the data phase from the client book (≈3,000 investors). The aggregate AUM / Day P&L tiles above are already live."
+              ? "No canonical LIVE investor positions are available for this book."
               : undefined
           }
           className="col-span-12 lg:col-span-6"

@@ -3,7 +3,7 @@
  * panel. Reads raw `v8/finance/chart` data from Yahoo, applies the bare-code
  * `.JO` suffix rule already centralised in `lib/data/providers/yahoo.ts`, and
  * turns the resulting series into the per-period return map the BFF consumes
- * (`{ "1d_pct": …, "5d_pct": …, "1m_pct": …, "6m_pct": …, "ytd_pct": …,
+ * (`{ "1d_pct": …, "5d_pct": …, "mtd_pct": …, "1m_pct": …, "6m_pct": …, "ytd_pct": …,
  *   "1y_pct": …, "5y_pct": …, "all_pct": … }`).
  *
  * The DB-driven implementation that previously lived in
@@ -12,7 +12,7 @@
  * the panel now reflects Yahoo's view of the world directly. A single
  * `range=10y&interval=1d` request per symbol gives us daily bars for up
  * to ten years (Yahoo clips to actual ticker history), which covers every
- * period the UI renders: 1D / 5D / 1M / 6M / YTD / 1Y / 5Y / All.
+ * period the UI renders: 1D / 5D / MTD / 1M / 6M / YTD / 1Y / 5Y / All.
  *
  * Why `range=10y&interval=1d` and not `range=max`:
  *   `range=max` makes Yahoo auto-degrade to *monthly* granularity
@@ -62,6 +62,7 @@ const YAHOO_HOST = "https://query1.finance.yahoo.com";
 export const YAHOO_RETURN_PERIODS = [
   "1d_pct",
   "5d_pct",
+  "mtd_pct",
   "1m_pct",
   "6m_pct",
   "ytd_pct",
@@ -246,14 +247,11 @@ function resolveLookbackBaseline(bars: YahooBar[], targetMs: number): number | n
   return null;
 }
 
-/**
- * Forward search for the first bar of the calendar year containing the
- * latest bar. YTD is conceptually "from the first trade of the year" so
- * the baseline must sit on/after Jan 1, not before it.
- */
-function resolveYtdBaseline(bars: YahooBar[], yearStartMs: number): number | null {
-  for (const bar of bars) {
-    if (bar.t >= yearStartMs) return bar.close;
+/** Final close before a calendar period starts (prior month/year end). */
+function resolvePriorPeriodClose(bars: YahooBar[], periodStartMs: number): number | null {
+  for (let index = bars.length - 2; index >= 0; index -= 1) {
+    const bar = bars[index] as YahooBar;
+    if (bar.t < periodStartMs) return bar.close;
   }
   return null;
 }
@@ -292,6 +290,7 @@ export function computePeriodReturns(bars: YahooBar[]): {
 
   const DAY = 86_400_000;
   const yearStartMs = Date.UTC(lastDate.getUTCFullYear(), 0, 1);
+  const monthStartMs = Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth(), 1);
 
   // 1D is the only period that maps to a *specific* bar (the bar before
   // the latest), not a window — its baseline is "yesterday's close".
@@ -313,7 +312,11 @@ export function computePeriodReturns(bars: YahooBar[]): {
     period[key] = safePct(pct(lastPrice, baseline ?? Number.NaN));
   }
 
-  period.ytd_pct = safePct(pct(lastPrice, resolveYtdBaseline(bars, yearStartMs) ?? Number.NaN));
+  // Calendar-period returns start from the final close BEFORE the period.
+  // Using the first close inside January/month omits the first trading day's
+  // move and is not the conventional YTD/MTD definition.
+  period.mtd_pct = safePct(pct(lastPrice, resolvePriorPeriodClose(bars, monthStartMs) ?? Number.NaN));
+  period.ytd_pct = safePct(pct(lastPrice, resolvePriorPeriodClose(bars, yearStartMs) ?? Number.NaN));
 
   // "All" = full available history in this Yahoo fetch. Anchored on the
   // first bar (the earliest in-series close) and outlier-clamped

@@ -342,14 +342,64 @@ function StrategyDetail({ strategy, showSummary, firstReveal, onView }: { strate
   );
 }
 
-const RETURN_PERIODS = [["1D", "1d_pct"], ["5D", "5d_pct"], ["MTD", "1m_pct"], ["6M", "6m_pct"], ["YTD", "ytd_pct"], ["1Y", "1y_pct"]] as const;
+const RETURN_PERIODS = [["1D", "1d_pct"], ["5D", "5d_pct"], ["MTD", "mtd_pct"], ["6M", "6m_pct"], ["YTD", "ytd_pct"], ["1Y", "1y_pct"]] as const;
+type ReturnPeriodKey = (typeof RETURN_PERIODS)[number][1];
+type ReturnSet = Partial<Record<ReturnPeriodKey, number | null>>;
+interface StrategyReturnInsightsResponse {
+  ok: boolean;
+  strategy?: { name: string; asOf: string | null; source: string; returns: ReturnSet };
+  constituents?: Array<{ symbol: string; name: string | null; asOf: string | null; source: string; returns: ReturnSet }>;
+  cash?: { symbol: string; name: string; source: string; returns: null };
+  benchmark?: { symbol: string; asOf: string | null; source: string; returns: ReturnSet | null } | null;
+}
+
+function returnAlertFloor(period: ReturnPeriodKey): number {
+  return period === "1d_pct" ? -4 : period === "5d_pct" ? -7 : period === "mtd_pct" ? -10 : -20;
+}
+
 function ReturnInsightsCard({ strategy }: { strategy: StrategyRow }) {
-  const [period, setPeriod] = useState<(typeof RETURN_PERIODS)[number][1]>("1d_pct");
-  const query = useQuery<{ assetReturns?: Array<Record<string, unknown>> }>({ queryKey: ["strategy-return-insights"], queryFn: () => fetch("/api/admin/dashboard", { cache: "no-store" }).then((response) => response.json()), ...queryOpts("reference") });
-  const symbols = new Set(strategy.holdingsPreview.map((holding) => holding.symbol.replace(/\.JO$/i, "").toUpperCase()));
-  const rows = (query.data?.assetReturns ?? []).filter((row) => symbols.has(String(row.symbol ?? "").replace(/\.JO$/i, "").toUpperCase())).map((row) => ({ symbol: String(row.symbol ?? "—").replace(/\.JO$/i, ""), value: Number(row[period]) })).filter((row) => Number.isFinite(row.value)).sort((a, b) => b.value - a.value);
-  const alerts = rows.filter((row) => row.value <= -4);
-  return <section className="glass-panel overflow-hidden"><header className="flex items-center gap-2 border-b border-border px-3 py-2.5"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-success/10 text-success"><TrendingUp className="h-3.5 w-3.5"/></span><h3 className="text-xs font-bold">Return Insights</h3>{alerts.length > 0 && <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[9px] font-bold text-destructive">{alerts.length} alerts</span>}<DataSourceBadge source="supabase" db="retail" /><div className="ml-auto flex rounded-lg bg-muted/50 p-0.5">{RETURN_PERIODS.map(([label, key]) => <button type="button" key={key} onClick={() => setPeriod(key)} className={cn("rounded-md px-1.5 py-1 text-[8px] font-bold", period === key ? "bg-background text-primary shadow-sm" : "text-muted-foreground")}>{label}</button>)}</div></header><div className="p-3">{query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading returns…</p> : rows.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No return data for these strategy securities.</p> : <div className="grid grid-cols-2 gap-2">{rows.map((row) => <div key={row.symbol} className="flex items-center rounded-lg border border-border px-2.5 py-2"><span className="font-mono text-[10px] font-bold">{row.symbol}</span><span className={cn("ml-auto font-mono text-[10px] font-bold", row.value >= 0 ? "text-success" : "text-destructive")}>{row.value >= 0 ? "+" : ""}{row.value.toFixed(2)}%</span></div>)}</div>}</div></section>;
+  const [period, setPeriod] = useState<ReturnPeriodKey>("1d_pct");
+  const query = useQuery<StrategyReturnInsightsResponse>({
+    queryKey: ["strategy-return-insights", strategy.id],
+    queryFn: async () => {
+      const response = await fetch(`/api/strategies/${encodeURIComponent(strategy.id)}/return-insights`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`return insights ${response.status}`);
+      return response.json();
+    },
+    ...queryOpts("live"),
+    refetchInterval: 60_000,
+  });
+  const rows = (query.data?.constituents ?? [])
+    .map((row) => ({ ...row, value: row.returns[period] }))
+    .sort((a, b) => (b.value ?? Number.NEGATIVE_INFINITY) - (a.value ?? Number.NEGATIVE_INFINITY));
+  const alerts = rows.filter((row) => row.value != null && row.value <= returnAlertFloor(period));
+  const strategyValue = query.data?.strategy?.returns[period] ?? null;
+  const benchmarkValue = query.data?.benchmark?.returns?.[period] ?? null;
+  const asOf = rows.map((row) => row.asOf).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+  return (
+    <section className="glass-panel overflow-hidden">
+      <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
+        <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-success/10 text-success"><TrendingUp className="h-3.5 w-3.5"/></span>
+        <div><h3 className="text-xs font-bold">Return Insights</h3><p className="text-[8px] text-muted-foreground">Certified strategy · Yahoo constituents</p></div>
+        {alerts.length > 0 && <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[9px] font-bold text-destructive">{alerts.length} alerts</span>}
+        <DataSourceBadge source="supabase" db="retail" />
+        <Pill tone="neutral" size="xs">Yahoo</Pill>
+        <div className="ml-auto flex rounded-lg bg-muted/50 p-0.5">{RETURN_PERIODS.map(([label, key]) => <button type="button" key={key} onClick={() => setPeriod(key)} className={cn("rounded-md px-1.5 py-1 text-[8px] font-bold", period === key ? "bg-background text-primary shadow-sm" : "text-muted-foreground")}>{label}</button>)}</div>
+      </header>
+      <div className="p-3">
+        {query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading focused returns…</p> : rows.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No return data for these strategy securities.</p> : <>
+          <div className="mb-3 grid grid-cols-2 gap-2 rounded-lg border border-border/70 bg-background/25 p-2.5">
+            <div><p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">{strategy.name} · certified</p><p className={cn("mt-1 font-mono text-sm font-bold", strategyValue == null ? "text-muted-foreground" : strategyValue >= 0 ? "text-success" : "text-destructive")}>{strategyValue == null ? "—" : `${strategyValue >= 0 ? "+" : ""}${strategyValue.toFixed(2)}%`}</p></div>
+            <div className="text-right"><p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Benchmark {query.data?.benchmark?.symbol ?? "—"}</p><p className={cn("mt-1 font-mono text-sm font-bold", benchmarkValue == null ? "text-muted-foreground" : benchmarkValue >= 0 ? "text-success" : "text-destructive")}>{benchmarkValue == null ? "—" : `${benchmarkValue >= 0 ? "+" : ""}${benchmarkValue.toFixed(2)}%`}</p></div>
+          </div>
+          <p className="mb-1.5 text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Constituent returns</p>
+          <div className="grid grid-cols-2 gap-2">{rows.map((row) => <div key={row.symbol} className="flex min-w-0 items-center rounded-lg border border-border px-2.5 py-2"><div className="min-w-0"><span className="font-mono text-[10px] font-bold">{row.symbol}</span>{row.name ? <p className="truncate text-[8px] text-muted-foreground">{row.name}</p> : null}</div><span className={cn("ml-auto font-mono text-[10px] font-bold", row.value == null ? "text-muted-foreground" : row.value >= 0 ? "text-success" : "text-destructive")}>{row.value == null ? "—" : `${row.value >= 0 ? "+" : ""}${row.value.toFixed(2)}%`}</span></div>)}</div>
+          {strategy.holdingsPreview.some((holding) => holding.isCash) ? <div className="mt-2 flex items-center rounded-lg border border-border px-2.5 py-2"><div><span className="font-mono text-[10px] font-bold">CA</span><p className="text-[8px] text-muted-foreground">Continuity cash · non-market asset</p></div><span className="ml-auto font-mono text-[10px] text-muted-foreground">n/a</span></div> : null}
+          <p className="mt-2 text-right font-mono text-[8px] text-muted-foreground">Yahoo as of {asOf ? new Date(asOf).toLocaleString("en-ZA") : "—"} · refreshes every 60s</p>
+        </>}
+      </div>
+    </section>
+  );
 }
 
 interface NewsCardItem { id: string; source: string; headline: string; body: string | null; url: string | null; publishedAt: string; ticker: string | null; tickers: string[]; category?: string | null; }
