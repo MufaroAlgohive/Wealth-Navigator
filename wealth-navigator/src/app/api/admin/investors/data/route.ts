@@ -103,6 +103,9 @@ export async function GET() {
     .flatMap((f) => [f.primary_user_id, f.parent_id])
     .filter((id): id is string => Boolean(id));
   const profileIds = [...new Set([...userIds, ...parentUserIds])];
+  // The intraday table is append-heavy. Never sort its entire history for an
+  // admin page; the canonical AUM reader uses the same bounded window.
+  const intradaySince = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
 
   const [
     strategies,
@@ -124,10 +127,10 @@ export async function GET() {
       ? requiredData("security metadata", db.from("securities_c").select("id, symbol, name, sector, logo_url, last_price, change_percent, updated_at").in("id", secIds))
       : [],
     secIds.length
-      ? requiredData("stored closes", db.from("stock_returns_c").select("security_id, symbol, current_price, ytd_pct, as_of_date").in("security_id", secIds).order("as_of_date", { ascending: false }))
+      ? requiredData("stored closes", db.from("stock_returns_c").select("security_id, symbol, current_price, ytd_pct, as_of_date").in("security_id", secIds).order("as_of_date", { ascending: false }).limit(5000))
       : [],
     secIds.length
-      ? requiredData("intraday prices", db.from("stock_intraday_c").select("security_id, current_price, timestamp").in("security_id", secIds).order("timestamp", { ascending: false }))
+      ? requiredData("intraday prices", db.from("stock_intraday_c").select("security_id, current_price, timestamp").in("security_id", secIds).gte("timestamp", intradaySince).order("timestamp", { ascending: false }).limit(5000))
       : [],
     userIds.length
       ? requiredData("transactions", db.from("transactions").select("id, user_id, family_member_id, amount, direction, name, description, status, transaction_date, broker_fee_cents, isin_fee_cents, transaction_fee_cents, base_amount_cents, buffer_cents, buffer_consumed_cents").in("user_id", userIds).order("transaction_date", { ascending: false }))
@@ -208,7 +211,9 @@ export async function GET() {
         updated_at: meta?.updated_at ?? null,
       };
     });
-    await applyYahooFallback({ rows: fallbackRows, maxYahoo: 40, concurrency: 4 });
+    // Keep this page gentle on Yahoo: at most eight lookups, two at a time.
+    // Remaining stale DB prices stay visible as explicitly provisional.
+    await applyYahooFallback({ rows: fallbackRows, maxYahoo: 8, concurrency: 2 });
     for (const row of fallbackRows as Array<{
       symbol: string;
       last_price: number | null;
@@ -223,9 +228,27 @@ export async function GET() {
       }
     }
   }
+  // A single illiquid/unmapped instrument must not hide every other investor.
+  // Use the same reference price already included by canonical AUM, but label
+  // it stale/provisional. If even that is absent, emit an unavailable row at
+  // zero so the UI can disclose the gap instead of crashing or using cost.
+  for (const id of secIds) {
+    if (Number(secLiveById.get(id)?.current_price) > 0) continue;
+    const meta = (secMeta as Array<{ id?: string; last_price?: number | null; updated_at?: string | null }>).find(
+      (row) => String(row.id ?? "") === id,
+    );
+    const referencePrice = Number(meta?.last_price);
+    secLiveById.set(id, {
+      security_id: id,
+      current_price: referencePrice > 0 ? referencePrice : 0,
+      price_source: referencePrice > 0 ? "securities_c_reference" : "unavailable",
+      price_as_of: meta?.updated_at ?? null,
+      stale: true,
+      age_seconds: meta?.updated_at ? Math.max(0, (now - Date.parse(meta.updated_at)) / 1000) : null,
+      provisional_reason: referencePrice > 0 ? "No recent market price; stale reference used" : "No price evidence available",
+    });
+  }
   const secLive = [...secLiveById.values()];
-  const unpricedIds = secIds.filter((id) => !(Number(secLiveById.get(id)?.current_price) > 0));
-  if (unpricedIds.length) throw new Error(`price coverage incomplete for ${unpricedIds.length} active security(s)`);
 
   void inList;
   const canonicalPositions = [...canonicalAum.byPosition.values()].map((position) => ({
