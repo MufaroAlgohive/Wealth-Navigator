@@ -43,6 +43,8 @@ interface RebalanceRequestRow {
   status: string;
   proposed_composition: ProposedLine[];
   executed_at: string | null;
+  completed_at: string | null;
+  completion_error: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -184,15 +186,15 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
     }
   }
 
-  async function retryUatSettlement(id: string) {
+  async function retrySettlement(id: string) {
     setCompletingId(id);
     try {
       const res = await fetch(`/api/rebalance/requests/${id}/retry-settlement`, { method: "POST" });
       const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
       if (!res.ok || !body.ok) {
-        window.alert(body.error ?? "UAT settlement could not be completed.");
+        window.alert(body.error ?? "Rebalance settlement could not be completed.");
       } else {
-        window.alert("UAT rebalance settlement completed. Refresh the strategy to see the updated model basket.");
+        window.alert("Rebalance settlement completed. Refresh the strategy to see the updated model basket.");
       }
       await refreshHistory();
     } finally {
@@ -312,7 +314,11 @@ export function PendingRebalanceSends({ scope = "live" }: { scope?: "live" | "ua
                 releasing={releasingId === r.id}
                 onRelease={r.status === "executed" ? () => releaseToOrderBook(r.id) : undefined}
                 completing={completingId === r.id}
-                onRetrySettlement={scope === "uat" && r.status !== "completed" ? () => retryUatSettlement(r.id) : undefined}
+                onRetrySettlement={
+                  r.status !== "completed" && (scope === "uat" || isMaster)
+                    ? () => retrySettlement(r.id)
+                    : undefined
+                }
                 // Mirrors release-to-orderbook/route.ts, which only applies the
                 // master step-up when the request is NOT uat-scoped. Demanding
                 // master on a UAT release here would block something the server
@@ -391,7 +397,11 @@ function BookedRebalanceRow({
             {r.status === "completed" ? "Completed" : r.status === "completing" ? "Completing" : released ? "In Order Book" : "On Rebalance Tab"}
           </Badge>
           <span className="text-[11px] text-muted-foreground">
-            {r.executed_at ? new Date(r.executed_at).toLocaleString("en-ZA") : "—"}
+            {r.completed_at
+              ? new Date(r.completed_at).toLocaleString("en-ZA")
+              : r.executed_at
+                ? new Date(r.executed_at).toLocaleString("en-ZA")
+                : "—"}
           </span>
           {onRelease && !released && stillParked.length > 0 ? (
             <Button
@@ -425,6 +435,11 @@ function BookedRebalanceRow({
       </div>
       {open ? (
         <div className="overflow-x-auto border-t border-border/40 px-4 py-2">
+          {r.completion_error ? (
+            <p className="mb-2 rounded border border-destructive/40 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive">
+              Settlement blocked: {r.completion_error}
+            </p>
+          ) : null}
           {ordersQuery.loading ? (
             <p className="text-[11px] text-muted-foreground">Loading orders...</p>
           ) : orders.length === 0 ? (
