@@ -133,6 +133,14 @@ export interface SettlementPlan {
   /** RECONCILE only: the lot to stamp the real fill price onto. */
   reconcileHoldingId: string | null;
   /**
+   * RECONCILE only. Non-null when the pre-booked lot's own `quantity` was 0 —
+   * a rebalance-parked placeholder (see reconcile-parked-holdings.ts), not a
+   * self-directed order whose quantity was already correct at park time. Only
+   * this placeholder case gets its quantity written at fill time; a non-zero
+   * pre-booked quantity is left untouched, exactly as before.
+   */
+  reconcileQuantity: number | null;
+  /**
    * RECONCILE only. Signed rands: what the app charged minus what it actually
    * cost. Positive means the client was overcharged. NOT moved automatically —
    * see the note in the reconcile branch.
@@ -215,6 +223,7 @@ export async function planSettlement(
     lotsToClose: [],
     mode: fill.side === "sell" ? "close" : fill.holdingId ? "reconcile" : "open",
     reconcileHoldingId: null,
+    reconcileQuantity: null,
     cashVarianceRands: null,
     blocked: null,
   };
@@ -359,10 +368,19 @@ export async function planSettlement(
     const row = lot as { id: string; quantity: number; Expected_fill: number | null };
     const chargedRands = Number(row.Expected_fill) > 0 ? Number(row.Expected_fill) * (Number(row.quantity) || 0) : null;
     const actualRands = toCents2((fill.filledQty * fill.avgFillCents) / 100);
+    /* A rebalance-parked lot is booked with quantity 0 as a deliberate
+       placeholder (reconcile-parked-holdings.ts) — nothing else in this
+       codebase's manual/emergency-fill path ever corrects it (the automated
+       counterpart, settleUatFill, only runs for uat_test orders). Left at 0,
+       a real filled position reads as R0 / no shares to the client forever.
+       Only fires for that placeholder signal; a self-directed order's
+       already-correct pre-booked quantity is untouched, exactly as before. */
+    const reconcileQuantity = Number(row.quantity) === 0 ? fill.filledQty : null;
     return {
       ...plan,
       mode: "reconcile",
       reconcileHoldingId: row.id,
+      reconcileQuantity,
       /* The reconcile lot is the WHOLE order, so its cost basis is the ORDER-WIDE
          VWAP. `marginalFillCents` — the price of just this slice — is meaningful
          only in the OPEN branch, where each slice becomes its own lot.
@@ -703,6 +721,11 @@ export async function settleFill(deps: SettlementDeps, fill: ObservedFill): Prom
         fill_set_by: `iress-settlement:${plan.orderId}`,
         fill_set_at: nowIso,
         updated_at: nowIso,
+        // Rebalance-placeholder lot (quantity was 0 at park time) — make it
+        // real now that the fill is in. See reconcileQuantity's doc comment.
+        ...(plan.reconcileQuantity != null
+          ? { quantity: plan.reconcileQuantity, market_value: plan.reconcileQuantity * markCents }
+          : {}),
       })
       .eq("id", plan.reconcileHoldingId);
     if (recErr) return abort(`reconcile update failed: ${recErr.message}`);
