@@ -213,8 +213,6 @@ export default function InvestorsPage() {
          Value — identical to MyMintAdmin's investors.html and dashboard. */
       currentCents = canonical?.securities_cents ?? currentCents;
       const valueCents = canonical?.aum_cents ?? currentCents + residualCents + bufferCents;
-      const pnlCents = currentCents - investedCents + realizedCents - (canonical?.consumed_aum_fee_cents ?? 0);
-      const investedStableCents = valueCents - pnlCents;
       const navKey=scope(userId,familyMemberId,strategyId);
       const canonicalRows = navByUser[navKey] || [];
       // Plot the canonical chain-linked return, never absolute basket value:
@@ -231,12 +229,36 @@ export default function InvestorsPage() {
       // and visibly disagrees with the fixed, once-daily-published YTD figure
       // shown right next to it on the same card.
       const canonicalRetPct = latestNav?.inception_pct ?? latestNav?.ytd_pct;
+      // Same preference for P&L cents — this field previously ALWAYS used the
+      // raw live-price computation even though the canonical published pnl
+      // (inception_pnl_cents) was already being fetched right here and simply
+      // never read. That let this row's P&L (and therefore Total P&L / Avg
+      // Return, which are summed/averaged from these per-row figures)
+      // silently disagree with the same row's own canonicalRetPct — two
+      // different numbers for "how did this investment do" shown side by
+      // side on the same card.
+      const rawPnlCents = currentCents - investedCents + realizedCents - (canonical?.consumed_aum_fee_cents ?? 0);
+      const pnlCents = latestNav?.inception_pnl != null ? Number(latestNav.inception_pnl) : rawPnlCents;
+      const investedStableCents = valueCents - pnlCents;
       const prof = profById.get(userId);
       const familyMember = familyMemberId ? familyById.get(familyMemberId) : null;
       const parentId = familyMember?.primary_user_id || familyMember?.parent_id;
       const parentProf = parentId ? profById.get(parentId) : prof;
       const parentName = familyMember && parentProf ? `${parentProf.first_name || ""} ${parentProf.last_name || ""}`.trim() || parentProf.email || (parentId ? parentId.slice(0,8) : null) : null;
-      const displayName = familyMember ? `${familyMember.first_name || ""} ${familyMember.last_name || ""}`.trim() || `Child ${familyMemberId?.slice(0,8)}` : prof ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0,8) : userId.slice(0,8);
+      // If this holding is attributed to a family member (familyMemberId set),
+      // NEVER fall through to the primary account holder's name — even if the
+      // family-member lookup misses for some reason (stale/incomplete fetch,
+      // race between the holdings and family_members queries, etc). Silently
+      // mislabeling a child's position as the parent's is worse than an
+      // honest "Child <id>" placeholder; a real investor was shown as the
+      // WRONG owner on the Best/Worst KPI tiles from exactly this fallback.
+      const displayName = familyMemberId
+        ? (familyMember
+            ? `${familyMember.first_name || ""} ${familyMember.last_name || ""}`.trim() || `Child ${familyMemberId.slice(0,8)}`
+            : `Child ${familyMemberId.slice(0,8)}`)
+        : prof
+          ? `${prof.first_name || ""} ${prof.last_name || ""}`.trim() || prof.email || userId.slice(0,8)
+          : userId.slice(0,8);
       out.push({
         key,userId,familyMemberId,strategyId,strategy:strategyId?(strategyById.get(strategyId)?.short_name||strategyById.get(strategyId)?.name||"Strategy"):null, name:displayName,parentName,
         email: prof?.email || "", mintNumber: prof?.mint_number || null, computershare: familyMember?.computershare_number || prof?.computershare_number || null,
