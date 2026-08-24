@@ -229,6 +229,58 @@ export async function publishClientEodReturns(
     priceBySymbol.set(sym, { cents, timestamp: row.timestamp });
   }
 
+  /* FALLBACK for a symbol intraday didn't surface. A held symbol's actual
+     intraday rows can exist well within the `since` window and still never
+     reach `ticks`: the query above caps at 5000 rows PER CHUNK, ordered by
+     timestamp across every symbol in that chunk together — a symbol whose
+     feed has simply gone quiet for a few hours (still fresh enough to be
+     real) gets crowded out of the top 5000 by symbols that never stopped
+     ticking. That read as "missing prices", failing the owner's publish
+     outright even though a perfectly good price exists. Same two-tier
+     fallback canonical-retail-aum.ts already uses for the identical
+     intraday shape: the latest stored daily close, then the security's own
+     last_price. Only queried for symbols intraday didn't already resolve —
+     the common case pays no extra cost. */
+  const stillMissing = symbols.filter((sym) => !priceBySymbol.has(bare(sym)));
+  if (stillMissing.length > 0) {
+    const closes = await inChunks<{
+      symbol: string;
+      current_price: number | string | null;
+      as_of_date: string;
+      fetched_at: string | null;
+    }>(stillMissing, (chunk) =>
+      db
+        .from("stock_returns_c")
+        .select("symbol, current_price, as_of_date, fetched_at")
+        .in("symbol", chunk)
+        .order("as_of_date", { ascending: false })
+        .order("fetched_at", { ascending: false })
+        .limit(5000),
+    );
+    for (const row of closes) {
+      const sym = bare(row.symbol);
+      const cents = Number(row.current_price);
+      if (priceBySymbol.has(sym) || !(cents > 0)) continue;
+      const timestamp = row.fetched_at || `${row.as_of_date}T23:59:59.000Z`;
+      priceBySymbol.set(sym, { cents, timestamp });
+    }
+  }
+  const stillMissingAfterCloses = [...new Set(securities.map((s) => bare(s.symbol)))].filter(
+    (sym) => !priceBySymbol.has(sym),
+  );
+  if (stillMissingAfterCloses.length > 0) {
+    const lastPrices = await inChunks<{ symbol: string; last_price: number | string | null }>(
+      securities.filter((s) => stillMissingAfterCloses.includes(bare(s.symbol))).map((s) => s.symbol),
+      (chunk) => db.from("securities_c").select("symbol, last_price").in("symbol", chunk),
+    );
+    for (const row of lastPrices) {
+      const sym = bare(row.symbol);
+      const cents = Number(row.last_price);
+      if (priceBySymbol.has(sym) || !(cents > 0)) continue;
+      priceBySymbol.set(sym, { cents, timestamp: `${asOf}T00:00:00.000Z` });
+    }
+  }
+
   const groups = new Map<
     string,
     { userId: string; familyId: string | null; strategyId: string; rows: HoldingRow[] }
