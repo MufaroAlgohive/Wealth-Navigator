@@ -180,3 +180,12 @@ export function activeHref(pathname: string): string | null {
   }
   return best;
 }
+
+/** Section that owns the current route, used to keep the sidebar filter from
+ * snapping back to Markets when navigation crosses Next.js layout boundaries. */
+export function activeSectionTitle(pathname: string): string | null {
+  const href = activeHref(pathname);
+  if (!href) return null;
+  if (Object.values(PERSONA_HOME).some((home) => home.href === href)) return "Overview";
+  return PLATFORM_NAV.find((section) => section.items.some((item) => item.href === href))?.title ?? null;
+}
