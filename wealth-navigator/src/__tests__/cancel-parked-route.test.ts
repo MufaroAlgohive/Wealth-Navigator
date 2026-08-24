@@ -56,7 +56,7 @@ describe("POST /api/admin/orderbook/cancel-parked", () => {
     const body = (await res.json()) as { ok: boolean; status?: string };
 
     expect(res.status).toBe(200);
-    expect(body).toEqual({ ok: true, status: "cancelled" });
+    expect(body).toEqual({ ok: true, status: "cancelled", rebalance_request_id: null, holding_retired: false });
     expect(mock.updateCalls).toHaveLength(1);
     expect(mock.updateCalls[0]?.patch.status).toBe("cancelled");
   });

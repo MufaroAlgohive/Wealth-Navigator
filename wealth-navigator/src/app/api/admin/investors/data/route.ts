@@ -62,11 +62,14 @@ export async function GET() {
   const holdingsRaw = await requiredData(
     "active holdings",
     db.from("stock_holdings_c")
-      .select("user_id, family_member_id, security_id, strategy_id, quantity, avg_fill, Expected_fill, market_value, created_at, transaction_id")
+      .select("user_id, family_member_id, security_id, strategy_id, quantity, avg_fill, Expected_fill, market_value, created_at, Fill_date, transaction_id")
       .eq("is_active", true).eq("trade_side", "BUY"),
   );
   const holdings = (holdingsRaw ?? []).filter(
     (holding) =>
+      // A parked order creates a placeholder row before execution. It is not
+      // an owned security until settlement stamps a fill date or average fill.
+      Boolean(holding.Fill_date || Number(holding.avg_fill) > 0) &&
       !liveScope.excludedUserIds.has(holding.user_id) &&
       (!holding.strategy_id || !liveScope.excludedStrategyIds.has(holding.strategy_id)),
   );
