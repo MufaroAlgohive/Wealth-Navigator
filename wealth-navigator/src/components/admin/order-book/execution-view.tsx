@@ -33,7 +33,7 @@
  * the tab is hidden.
  */
 
-import { ChevronRight, FileSpreadsheet, Loader2, Pencil, Radio, SendHorizontal } from "lucide-react";
+import { CheckCircle2, ChevronRight, Circle, FileSpreadsheet, Loader2, MinusCircle, Pencil, Radio, SendHorizontal } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
@@ -46,6 +46,7 @@ import { useAdmin } from "@/lib/admin/context";
 import { cn } from "@/lib/cn";
 import { usePolling } from "@/lib/hooks/use-polling";
 import { allowsMarketRelease, allowsUatSelfFill } from "@/lib/oems/orderbook-lane-actions";
+import { longmarkExportFilename, longmarkOrdersCsv } from "@/lib/orders/longmark-export";
 import { SEND_TO_MARKET_LOCKED, SEND_TO_MARKET_LOCKED_MESSAGE } from "@/lib/orders/send-to-market-lock";
 import { isAmendable, isAwaitingBrokerAck, isCancellable } from "./format";
 import { type InvestorAgg, InvestorFilterTable } from "./investor-filter-table";
@@ -253,21 +254,6 @@ function fmtTs(iso: string): string {
   return `${d.toLocaleDateString("en-ZA", { day: "2-digit", month: "short" })} ${d.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-/** CSV-quote a field the way the CRM's toCsvContent() always has: every field
- *  wrapped in double quotes, internal quotes doubled. */
-const csvField = (v: unknown): string => `"${String(v ?? "").replace(/"/g, '""')}"`;
-
-/** One CSV data line for an order — same field order MyMintAdmin's export
- *  has always used (Buy/sell, Equity code, Nominal), exchange suffix
- *  stripped off the ticker. No aggregation: this is per ORDER, so if two
- *  different clients both bought the same instrument, each gets its own
- *  line rather than being summed into one — Longmark needs to see it's two
- *  people, not one bigger order. */
-function orderCsvLine(row: ExecutionRow): string {
-  const ticker = String(row.symbol || "").replace(/\.(JO|JSE)$/i, "").trim();
-  return [row.side, ticker, row.qty].map(csvField).join(",");
-}
-
 function downloadCsv(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -280,23 +266,12 @@ function downloadCsv(content: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-/** Same 3-column broker-ticket shape as MyMintAdmin's orderbook CSV export
- *  (Buy/sell, Equity code, Nominal) — one row, this order only. */
-function exportRowCsv(row: ExecutionRow) {
-  const header = ["Buy/sell", "Equity code", "Nominal"].map(csvField).join(",");
-  downloadCsv(`${header}\n${orderCsvLine(row)}`, `order-${row.order_id || row.id}-${new Date().toISOString().slice(0, 10)}.csv`);
-}
-
-/** Exports every order currently in this orderbook as one CSV — same shape
- *  and same "no aggregation" rule as exportRowCsv, just every row instead
- *  of one. Matches CRM's whole-book export (downloadCsv(liveRows, ...)),
- *  which is what the desk already hands Longmark today. */
-function exportBookCsv(rows: ExecutionRow[], bookSeq: number) {
-  const header = ["Buy/sell", "Equity code", "Nominal"].map(csvField).join(",");
-  const lines = rows.map(orderCsvLine);
+/** Export all visible orders or an explicitly selected subset. Longmark's
+ * three-column format and one-row-per-order rule remain unchanged. */
+function exportBookCsv(rows: ExecutionRow[], bookSeq: number, selected: boolean) {
   downloadCsv(
-    [header, ...lines].join("\n"),
-    `orderbook-${String(bookSeq).padStart(2, "0")}-${new Date().toISOString().slice(0, 10)}.csv`,
+    longmarkOrdersCsv(rows),
+    longmarkExportFilename(bookSeq, new Date().toISOString().slice(0, 10), selected),
   );
 }
 
@@ -768,6 +743,8 @@ interface OrderActions {
    *  row in the WHOLE book (not just this one), reviewed in one dialog, then
    *  applied sequentially. See handleBulkManualFillFile in ExecutionView. */
   bulkManualFillFromFile: (file: File) => void;
+  selectedExportIds: Set<string>;
+  toggleExportSelection: (auditId: string) => void;
 }
 
 /**
@@ -828,6 +805,8 @@ function GroupRow({
     retryError,
     handleRetry,
     bulkManualFillFromFile,
+    selectedExportIds,
+    toggleExportSelection,
   } = actions;
 
   // Emergency manual fill — for when IRESS itself is down and there is a
@@ -839,7 +818,13 @@ function GroupRow({
 
   return (
     <React.Fragment key={`grp:${groupKey}`}>
-      <tr className={cn("border-b border-border/40 hover:bg-accent/10", childCount > 0 && "bg-accent/5")}>
+      <tr
+        className={cn(
+          "border-b border-border/40 hover:bg-accent/10",
+          childCount > 0 && "bg-accent/5",
+          selectedExportIds.has(r.id) && "bg-primary/[0.06]",
+        )}
+      >
         <td className="px-2 py-1 whitespace-nowrap">
           <button
             type="button"
@@ -1099,11 +1084,16 @@ function GroupRow({
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => exportRowCsv(r)}
-              className="h-6 w-6 p-0 text-muted-foreground hover:bg-[hsl(var(--foreground)/0.05)] hover:text-foreground"
-              title="Export this order as CSV (Buy/sell, Equity code, Nominal — same shape as the CRM's orderbook export)."
+              onClick={() => toggleExportSelection(r.id)}
+              aria-label={`${selectedExportIds.has(r.id) ? "Remove" : "Add"} ${r.symbol} order from Longmark export selection`}
+              aria-pressed={selectedExportIds.has(r.id)}
+              className={cn(
+                "h-6 w-6 rounded-full p-0",
+                selectedExportIds.has(r.id) ? "text-primary hover:bg-primary/10" : "text-muted-foreground",
+              )}
+              title={selectedExportIds.has(r.id) ? "Selected for Longmark export" : "Select for Longmark export"}
             >
-              <FileSpreadsheet className="h-3.5 w-3.5" />
+              {selectedExportIds.has(r.id) ? <CheckCircle2 className="h-4 w-4" /> : <Circle className="h-4 w-4" />}
             </Button>
           </div>
           {fillError[r.id] || cancelError[r.id] || retryError[r.id] ? (
@@ -1632,6 +1622,36 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     () => filterOutPromotedBooks(groupedRows, books),
     [groupedRows, books],
   );
+  const [selectedExportIds, setSelectedExportIds] = React.useState<Set<string>>(() => new Set());
+  const visibleExportIds = React.useMemo(
+    () => new Set(liveGroupedRows.map((group) => group.parent.id)),
+    [liveGroupedRows],
+  );
+  React.useEffect(() => {
+    setSelectedExportIds((current) => {
+      const next = new Set([...current].filter((id) => visibleExportIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [visibleExportIds]);
+  React.useEffect(() => {
+    setSelectedExportIds(new Set());
+  }, [scope, sourceParam]);
+  const toggleExportSelection = React.useCallback((auditId: string) => {
+    setSelectedExportIds((current) => {
+      const next = new Set(current);
+      if (next.has(auditId)) next.delete(auditId);
+      else next.add(auditId);
+      return next;
+    });
+  }, []);
+  const allVisibleSelected = liveGroupedRows.length > 0 && selectedExportIds.size === liveGroupedRows.length;
+  const selectedExportRows = React.useMemo(
+    () => liveGroupedRows.map((group) => group.parent).filter((row) => selectedExportIds.has(row.id)),
+    [liveGroupedRows, selectedExportIds],
+  );
+  const toggleAllExportRows = React.useCallback(() => {
+    setSelectedExportIds(allVisibleSelected ? new Set() : new Set(visibleExportIds));
+  }, [allVisibleSelected, visibleExportIds]);
   const strategyBlocks = React.useMemo(() => groupOrdersByStrategy(liveGroupedRows), [liveGroupedRows]);
   const liveBookSequence = React.useMemo(() => computeLiveBookSequence(books), [books]);
   const displayItems = React.useMemo(
@@ -2107,6 +2127,8 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
     retryError,
     handleRetry,
     bulkManualFillFromFile,
+    selectedExportIds,
+    toggleExportSelection,
   };
 
   // "Send to Market (N)" — releases parked mint client-orders. Ported from
@@ -2302,11 +2324,26 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => exportBookCsv(liveGroupedRows.map((g) => g.parent), liveBookSequence)}
+            onClick={() =>
+              exportBookCsv(
+                selectedExportRows.length > 0 ? selectedExportRows : liveGroupedRows.map((g) => g.parent),
+                liveBookSequence,
+                selectedExportRows.length > 0,
+              )
+            }
             disabled={liveGroupedRows.length === 0}
-            title="Export every order in this orderbook as one CSV (Buy/sell, Equity code, Nominal) — one line per order, not aggregated across clients."
+            title={
+              selectedExportRows.length > 0
+                ? `Export ${selectedExportRows.length} selected order${selectedExportRows.length === 1 ? "" : "s"} in Longmark's three-column CSV format.`
+                : "Nothing selected — export every visible order in Longmark's three-column CSV format."
+            }
           >
             <FileSpreadsheet className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">
+              {selectedExportRows.length > 0
+                ? `Export selected (${selectedExportRows.length})`
+                : `Export all (${liveGroupedRows.length})`}
+            </span>
           </Button>
           <Button variant="ghost" size="sm" onClick={refreshAll}>
             Refresh
@@ -2418,7 +2455,27 @@ export function ExecutionView({ sources, scope }: { sources: string[]; scope?: "
                   key={h}
                   className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground whitespace-nowrap"
                 >
-                  {h}
+                  {h === "Actions" ? (
+                    <div className="flex items-center gap-2">
+                      <span>{h}</span>
+                      <button
+                        type="button"
+                        onClick={toggleAllExportRows}
+                        disabled={liveGroupedRows.length === 0}
+                        aria-label={allVisibleSelected ? "Clear all Longmark export selections" : "Select all visible orders for Longmark export"}
+                        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+                        title={allVisibleSelected ? "Clear all export selections" : "Select all visible orders"}
+                      >
+                        {allVisibleSelected ? (
+                          <CheckCircle2 className="h-4 w-4 text-primary" />
+                        ) : selectedExportIds.size > 0 ? (
+                          <MinusCircle className="h-4 w-4 text-primary" />
+                        ) : (
+                          <Circle className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
+                  ) : h}
                 </th>
               ))}
             </tr>
