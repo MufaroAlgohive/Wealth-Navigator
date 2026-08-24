@@ -39,6 +39,7 @@ import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
 const FILTER_ALL = "All";
 /** Deliberate business default (not Overview, not All) — see the Filter dropdown. */
 const DEFAULT_FILTER = "Markets";
+const FILTER_STORAGE_KEY = "mint-platform-nav-filter";
 /** Idle time within the sidebar before it auto-collapses to icon-only. */
 const IDLE_COLLAPSE_MS = 10_000;
 
@@ -98,18 +99,38 @@ export function PlatformNav() {
   // must restore Strategies, not the generic Markets default.
   React.useEffect(() => {
     if (filterTouchedRef.current) return;
-    if (routeSection && filterOptions.includes(routeSection)) {
+    const stored = (() => {
+      try {
+        return window.sessionStorage.getItem(FILTER_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+    })();
+    const storedOwnsRoute = stored
+      ? sections.some(
+          (section) =>
+            section.title === stored && section.items.some((item) => item.href === active),
+        )
+      : false;
+    if (stored && filterOptions.includes(stored) && (storedOwnsRoute || !routeSection)) {
+      setFilter(stored);
+    } else if (routeSection && filterOptions.includes(routeSection)) {
       setFilter(routeSection);
     } else if (filterOptions.includes(DEFAULT_FILTER)) {
       setFilter(DEFAULT_FILTER);
     } else if (filterOptions.length > 0 && !filterOptions.includes(filter)) {
       setFilter(FILTER_ALL);
     }
-  }, [filterOptions, filter, routeSection]);
+  }, [active, filterOptions, filter, routeSection, sections]);
 
   const selectFilter = React.useCallback((next: string) => {
     filterTouchedRef.current = true;
     setFilter(next);
+    try {
+      window.sessionStorage.setItem(FILTER_STORAGE_KEY, next);
+    } catch {
+      /* Navigation still works when storage is unavailable. */
+    }
   }, []);
 
   const visibleSections = React.useMemo(
