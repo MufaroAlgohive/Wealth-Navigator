@@ -208,7 +208,7 @@ function CockpitKpi({
   db?: DbName;
 }) {
   return (
-    <div className="glass-kpi group relative">
+    <div className="glass-kpi relative">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           {icon && (
@@ -274,12 +274,6 @@ function CockpitKpi({
           <ArrowUpRight className="h-3 w-3" />
         </Link>
       ) : null}
-      <div
-        className={cn(
-          "pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100",
-          accent === "primary" ? "bg-primary/20" : "bg-primary/10",
-        )}
-      />
     </div>
   );
 }

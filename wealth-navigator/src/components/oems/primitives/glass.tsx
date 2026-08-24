@@ -94,7 +94,7 @@ interface GlassKpiProps {
 
 export function GlassKpi({ label, value, sub, accent = "default", dataSource, db }: GlassKpiProps) {
   return (
-    <div className="glass-kpi group">
+    <div className="glass-kpi">
       <div className="flex items-center justify-between gap-2">
         <p className="text-caption">{label}</p>
         {(dataSource || db) && <DataSourceBadge source={dataSource ?? "supabase"} db={db} />}
@@ -121,12 +121,6 @@ export function GlassKpi({ label, value, sub, accent = "default", dataSource, db
           {sub}
         </p>
       )}
-      <div
-        className={cn(
-          "pointer-events-none absolute -right-6 -top-6 h-20 w-20 rounded-full opacity-0 blur-2xl transition-opacity duration-500 group-hover:opacity-100",
-          accent === "primary" ? "bg-primary/20" : "bg-primary/10",
-        )}
-      />
     </div>
   );
 }
