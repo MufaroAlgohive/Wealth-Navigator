@@ -18,7 +18,7 @@ interface NavRow { user_id: string; family_member_id?: string | null; strategy_i
 interface Profile { id: string; first_name: string | null; last_name: string | null; email: string | null; mint_number: string | null; computershare_number: string | null; }
 interface FamilyMember { id: string; first_name: string | null; last_name: string | null; computershare_number: string | null; primary_user_id?: string | null; parent_id?: string | null; }
 interface SecMeta { id: string; symbol: string; name: string | null; sector: string | null; logo_url: string | null; }
-interface SecLive { security_id: string; current_price: number | null; price_source?: string; price_as_of?: string | null; stale?: boolean; age_seconds?: number | null; }
+interface SecLive { security_id: string; current_price: number | null; price_source?: string; price_as_of?: string | null; stale?: boolean; age_seconds?: number | null; provisional_reason?: string; }
 interface Txn { id: string; user_id: string; family_member_id?: string | null; amount: number; direction: string; name: string | null; description: string | null; status: string | null; transaction_date: string | null; broker_fee_cents: number | null; isin_fee_cents: number | null; transaction_fee_cents: number | null; buffer_cents: number | null; buffer_consumed_cents: number | null; }
 interface Residual { user_id: string; family_member_id?: string | null; strategy_id?: string | null; balance_cents: number | null; }
 interface Strategy { id: string; name: string; short_name: string | null; }
@@ -304,6 +304,7 @@ export default function InvestorsPage() {
     return { aum, invested, pnl, avgRet, best: sorted[0] || null, worst: sorted[sorted.length - 1] || null };
   }, [data?.canonicalSummary?.total_aum_cents, investors]);
   const stalePrices = data?.secLive.filter((price) => price.stale) ?? [];
+  const staleSymbols = stalePrices.map((price) => data?.secMeta.find((security) => security.id === price.security_id)?.symbol || price.security_id.slice(0, 8));
 
   const filtered = investors.filter((i) => (bookType === "strategies" ? !!i.strategyId : !i.strategyId) && (!search.trim() || `${i.name} ${i.parentName || ""} ${i.email} ${i.strategy || ""}`.toLowerCase().includes(search.toLowerCase())));
   const listRows = bookType === "strategies" ? groupStrategyInvestors(filtered, selId) : filtered.map((i) => ({ ...i, ownerKey: ownerKeyOf(i), selectedKey: i.key, strategies: [i], groupCount: 1 }));
@@ -313,7 +314,7 @@ export default function InvestorsPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       {loadError ? <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs text-destructive"><b>Investor analytics unavailable.</b> {loadError} Values are hidden because a partial financial view is unsafe.</div> : null}
-      {data ? <div className={cn("rounded-xl border px-4 py-3 text-xs", stalePrices.length ? "border-warning/40 bg-warning/10 text-warning" : "border-success/30 bg-success/5 text-success")}><b>{stalePrices.length ? "Price warning" : "Data reconciled"}.</b> AUM evidence as of {data.canonicalSummary?.as_of ? new Date(data.canonicalSummary.as_of).toLocaleString("en-ZA") : "unknown"}. {stalePrices.length ? `${stalePrices.length} security price(s) are stale; Yahoo fallback was unavailable, so values are marked provisional.` : "All active securities have usable price evidence."}</div> : null}
+      {data ? <div className={cn("rounded-xl border px-4 py-3 text-xs", stalePrices.length ? "border-warning/40 bg-warning/10 text-warning" : "border-success/30 bg-success/5 text-success")}><b>{stalePrices.length ? "Price warning" : "Data reconciled"}.</b> AUM evidence as of {data.canonicalSummary?.as_of ? new Date(data.canonicalSummary.as_of).toLocaleString("en-ZA") : "unknown"}. {stalePrices.length ? `${stalePrices.length} security price(s) are stale or unavailable (${staleSymbols.join(", ")}); values remain visible but are explicitly provisional.` : "All active securities have usable price evidence."}</div> : null}
       {/* KPI bar */}
       <div className="flex justify-end"><DataSourceBadge source="hybrid" db="retail" /></div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
