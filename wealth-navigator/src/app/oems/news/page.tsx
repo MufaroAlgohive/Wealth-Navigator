@@ -14,6 +14,7 @@ import { isRealDataOnlyClient } from "@/lib/data-policy";
 import { formatTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
+import { classifyNewsWire } from "@/lib/news-source";
 
 interface NewsItem {
   id: string;
@@ -372,7 +373,7 @@ export default function NewsPage() {
                             url: a.url,
                             category: a.category,
                             tickers: a.tickers,
-                            wire: isSens ? "SENS" : "ALLIANCE",
+                            wire: classifyNewsWire(a.source, a.category),
                             regulatory: isSens || a.severity === "regulatory",
                           })
                         }
