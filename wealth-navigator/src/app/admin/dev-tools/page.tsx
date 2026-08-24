@@ -290,13 +290,12 @@ function ClientReturnsPublishPanel() {
           strategy) into <span className="font-mono">client_strategy_return_publication_audit_c</span>,
           which is what Day P&amp;L / per-client YTD read from.
         </p>
-        <p className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-600 dark:text-amber-400">
-          <strong>Coordinate before running this.</strong> The CRM (MyMintAdmin, a separate app) has its
-          own daily cron for this exact job at 16:00 UTC, and this route is intentionally opt-in
-          (<span className="font-mono">CLIENT_RETURNS_PUBLISH_APPLY</span> unset) specifically because two
-          publishers writing the same (owner, date) row can fork that client&apos;s return chain. Only use
-          this button once you&apos;ve confirmed the CRM&apos;s cron did <em>not</em> already publish
-          today&apos;s date, or you&apos;re intentionally taking over publication from it.
+        <p className="text-muted-foreground">
+          The CRM (MyMintAdmin) handed this job to the OEM on 2026-08-24 — its own daily cron call was
+          removed rather than left behind a flag, so there is only one live writer now and this button is
+          safe to use any time. Useful for forcing today&apos;s figures forward immediately instead of
+          waiting for the scheduled run, or for spot-checking a specific date via{" "}
+          <span className="font-mono">?asOf=</span> in the API directly.
         </p>
         {result && (
           <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
