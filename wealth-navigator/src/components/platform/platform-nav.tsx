@@ -37,11 +37,11 @@ import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
  * Per-role page-access gating replaces the `showAll` shortcut once RBAC lands.
  */
 const FILTER_ALL = "All";
-/** Deliberate business default (not Overview, not All) — see the Filter dropdown. */
-const DEFAULT_FILTER = "Markets";
+/** Deliberate business default — see the Filter dropdown. */
+const DEFAULT_FILTER = FILTER_ALL;
 const FILTER_STORAGE_KEY = "mint-platform-nav-filter";
 /** Idle time within the sidebar before it auto-collapses to icon-only. */
-const IDLE_COLLAPSE_MS = 10_000;
+const IDLE_COLLAPSE_MS = 50_000;
 
 export function PlatformNav() {
   const pathname = usePathname() ?? "";
