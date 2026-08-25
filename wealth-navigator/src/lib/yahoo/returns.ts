@@ -123,8 +123,28 @@ const YAHOO_INTERVAL = "1d";
  * as an outlier (a near-zero baseline, a corporate action on the first
  * bar in the series, etc.) and surfaced to the UI as `null` so the bar
  * renders an honest "—" instead of a five-digit number with no signal.
+ *
+ * A single flat 1000% cap only catches five-digit garbage — it does
+ * nothing about a "5 day" figure reading +93% or -50%, which is exactly
+ * as wrong (a real week rarely moves a basket that much) but sails
+ * straight under a 1000% bar. Per-period caps below are sized to what a
+ * genuine move over that horizon actually looks like, loose enough that
+ * a real crash/rally day isn't suppressed, tight enough to still reject
+ * the class of bug this guard exists for. Longer horizons compound
+ * legitimately, so they stay far looser than the short ones.
  */
-const OUTLIER_PCT_CAP = 1000;
+const OUTLIER_PCT_CAP: Partial<Record<YahooReturnPeriodKey, number>> = {
+  "1d_pct": 50,
+  "5d_pct": 75,
+  mtd_pct: 150,
+  "1m_pct": 150,
+  "6m_pct": 250,
+  ytd_pct: 300,
+  "1y_pct": 400,
+  "5y_pct": 1000,
+  all_pct: 1000,
+};
+const DEFAULT_OUTLIER_PCT_CAP = 1000;
 
 /**
  * In-process LRU-ish cache so repeated dashboard reloads don't re-hit
@@ -256,9 +276,10 @@ function resolvePriorPeriodClose(bars: YahooBar[], periodStartMs: number): numbe
   return null;
 }
 
-function safePct(value: number): number | null {
+function safePct(value: number, period: YahooReturnPeriodKey): number | null {
   if (!Number.isFinite(value)) return null;
-  if (Math.abs(value) > OUTLIER_PCT_CAP) return null;
+  const cap = OUTLIER_PCT_CAP[period] ?? DEFAULT_OUTLIER_PCT_CAP;
+  if (Math.abs(value) > cap) return null;
   return Number(value.toFixed(2));
 }
 
@@ -297,7 +318,7 @@ export function computePeriodReturns(bars: YahooBar[]): {
   const previousClose = (bars[bars.length - 2] as YahooBar).close;
   const period: Partial<Record<YahooReturnPeriodKey, number | null>> = {};
 
-  period["1d_pct"] = safePct(pct(lastPrice, previousClose));
+  period["1d_pct"] = safePct(pct(lastPrice, previousClose), "1d_pct");
 
   // Calendar windows anchored on `lastMs` (NOT `Date.now()` — see header).
   const lookbacks: { key: YahooReturnPeriodKey; ms: number }[] = [
@@ -309,20 +330,20 @@ export function computePeriodReturns(bars: YahooBar[]): {
   ];
   for (const { key, ms } of lookbacks) {
     const baseline = resolveLookbackBaseline(bars, lastMs - ms);
-    period[key] = safePct(pct(lastPrice, baseline ?? Number.NaN));
+    period[key] = safePct(pct(lastPrice, baseline ?? Number.NaN), key);
   }
 
   // Calendar-period returns start from the final close BEFORE the period.
   // Using the first close inside January/month omits the first trading day's
   // move and is not the conventional YTD/MTD definition.
-  period.mtd_pct = safePct(pct(lastPrice, resolvePriorPeriodClose(bars, monthStartMs) ?? Number.NaN));
-  period.ytd_pct = safePct(pct(lastPrice, resolvePriorPeriodClose(bars, yearStartMs) ?? Number.NaN));
+  period.mtd_pct = safePct(pct(lastPrice, resolvePriorPeriodClose(bars, monthStartMs) ?? Number.NaN), "mtd_pct");
+  period.ytd_pct = safePct(pct(lastPrice, resolvePriorPeriodClose(bars, yearStartMs) ?? Number.NaN), "ytd_pct");
 
   // "All" = full available history in this Yahoo fetch. Anchored on the
   // first bar (the earliest in-series close) and outlier-clamped
   // alongside the rest.
   const first = bars[0] as YahooBar;
-  period.all_pct = safePct(pct(lastPrice, first.close));
+  period.all_pct = safePct(pct(lastPrice, first.close), "all_pct");
 
   return { lastPrice, period, asOf: last.t };
 }
@@ -464,12 +485,12 @@ export async function computeYahooStrategyReturns(
               weightSum += h.weight;
             }
           }
-          // Use the same outlier guard as the asset rows; clamping at
-          // the strategy level catches cases where one constituent's
-          // 5-digit outlier would otherwise dominate the basket.
+          // Use the same per-period outlier guard as the asset rows;
+          // clamping at the strategy level catches cases where one
+          // constituent's outlier would otherwise dominate the basket.
           const value = weightSum > 0 ? weightedSum / weightSum : Number.NaN;
-          base[period] =
-            Number.isFinite(value) && Math.abs(value) <= OUTLIER_PCT_CAP ? Number(value.toFixed(2)) : null;
+          const cap = OUTLIER_PCT_CAP[period] ?? DEFAULT_OUTLIER_PCT_CAP;
+          base[period] = Number.isFinite(value) && Math.abs(value) <= cap ? Number(value.toFixed(2)) : null;
         }
         // "lastPrice" for a strategy is intentionally null — strategies
         // are baskets, not tickers, so we don't synthesise a value.
