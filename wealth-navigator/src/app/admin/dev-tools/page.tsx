@@ -8,6 +8,7 @@ import { isAdminRole } from "@/lib/admin/pages";
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type RecomputeStrategyResult = {
   strategy: string;
@@ -44,15 +45,22 @@ function formatPct(v: number | null) {
 function RecomputePanel() {
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<RecomputeResponse | null>(null);
+  // Scoping to one strategy trims the request to a fraction of the work —
+  // draft + certification run sequentially for every active strategy
+  // otherwise, and that full sweep has 502'd in practice (a platform
+  // function-duration ceiling below what the route's own maxDuration
+  // declares, most likely). Empty runs every strategy, same as before.
+  const [strategyName, setStrategyName] = useState("");
 
   const runRecompute = async () => {
     setPending(true);
     setResult(null);
     try {
+      const trimmed = strategyName.trim();
       const res = await fetch("/api/admin/canonical-ledger/recompute", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify(trimmed ? { strategyName: trimmed } : {}),
       });
       const body = (await res.json().catch(() => ({}))) as RecomputeResponse;
       setResult(body);
@@ -118,9 +126,17 @@ function RecomputePanel() {
       title="Canonical ledger recompute"
       endpoint="admin.canonical-ledger.recompute"
       right={
-        <Button size="sm" onClick={runRecompute} disabled={pending}>
-          {pending ? "Recomputing…" : "Recompute Now"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Input
+            value={strategyName}
+            onChange={(e) => setStrategyName(e.target.value)}
+            placeholder="All strategies"
+            className="h-8 w-40 text-xs"
+          />
+          <Button size="sm" onClick={runRecompute} disabled={pending}>
+            {pending ? "Recomputing…" : "Recompute Now"}
+          </Button>
+        </div>
       }
     >
       <div className="space-y-3 text-xs">
@@ -129,7 +145,8 @@ function RecomputePanel() {
           sequence the 17:30 UTC daily cron runs automatically. Use this to pull corrected YTD figures forward
           immediately (e.g. after a ledger fix) instead of waiting for tonight&apos;s scheduled run. This can
           take a while — draft and certification run sequentially for every active strategy. Requires a
-          Dev or Master ★ account.
+          Dev or Master ★ account. Enter an exact strategy name above (e.g. &quot;Yield Basket&quot;) to scope
+          a run to just that one — much less likely to time out than running all of them at once.
         </p>
         {result && (
           <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
