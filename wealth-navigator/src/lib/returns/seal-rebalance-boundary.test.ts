@@ -44,21 +44,29 @@ describe("recordRebalanceExecutionEvidence", () => {
 });
 
 /**
- * `reconcile_rebalance_ca` has existed in the retail database since
- * 2026-07-29 but, until this change, no application code ever called it —
- * every CA reconciliation row in production was written by hand, after
- * the fact, once someone noticed certification had stalled. It is now part
- * of the completion gate: `finalizeRebalanceBoundary` must refuse (return
- * `sealed: false`) rather than merely log when reconciliation fails, or a
- * rebalance can complete — flipping `strategies_c.holdings` — with no
- * reconciled CA and no durable trace of the failure, recreating the exact
- * silent-stall incident this work exists to close.
+ * `finalize_rebalance_boundary_and_ca` (retail RPC,
+ * supabase/migrations/20260825000003_finalize_rebalance_boundary_and_ca.sql)
+ * wraps `finalize_rebalance_return_boundary` and `reconcile_rebalance_ca` in
+ * ONE Postgres transaction. That matters, not just for tidiness: the two
+ * calls write real financial state (a valuation rule + return-publication
+ * audit row for the first, a CA reconciliation row for the second), and
+ * calling them as two separate round-trips would leave a real window where
+ * the return boundary is durably sealed against the target composition
+ * while `strategies_c.holdings` still shows the old one, if reconciliation
+ * failed in between — recreating the exact partial-state risk this whole
+ * effort exists to close, just moved one step later. `reconcile_rebalance_ca`
+ * itself has existed in the retail database since 2026-07-29 (idempotent —
+ * an existing row for a batch short-circuits with its stored values, a
+ * conflicting one raises) but no application code ever called it until this
+ * change, so every CA reconciliation row in production was written by hand,
+ * after the fact, once someone noticed certification had stalled.
  *
- * These tests cover a partial sell, a full liquidation, that the
- * reconciliation call is attributed to the resolved settlement actor (not a
- * wrong/arbitrary owner), that calling the boundary twice for the same
- * batch (a retry) does not error or attempt a duplicate write, and that a
- * reconciliation failure gates completion instead of being swallowed.
+ * These tests cover a partial sell, a full liquidation, that the wrapper
+ * call is attributed to the resolved settlement actor (not a wrong/arbitrary
+ * owner), that calling the boundary twice for the same batch (a retry) does
+ * not error or attempt a duplicate write, and that a reconciliation failure
+ * — surfaced by Postgres as the whole wrapper call failing, since the
+ * transaction rolled back — gates completion instead of being swallowed.
  */
 function dbWithRpc(rpcImpl: (fn: string, args: Record<string, unknown>) => unknown) {
   return {
@@ -80,11 +88,11 @@ function dbWithRpc(rpcImpl: (fn: string, args: Record<string, unknown>) => unkno
 describe("finalizeRebalanceBoundary", () => {
   it("seals and reconciles CA for a partial sell (remaining position priced, actor attributed)", async () => {
     const db = dbWithRpc((fn) => {
-      if (fn === "finalize_rebalance_return_boundary") {
-        return resolved({ securities_value_cents: 1800, continuity_cash_cents: 200, complete_value_cents: 2000 });
-      }
-      if (fn === "reconcile_rebalance_ca") {
-        return resolved({ idempotent: false, reconciliation_id: "recon-1", strategy_ca_cents: 200 });
+      if (fn === "finalize_rebalance_boundary_and_ca") {
+        return resolved({
+          boundary: { securities_value_cents: 1800, continuity_cash_cents: 200, complete_value_cents: 2000 },
+          ca: { idempotent: false, reconciliation_id: "recon-1", strategy_ca_cents: 200 },
+        });
       }
       throw new Error(`unexpected rpc: ${fn}`);
     });
@@ -103,17 +111,19 @@ describe("finalizeRebalanceBoundary", () => {
       continuityCashCents: 200,
       caReconciled: true,
     });
-    expect(db.rpc).toHaveBeenCalledWith("finalize_rebalance_return_boundary", expect.objectContaining({ p_batch_id: "batch-1", p_actor: "user-1" }));
-    expect(db.rpc).toHaveBeenCalledWith("reconcile_rebalance_ca", { p_batch_id: "batch-1", p_actor: "user-1" });
+    expect(db.rpc).toHaveBeenCalledWith(
+      "finalize_rebalance_boundary_and_ca",
+      expect.objectContaining({ p_batch_id: "batch-1", p_actor: "user-1" }),
+    );
   });
 
   it("seals and reconciles CA for a full liquidation (securities value zero, continuity cash carries the model value)", async () => {
     const db = dbWithRpc((fn) => {
-      if (fn === "finalize_rebalance_return_boundary") {
-        return resolved({ securities_value_cents: 0, continuity_cash_cents: 2000, complete_value_cents: 2000 });
-      }
-      if (fn === "reconcile_rebalance_ca") {
-        return resolved({ idempotent: false, reconciliation_id: "recon-2", strategy_ca_cents: 2000 });
+      if (fn === "finalize_rebalance_boundary_and_ca") {
+        return resolved({
+          boundary: { securities_value_cents: 0, continuity_cash_cents: 2000, complete_value_cents: 2000 },
+          ca: { idempotent: false, reconciliation_id: "recon-2", strategy_ca_cents: 2000 },
+        });
       }
       throw new Error(`unexpected rpc: ${fn}`);
     });
@@ -129,16 +139,19 @@ describe("finalizeRebalanceBoundary", () => {
     expect(result).toMatchObject({ sealed: true, securitiesValueCents: 0, continuityCashCents: 2000, caReconciled: true });
   });
 
-  it("attributes both RPC calls to the resolved settlement actor passed in, not the caller's original supplied id", async () => {
+  it("attributes the wrapper call to the resolved settlement actor passed in, not a re-derived one", async () => {
     // finalizeRebalanceBoundary takes the settlement actor as already-resolved
     // (recordRebalanceSettlement did that resolution earlier, in phase 1) --
-    // it must pass that id through untouched to both RPC calls rather than
-    // re-deriving or defaulting it.
+    // it must pass that id through untouched to the RPC rather than
+    // re-deriving or defaulting it, since the wrapper attributes BOTH the
+    // boundary seal and the CA reconciliation to this one actor.
     const db = dbWithRpc((fn) => {
-      if (fn === "finalize_rebalance_return_boundary") {
-        return resolved({ securities_value_cents: 1000, continuity_cash_cents: 0, complete_value_cents: 1000 });
+      if (fn === "finalize_rebalance_boundary_and_ca") {
+        return resolved({
+          boundary: { securities_value_cents: 1000, continuity_cash_cents: 0, complete_value_cents: 1000 },
+          ca: { idempotent: false },
+        });
       }
-      if (fn === "reconcile_rebalance_ca") return resolved({ idempotent: false });
       throw new Error(`unexpected rpc: ${fn}`);
     });
 
@@ -149,19 +162,23 @@ describe("finalizeRebalanceBoundary", () => {
       holdings: [{ symbol: "ABC.JO", shares: 1 }],
     });
 
-    expect(db.rpc).toHaveBeenCalledWith("reconcile_rebalance_ca", { p_batch_id: "batch-3", p_actor: "parent-1" });
+    expect(db.rpc).toHaveBeenCalledWith(
+      "finalize_rebalance_boundary_and_ca",
+      expect.objectContaining({ p_batch_id: "batch-3", p_actor: "parent-1" }),
+    );
   });
 
   it("does not error or duplicate-write on a retry of an already-reconciled batch", async () => {
     const db = dbWithRpc((fn) => {
-      // Both RPCs are idempotent server-side: finalize_rebalance_return_boundary
-      // early-returns idempotent:true, reconcile_rebalance_ca early-returns the
-      // existing row's values rather than inserting again.
-      if (fn === "finalize_rebalance_return_boundary") {
-        return resolved({ idempotent: true, securities_value_cents: 1800, continuity_cash_cents: 200, complete_value_cents: 2000 });
-      }
-      if (fn === "reconcile_rebalance_ca") {
-        return resolved({ idempotent: true, reconciliation_id: "recon-1", strategy_ca_cents: 200 });
+      // The wrapper's two callees are both idempotent server-side:
+      // finalize_rebalance_return_boundary early-returns idempotent:true,
+      // reconcile_rebalance_ca early-returns the existing row's values
+      // rather than inserting again.
+      if (fn === "finalize_rebalance_boundary_and_ca") {
+        return resolved({
+          boundary: { idempotent: true, securities_value_cents: 1800, continuity_cash_cents: 200, complete_value_cents: 2000 },
+          ca: { idempotent: true, reconciliation_id: "recon-1", strategy_ca_cents: 200 },
+        });
       }
       throw new Error(`unexpected rpc: ${fn}`);
     });
@@ -179,18 +196,18 @@ describe("finalizeRebalanceBoundary", () => {
     expect(retry).toMatchObject({ sealed: true, caReconciled: true, idempotent: true });
   });
 
-  it("gates completion on CA reconciliation: a boundary whose reconciliation fails is not sealed", async () => {
+  it("gates completion on CA reconciliation: a wrapper call whose reconciliation fails is not sealed, and nothing is left half-written", async () => {
     // This is the mixed parked/settled case before settleRebalanceCashForClients'
     // parked zero-movement rows exist: reconcile_rebalance_ca correctly refuses
     // because an owner has no strategy_rebalance_cash_events_c row for this
-    // batch yet. The failure must gate — not just log — so the caller leaves
-    // the rebalance retryable and never flips strategies_c.holdings on top of
-    // an unreconciled CA.
+    // batch yet. Because both callees run inside finalize_rebalance_boundary_and_ca's
+    // single transaction, that refusal rolls back finalize_rebalance_return_boundary's
+    // writes too — Postgres surfaces this as the whole RPC call erroring, not a
+    // partial success — so the failure must gate, not just log: the caller
+    // leaves the rebalance retryable and never flips strategies_c.holdings on
+    // top of a boundary that (from the database's perspective) was never sealed.
     const db = dbWithRpc((fn) => {
-      if (fn === "finalize_rebalance_return_boundary") {
-        return resolved({ securities_value_cents: 1800, continuity_cash_cents: 200, complete_value_cents: 2000 });
-      }
-      if (fn === "reconcile_rebalance_ca") {
+      if (fn === "finalize_rebalance_boundary_and_ca") {
         return { data: null, error: { message: "Every affected owner requires an immutable rebalance cash event" } };
       }
       throw new Error(`unexpected rpc: ${fn}`);

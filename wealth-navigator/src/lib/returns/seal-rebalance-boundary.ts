@@ -278,13 +278,15 @@ async function latestPrices(
  * conflicting one raises — and derives every number from the batch's own
  * evidence, but until this change nothing ever called it, so every
  * production reconciliation row was a hand-authored, after-the-fact
- * migration once someone noticed certification had stalled. It is now part
- * of the completion gate, not a best-effort side call: a rebalance whose
- * model composition and financial state cannot be reconciled must not be
- * marked complete, exactly the failure mode this module exists to prevent
- * for the return boundary itself. Failure here returns `sealed: false`, so
- * the caller leaves the institutional request `completing` with
- * `completion_error` set and retryable — same as any other failed step.
+ * migration once someone noticed certification had stalled. It now runs in
+ * the SAME transaction as `finalize_rebalance_return_boundary`, via the
+ * `finalize_rebalance_boundary_and_ca` wrapper RPC below: a rebalance whose
+ * model composition and financial state cannot be reconciled must not seal
+ * a return boundary either, or the two would drift out of sync until a
+ * later retry — exactly the partial-state failure mode this module exists
+ * to prevent. Failure here returns `sealed: false`, so the caller leaves
+ * the institutional request `completing` with `completion_error` set and
+ * retryable — same as any other failed step.
  */
 export async function finalizeRebalanceBoundary(
   retailDb: SupabaseClient,
@@ -339,7 +341,18 @@ export async function finalizeRebalanceBoundary(
     holdings.reduce((sum, h) => sum + h.shares * (priceCents.get(h.symbol) ?? 0), 0),
   );
 
-  const rpcRes = await retailDb.rpc("finalize_rebalance_return_boundary", {
+  // One retail RPC, one transaction: finalize_rebalance_boundary_and_ca
+  // (supabase/migrations/20260825000003_finalize_rebalance_boundary_and_ca.sql)
+  // calls finalize_rebalance_return_boundary then reconcile_rebalance_ca
+  // inside a single plpgsql function body. If reconciliation raises, the
+  // WHOLE transaction — including the boundary's own writes to
+  // strategy_valuation_rules_c / strategy_return_publication_audit_c — rolls
+  // back, so there is never a window where the return boundary is sealed
+  // against the target composition while strategies_c.holdings still shows
+  // the old one. Two separate RPC calls could not guarantee that: a
+  // reconciliation failure between them would leave the boundary durably
+  // sealed with nothing (yet) to unwind it.
+  const rpcRes = await retailDb.rpc("finalize_rebalance_boundary_and_ca", {
     p_batch_id: batchId,
     p_securities_value_cents: securitiesValueCents,
     p_holdings_snapshot: holdings,
@@ -347,31 +360,22 @@ export async function finalizeRebalanceBoundary(
     p_price_observed_at: freshestAt ?? effectiveAt.toISOString(),
     p_actor: actorId,
   });
-  if (rpcRes.error) return { sealed: false, error: `boundary RPC failed: ${rpcRes.error.message}`, batchId };
+  if (rpcRes.error) {
+    // Whichever callee raised, nothing committed: the rebalance stays
+    // `completing`/retryable, strategies_c.holdings is untouched, and a
+    // retry (once, for a CA failure, cash settlement covers every owner —
+    // see settleRebalanceCashForClients' parked zero-movement rows) succeeds.
+    return { sealed: false, error: `boundary finalization failed: ${rpcRes.error.message}`, batchId };
+  }
 
-  const out = (rpcRes.data ?? {}) as {
+  const combined = (rpcRes.data ?? {}) as { boundary?: Record<string, unknown> };
+  const out = (combined.boundary ?? {}) as {
     idempotent?: boolean;
     securities_value_cents?: number;
     continuity_cash_cents?: number;
     complete_value_cents?: number;
     ytd_pct?: number;
   };
-
-  const caRes = await retailDb.rpc("reconcile_rebalance_ca", {
-    p_batch_id: batchId,
-    p_actor: actorId,
-  });
-  if (caRes.error) {
-    // The return boundary above is already sealed (financial state written),
-    // but an unreconciled CA is exactly the silent-stall failure mode this
-    // change exists to close — so this is refused, not logged-and-ignored.
-    // The composition flip has NOT happened yet (that's the caller's next
-    // step, gated on `sealed: true`), so refusing here leaves nothing to
-    // unwind: the rebalance stays `completing`/retryable, strategies_c.holdings
-    // is untouched, and re-running once cash settlement covers every owner
-    // (see settleRebalanceCashForClients' parked zero-movement rows) succeeds.
-    return { sealed: false, error: `CA reconciliation failed: ${caRes.error.message}`, batchId };
-  }
 
   return {
     sealed: true,

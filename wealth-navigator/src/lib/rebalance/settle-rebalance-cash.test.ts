@@ -115,11 +115,30 @@ describe("settleRebalanceCashForClients — parked/settled owner coverage", () =
     const settlements = rpcCall[1].p_settlements as Array<Record<string, unknown>>;
     expect(settlements).toHaveLength(2);
 
+    // Exact residual math, not just gross_sell_cents: with zero brokerage/
+    // custody fees and zero reserve mocked, the R10.00 sale's full proceeds
+    // land in the owner's OWN residual (opening 5000 -> closing 6000) --
+    // and the row is attributed to exactly that (user_id, family_member_id)
+    // pair, not merged with the parked owner's.
     const settled = settlements.find((s) => s.user_id === "user-settled");
-    expect(settled).toMatchObject({ gross_sell_cents: 1000 });
+    expect(settled).toMatchObject({
+      user_id: "user-settled",
+      family_member_id: null,
+      gross_sell_cents: 1000,
+      gross_buy_cents: 0,
+      opening_residual_cents: 5000,
+      closing_residual_cents: 6000,
+      reserve_before_cents: 0,
+      reserve_used_cents: 0,
+      reserve_after_cents: 0,
+      requested_fee_cents: 0,
+      fee_shortfall_cents: 0,
+    });
 
     const parked = settlements.find((s) => s.user_id === "user-parked");
     expect(parked).toMatchObject({
+      user_id: "user-parked",
+      family_member_id: null,
       opening_residual_cents: 5000,
       closing_residual_cents: 5000,
       reserve_before_cents: 0,
@@ -128,6 +147,81 @@ describe("settleRebalanceCashForClients — parked/settled owner coverage", () =
       requested_fee_cents: 0,
       transaction_id: null,
     });
+  });
+
+  it("keeps a parent's and their family member's settlements as separate, correctly attributed rows", async () => {
+    const retailDb = baseRetailDb([
+      { id: "holding-parent", user_id: "parent-1", family_member_id: null },
+      { id: "holding-child", user_id: "parent-1", family_member_id: "child-1" },
+    ]);
+    const institutionalDb = {
+      from: vi.fn((table: string) => {
+        if (table === "oems_order_audit") {
+          return chain(resolved([
+            {
+              side: "sell",
+              quantity: 1,
+              symbol: "ABC.JO",
+              payload: { holding_id: "holding-parent", user_id: "parent-1", family_member_id: null, avgPx: 1000, client_treatment: "settled" },
+            },
+            {
+              side: "sell",
+              quantity: 1,
+              symbol: "DEF.JO",
+              payload: { holding_id: "holding-child", user_id: "parent-1", family_member_id: "child-1", avgPx: 700, client_treatment: "settled" },
+            },
+          ]));
+        }
+        throw new Error(`unexpected institutional table: ${table}`);
+      }),
+    };
+
+    const result = await settleRebalanceCashForClients(retailDb as never, institutionalDb as never, "request-1", "batch-1");
+
+    expect(result.errors).toEqual([]);
+    const settlements = (retailDb.rpc as ReturnType<typeof vi.fn>).mock.calls[0][1].p_settlements as Array<Record<string, unknown>>;
+    expect(settlements).toHaveLength(2);
+    // Proceeds must never cross the parent/child boundary: each pair gets
+    // its own residual math from its own R10.00 / R7.00 sale, not a
+    // combined R17.00.
+    expect(settlements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ user_id: "parent-1", family_member_id: null, gross_sell_cents: 1000, closing_residual_cents: 6000 }),
+      expect.objectContaining({ user_id: "parent-1", family_member_id: "child-1", gross_sell_cents: 700, closing_residual_cents: 5700 }),
+    ]));
+  });
+
+  it("computes an identical settlement payload on a retry (no client-side state to drift, no second credit)", async () => {
+    // settleRebalanceCashForClients recomputes everything fresh from stored
+    // balances each call; it holds no client-side memory of a prior run. A
+    // retry after e.g. a later phase failing must therefore ask the
+    // (already idempotent, unmodified) record_rebalance_cash_settlement RPC
+    // for the EXACT same operation both times -- proving retry-safety here
+    // means proving determinism, since the server RPC's own opening-balance
+    // check is what turns a second identical call into a no-op rather than
+    // a second credit.
+    const orders = [{
+      side: "sell",
+      quantity: 1,
+      symbol: "ABC.JO",
+      payload: { holding_id: "holding-settled", user_id: "user-settled", family_member_id: null, avgPx: 1000, client_treatment: "settled" },
+    }];
+    const institutionalDbFor = () => ({
+      from: vi.fn((table: string) => {
+        if (table === "oems_order_audit") return chain(resolved(orders));
+        throw new Error(`unexpected institutional table: ${table}`);
+      }),
+    });
+
+    const retailDbFirst = baseRetailDb([{ id: "holding-settled", user_id: "user-settled", family_member_id: null }]);
+    const first = await settleRebalanceCashForClients(retailDbFirst as never, institutionalDbFor() as never, "request-1", "batch-1");
+    const retailDbSecond = baseRetailDb([{ id: "holding-settled", user_id: "user-settled", family_member_id: null }]);
+    const second = await settleRebalanceCashForClients(retailDbSecond as never, institutionalDbFor() as never, "request-1", "batch-1");
+
+    expect(first.errors).toEqual([]);
+    expect(second.errors).toEqual([]);
+    const firstSettlements = (retailDbFirst.rpc as ReturnType<typeof vi.fn>).mock.calls[0][1].p_settlements;
+    const secondSettlements = (retailDbSecond.rpc as ReturnType<typeof vi.fn>).mock.calls[0][1].p_settlements;
+    expect(secondSettlements).toEqual(firstSettlements);
   });
 
   it("does not write a duplicate parked coverage row for an owner already covered by a real settled settlement", async () => {
