@@ -13,11 +13,8 @@
  *     trailing zeros and round to at most 2dp so the displayed value
  *     matches the source.
  *
- *  2. **Daily cron note.** The strip surfaces the SARB feed's
- *     last-updated timestamp and reminds the operator that a daily
- *     Vercel cron (<code>/api/cron/sa-rates</code>) is responsible for
- *     invalidating the 1h cache. If the operator notices stale numbers
- *     during a SARB MPC day, the note points them at the right knob.
+ *  2. **Explicit freshness.** The strip separates SARB's observation date
+ *     from the time OEM fetched it and reports the upstream freshness state.
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -35,6 +32,8 @@ interface Indicator {
   value: number | null;
   asOf: string | null;
   code: string | null;
+  freshness: "current" | "delayed" | "stale" | "unavailable";
+  ageDays: number | null;
 }
 
 interface SaRatesResponse {
@@ -42,6 +41,8 @@ interface SaRatesResponse {
   sourceLabel?: string;
   rates: Record<string, Indicator | null>;
   asOf: string | null;
+  fetchedAt?: string;
+  refreshSeconds?: number;
 }
 
 const ORDER: Array<{
@@ -92,7 +93,7 @@ export function MacroPulse() {
       return r.json();
     },
     enabled: realDataOnly,
-    refetchInterval: 3_600_000,
+    refetchInterval: 300_000,
     ...queryOpts("reference"),
   });
 
@@ -138,15 +139,23 @@ export function MacroPulse() {
       right={
         <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
           <RefreshCw className="h-3 w-3" />
-          {asOf ? `updated ${asOf.slice(0, 10)}` : "awaiting SARB"}
+          {q.data?.fetchedAt
+            ? `fetched ${new Date(q.data.fetchedAt).toLocaleTimeString("en-ZA", {
+                hour: "2-digit",
+                minute: "2-digit",
+                timeZone: "Africa/Johannesburg",
+              })}`
+            : asOf
+              ? `observed ${asOf.slice(0, 10)}`
+              : "awaiting SARB"}
         </span>
       }
     >
       {q.isLoading ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {ORDER.map((_, n) => (
+          {ORDER.map((item) => (
             <div
-              key={`macro-kpi-${n}`}
+              key={`macro-kpi-${item.key}`}
               className="h-20 animate-pulse rounded-2xl bg-[hsl(var(--foreground)/0.05)]"
             />
           ))}
@@ -172,7 +181,11 @@ export function MacroPulse() {
               const sub = (
                 <span className="inline-flex items-center gap-1.5">
                   <span>
-                    {r?.asOf ? `as of ${r.asOf.slice(0, 10)}` : r?.code ? `code ${r.code}` : "SARB"}
+                    {r?.asOf
+                      ? `observed ${r.asOf.slice(0, 10)} · ${r.freshness}`
+                      : r?.code
+                        ? `code ${r.code}`
+                        : "SARB"}
                   </span>
                   {delta ? (
                     <span
@@ -209,9 +222,9 @@ export function MacroPulse() {
             })}
           </div>
           <p className="mt-3 text-[10.5px] leading-snug text-muted-foreground/80">
-            Indicators refresh daily via the <code>/api/cron/sa-rates</code> Vercel cron (see{" "}
-            <code>vercel.json</code>). The strip's <code>as of</code> date reflects the SARB observation date,
-            not the request time. Values are shown without forced trailing-zero rounding (e.g.{" "}
+            Current indicators use a shared five-minute SARB cache; the weekday persistence job runs via{" "}
+            <code>/api/cron/sa-rates-update</code>. Observation dates and OEM fetch times are shown separately,
+            so an old official release is never presented as a fresh tick. Values are shown without forced trailing-zero rounding (e.g.{" "}
             <code>10.5%</code> stays <code>10.5%</code>, not <code>10.50%</code>).
           </p>
         </>
