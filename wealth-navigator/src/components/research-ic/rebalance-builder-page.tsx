@@ -3466,6 +3466,7 @@ function ProposalsList({
 }) {
   const qc = useQueryClient();
   const [cancellingId, setCancellingId] = React.useState<string | null>(null);
+  const [retryingId, setRetryingId] = React.useState<string | null>(null);
   const q = useQuery<{ requests: RebalanceRequest[]; notice?: string }>({
     queryKey: ["ric-rebalance-requests"],
     refetchInterval: 30_000,
@@ -3517,10 +3518,26 @@ function ProposalsList({
     }
   }
 
+  async function retrySettlement(id: string) {
+    setRetryingId(id);
+    try {
+      const res = await fetch(`/api/rebalance/requests/${id}/retry-settlement`, { method: "POST" });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!res.ok || !body.ok) {
+        window.alert(body.error ?? "Rebalance settlement could not be completed.");
+      }
+      await qc.invalidateQueries({ queryKey: ["ric-rebalance-requests"] });
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
   const STATUS_TONE: Record<string, string> = {
     pending: "border-primary/35 bg-primary/12 text-primary",
     ic_approved: "border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.12)] text-up",
     executed: "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] text-muted-foreground",
+    completing: "border-amber-500/35 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    completed: "border-[hsl(var(--up)/0.35)] bg-[hsl(var(--up)/0.12)] text-up",
     rejected: "border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.12)] text-down",
     cancelled: "border-[hsl(var(--glass-border))] bg-[hsl(var(--foreground)/0.05)] text-muted-foreground",
   };
@@ -3553,11 +3570,9 @@ function ProposalsList({
               ? r.proposed_composition.filter((h) => h.action && h.action !== "hold").length
               : 0;
             return (
-              <div
-                key={r.id}
-                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[hsl(var(--glass-border))] px-4 py-3"
-              >
-                <div className="flex min-w-0 items-center gap-3">
+              <div key={r.id} className="rounded-lg border border-[hsl(var(--glass-border))] px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
                   <span
                     className={cn(
                       "rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
@@ -3573,8 +3588,8 @@ function ProposalsList({
                       {changes} change{changes === 1 ? "" : "s"} · raised by {r.requested_by}
                     </p>
                   </div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
                   {r.status === "pending" && (
                     <Link
                       href="/oems/committee"
@@ -3622,7 +3637,32 @@ function ProposalsList({
                       Released to Rebalance tab — send to order book from there
                     </span>
                   )}
+                  {r.status === "completing" && r.completion_error && (
+                    <button
+                      type="button"
+                      onClick={() => retrySettlement(r.id)}
+                      disabled={retryingId === r.id}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/35 px-3 py-1.5 text-xs font-medium text-amber-600 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-400"
+                    >
+                      {retryingId === r.id ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Retrying…
+                        </>
+                      ) : (
+                        "Retry settlement"
+                      )}
+                    </button>
+                  )}
+                  {r.status === "completed" && (
+                    <span className="text-xs text-up">Settlement and model finalization completed</span>
+                  )}
+                  </div>
                 </div>
+                {r.completion_error && (
+                  <p className="mt-2 rounded-md border border-[hsl(var(--down)/0.35)] bg-[hsl(var(--down)/0.1)] px-2.5 py-2 text-xs text-down">
+                    Settlement blocked: {r.completion_error}
+                  </p>
+                )}
               </div>
             );
           })}
