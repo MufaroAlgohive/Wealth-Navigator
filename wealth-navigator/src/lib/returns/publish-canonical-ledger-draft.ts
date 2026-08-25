@@ -602,6 +602,31 @@ export async function publishCanonicalLedgerDraft(
           : [];
         const [reconciliation] = reconciliations;
         if (!reconciliation) throw new Error("REBALANCE_CA_RECONCILIATION_REQUIRED");
+        // Current prices for the boundary's own securities, so the boundary
+        // check can tell real price movement on untraded legs apart from
+        // unexplained cash — see unchangedLegCurrentPrices's doc comment on
+        // rebuildLegsAcrossSettledBoundary. A small, separate fetch rather
+        // than reusing the wider `prices`/`lookup` built below: those cover
+        // this strategy's full history for the daily-return calc, not yet
+        // available at this point in the function, and pulling just the
+        // boundary date keeps this fetch cheap regardless.
+        const boundaryPrices = await fetchPriceHistory(
+          db,
+          currentHoldings.flatMap((holding) => [holding.ticker, `${holding.ticker}.JO`]),
+          batch.effective_date,
+          batch.effective_date,
+        );
+        const boundaryLookup = priceLookup(boundaryPrices);
+        const unchangedLegCurrentPrices = new Map(
+          currentHoldings
+            .map((holding) => {
+              const price =
+                boundaryLookup.exact.get(`${batch.effective_date}:${holding.ticker}`) ??
+                boundaryLookup.onOrBefore(holding.ticker, batch.effective_date);
+              return price ? ([holding.ticker, price.cents] as const) : null;
+            })
+            .filter((entry): entry is readonly [string, number] => entry != null),
+        );
         const rebuilt = rebuildLegsAcrossSettledBoundary({
           previousDate: previous.as_of_date,
           previousHoldings: priorHoldings,
@@ -613,6 +638,7 @@ export async function publishCanonicalLedgerDraft(
           fills,
           securitySymbols: new Map(securities.map((security) => [security.id, security.symbol])),
           reconciliation,
+          unchangedLegCurrentPrices,
         });
         boundaryLegs = rebuilt.legs;
         boundaryEvidence = rebuilt.evidence;
