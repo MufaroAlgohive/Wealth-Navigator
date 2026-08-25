@@ -7,6 +7,26 @@ export interface AssetDayPnlInput {
 }
 
 /**
+ * Select the bounded Yahoo refresh batch. Never-fetched symbols come first;
+ * once coverage is warm, the oldest cached symbols rotate to the front.
+ */
+export function planQuoteRefresh(
+  symbols: string[],
+  refreshedAtBySymbol: ReadonlyMap<string, number>,
+  limit: number,
+): string[] {
+  return [...new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))]
+    .sort((left, right) => {
+      const leftAt = refreshedAtBySymbol.get(left);
+      const rightAt = refreshedAtBySymbol.get(right);
+      if (leftAt == null && rightAt != null) return -1;
+      if (leftAt != null && rightAt == null) return 1;
+      return (leftAt ?? 0) - (rightAt ?? 0) || left.localeCompare(right);
+    })
+    .slice(0, Math.max(0, limit));
+}
+
+/**
  * Gross market P&L for one owner/security/strategy position.
  *
  * Opening units mark from previous close to now. Units bought today only mark

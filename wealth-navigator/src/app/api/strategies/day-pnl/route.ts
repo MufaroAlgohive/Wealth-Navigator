@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
-import { calculateAssetDayPnlCents } from "@/lib/pnl/asset-day-pnl";
+import { calculateAssetDayPnlCents, planQuoteRefresh } from "@/lib/pnl/asset-day-pnl";
 import {
   createInstitutionalServiceRoleClient,
   createRetailServiceRoleClient,
@@ -14,8 +14,8 @@ import { fetchYahooTruthQuote, type YahooTruthQuote } from "@/lib/truth/yahoo-li
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const QUOTE_CACHE_MS = 25_000;
-const quoteCache = new Map<string, { expiresAt: number; quote: YahooTruthQuote }>();
+const MAX_YAHOO_QUOTES_PER_REFRESH = 8;
+const quoteCache = new Map<string, { refreshedAt: number; quote: YahooTruthQuote }>();
 const sastDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", {
   timeZone: "Africa/Johannesburg", year: "numeric", month: "2-digit", day: "2-digit",
 }).format(value);
@@ -23,26 +23,41 @@ const finite = (value: unknown) => Number.isFinite(Number(value)) ? Number(value
 const keyOf = (userId: string, familyId: string | null, strategyId: string, securityId: string) =>
   `${userId}|${familyId ?? ""}|${strategyId}|${securityId}`;
 
-async function cachedQuote(symbol: string): Promise<YahooTruthQuote> {
-  const key = symbol.trim().toUpperCase();
-  const cached = quoteCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.quote;
-  const quote = await fetchYahooTruthQuote(symbol);
-  quoteCache.set(key, { quote, expiresAt: Date.now() + QUOTE_CACHE_MS });
-  return quote;
-}
-
-async function loadQuotes(symbols: string[]): Promise<Map<string, YahooTruthQuote>> {
+async function loadQuotes(
+  symbols: string[],
+  persisted: Map<string, { refreshedAt: number; quote: YahooTruthQuote }>,
+): Promise<{ quotes: Map<string, YahooTruthQuote>; refreshed: YahooTruthQuote[] }> {
   const output = new Map<string, YahooTruthQuote>();
-  // Yahoo is a bounded fallback, never the platform-wide polling feed.
-  for (let start = 0; start < Math.min(symbols.length, 8); start += 2) {
-    const chunk = symbols.slice(start, Math.min(start + 2, 8));
-    const settled = await Promise.allSettled(chunk.map(cachedQuote));
+  const refreshed: YahooTruthQuote[] = [];
+  const normalized = [...new Set(symbols.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean))];
+  for (const [symbol, row] of persisted) {
+    const memory = quoteCache.get(symbol);
+    if (!memory || memory.refreshedAt < row.refreshedAt) quoteCache.set(symbol, row);
+  }
+  for (const symbol of normalized) {
+    const cached = quoteCache.get(symbol);
+    if (cached) output.set(symbol, cached.quote);
+  }
+
+  // At most eight requests per 30-second UI refresh, two at a time. Missing
+  // names are warmed first; afterwards the oldest cached names rotate. The
+  // previous implementation repeatedly refreshed the first eight names and
+  // could therefore leave every later name uncovered forever.
+  const refreshedAt = new Map([...quoteCache].map(([symbol, row]) => [symbol, row.refreshedAt]));
+  const refresh = planQuoteRefresh(normalized, refreshedAt, MAX_YAHOO_QUOTES_PER_REFRESH);
+  for (let start = 0; start < refresh.length; start += 2) {
+    const chunk = refresh.slice(start, start + 2);
+    const settled = await Promise.allSettled(chunk.map((symbol) => fetchYahooTruthQuote(symbol)));
     settled.forEach((result, index) => {
-      if (result.status === "fulfilled") output.set(chunk[index]!, result.value);
+      const symbol = chunk[index]!;
+      if (result.status === "fulfilled") {
+        quoteCache.set(symbol, { quote: result.value, refreshedAt: Date.now() });
+        output.set(symbol, result.value);
+        refreshed.push(result.value);
+      }
     });
   }
-  return output;
+  return { quotes: output, refreshed };
 }
 
 async function loadHistory(db: ReturnType<typeof createRetailServiceRoleClient>, from: string, to: string) {
@@ -165,10 +180,49 @@ export async function GET(request: Request) {
 
   const fallbackIds = securityIds.filter((id) => !quoteBySecurityId.has(id));
   const fallbackSymbols = fallbackIds.map((id) => securityById.get(id)).filter((symbol): symbol is string => Boolean(symbol));
-  const fallbackQuotes = await loadQuotes(fallbackSymbols);
+  const normalizedFallbackSymbols = fallbackSymbols.map((symbol) => symbol.trim().toUpperCase());
+  const persistedQuotes = new Map<string, { refreshedAt: number; quote: YahooTruthQuote }>();
+  let persistentQuoteCacheAvailable = true;
+  if (normalizedFallbackSymbols.length) {
+    const persistedResult = await retail.from("day_pnl_quote_cache_c")
+      .select("symbol,price_cents,previous_close_cents,exchange_time,fetched_at")
+      .in("symbol", normalizedFallbackSymbols);
+    if (persistedResult.error) {
+      persistentQuoteCacheAvailable = false;
+    } else {
+      for (const row of persistedResult.data ?? []) {
+        const symbol = String(row.symbol ?? "").trim().toUpperCase();
+        const priceCents = finite(row.price_cents);
+        const previousCloseCents = finite(row.previous_close_cents);
+        const exchangeTime = String(row.exchange_time ?? "");
+        const fetchedAt = String(row.fetched_at ?? "");
+        if (!symbol || !(priceCents > 0) || !(previousCloseCents > 0) || !exchangeTime || !fetchedAt) continue;
+        persistedQuotes.set(symbol, {
+          refreshedAt: Date.parse(fetchedAt),
+          quote: {
+            symbol, yahooSymbol: `${symbol}.JO`, priceCents, previousCloseCents,
+            dailyChangeCents: priceCents - previousCloseCents,
+            dailyChangePct: ((priceCents - previousCloseCents) / previousCloseCents) * 100,
+            currency: "ZAR", exchangeTime, fetchedAt, source: "Yahoo Finance chart API",
+          },
+        });
+      }
+    }
+  }
+  const { quotes: fallbackQuotes, refreshed } = await loadQuotes(fallbackSymbols, persistedQuotes);
+  if (persistentQuoteCacheAvailable && refreshed.length) {
+    const cacheWrite = await retail.from("day_pnl_quote_cache_c").upsert(refreshed.map((quote) => ({
+      symbol: quote.symbol.trim().toUpperCase(),
+      price_cents: quote.priceCents,
+      previous_close_cents: quote.previousCloseCents,
+      exchange_time: quote.exchangeTime,
+      fetched_at: quote.fetchedAt,
+    })), { onConflict: "symbol" });
+    if (cacheWrite.error) persistentQuoteCacheAvailable = false;
+  }
   for (const id of fallbackIds) {
     const symbol = securityById.get(id);
-    const quote = symbol ? fallbackQuotes.get(symbol) : undefined;
+    const quote = symbol ? fallbackQuotes.get(symbol.trim().toUpperCase()) : undefined;
     if (quote) quoteBySecurityId.set(id, quote);
   }
   let totalPnlCents = 0;
@@ -192,6 +246,10 @@ export async function GET(request: Request) {
     if (!newestExchangeTime || quote.exchangeTime > newestExchangeTime) newestExchangeTime = quote.exchangeTime;
   }
   const liveComplete = currentByKey.size > 0 && coveredKeys.size === currentByKey.size;
+  const missingSymbols = [...new Set([...currentByKey]
+    .filter(([key]) => !coveredKeys.has(key))
+    .map(([, position]) => securityById.get(position.securityId) ?? position.securityId))]
+    .sort();
 
   const historyByDate = new Map<string, { pnlCents: number; strategies: Set<string>; investors: Set<string> }>();
   for (const row of history) {
@@ -217,6 +275,10 @@ export async function GET(request: Request) {
       asOf: newestExchangeTime,
       coveredHoldings: coveredKeys.size,
       totalHoldings: currentByKey.size,
+      coveredSecurities: securityIds.length - missingSymbols.length,
+      totalSecurities: securityIds.length,
+      missingSymbols,
+      quoteCache: persistentQuoteCacheAvailable ? "persistent" : "memory-only",
       feesIncluded: false,
     },
     history: [...historyByDate.entries()]
