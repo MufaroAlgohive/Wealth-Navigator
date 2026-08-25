@@ -82,14 +82,25 @@ export default function DashboardPage() {
     return items;
   }, [rows, labelKey, period]);
   const gainers = ranked.slice(0, 10);
-  const losers = ranked.slice(-10).reverse();
+  // Bottom 10 by value used to be labelled "losers" unconditionally — when
+  // fewer than 10 entries are actually negative, the least-positive ones
+  // got shown under "Top losers" despite being genuine gains. Only a
+  // negative pct is a loser.
+  const losers = ranked
+    .filter((x) => x.pct < 0)
+    .slice(-10)
+    .reverse();
   const alerts = ranked.filter((x) => x.pct <= -4);
   const maxAbs = Math.max(1, ...ranked.map((x) => Math.abs(x.pct)));
 
   const chartData = React.useMemo(
     () =>
       strategyReturns
-        .map((r) => ({ name: String(r.name ?? "—").slice(0, 12), ytd: num(r.ytd_pct) ?? 0 }))
+        // A strategy with no YTD figure used to default to 0%, rendering as
+        // a flat bar indistinguishable from a genuinely flat return. Drop
+        // it instead — an absent bar is honest, a fake 0% bar is not.
+        .map((r) => ({ name: String(r.name ?? "—").slice(0, 12), ytd: num(r.ytd_pct) }))
+        .filter((r): r is { name: string; ytd: number } => r.ytd != null)
         .sort((a, b) => b.ytd - a.ytd)
         .slice(0, 8),
     [strategyReturns],
