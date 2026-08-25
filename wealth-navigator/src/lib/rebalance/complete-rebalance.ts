@@ -3,7 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   recordRebalanceExecutionEvidence,
   recordRebalanceSettlement,
-  sealRebalanceBoundary,
+  finalizeRebalanceBoundary,
+  type BoundaryHolding,
+  type BoundaryOwner,
   type RebalanceExecutionEvidence,
 } from "@/lib/returns/seal-rebalance-boundary";
 import {
@@ -22,13 +24,30 @@ import {
  * filled" rule applied to every individual client's holdings. Called from
  * the fill path (admin/orderbook/fills/route.ts) after each fill.
  *
+ * For a strategy-wide rebalance, completion runs in three ordered phases,
+ * each gated on the previous one succeeding:
+ *
+ *   1. Groundwork — record the SETTLED `rebalance_batch` and its
+ *      `rebalance_event` execution evidence. Both are idempotent, so a retry
+ *      converges rather than duplicates.
+ *   2. Cash settlement (settleRebalanceCashForClients) — every owner named
+ *      in the batch's execution evidence, settled or parked, gets
+ *      immutable `strategy_rebalance_cash_events_c` coverage. This must run
+ *      BEFORE boundary finalization: reconcile_rebalance_ca (phase 3)
+ *      requires that coverage to exist for every owner or it refuses.
+ *   3. Boundary finalization (finalizeRebalanceBoundary) — seal the return
+ *      boundary AND auto-write the CA reconciliation row as one gate. Only
+ *      once this succeeds does `strategies_c.holdings` flip.
+ *
  * Flipping the composition and sealing the strategy's return boundary are one
  * atomic decision, not two steps: `strategies_c.holdings` is what the EOD
  * return publisher prices, so a flip without a matching boundary makes the
  * next publication read the composition change as a one-day return and chain
- * it into YTD permanently. The boundary is therefore sealed FIRST and the
- * flip only happens if it succeeded — leaving the rebalance visibly
- * unfinished (and retryable) is recoverable; a corrupted return chain is not.
+ * it into YTD permanently. The boundary (and its CA reconciliation) is
+ * therefore sealed FIRST and the flip only happens if it succeeded — leaving
+ * the rebalance visibly unfinished (and retryable) is recoverable; a
+ * corrupted return chain, or a completed rebalance nobody can reconcile, is
+ * not.
  *
  * There are two boundaries, and they are not the same thing. The STRATEGY
  * boundary (above) belongs only to a strategy-wide rebalance. The CLIENT
@@ -67,6 +86,7 @@ export interface CompleteRebalanceResult {
     ytdPct?: number;
     continuityCashCents?: number;
     completeValueCents?: number;
+    caReconciled?: boolean;
   };
 }
 
@@ -77,6 +97,22 @@ interface SiblingOrder {
   order_id?: string | null;
   payload: Record<string, unknown> | null;
   result_payload?: Record<string, unknown> | null;
+}
+
+/** Everything phase 3 (finalizeRebalanceBoundary + the holdings flip) needs, once phase 1+2 have succeeded. */
+interface PendingStrategyFinalization {
+  strategyId: string;
+  targetHoldings: Array<{ name: string; shares: number; symbol: string; ticker: string; quantity: number; weight: number }>;
+  isLiquidation: boolean;
+  settlementActorId: string;
+}
+
+interface GroundworkResult {
+  completed: boolean;
+  error?: string;
+  scope?: "strategy" | "single_user";
+  settlementBatchId?: string;
+  pendingFinalization?: PendingStrategyFinalization;
 }
 
 export async function maybeCompleteRebalance(
@@ -153,7 +189,10 @@ export async function maybeCompleteRebalance(
     return { completed: false, error: "completing rebalance has no stable completion batch id" };
   }
 
-  const boundaryResult = await runCompletion(
+  // Phase 1: groundwork. Records the batch + execution evidence for both
+  // scopes; for a strategy-wide request also prices the target composition
+  // and returns everything phase 3 will need, without sealing anything yet.
+  const groundwork = await recordGroundwork(
     retailDb,
     institutionalDb,
     rebalanceRequestId,
@@ -161,11 +200,14 @@ export async function maybeCompleteRebalance(
     siblings,
     settlementBatchId,
   );
-  if (!boundaryResult.completed) {
-    await recordCompletionError(institutionalDb, rebalanceRequestId, boundaryResult.error ?? "completion failed");
-    return boundaryResult;
+  if (!groundwork.completed) {
+    await recordCompletionError(institutionalDb, rebalanceRequestId, groundwork.error ?? "completion failed");
+    return { completed: false, error: groundwork.error, scope: groundwork.scope };
   }
 
+  // Phase 2: cash settlement. Must run before phase 3 — CA reconciliation
+  // requires immutable cash-event coverage for every owner named in the
+  // batch, settled or parked, and this is what writes it.
   const cashSettlement = await settleRebalanceCashForClients(
     retailDb,
     institutionalDb,
@@ -175,9 +217,76 @@ export async function maybeCompleteRebalance(
   if (cashSettlement.errors.length > 0) {
     const error = `cash settlement failed: ${cashSettlement.errors.join("; ")}`;
     await recordCompletionError(institutionalDb, rebalanceRequestId, error);
-    return { ...boundaryResult, completed: false, error, cashSettlement };
+    return { completed: false, error, scope: groundwork.scope, settlementBatchId, cashSettlement };
   }
 
+  // Single-client requests have nothing left to finalize: the strategy's own
+  // composition and return chain were never touched (see this module's doc
+  // comment on the two distinct boundaries).
+  if (groundwork.scope === "single_user" || !groundwork.pendingFinalization) {
+    return await markCompleted(institutionalDb, rebalanceRequestId, settlementBatchId, {
+      completed: true,
+      scope: groundwork.scope,
+      settlementBatchId,
+      cashSettlement,
+    });
+  }
+
+  // Phase 3: seal the return boundary and auto-reconcile CA as one gate.
+  const { strategyId, targetHoldings, isLiquidation, settlementActorId } = groundwork.pendingFinalization;
+  const boundary = await finalizeRebalanceBoundary(retailDb, {
+    batchId: settlementBatchId,
+    strategyId,
+    holdings: targetHoldings.map((h) => ({ symbol: h.symbol, shares: h.shares })),
+    actorId: settlementActorId,
+    // A liquidation values its securities at zero and moves the whole prior
+    // complete value into continuity cash, which is exactly right: the
+    // strategy still holds what it held, just as cash rather than stock.
+    allowEmptyHoldings: isLiquidation,
+  });
+  if (!boundary.sealed) {
+    const error = `return boundary not sealed, composition left unchanged: ${boundary.error ?? "unknown"}`;
+    await recordCompletionError(institutionalDb, rebalanceRequestId, error);
+    return {
+      completed: false,
+      error,
+      scope: "strategy",
+      settlementBatchId,
+      cashSettlement,
+      boundary: { sealed: false, error: boundary.error },
+    };
+  }
+
+  const updRes = await retailDb
+    .from("strategies_c")
+    .update({ holdings: targetHoldings, updated_at: new Date().toISOString() })
+    .eq("id", strategyId);
+  if (updRes.error) {
+    await recordCompletionError(institutionalDb, rebalanceRequestId, updRes.error.message);
+    return { completed: false, error: updRes.error.message, scope: "strategy", settlementBatchId, cashSettlement };
+  }
+
+  return await markCompleted(institutionalDb, rebalanceRequestId, settlementBatchId, {
+    completed: true,
+    scope: "strategy",
+    settlementBatchId,
+    cashSettlement,
+    boundary: {
+      sealed: true,
+      ytdPct: boundary.ytdPct,
+      continuityCashCents: boundary.continuityCashCents,
+      completeValueCents: boundary.completeValueCents,
+      caReconciled: boundary.caReconciled,
+    },
+  });
+}
+
+async function markCompleted(
+  institutionalDb: SupabaseClient,
+  rebalanceRequestId: string,
+  settlementBatchId: string,
+  successResult: CompleteRebalanceResult,
+): Promise<CompleteRebalanceResult> {
   const finalise = await institutionalDb
     .from("rebalance_request_c")
     .update({
@@ -194,10 +303,9 @@ export async function maybeCompleteRebalance(
   if (finalise.error || !finalise.data) {
     const error = `rebalance finalisation failed: ${finalise.error?.message ?? "claim no longer owned"}`;
     await recordCompletionError(institutionalDb, rebalanceRequestId, error);
-    return { ...boundaryResult, completed: false, error, cashSettlement };
+    return { ...successResult, completed: false, error };
   }
-
-  return { ...boundaryResult, completed: true, cashSettlement };
+  return successResult;
 }
 
 async function recordCompletionError(
@@ -213,14 +321,14 @@ async function recordCompletionError(
   if (result.error) console.error("rebalance completion error could not be recorded", result.error.message);
 }
 
-async function runCompletion(
+async function recordGroundwork(
   retailDb: SupabaseClient,
   institutionalDb: SupabaseClient,
   rebalanceRequestId: string,
   actorId: string | undefined,
   siblings: SiblingOrder[],
   settlementBatchId: string,
-): Promise<CompleteRebalanceResult> {
+): Promise<GroundworkResult> {
   // Owners whose own holdings this rebalance moved. Derived from the holdings
   // the orders reference rather than the order payload, because the payload
   // hardcodes family_member_id to null while the holding carries the real one
@@ -234,8 +342,8 @@ async function runCompletion(
         .filter((v): v is string => typeof v === "string" && v.length > 0),
     ),
   ];
-  const owners = new Map<string, { userId: string; familyMemberId: string | null }>();
-  const ownerByHoldingId = new Map<string, { userId: string; familyMemberId: string | null }>();
+  const owners = new Map<string, BoundaryOwner>();
+  const ownerByHoldingId = new Map<string, BoundaryOwner>();
   if (touchedHoldingIds.length > 0) {
     const ownerRes = await retailDb
       .from("stock_holdings_c")
@@ -314,8 +422,8 @@ async function runCompletion(
   // strategy's published value on one account's trade.
   //
   // Everything client-level still runs: the fills already moved their holdings
-  // with cost basis intact, settleRebalanceCashForClients (the completion
-  // step below) applies their reserve-funded fees and
+  // with cost basis intact, settleRebalanceCashForClients (run by the caller
+  // right after this groundwork step) applies their reserve-funded fees and
   // residual, and the settlement batch recorded below lets their own return
   // series (publish-client-eod-returns.ts) chain across the composition change
   // instead of jamming on it.
@@ -323,11 +431,6 @@ async function runCompletion(
   const strategyName = reqRes.data.strategy_id as string;
 
   if (typeof affected?.scope === "string" && affected.scope === "single_user") {
-    // Still record the settlement itself. The strategy's return chain is
-    // untouched, but the CLIENT's composition did change, and their own return
-    // publisher refuses to publish an unexplained composition change — without
-    // a settled batch naming them, their series jams and their YTD goes stale,
-    // which is the opposite of preserving it.
     const stratRow = await retailDb.from("strategies_c").select("id").eq("name", strategyName).maybeSingle();
     const singleStrategyId = stratRow.data?.id as string | undefined;
     if (!singleStrategyId) {
@@ -403,14 +506,14 @@ async function runCompletion(
     return { ticker: p.ticker, name: p.name ?? sym, shares, valueCents: shares * priceCents };
   });
   const totalCents = valued.reduce((s, v) => s + v.valueCents, 0) || 1;
-  const holdings = valued.map((v) => ({
+  const targetHoldings = valued.map((v) => ({
     name: v.name,
     shares: v.shares,
     symbol: v.ticker,
     ticker: v.ticker,
     quantity: v.shares,
     weight: Math.round((v.valueCents / totalCents) * 10000) / 100,
-  }));
+  })) as PendingStrategyFinalization["targetHoldings"];
 
   const stratRes = await retailDb
     .from("strategies_c")
@@ -421,46 +524,34 @@ async function runCompletion(
   if (!stratRes.data?.id) return { completed: false, error: `strategy "${strategyName}" not found` };
   const strategyId = stratRes.data.id as string;
 
-  // Seal the return boundary before the composition moves. See this module's
-  // doc comment: the publisher prices whatever `strategies_c.holdings` says,
-  // so a flip that outruns its boundary is an unrecoverable YTD corruption.
-  const boundary = await sealRebalanceBoundary(retailDb, {
+  // Record the batch + execution evidence now (phase 1). Boundary sealing
+  // and CA reconciliation happen later, in phase 3, after cash settlement.
+  const recorded = await recordRebalanceSettlement(retailDb, {
     batchId: settlementBatchId,
     strategyId,
     strategyName,
-    holdings: holdings.map((h) => ({ symbol: h.symbol, shares: h.shares })),
+    holdings: targetHoldings.map((h) => ({ symbol: h.symbol, shares: h.shares } satisfies BoundaryHolding)),
     actorId: actorId ?? "",
     owners: affectedOwners,
     holdingsBefore: stratRes.data.holdings ?? null,
-    // A liquidation values its securities at zero and moves the whole prior
-    // complete value into continuity cash, which is exactly right: the
-    // strategy still holds what it held, just as cash rather than stock.
-    allowEmptyHoldings: isLiquidation,
-    executionEvidence,
   });
-  if (!boundary.sealed) {
-    return {
-      completed: false,
-      error: `return boundary not sealed, composition left unchanged: ${boundary.error ?? "unknown"}`,
-      boundary: { sealed: false, error: boundary.error },
-    };
+  if (recorded.error || !recorded.batchId || !recorded.actorId) {
+    return { completed: false, error: recorded.error ?? "settlement batch not recorded", scope: "strategy" };
   }
-
-  const updRes = await retailDb
-    .from("strategies_c")
-    .update({ holdings, updated_at: new Date().toISOString() })
-    .eq("id", strategyId);
-  if (updRes.error) return { completed: false, error: updRes.error.message };
+  const eventError = await recordRebalanceExecutionEvidence(retailDb, recorded.batchId, executionEvidence);
+  if (eventError) {
+    return { completed: false, error: eventError, scope: "strategy", settlementBatchId: recorded.batchId };
+  }
 
   return {
     completed: true,
     scope: "strategy",
-    settlementBatchId: boundary.batchId,
-    boundary: {
-      sealed: true,
-      ytdPct: boundary.ytdPct,
-      continuityCashCents: boundary.continuityCashCents,
-      completeValueCents: boundary.completeValueCents,
+    settlementBatchId: recorded.batchId,
+    pendingFinalization: {
+      strategyId,
+      targetHoldings,
+      isLiquidation,
+      settlementActorId: recorded.actorId,
     },
   };
 }

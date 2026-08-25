@@ -12,9 +12,17 @@ import { calculateProceedsBridge } from "./proceeds";
  * half — called once every order in a rebalance has finished, applying the
  * real net effect per settled client in one pass.
  *
- * Deliberately keyed off `payload.client_treatment === "settled"` — parked
- * clients never reach this function; their (fee-free) reserve/residual
- * accounting already happened at booking time in reconcile-parked-holdings.ts.
+ * The settled-owner loop below is keyed off `payload.client_treatment ===
+ * "settled"` — parked clients' (fee-free) reserve/residual accounting
+ * already happened at booking time in reconcile-parked-holdings.ts, and
+ * this function must never move their cash a second time. But
+ * `reconcile_rebalance_ca` requires batch-scoped
+ * `strategy_rebalance_cash_events_c` coverage for EVERY owner named in the
+ * batch's `rebalance_event` rows, parked or not, or it refuses to
+ * reconcile the model's corporate-action cash — so a second pass below
+ * writes an honest zero-movement row for each parked owner (opening
+ * balance equals closing balance, no fee, no reserve draw): real coverage
+ * evidence that nothing moved in THIS batch, not a fabricated settlement.
  */
 
 interface FilledOrder {
@@ -49,18 +57,19 @@ export async function settleRebalanceCashForClients(
   const custodyFeeCentsPerIsin =
     Number.isFinite(custodyFeeRands) && custodyFeeRands >= 0 ? Math.round(custodyFeeRands * 100) : 0;
 
-  const ordersRes = await institutionalDb
+  const allOrdersRes = await institutionalDb
     .from("oems_order_audit")
     .select("side, quantity, symbol, payload")
     .eq("payload->>rebalance_request_id", rebalanceRequestId)
-    .eq("payload->>client_treatment", "settled")
     .eq("status", "filled");
-  if (ordersRes.error) {
-    result.errors.push(ordersRes.error.message);
+  if (allOrdersRes.error) {
+    result.errors.push(allOrdersRes.error.message);
     return result;
   }
-  const orders = (ordersRes.data ?? []) as FilledOrder[];
-  if (orders.length === 0) return result;
+  const allOrders = (allOrdersRes.data ?? []) as FilledOrder[];
+  const orders = allOrders.filter((o) => o.payload?.client_treatment === "settled");
+  const parkedOrders = allOrders.filter((o) => o.payload?.client_treatment === "parked");
+  if (orders.length === 0 && parkedOrders.length === 0) return result;
 
   // The order payload is not authoritative for ownership: older OEM orders
   // hard-coded family_member_id=null. Resolve the owner from the holding that
@@ -68,7 +77,7 @@ export async function settleRebalanceCashForClients(
   // be combined.
   const holdingIds = [
     ...new Set(
-      orders
+      allOrders
         .map((order) => order.payload?.holding_id)
         .filter((id): id is string => typeof id === "string" && id.length > 0),
     ),
@@ -254,6 +263,64 @@ export async function settleRebalanceCashForClients(
         expected_buffer_consumed_cents: bufferConsumedCents,
         gross_sell_cents: bridge.grossSellCents,
         gross_buy_cents: bridge.grossBuyCents,
+      });
+    } catch (err) {
+      result.errors.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Parked owners moved no cash in THIS batch — their reserve/residual was
+  // already applied directly at booking time in reconcile-parked-holdings.ts
+  // — but reconcile_rebalance_ca still requires coverage evidence for every
+  // owner named in the batch's rebalance_event rows. Write an honest
+  // zero-movement row per parked owner (closing balance equals opening
+  // balance, no fee, no reserve draw) rather than leaving them uncovered.
+  const parkedByOwner = new Map<string, { userId: string; familyMemberId: string | null; orders: FilledOrder[] }>();
+  for (const o of parkedOrders) {
+    const holdingId = typeof o.payload?.holding_id === "string" ? o.payload.holding_id : "";
+    const holdingOwner = holdingId ? ownerByHoldingId.get(holdingId) : undefined;
+    const userId = holdingOwner?.userId ?? (typeof o.payload?.user_id === "string" ? o.payload.user_id : "");
+    const familyMemberId = holdingOwner
+      ? holdingOwner.familyMemberId
+      : typeof o.payload?.family_member_id === "string"
+        ? o.payload.family_member_id
+        : null;
+    if (!userId) continue;
+    const key = `${userId}|${familyMemberId ?? ""}`;
+    if (byOwner.has(key)) continue; // already covered by a real settled settlement
+    const owner = parkedByOwner.get(key) ?? { userId, familyMemberId, orders: [] };
+    owner.orders.push(o);
+    parkedByOwner.set(key, owner);
+  }
+  for (const { userId, familyMemberId, orders: userOrders } of parkedByOwner.values()) {
+    try {
+      const strategyRowId = await resolveStrategyRowId(userOrders);
+      if (!strategyRowId) throw new Error(`parked rebalance owner ${userId} has no retail strategy identity`);
+      let residualQuery = retailDb
+        .from("strategy_rebalance_residuals")
+        .select("balance_cents")
+        .eq("user_id", userId)
+        .eq("strategy_id", strategyRowId);
+      residualQuery = familyMemberId
+        ? residualQuery.eq("family_member_id", familyMemberId)
+        : residualQuery.is("family_member_id", null);
+      const { data: residualRow } = await residualQuery.maybeSingle();
+      const residualCents = Number(residualRow?.balance_cents ?? 0);
+      settlements.push({
+        user_id: userId,
+        family_member_id: familyMemberId,
+        strategy_id: strategyRowId,
+        transaction_id: null,
+        opening_residual_cents: residualCents,
+        closing_residual_cents: residualCents,
+        reserve_before_cents: 0,
+        reserve_used_cents: 0,
+        reserve_after_cents: 0,
+        requested_fee_cents: 0,
+        fee_shortfall_cents: 0,
+        expected_buffer_consumed_cents: 0,
+        gross_sell_cents: 0,
+        gross_buy_cents: 0,
       });
     } catch (err) {
       result.errors.push(err instanceof Error ? err.message : String(err));
