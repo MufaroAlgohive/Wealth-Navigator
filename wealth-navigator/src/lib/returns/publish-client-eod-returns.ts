@@ -577,9 +577,26 @@ export async function publishClientEodReturns(
         externalContribution =
           previous.external_contribution_cents == null ? null : Number(previous.external_contribution_cents);
         if (!sameSnapshot(previous.holdings_snapshot, snapshot)) {
+          // Comparing DATES (not timestamps) here used to reject a same-day
+          // boundary outright: a client rebalanced mid-morning, published
+          // again that evening, and the batch's own settlement date equalled
+          // `previous.as_of_date` — `date > date` is false even though the
+          // batch happened well after `previous` was captured. Reproduced
+          // live 2026-08-25: a rebalance settled 2026-08-24T14:52 explaining
+          // a change from a 2026-08-24T10:57 publish, both dated the same
+          // calendar day, threw "composition changed without a settled
+          // rebalance boundary" on the very next run. Comparing real
+          // timestamps against `previous.published_at` (when that row was
+          // actually captured, not just its date) fixes the same-day case
+          // and is strictly more correct than the date-only version for the
+          // cross-day case too — a batch that settled earlier the same day
+          // `previous` was published is correctly excluded (already
+          // reflected in `previous`), not just anything under the date.
+          const previousPublishedAtMs = Date.parse(String(previous.published_at ?? "")) || 0;
+          const nowMs = Date.now();
           const boundary = (boundaryBatchesByOwner.get(key) ?? []).find((batch) => {
-            const date = String(batch.settlement_effective_at || batch.settled_at || "").slice(0, 10);
-            return date && date > String(previous.as_of_date) && date <= asOf;
+            const batchMs = Date.parse(String(batch.settlement_effective_at || batch.settled_at || ""));
+            return Number.isFinite(batchMs) && batchMs > previousPublishedAtMs && batchMs <= nowMs;
           });
           if (!boundary) throw new Error("composition changed without a settled rebalance boundary");
           boundaryBatchId = boundary.id;
