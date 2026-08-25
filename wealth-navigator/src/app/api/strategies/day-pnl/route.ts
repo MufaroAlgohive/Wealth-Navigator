@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminContext } from "@/lib/admin/rbac";
 import { loadRetailLiveScope } from "@/lib/aum/retail-live-scope";
-import { calculateAssetDayPnlCents, planQuoteRefresh } from "@/lib/pnl/asset-day-pnl";
+import { calculateAssetDayPnlCents, planQuoteRefresh, resolveDayPnlStrategyId } from "@/lib/pnl/asset-day-pnl";
 import {
   createInstitutionalServiceRoleClient,
   createRetailServiceRoleClient,
@@ -20,8 +20,9 @@ const sastDate = (value = new Date()) => new Intl.DateTimeFormat("en-CA", {
   timeZone: "Africa/Johannesburg", year: "numeric", month: "2-digit", day: "2-digit",
 }).format(value);
 const finite = (value: unknown) => Number.isFinite(Number(value)) ? Number(value) : 0;
-const keyOf = (userId: string, familyId: string | null, strategyId: string, securityId: string) =>
-  `${userId}|${familyId ?? ""}|${strategyId}|${securityId}`;
+const DIRECT_BOOK = "__DIRECT__";
+const keyOf = (userId: string, familyId: string | null, strategyId: string | null, securityId: string) =>
+  `${userId}|${familyId ?? ""}|${strategyId ?? DIRECT_BOOK}|${securityId}`;
 
 async function loadQuotes(
   symbols: string[],
@@ -110,13 +111,18 @@ export async function GET(request: Request) {
   }
 
   const securityById = new Map((securitiesResult.data ?? []).map((row) => [String(row.id), String(row.symbol)]));
-  const allHoldings = (holdingsResult.data ?? []).filter((row) => row.user_id && row.strategy_id && row.security_id &&
-    !scope.excludedUserIds.has(String(row.user_id)) && !scope.excludedStrategyIds.has(String(row.strategy_id)));
+  // Platform Day P&L covers the entire LIVE investor book. A direct/manual
+  // security legitimately has no strategy_id and must not disappear merely
+  // because it is outside a managed basket.
+  const allHoldings = (holdingsResult.data ?? []).filter((row) => row.user_id && row.security_id &&
+    !scope.excludedUserIds.has(String(row.user_id)) &&
+    (!row.strategy_id || !scope.excludedStrategyIds.has(String(row.strategy_id))));
   const holdingById = new Map(allHoldings.map((row) => [String(row.id), row]));
-  const currentByKey = new Map<string, { userId: string; strategyId: string; securityId: string; quantity: number }>();
+  const currentByKey = new Map<string, { userId: string; strategyId: string | null; securityId: string; quantity: number }>();
   for (const row of allHoldings.filter((holding) => holding.is_active && String(holding.trade_side).toUpperCase() === "BUY")) {
-    const key = keyOf(String(row.user_id), row.family_member_id ? String(row.family_member_id) : null, String(row.strategy_id), String(row.security_id));
-    const current = currentByKey.get(key) ?? { userId: String(row.user_id), strategyId: String(row.strategy_id), securityId: String(row.security_id), quantity: 0 };
+    const strategyId = row.strategy_id ? String(row.strategy_id) : null;
+    const key = keyOf(String(row.user_id), row.family_member_id ? String(row.family_member_id) : null, strategyId, String(row.security_id));
+    const current = currentByKey.get(key) ?? { userId: String(row.user_id), strategyId, securityId: String(row.security_id), quantity: 0 };
     current.quantity += Math.abs(finite(row.quantity));
     currentByKey.set(key, current);
   }
@@ -128,13 +134,15 @@ export async function GET(request: Request) {
     const holding = typeof payload.holding_id === "string" ? holdingById.get(payload.holding_id) : undefined;
     const userId = String(holding?.user_id ?? payload.user_id ?? "");
     const familyId = holding?.family_member_id ? String(holding.family_member_id) : typeof payload.family_member_id === "string" ? payload.family_member_id : null;
-    const strategyId = String(holding?.strategy_id ?? payload.strategy_id ?? "");
+    // When the holding is known, its null strategy_id is meaningful: this is
+    // a direct security. Do not replace it with payload labels such as MANUAL.
+    const strategyId = resolveDayPnlStrategyId(holding, payload.strategy_id);
     const securityId = String(holding?.security_id ?? payload.security_id ?? "");
     const quantity = finite(payload.filled ?? row.quantity);
     const resultPayload = (row.result_payload ?? {}) as Record<string, unknown>;
     const fillPriceCents = finite(resultPayload.avgFillPrice ?? payload.avgPx);
-    if (!userId || !strategyId || !securityId || !(quantity > 0) || !(fillPriceCents > 0) ||
-      scope.excludedUserIds.has(userId) || scope.excludedStrategyIds.has(strategyId)) continue;
+    if (!userId || !securityId || !(quantity > 0) || !(fillPriceCents > 0) ||
+      scope.excludedUserIds.has(userId) || (strategyId != null && scope.excludedStrategyIds.has(strategyId))) continue;
     const key = keyOf(userId, familyId, strategyId, securityId);
     const bucket = fillsByKey.get(key) ?? { buys: [], sells: [] };
     (String(row.side).toLowerCase() === "sell" ? bucket.sells : bucket.buys).push({ quantity, fillPriceCents });
@@ -241,11 +249,15 @@ export async function GET(request: Request) {
       sells: fills.sells,
     });
     totalPnlCents += pnl;
-    byStrategy.set(position.strategyId, (byStrategy.get(position.strategyId) ?? 0) + pnl);
+    if (position.strategyId != null) {
+      byStrategy.set(position.strategyId, (byStrategy.get(position.strategyId) ?? 0) + pnl);
+    }
     coveredKeys.add(key);
     if (!newestExchangeTime || quote.exchangeTime > newestExchangeTime) newestExchangeTime = quote.exchangeTime;
   }
   const liveComplete = currentByKey.size > 0 && coveredKeys.size === currentByKey.size;
+  const directPositions = [...currentByKey.values()].filter((position) => position.strategyId == null).length;
+  const strategyPositions = currentByKey.size - directPositions;
   const missingSymbols = [...new Set([...currentByKey]
     .filter(([key]) => !coveredKeys.has(key))
     .map(([, position]) => securityById.get(position.securityId) ?? position.securityId))]
@@ -275,6 +287,8 @@ export async function GET(request: Request) {
       asOf: newestExchangeTime,
       coveredHoldings: coveredKeys.size,
       totalHoldings: currentByKey.size,
+      directPositions,
+      strategyPositions,
       coveredSecurities: securityIds.length - missingSymbols.length,
       totalSecurities: securityIds.length,
       missingSymbols,

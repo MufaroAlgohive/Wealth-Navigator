@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { calculateAssetDayPnlCents, planQuoteRefresh } from "./asset-day-pnl";
+import { calculateAssetDayPnlCents, planQuoteRefresh, resolveDayPnlStrategyId } from "./asset-day-pnl";
 
 describe("calculateAssetDayPnlCents", () => {
   it("marks an unchanged opening holding from previous close", () => {
@@ -31,5 +31,16 @@ describe("planQuoteRefresh", () => {
   it("rotates the oldest cached symbols once full coverage exists", () => {
     const refreshed = new Map([["NED", 300], ["MTN", 100], ["SUI", 200]]);
     expect(planQuoteRefresh(["NED", "MTN", "SUI"], refreshed, 2)).toEqual(["MTN", "SUI"]);
+  });
+});
+
+describe("resolveDayPnlStrategyId", () => {
+  it("keeps a known null strategy holding in the direct book", () => {
+    expect(resolveDayPnlStrategyId({ strategy_id: null }, "MANUAL")).toBeNull();
+  });
+
+  it("uses the strategy for managed holdings and payload-only fills", () => {
+    expect(resolveDayPnlStrategyId({ strategy_id: "yield" }, "MANUAL")).toBe("yield");
+    expect(resolveDayPnlStrategyId(undefined, "yield")).toBe("yield");
   });
 });
