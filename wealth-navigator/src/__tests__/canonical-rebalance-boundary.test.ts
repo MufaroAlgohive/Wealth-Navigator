@@ -80,6 +80,7 @@ const input = () => ({
     capital_source: "SETTLED_FILLS",
   },
   unchangedLegCurrentPrices: undefined as Map<string, number> | undefined,
+  unchangedLegPreviousPrices: undefined as Map<string, number> | undefined,
 });
 
 describe("canonical rebalance boundary reconstruction", () => {
@@ -133,12 +134,17 @@ describe("canonical rebalance boundary reconstruction", () => {
     withDrift.reconciliation.strategy_ca_cents = 790;
     withDrift.reconciliation.model_capital_cents = 3790;
     withDrift.unchangedLegCurrentPrices = new Map([["KEEP", 400]]);
+    withDrift.unchangedLegPreviousPrices = new Map([["KEEP", 500]]);
 
-    // Without the drift map, the identical cash figure is indistinguishable
-    // from genuinely unexplained capital — confirms the fix is the map, not
-    // a loosened threshold.
-    const withoutDriftMap = { ...withDrift, unchangedLegCurrentPrices: undefined };
-    expect(() => rebuildLegsAcrossSettledBoundary(withoutDriftMap)).toThrow(
+    // Without either price map, the identical cash figure is indistinguishable
+    // from genuinely unexplained capital — confirms the fix is the two maps,
+    // not a loosened threshold.
+    const withoutDriftMaps = {
+      ...withDrift,
+      unchangedLegCurrentPrices: undefined,
+      unchangedLegPreviousPrices: undefined,
+    };
+    expect(() => rebuildLegsAcrossSettledBoundary(withoutDriftMaps)).toThrow(
       "BOUNDARY_REQUIRES_UNEXPLAINED_EXTERNAL_CAPITAL",
     );
 
@@ -147,5 +153,67 @@ describe("canonical rebalance boundary reconstruction", () => {
       unchanged_leg_drift_cents: -200,
       execution_cost_cents: 10,
     });
+  });
+
+  it("ignores previousLegs' entry price as a source of the untraded leg's previous price", () => {
+    // The bug in the first version of this fix: KEEP's leg in previousLegs
+    // carries its ORIGINAL cost basis (500, from whenever that lot opened —
+    // could be months earlier), not a rolling mark. Live 2026-08-25: NED's
+    // leg still carried its 2026-01-30 inception price; the real close on
+    // the actual previous published date (2026-08-21) was materially
+    // different, and deriving "previous price" from the leg silently
+    // reintroduced the exact bug this fix exists to close. A correct
+    // implementation reads ONLY unchangedLegPreviousPrices, so a wildly
+    // different entryPriceCents on the leg itself (999 here, vs the "real"
+    // previous close of 500 supplied via the map) must not change the
+    // result at all.
+    const withStaleLegEntry = input();
+    withStaleLegEntry.previousLegs = withStaleLegEntry.previousLegs.map((leg) =>
+      leg.ticker === "KEEP" ? { ...leg, entryPriceCents: 999 } : leg,
+    );
+    withStaleLegEntry.currentCashCents = 790;
+    withStaleLegEntry.reconciliation.strategy_ca_cents = 790;
+    withStaleLegEntry.reconciliation.model_capital_cents = 3790;
+    withStaleLegEntry.unchangedLegCurrentPrices = new Map([["KEEP", 400]]);
+    withStaleLegEntry.unchangedLegPreviousPrices = new Map([["KEEP", 500]]);
+
+    const result = rebuildLegsAcrossSettledBoundary(withStaleLegEntry);
+    expect(result.evidence).toMatchObject({
+      unchanged_leg_drift_cents: -200,
+      execution_cost_cents: 10,
+    });
+  });
+
+  it("tolerates a small residual after drift adjustment (EOD close vs intraday settlement tick noise)", () => {
+    // Same drift as the passing case above, but currentCashCents is 7 cents
+    // short of what the drift adjustment predicts (797 instead of 790) --
+    // exactly the residual reproduced live 2026-08-25 between a stored EOD
+    // close and the live intraday tick the settlement RPC actually used.
+    // Must still pass: this is real cross-source noise, not unexplained
+    // capital.
+    const withResidual = input();
+    withResidual.currentCashCents = 797;
+    withResidual.reconciliation.strategy_ca_cents = 797;
+    withResidual.reconciliation.model_capital_cents = 3797;
+    withResidual.unchangedLegCurrentPrices = new Map([["KEEP", 400]]);
+    withResidual.unchangedLegPreviousPrices = new Map([["KEEP", 500]]);
+
+    expect(() => rebuildLegsAcrossSettledBoundary(withResidual)).not.toThrow();
+  });
+
+  it("still refuses a gap far too large to be EOD-close-vs-intraday-tick noise, even with drift data supplied", () => {
+    // R50 unexplained is nowhere near the few-cents-per-security noise the
+    // wider tolerance exists for -- confirms drift data doesn't make the
+    // guard toothless.
+    const withHugeGap = input();
+    withHugeGap.currentCashCents = 5790;
+    withHugeGap.reconciliation.strategy_ca_cents = 5790;
+    withHugeGap.reconciliation.model_capital_cents = 8790;
+    withHugeGap.unchangedLegCurrentPrices = new Map([["KEEP", 400]]);
+    withHugeGap.unchangedLegPreviousPrices = new Map([["KEEP", 500]]);
+
+    expect(() => rebuildLegsAcrossSettledBoundary(withHugeGap)).toThrow(
+      "BOUNDARY_REQUIRES_UNEXPLAINED_EXTERNAL_CAPITAL",
+    );
   });
 });
