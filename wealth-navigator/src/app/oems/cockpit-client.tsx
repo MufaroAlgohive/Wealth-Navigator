@@ -796,11 +796,19 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   });
   // Official SARB rates + macro (repo / prime / ZARONIA / Sabor / CPI / PPI).
   // IRESS V4 on DFM@MINT has no rates or macro feed; SARB's free Web API does.
-  type SaRate = { label: string; value: number | null; asOf: string | null } | null;
+  type SaRate = {
+    label: string;
+    value: number | null;
+    asOf: string | null;
+    freshness: "current" | "delayed" | "stale" | "unavailable";
+    ageDays: number | null;
+  } | null;
   const saRatesQ = useQuery<{
     source: string;
     sourceLabel?: string;
     asOf: string | null;
+    fetchedAt?: string;
+    refreshSeconds?: number;
     rates: Record<string, SaRate>;
   }>({
     queryKey: ["bff-sa-rates"],
@@ -810,7 +818,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       return r.json();
     },
     enabled: realDataOnly,
-    refetchInterval: 3_600_000,
+    refetchInterval: 300_000,
     ...queryOpts("reference"),
   });
   const saRates = saRatesQ.data?.rates;
@@ -2454,7 +2462,18 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             dataSource={saRatesQ.data?.source === "sarb" ? "external" : "unconfigured"}
             noPadding
             className="col-span-12 lg:col-span-4 flex h-[340px] flex-col min-h-0"
-            right={<span className="text-caption font-mono">{saRatesQ.data?.sourceLabel ?? "SARB"}</span>}
+            right={
+              <span className="text-caption font-mono">
+                {saRatesQ.data?.sourceLabel ?? "SARB"}
+                {saRatesQ.data?.fetchedAt
+                  ? ` · fetched ${new Date(saRatesQ.data.fetchedAt).toLocaleTimeString("en-ZA", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      timeZone: "Africa/Johannesburg",
+                    })}`
+                  : ""}
+              </span>
+            }
           >
             {saRatesQ.isLoading ? (
               <div className="p-5">
@@ -2481,9 +2500,27 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     ] as const
                   ).map(([k, r]) => (
                     <div key={k} className="glass-inset p-3">
-                      <p className="text-caption">{k}</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-caption">{k}</p>
+                        {r?.freshness && (
+                          <span
+                            className={cn(
+                              "rounded-full px-1.5 py-0.5 font-mono text-[8px] uppercase",
+                              r.freshness === "current"
+                                ? "bg-success/10 text-success"
+                                : r.freshness === "delayed"
+                                  ? "bg-warning/10 text-warning"
+                                  : "bg-destructive/10 text-destructive",
+                            )}
+                          >
+                            {r.freshness}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-metric mt-1">{r?.value != null ? `${r.value.toFixed(2)}%` : "—"}</p>
-                      {r?.asOf && <p className="mt-0.5 text-caption opacity-70">{r.asOf.slice(0, 10)}</p>}
+                      {r?.asOf && (
+                        <p className="mt-0.5 text-caption opacity-70">observed {r.asOf.slice(0, 10)}</p>
+                      )}
                     </div>
                   ))}
                 </div>
