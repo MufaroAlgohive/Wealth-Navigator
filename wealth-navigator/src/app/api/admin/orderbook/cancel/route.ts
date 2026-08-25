@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { can, getAdminContext } from "@/lib/admin/rbac";
 import { isIressWorkerConfigured } from "@/lib/data-policy";
 import { callWorker } from "@/lib/iress/worker-api";
+import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
+import { voidUnfilledRemainder } from "@workers/iress-ingest/src/settlement";
 
 /**
  * POST /api/admin/orderbook/cancel
@@ -115,6 +117,40 @@ export async function POST(req: Request) {
     );
   }
 
+  // The worker only best-effort stamps oems_order_audit.status="cancelled" —
+  // nothing in that round-trip ever retires the RETAIL placeholder holding
+  // this order was raised against. Unlike a parked cancel (cancel-parked/
+  // route.ts, safe to fully zero — a parked order can never be partially
+  // filled), an order that reached the broker CAN be partially filled before
+  // cancellation, so voidUnfilledRemainder — the same partial-fill-aware
+  // function the IRESS poller uses for a broker-observed terminal state — is
+  // reused here rather than a cruder full-zero. Best-effort: a real broker
+  // cancel must not be reported as failed over a holding-cleanup hiccup.
+  let holdingVoided = false;
+  let holdingVoidError: string | null = null;
+  try {
+    const institutionalDb = createInstitutionalServiceRoleClient();
+    const retailDb = createRetailServiceRoleClient();
+    const { data: auditRow, error: auditErr } = await institutionalDb
+      .from("oems_order_audit")
+      .select("order_id, status, quantity, payload")
+      .eq("order_id", orderNumber)
+      .eq("payload->>broker_account_code", account)
+      .maybeSingle();
+    if (auditErr) {
+      holdingVoidError = auditErr.message;
+    } else if (auditRow) {
+      const result = await voidUnfilledRemainder(
+        { institutional: institutionalDb, retail: retailDb, enabled: true, dryRun: false },
+        auditRow as { order_id: string; status: string; quantity: number | null; payload: Record<string, unknown> | null },
+      );
+      holdingVoided = result.lotVoided || result.unfilledQty > 0;
+      if (result.error) holdingVoidError = result.error;
+    }
+  } catch (err) {
+    holdingVoidError = err instanceof Error ? err.message : String(err);
+  }
+
   return NextResponse.json({
     ok: true,
     orderNumber,
@@ -122,5 +158,7 @@ export async function POST(req: Request) {
     cancelledAt: body2.cancelledAt ?? new Date().toISOString(),
     workerId: body2.workerId ?? null,
     iressMode: body2.iressMode ?? null,
+    holdingVoided,
+    holdingVoidError,
   });
 }
