@@ -219,20 +219,6 @@ export interface SealBoundaryResult {
   idempotent?: boolean;
   /** True once `reconcile_rebalance_ca` has recorded (or already held) this batch's CA row. */
   caReconciled?: boolean;
-  /**
-   * Set when the auto-reconciliation attempt below failed. Deliberately does
-   * NOT flip `sealed` to false: the boundary itself is sound (the return
-   * chain is safe) even when CA reconciliation cannot complete, which is
-   * exactly the case for a batch that mixes settled and PARKED owners —
-   * parked clients' cash was already adjusted directly in
-   * reconcile-parked-holdings.ts, outside `strategy_rebalance_cash_events_c`,
-   * so `reconcile_rebalance_ca`'s per-owner cash-event check legitimately
-   * refuses them. That is a pre-existing, known gap in parked-client cash
-   * evidence (out of scope here) — not a reason to leave the whole rebalance
-   * stuck retrying forever. Surfaced here so it's visible in logs/ops rather
-   * than silently swallowed.
-   */
-  caReconciliationError?: string;
 }
 
 function bare(symbol: string): string {
@@ -276,18 +262,39 @@ async function latestPrices(
   return { priceCents, freshestAt };
 }
 
-export async function sealRebalanceBoundary(
+/**
+ * Finalize an already-recorded strategy rebalance batch: price its target
+ * composition, seal the return boundary, and auto-write the corporate-action
+ * reconciliation row the boundary makes possible — all as one completion
+ * gate. The batch (`rebalance_batch`) and its execution evidence
+ * (`rebalance_event`) must already exist (see `recordRebalanceSettlement` /
+ * `recordRebalanceExecutionEvidence`), and — critically — cash settlement
+ * (`settleRebalanceCashForClients`) must already have run for this batch,
+ * because CA reconciliation below requires `strategy_rebalance_cash_events_c`
+ * coverage for every affected owner and cannot get it any other way.
+ *
+ * `reconcile_rebalance_ca` (retail RPC, live since 2026-07-29) is idempotent
+ * — an existing row for this batch short-circuits with its stored values, a
+ * conflicting one raises — and derives every number from the batch's own
+ * evidence, but until this change nothing ever called it, so every
+ * production reconciliation row was a hand-authored, after-the-fact
+ * migration once someone noticed certification had stalled. It is now part
+ * of the completion gate, not a best-effort side call: a rebalance whose
+ * model composition and financial state cannot be reconciled must not be
+ * marked complete, exactly the failure mode this module exists to prevent
+ * for the return boundary itself. Failure here returns `sealed: false`, so
+ * the caller leaves the institutional request `completing` with
+ * `completion_error` set and retryable — same as any other failed step.
+ */
+export async function finalizeRebalanceBoundary(
   retailDb: SupabaseClient,
   params: {
-    /** Stable id allocated by the institutional completion claim. */
-    batchId?: string;
+    batchId: string;
     strategyId: string;
-    strategyName: string;
     /** The composition the strategy is moving TO. */
     holdings: BoundaryHolding[];
+    /** Resolved retail actor from the earlier settlement-recording step. */
     actorId: string;
-    /** Owners this settlement moved — recorded for the client-side boundary. */
-    owners: BoundaryOwner[];
     /**
      * Set only for a deliberate full liquidation, where an empty target
      * composition is the intended result rather than a malformed input. The
@@ -296,20 +303,17 @@ export async function sealRebalanceBoundary(
      * silently sealing one would tell the publisher the strategy holds nothing.
      */
     allowEmptyHoldings?: boolean;
-    holdingsBefore?: unknown;
-    /** Filled broker rows to persist before this strategy boundary is finalized. */
-    executionEvidence?: RebalanceExecutionEvidence[];
     effectiveAt?: Date;
   },
 ): Promise<SealBoundaryResult> {
-  const { strategyId, strategyName, actorId } = params;
+  const { batchId, strategyId, actorId } = params;
   const effectiveAt = params.effectiveAt ?? new Date();
 
   const holdings = params.holdings
     .map((h) => ({ symbol: bare(h.symbol), shares: Math.max(0, Math.round(Number(h.shares) || 0)) }))
     .filter((h) => h.symbol && h.shares > 0);
   if (holdings.length === 0 && !params.allowEmptyHoldings) {
-    return { sealed: false, error: "no positive holdings to value" };
+    return { sealed: false, error: "no positive holdings to value", batchId };
   }
   const { priceCents, freshestAt } = await latestPrices(
     retailDb,
@@ -327,6 +331,7 @@ export async function sealRebalanceBoundary(
     return {
       sealed: false,
       error: `no recent price for ${missing.join(", ")} — refusing to seal a partial boundary`,
+      batchId,
     };
   }
 
@@ -334,42 +339,13 @@ export async function sealRebalanceBoundary(
     holdings.reduce((sum, h) => sum + h.shares * (priceCents.get(h.symbol) ?? 0), 0),
   );
 
-  // The RPC resolves the strategy from its batch, so the settlement needs one.
-  // The same batch doubles as the client-side boundary for the owners it moved.
-  const recorded = await recordRebalanceSettlement(retailDb, {
-    batchId: params.batchId,
-    strategyId,
-    strategyName,
-    holdings,
-    actorId,
-    owners: params.owners,
-    holdingsBefore: params.holdingsBefore,
-    effectiveAt,
-  });
-  if (recorded.error || !recorded.batchId) {
-    return { sealed: false, error: recorded.error ?? "settlement batch not recorded" };
-  }
-  const batchId = recorded.batchId;
-  const settlementActorId = recorded.actorId;
-  if (!settlementActorId) return { sealed: false, error: "settlement batch has no retail actor", batchId };
-
-  // A batch without its execution rows cannot later explain the model legs
-  // that changed. Refuse the boundary (and therefore the composition flip)
-  // rather than leave a plausible-looking but unverifiable rebalance behind.
-  const eventError = await recordRebalanceExecutionEvidence(
-    retailDb,
-    batchId,
-    params.executionEvidence ?? [],
-  );
-  if (eventError) return { sealed: false, error: eventError, batchId };
-
   const rpcRes = await retailDb.rpc("finalize_rebalance_return_boundary", {
     p_batch_id: batchId,
     p_securities_value_cents: securitiesValueCents,
     p_holdings_snapshot: holdings,
     p_effective_at: effectiveAt.toISOString(),
     p_price_observed_at: freshestAt ?? effectiveAt.toISOString(),
-    p_actor: settlementActorId,
+    p_actor: actorId,
   });
   if (rpcRes.error) return { sealed: false, error: `boundary RPC failed: ${rpcRes.error.message}`, batchId };
 
@@ -381,24 +357,20 @@ export async function sealRebalanceBoundary(
     ytd_pct?: number;
   };
 
-  // Auto-write the corporate-action reconciliation row the boundary just
-  // made possible. `reconcile_rebalance_ca` has existed since 2026-07-29,
-  // is idempotent (an existing row for this batch short-circuits with the
-  // same values, a conflicting one raises), and derives every number itself
-  // from this batch's own evidence — but until now no caller ever invoked
-  // it, so it was only ever written by hand-authored, after-the-fact
-  // migrations once someone noticed certification had stalled. Best-effort:
-  // failure here must not undo a sound boundary seal (see caReconciliationError).
-  let caReconciled: boolean | undefined;
-  let caReconciliationError: string | undefined;
   const caRes = await retailDb.rpc("reconcile_rebalance_ca", {
     p_batch_id: batchId,
-    p_actor: settlementActorId,
+    p_actor: actorId,
   });
   if (caRes.error) {
-    caReconciliationError = caRes.error.message;
-  } else {
-    caReconciled = true;
+    // The return boundary above is already sealed (financial state written),
+    // but an unreconciled CA is exactly the silent-stall failure mode this
+    // change exists to close — so this is refused, not logged-and-ignored.
+    // The composition flip has NOT happened yet (that's the caller's next
+    // step, gated on `sealed: true`), so refusing here leaves nothing to
+    // unwind: the rebalance stays `completing`/retryable, strategies_c.holdings
+    // is untouched, and re-running once cash settlement covers every owner
+    // (see settleRebalanceCashForClients' parked zero-movement rows) succeeds.
+    return { sealed: false, error: `CA reconciliation failed: ${caRes.error.message}`, batchId };
   }
 
   return {
@@ -409,7 +381,6 @@ export async function sealRebalanceBoundary(
     continuityCashCents: Number(out.continuity_cash_cents ?? 0),
     completeValueCents: Number(out.complete_value_cents ?? 0),
     ytdPct: out.ytd_pct == null ? undefined : Number(out.ytd_pct),
-    caReconciled,
-    caReconciliationError,
+    caReconciled: true,
   };
 }

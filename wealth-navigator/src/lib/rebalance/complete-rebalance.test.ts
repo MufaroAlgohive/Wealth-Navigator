@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const settlementMocks = vi.hoisted(() => ({
-  sealRebalanceBoundary: vi.fn(),
+  finalizeRebalanceBoundary: vi.fn(),
   recordRebalanceSettlement: vi.fn(),
   recordRebalanceExecutionEvidence: vi.fn(),
 }));
@@ -10,7 +10,7 @@ const cashMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/returns/seal-rebalance-boundary", () => ({
-  sealRebalanceBoundary: settlementMocks.sealRebalanceBoundary,
+  finalizeRebalanceBoundary: settlementMocks.finalizeRebalanceBoundary,
   recordRebalanceSettlement: settlementMocks.recordRebalanceSettlement,
   recordRebalanceExecutionEvidence: settlementMocks.recordRebalanceExecutionEvidence,
 }));
@@ -168,7 +168,7 @@ describe("maybeCompleteRebalance", () => {
     const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
 
     expect(outcome).toEqual({ completed: false });
-    expect(settlementMocks.sealRebalanceBoundary).not.toHaveBeenCalled();
+    expect(settlementMocks.finalizeRebalanceBoundary).not.toHaveBeenCalled();
   });
 
   it("keeps the request completing when cash settlement fails", async () => {
@@ -225,11 +225,13 @@ describe("maybeCompleteRebalance", () => {
 
     expect(outcome).toEqual({ completed: false });
     expect(settlementMocks.recordRebalanceSettlement).not.toHaveBeenCalled();
-    expect(settlementMocks.sealRebalanceBoundary).not.toHaveBeenCalled();
+    expect(settlementMocks.finalizeRebalanceBoundary).not.toHaveBeenCalled();
   });
 
-  it("never flips model holdings if sealing the return boundary fails", async () => {
-    settlementMocks.sealRebalanceBoundary.mockResolvedValue({ sealed: false, error: "missing close" });
+  it("never flips model holdings if sealing the return boundary (or its CA reconciliation) fails", async () => {
+    settlementMocks.recordRebalanceSettlement.mockResolvedValue({ batchId: "batch-1", actorId: "user-1" });
+    settlementMocks.recordRebalanceExecutionEvidence.mockResolvedValue(null);
+    settlementMocks.finalizeRebalanceBoundary.mockResolvedValue({ sealed: false, error: "missing close" });
     const retailUpdate = vi.fn(() => chain({ data: null, error: null }));
     const retailDb = {
       from: vi.fn((table: string) => {
@@ -279,7 +281,57 @@ describe("maybeCompleteRebalance", () => {
     const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
 
     expect(outcome).toMatchObject({ completed: false, error: expect.stringContaining("return boundary not sealed") });
-    expect(settlementMocks.sealRebalanceBoundary).toHaveBeenCalledOnce();
+    expect(settlementMocks.finalizeRebalanceBoundary).toHaveBeenCalledOnce();
     expect(retailUpdate).not.toHaveBeenCalled();
+  });
+
+  it("runs cash settlement before boundary finalization, and does not finalize a strategy-wide rebalance if it fails", async () => {
+    settlementMocks.recordRebalanceSettlement.mockResolvedValue({ batchId: "batch-1", actorId: "user-1" });
+    settlementMocks.recordRebalanceExecutionEvidence.mockResolvedValue(null);
+    cashMocks.settleRebalanceCashForClients.mockResolvedValue({ settledUserIds: [], errors: ["insufficient reserve"] });
+    const retailDb = {
+      from: vi.fn((table: string) => {
+        if (table === "securities_c") return chain({ data: [{ symbol: "ABC.JO", last_price: 1000 }], error: null });
+        if (table === "strategies_c") {
+          return { select: () => chain({ data: { id: "strategy-1", holdings: [] }, error: null }) };
+        }
+        throw new Error(`unexpected retail table: ${table}`);
+      }),
+    };
+    const institutionalDb = {
+      from: vi.fn((table: string) => {
+        if (table === "oems_order_audit") {
+          return chain({
+            data: [{
+              status: "filled",
+              side: "buy",
+              quantity: 2,
+              payload: { user_id: "user-1", security_id: "security-1", filled: 2, lastFillAt: "2026-08-14T12:00:00.000Z" },
+              result_payload: { avgFillPrice: 1000 },
+            }],
+            error: null,
+          });
+        }
+        if (table === "rebalance_request_c") {
+          return rebalanceRequestChain({
+            data: {
+              strategy_id: "Strategy Name",
+              affected_investors: { scope: "strategy" },
+              proposed_composition: [{ ticker: "ABC.JO", shares: 2, action: "increase" }],
+            },
+            error: null,
+          });
+        }
+        throw new Error(`unexpected institutional table: ${table}`);
+      }),
+    };
+
+    const outcome = await maybeCompleteRebalance(retailDb as never, institutionalDb as never, "request-1", "actor-1");
+
+    expect(outcome).toMatchObject({ completed: false, error: expect.stringContaining("cash settlement failed") });
+    expect(settlementMocks.finalizeRebalanceBoundary).not.toHaveBeenCalled();
+    const cashCallOrder = cashMocks.settleRebalanceCashForClients.mock.invocationCallOrder[0];
+    const recordCallOrder = settlementMocks.recordRebalanceSettlement.mock.invocationCallOrder[0];
+    expect(cashCallOrder).toBeGreaterThan(recordCallOrder);
   });
 });
