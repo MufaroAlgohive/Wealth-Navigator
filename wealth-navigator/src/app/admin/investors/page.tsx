@@ -409,7 +409,22 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
         <Kpi label="YTD" value={pctStr(inv.ytdPct)} valueCls={pctCls(inv.ytdPct)} />
         <Kpi label="Inception" value={pctStr(inv.inceptionPct)} valueCls={pctCls(inv.inceptionPct)} />
       </div>
-      {Math.abs(inv.reconciliationDeltaCents) > 1 ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">Accounting mismatch: value differs from basis plus P&amp;L by {R(inv.reconciliationDeltaCents)}.</div> : null}
+      {/* "Value" (canonical.aum_cents) is live — it recomputes from current
+          intraday prices on every load. "P&L" prefers the once-daily
+          published inception_pnl. Those two are sourced at different
+          frequencies by design, so on an ordinary day with live price
+          movement they will legitimately disagree by however much the
+          position has moved since the last publish — that is not an
+          accounting error, it is the ENTIRE reason "Value" exists as a
+          separate, live figure instead of just echoing the daily one.
+          A flat >1-cent threshold fired on that expected drift constantly
+          and read as a live backend bug to anyone glancing at it (reported
+          2026-08-25). Scoped to the larger of a R20 floor or 2% of this
+          investor's own value — comfortably covers ordinary same-day price
+          movement while still surfacing a genuine problem (a missing lot,
+          a wrong-by-orders-of-magnitude price, double-counted cash), which
+          in practice run far larger than a day's normal drift. */}
+      {Math.abs(inv.reconciliationDeltaCents) > Math.max(2000, inv.valueCents * 0.02) ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">Accounting mismatch: value differs from basis plus P&amp;L by {R(inv.reconciliationDeltaCents)}.</div> : null}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex-wrap">
