@@ -26,6 +26,15 @@ export function planQuoteRefresh(
     .slice(0, Math.max(0, limit));
 }
 
+/** Preserve a known holding's null strategy as the direct-investment book. */
+export function resolveDayPnlStrategyId(
+  holding: { strategy_id?: unknown } | undefined,
+  payloadStrategyId: unknown,
+): string | null {
+  if (holding) return holding.strategy_id ? String(holding.strategy_id) : null;
+  return payloadStrategyId ? String(payloadStrategyId) : null;
+}
+
 /**
  * Gross market P&L for one owner/security/strategy position.
  *
