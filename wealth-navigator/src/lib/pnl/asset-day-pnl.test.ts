@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { calculateAssetDayPnlCents } from "./asset-day-pnl";
+import { calculateAssetDayPnlCents, planQuoteRefresh } from "./asset-day-pnl";
 
 describe("calculateAssetDayPnlCents", () => {
   it("marks an unchanged opening holding from previous close", () => {
@@ -19,5 +19,17 @@ describe("calculateAssetDayPnlCents", () => {
     const sold = calculateAssetDayPnlCents({ currentQuantity: 0, currentPriceCents: 100, previousCloseCents: 100, buys: [], sells: [{ quantity: 2, fillPriceCents: 100 }] });
     const bought = calculateAssetDayPnlCents({ currentQuantity: 2, currentPriceCents: 200, previousCloseCents: 180, buys: [{ quantity: 2, fillPriceCents: 200 }], sells: [] });
     expect(sold + bought).toBe(0);
+  });
+});
+
+describe("planQuoteRefresh", () => {
+  it("warms never-fetched symbols before refreshing cached symbols", () => {
+    const refreshed = new Map([["NED", 100], ["MTN", 200]]);
+    expect(planQuoteRefresh(["NED", "SUI", "MTN", "DIB"], refreshed, 2)).toEqual(["DIB", "SUI"]);
+  });
+
+  it("rotates the oldest cached symbols once full coverage exists", () => {
+    const refreshed = new Map([["NED", 300], ["MTN", 100], ["SUI", 200]]);
+    expect(planQuoteRefresh(["NED", "MTN", "SUI"], refreshed, 2)).toEqual(["MTN", "SUI"]);
   });
 });

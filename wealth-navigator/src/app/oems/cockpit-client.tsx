@@ -177,6 +177,9 @@ interface DayPnlResponse {
     asOf: string | null;
     coveredHoldings: number;
     totalHoldings: number;
+    coveredSecurities: number;
+    totalSecurities: number;
+    missingSymbols: string[];
     feesIncluded: boolean;
   };
   history: Array<{ date: string; pnl: number; strategies: number; investors: number }>;
@@ -198,7 +201,7 @@ function CockpitDayPnlHistory({ open, onOpenChange, data }: { open: boolean; onO
         <div className="rounded-lg border border-border/70 bg-background/35 p-4">
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Today · {data?.today.date ?? "—"}</p>
           <p className={cn("mt-1 font-mono text-2xl font-bold", (data?.today.pnl ?? 0) > 0 ? "text-success" : (data?.today.pnl ?? 0) < 0 ? "text-destructive" : "text-foreground")}>{data?.today.pnl == null ? "Pending complete market coverage" : formatZAR(data.today.pnl)}</p>
-          <p className="mt-1 text-[10px] text-muted-foreground">{data?.today.status === "live" ? `Gross · ${data.today.coveredHoldings}/${data.today.totalHoldings} positions · refreshes every 30 seconds` : "A stale or partial value is never presented as today."}</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">{data?.today.status === "live" ? `Gross · ${data.today.coveredHoldings}/${data.today.totalHoldings} positions · refreshes every 30 seconds` : data?.today ? `Pricing ${data.today.coveredSecurities}/${data.today.totalSecurities} securities${data.today.missingSymbols.length ? ` · waiting for ${data.today.missingSymbols.slice(0, 5).join(", ")}${data.today.missingSymbols.length > 5 ? "…" : ""}` : ""}. Coverage warms in bounded batches; no partial P&L is shown.` : "A stale or partial value is never presented as today."}</p>
         </div>
         <div className="max-h-[45vh] overflow-y-auto rounded-lg border border-border/70">
           <div className="grid grid-cols-[1fr_1fr_80px_80px] border-b border-border/70 px-3 py-2 text-[10px] uppercase text-muted-foreground"><span>Date</span><span className="text-right">P&amp;L</span><span className="text-right">Strategies</span><span className="text-right">Investors</span></div>
