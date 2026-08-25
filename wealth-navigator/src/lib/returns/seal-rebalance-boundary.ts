@@ -217,6 +217,22 @@ export interface SealBoundaryResult {
   ytdPct?: number;
   batchId?: string;
   idempotent?: boolean;
+  /** True once `reconcile_rebalance_ca` has recorded (or already held) this batch's CA row. */
+  caReconciled?: boolean;
+  /**
+   * Set when the auto-reconciliation attempt below failed. Deliberately does
+   * NOT flip `sealed` to false: the boundary itself is sound (the return
+   * chain is safe) even when CA reconciliation cannot complete, which is
+   * exactly the case for a batch that mixes settled and PARKED owners —
+   * parked clients' cash was already adjusted directly in
+   * reconcile-parked-holdings.ts, outside `strategy_rebalance_cash_events_c`,
+   * so `reconcile_rebalance_ca`'s per-owner cash-event check legitimately
+   * refuses them. That is a pre-existing, known gap in parked-client cash
+   * evidence (out of scope here) — not a reason to leave the whole rebalance
+   * stuck retrying forever. Surfaced here so it's visible in logs/ops rather
+   * than silently swallowed.
+   */
+  caReconciliationError?: string;
 }
 
 function bare(symbol: string): string {
@@ -364,6 +380,27 @@ export async function sealRebalanceBoundary(
     complete_value_cents?: number;
     ytd_pct?: number;
   };
+
+  // Auto-write the corporate-action reconciliation row the boundary just
+  // made possible. `reconcile_rebalance_ca` has existed since 2026-07-29,
+  // is idempotent (an existing row for this batch short-circuits with the
+  // same values, a conflicting one raises), and derives every number itself
+  // from this batch's own evidence — but until now no caller ever invoked
+  // it, so it was only ever written by hand-authored, after-the-fact
+  // migrations once someone noticed certification had stalled. Best-effort:
+  // failure here must not undo a sound boundary seal (see caReconciliationError).
+  let caReconciled: boolean | undefined;
+  let caReconciliationError: string | undefined;
+  const caRes = await retailDb.rpc("reconcile_rebalance_ca", {
+    p_batch_id: batchId,
+    p_actor: settlementActorId,
+  });
+  if (caRes.error) {
+    caReconciliationError = caRes.error.message;
+  } else {
+    caReconciled = true;
+  }
+
   return {
     sealed: true,
     batchId,
@@ -372,5 +409,7 @@ export async function sealRebalanceBoundary(
     continuityCashCents: Number(out.continuity_cash_cents ?? 0),
     completeValueCents: Number(out.complete_value_cents ?? 0),
     ytdPct: out.ytd_pct == null ? undefined : Number(out.ytd_pct),
+    caReconciled,
+    caReconciliationError,
   };
 }

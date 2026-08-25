@@ -67,6 +67,8 @@ export interface CompleteRebalanceResult {
     ytdPct?: number;
     continuityCashCents?: number;
     completeValueCents?: number;
+    caReconciled?: boolean;
+    caReconciliationError?: string;
   };
 }
 
@@ -452,6 +454,15 @@ async function runCompletion(
     .eq("id", strategyId);
   if (updRes.error) return { completed: false, error: updRes.error.message };
 
+  if (boundary.caReconciliationError) {
+    // Never blocks completion (see SealBoundaryResult.caReconciliationError),
+    // but must not go unnoticed the way the pre-fix silence did — that
+    // silence is exactly why certification stalled for days undetected.
+    console.error(
+      `rebalance ${rebalanceRequestId} (batch ${boundary.batchId}): CA reconciliation did not complete: ${boundary.caReconciliationError}`,
+    );
+  }
+
   return {
     completed: true,
     scope: "strategy",
@@ -461,6 +472,8 @@ async function runCompletion(
       ytdPct: boundary.ytdPct,
       continuityCashCents: boundary.continuityCashCents,
       completeValueCents: boundary.completeValueCents,
+      caReconciled: boundary.caReconciled,
+      caReconciliationError: boundary.caReconciliationError,
     },
   };
 }
