@@ -79,6 +79,7 @@ const input = () => ({
     reconciled_owner_count: 3,
     capital_source: "SETTLED_FILLS",
   },
+  unchangedLegCurrentPrices: undefined as Map<string, number> | undefined,
 });
 
 describe("canonical rebalance boundary reconstruction", () => {
@@ -115,5 +116,36 @@ describe("canonical rebalance boundary reconstruction", () => {
     expect(() => rebuildLegsAcrossSettledBoundary(broken)).toThrow(
       "BOUNDARY_REQUIRES_UNEXPLAINED_EXTERNAL_CAPITAL",
     );
+  });
+
+  it("does not mistake real price movement on an untraded leg for unexplained capital", () => {
+    // KEEP (2 units, held before AND after — never trades at this boundary)
+    // drops from 500 to 400 between the previous published date and
+    // settlement: a real R2.00 loss the strategy would have carried
+    // regardless of this rebalance. Conservation of total value means that
+    // loss legitimately shows up as MORE cash left over (790, not the base
+    // case's 590) once the trade itself is accounted for — exactly the
+    // 2026-08-25 Yield Basket incident (NED/SUI/DIB/TBS lost value between
+    // 08-21 and 08-24, and the boundary check read the resulting cash
+    // increase as capital appearing from nowhere).
+    const withDrift = input();
+    withDrift.currentCashCents = 790;
+    withDrift.reconciliation.strategy_ca_cents = 790;
+    withDrift.reconciliation.model_capital_cents = 3790;
+    withDrift.unchangedLegCurrentPrices = new Map([["KEEP", 400]]);
+
+    // Without the drift map, the identical cash figure is indistinguishable
+    // from genuinely unexplained capital — confirms the fix is the map, not
+    // a loosened threshold.
+    const withoutDriftMap = { ...withDrift, unchangedLegCurrentPrices: undefined };
+    expect(() => rebuildLegsAcrossSettledBoundary(withoutDriftMap)).toThrow(
+      "BOUNDARY_REQUIRES_UNEXPLAINED_EXTERNAL_CAPITAL",
+    );
+
+    const result = rebuildLegsAcrossSettledBoundary(withDrift);
+    expect(result.evidence).toMatchObject({
+      unchanged_leg_drift_cents: -200,
+      execution_cost_cents: 10,
+    });
   });
 });
