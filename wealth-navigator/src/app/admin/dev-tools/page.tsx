@@ -51,16 +51,26 @@ function RecomputePanel() {
   // function-duration ceiling below what the route's own maxDuration
   // declares, most likely). Empty runs every strategy, same as before.
   const [strategyName, setStrategyName] = useState("");
+  // Defaults to today (SAST) server-side when left blank — but "today" has
+  // no confirmed close until the market actually finishes trading, so a
+  // strategy stuck on an old published date can't bridge forward until
+  // then. Targeting an already-closed date (e.g. yesterday) directly lets
+  // that bridge happen immediately instead of waiting for tonight's cron.
+  const [asOfDate, setAsOfDate] = useState("");
 
   const runRecompute = async () => {
     setPending(true);
     setResult(null);
     try {
       const trimmed = strategyName.trim();
+      const trimmedDate = asOfDate.trim();
       const res = await fetch("/api/admin/canonical-ledger/recompute", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(trimmed ? { strategyName: trimmed } : {}),
+        body: JSON.stringify({
+          ...(trimmed ? { strategyName: trimmed } : {}),
+          ...(trimmedDate ? { asOfDate: trimmedDate } : {}),
+        }),
       });
       const body = (await res.json().catch(() => ({}))) as RecomputeResponse;
       setResult(body);
@@ -133,6 +143,12 @@ function RecomputePanel() {
             placeholder="All strategies"
             className="h-8 w-40 text-xs"
           />
+          <Input
+            value={asOfDate}
+            onChange={(e) => setAsOfDate(e.target.value)}
+            placeholder="Today (SAST)"
+            className="h-8 w-32 text-xs"
+          />
           <Button size="sm" onClick={runRecompute} disabled={pending}>
             {pending ? "Recomputing…" : "Recompute Now"}
           </Button>
@@ -145,8 +161,11 @@ function RecomputePanel() {
           sequence the 17:30 UTC daily cron runs automatically. Use this to pull corrected YTD figures forward
           immediately (e.g. after a ledger fix) instead of waiting for tonight&apos;s scheduled run. This can
           take a while — draft and certification run sequentially for every active strategy. Requires a
-          Dev or Master ★ account. Enter an exact strategy name above (e.g. &quot;Yield Basket&quot;) to scope
-          a run to just that one — much less likely to time out than running all of them at once.
+          Dev or Master ★ account. Enter an exact strategy name (e.g. &quot;Yield Basket&quot;) to scope a run
+          to just that one — much less likely to time out than running all of them at once. Leaving the date
+          blank defaults to today (SAST), which has no confirmed close until the market finishes trading — a
+          strategy stuck on an old published date can&apos;t bridge forward until then. Enter an
+          already-closed date (YYYY-MM-DD, e.g. yesterday) to bridge it immediately instead of waiting.
         </p>
         {result && (
           <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
