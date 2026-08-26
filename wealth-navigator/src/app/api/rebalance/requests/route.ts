@@ -69,7 +69,7 @@ export async function GET(req: Request) {
   let q = db
     .from("rebalance_request_c")
     .select(
-      "id, strategy_id, requested_by, current_composition, proposed_composition, affected_investors, status, environment_scope, ic_session_id, research_note_id, executed_at, created_at, updated_at",
+      "id, strategy_id, requested_by, current_composition, proposed_composition, affected_investors, status, environment_scope, ic_session_id, research_note_id, executed_at, completed_at, completion_error, created_at, updated_at",
     )
     .order("created_at", { ascending: false })
     .limit(100);
@@ -221,7 +221,7 @@ function sellDirectionSymbols(current: unknown[], proposed: unknown[]): Set<stri
   return sells;
 }
 
-async function missingResearchNotes(
+async function missingApprovedResearchNotes(
   db: NonNullable<Awaited<ReturnType<typeof openDb>>>,
   current: unknown[],
   proposed: unknown[],
@@ -236,7 +236,8 @@ async function missingResearchNotes(
   const { data, error } = await db
     .from("research_note_c")
     .select("symbol")
-    .eq("environment_scope", environmentScope);
+    .eq("environment_scope", environmentScope)
+    .eq("status", "approved");
   if (error) throw new Error(error.message);
   const covered = new Set((data ?? []).map((note) => bareSymbol(note.symbol)));
   return required.filter((symbol) => !covered.has(symbol));
@@ -339,10 +340,10 @@ export async function POST(req: Request) {
   // never satisfy a UAT proposal (or vice versa). Enforce this at the write
   // boundary so a direct API request cannot bypass the builder's gate.
   try {
-    const missing = await missingResearchNotes(db, currentComposition, proposedComposition, environmentScope);
+    const missing = await missingApprovedResearchNotes(db, currentComposition, proposedComposition, environmentScope);
     if (missing.length) {
       return NextResponse.json(
-        { ok: false, error: `Research required before creating this rebalance: ${missing.join(", ")}.` },
+        { ok: false, error: `Approved research required before creating this rebalance: ${missing.join(", ")}.` },
         { status: 422 },
       );
     }

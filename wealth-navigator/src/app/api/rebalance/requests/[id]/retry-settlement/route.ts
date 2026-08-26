@@ -2,15 +2,16 @@ import { NextResponse } from "next/server";
 
 import { canResearchIc, getAdminContext } from "@/lib/admin/rbac";
 import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
-import { settleRebalanceCashForClients } from "@/lib/rebalance/settle-rebalance-cash";
+import { canRetryRebalanceSettlement } from "@/lib/rebalance/settlement-retry-policy";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 /**
- * Retry the post-fill settlement boundary for a UAT rebalance.
+ * Retry the post-fill settlement boundary for a fully-filled rebalance.
  *
  * Filling normally invokes this work automatically. This recovery endpoint is
- * deliberately UAT-only: it is useful when a deployment race or transient
- * service failure leaves fully-filled test orders without their model flip.
+ * It is useful when a deployment race or transient service failure leaves
+ * fully-filled orders without their model flip or cash settlement. LIVE
+ * recovery is Master-only; UAT keeps the normal IC-approver permission.
  * `maybeCompleteRebalance` is idempotent and refuses incomplete fills.
  */
 export const dynamic = "force-dynamic";
@@ -42,17 +43,19 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     .maybeSingle();
   if (requestRes.error) return NextResponse.json({ ok: false, error: requestRes.error.message }, { status: 500 });
   if (!requestRes.data) return NextResponse.json({ ok: false, error: "rebalance request not found" }, { status: 404 });
-  if (String(requestRes.data.environment_scope ?? "live").toLowerCase() !== "uat") {
-    return NextResponse.json({ ok: false, error: "retry settlement is UAT-only" }, { status: 403 });
+  if (!canRetryRebalanceSettlement(requestRes.data.environment_scope, auth.ctx.approverTier)) {
+    return NextResponse.json(
+      { ok: false, error: "LIVE settlement recovery requires a Master account" },
+      { status: 403 },
+    );
   }
-  if (requestRes.data.status !== "executed") {
-    return NextResponse.json({ ok: false, error: "rebalance is not on the Rebalance tab" }, { status: 409 });
+  if (!["executed", "completing"].includes(requestRes.data.status)) {
+    return NextResponse.json({ ok: false, error: "rebalance is not ready to complete" }, { status: 409 });
   }
 
   const completion = await maybeCompleteRebalance(retail, institutional, id, auth.ctx.userId);
   if (!completion.completed) {
     return NextResponse.json({ ok: false, completion, error: completion.error ?? "rebalance is not ready for settlement" }, { status: 409 });
   }
-  const cashSettlement = await settleRebalanceCashForClients(retail, institutional, id, completion.settlementBatchId);
-  return NextResponse.json({ ok: true, completion, cashSettlement });
+  return NextResponse.json({ ok: true, completion, cashSettlement: completion.cashSettlement });
 }

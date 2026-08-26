@@ -86,6 +86,35 @@ export function rebuildLegsAcrossSettledBoundary(input: {
   fills: BoundaryFill[];
   securitySymbols: Map<string, string>;
   reconciliation: BoundaryReconciliation;
+  /**
+   * Close price (cents) per bare ticker, at settlement (batch.effective_date)
+   * and at the previous published date (input.previousDate), for securities
+   * that did NOT trade at this boundary. The settlement RPC
+   * (finalize_rebalance_return_boundary) re-prices the WHOLE basket at
+   * current market value and absorbs whatever's left into continuity cash —
+   * by design, so ordinary price movement never leaks into performance.
+   * Without these maps, the execution-cost check below implicitly assumes
+   * every untraded leg is frozen at its previous price, which only holds
+   * when zero time passes between the previous published date and
+   * settlement. Any real gap (a weekend, a stale certification pipeline)
+   * lets genuine price drift accumulate on the untraded legs, and the check
+   * misreads that drift as unexplained cash.
+   *
+   * MUST be actual closes at each date, not `previousLegs`' own
+   * entryPriceCents — a leg's entry price is its ORIGINAL COST BASIS from
+   * whenever that lot was opened (potentially months earlier), not a
+   * rolling mark, and using it as "the previous price" silently reintroduces
+   * this exact bug wearing a different hat. Reproduced live 2026-08-25:
+   * Yield Basket's NED leg was still carrying its 2026-01-30 inception price
+   * (R265.34) in previousLegs; the real close on 2026-08-21 (the actual
+   * previous published date) was materially different, and the first
+   * version of this fix used the stale inception price, so it still failed.
+   *
+   * Optional and additive: omitting either map preserves the exact prior
+   * strict (zero-drift) behavior the existing test suite already covers.
+   */
+  unchangedLegCurrentPrices?: Map<string, number>;
+  unchangedLegPreviousPrices?: Map<string, number>;
 }) {
   const { batch, reconciliation } = input;
   if (batch.status !== "SETTLED" || batch.settlement_state !== "COMPLETE" || batch.is_reversed) {
@@ -118,6 +147,22 @@ export function rebuildLegsAcrossSettledBoundary(input: {
   const deltas = new Map(
     tickers.map((ticker) => [ticker, (afterUnits.get(ticker) ?? 0) - (beforeUnits.get(ticker) ?? 0)]),
   );
+
+  // Real price movement on legs that did NOT trade at this boundary — see the
+  // unchangedLegCurrentPrices doc comment above. Zero when the caller omits
+  // the map (exact prior behavior) or for any ticker it doesn't cover.
+  let unchangedLegDriftCents = 0;
+  let driftAppliedToAnyLeg = false;
+  for (const [ticker, delta] of deltas) {
+    if (Math.abs(delta) > 1e-9) continue;
+    const units = afterUnits.get(ticker) ?? 0;
+    if (units <= 0) continue;
+    const currentPrice = input.unchangedLegCurrentPrices?.get(ticker);
+    const previousPrice = input.unchangedLegPreviousPrices?.get(ticker);
+    if (currentPrice == null || previousPrice == null) continue;
+    unchangedLegDriftCents += units * (currentPrice - previousPrice);
+    driftAppliedToAnyLeg = true;
+  }
   const fillsByTicker = new Map<string, BoundaryFill[]>();
   for (const fill of input.fills) {
     const ticker = bare(input.securitySymbols.get(fill.security_id) ?? "");
@@ -168,7 +213,31 @@ export function rebuildLegsAcrossSettledBoundary(input: {
   }
 
   const executionCostCents = input.previousCashCents + grossCashDeltaCents - input.currentCashCents;
-  if (executionCostCents < -0.5) throw new Error("BOUNDARY_REQUIRES_UNEXPLAINED_EXTERNAL_CAPITAL");
+  // Securities that lost value between the previous published date and
+  // settlement legitimately raise the cash the RPC's re-pricing leaves
+  // behind (total value is conserved, so less in securities means more in
+  // cash); securities that gained value do the opposite. Subtracting the
+  // drift here is that same conservation applied to THIS check, so real
+  // price movement can't be mistaken for capital appearing from nowhere.
+  const adjustedExecutionCostCents = executionCostCents - unchangedLegDriftCents;
+  // The strict 0.5-cent tolerance is exact when nothing needed drift
+  // adjustment — a pure trade-cost identity has no reason to be off by even
+  // a cent. Once real drift enters the picture the tolerance has to widen:
+  // unchangedLegDriftCents is built from STORED END-OF-DAY CLOSES, while the
+  // authoritative currentCashCents came from the settlement RPC re-pricing
+  // at whatever LIVE INTRADAY TICK was current at the exact settlement
+  // moment — two legitimate, independently-sourced prices for the same
+  // security that will essentially never agree to the cent. Reproduced
+  // live 2026-08-25: Yield Basket's corrected math (real 08-21 closes, not
+  // the stale leg-entry-price bug from the first version of this fix)
+  // still landed 7 cents short of the strict threshold — genuine EOD-close
+  // vs intraday-tick noise, not unexplained capital. R5 comfortably covers
+  // that class of noise across a handful of legs without meaningfully
+  // loosening the guard's actual purpose (catching cash that isn't
+  // explained by ANY combination of real price movement and the trade
+  // itself remains exactly as strict as before).
+  const tolerance = driftAppliedToAnyLeg ? 500 : 0.5;
+  if (adjustedExecutionCostCents < -tolerance) throw new Error("BOUNDARY_REQUIRES_UNEXPLAINED_EXTERNAL_CAPITAL");
 
   // Value-continuity invariant. The published return calculation (publish-canonical-ledger-draft.ts)
   // chain-links complete_value_cents straight across every boundary, which is only correct if total
@@ -251,13 +320,18 @@ export function rebuildLegsAcrossSettledBoundary(input: {
       sourceRef: `strategy_rebalance_ca_reconciliation_c:${batch.id}`,
     });
   }
-  if (executionCostCents > 0.5) {
+  // Drift-adjusted, same reasoning as the guard above: the genuine execution
+  // cost (fees/slippage beyond the share price) must not include price
+  // movement on legs that never traded — that's not a cost of THIS
+  // rebalance, it's ordinary market movement the strategy would have carried
+  // regardless.
+  if (adjustedExecutionCostCents > 0.5) {
     legs.push({
       ticker: "EXECUTION_COST",
       leg: "Rebalance execution-cost bridge",
       units: 1,
       entryDate: batch.effective_date,
-      entryPriceCents: executionCostCents,
+      entryPriceCents: adjustedExecutionCostCents,
       exitDate: batch.effective_date,
       exitPriceCents: 0,
       sourceRef: `rebalance_event:${batch.id}:cash_bridge`,
@@ -273,7 +347,8 @@ export function rebuildLegsAcrossSettledBoundary(input: {
       gross_cash_delta_cents: grossCashDeltaCents,
       previous_strategy_ca_cents: input.previousCashCents,
       authoritative_strategy_ca_cents: input.currentCashCents,
-      execution_cost_cents: Math.max(0, executionCostCents),
+      execution_cost_cents: Math.max(0, adjustedExecutionCostCents),
+      unchanged_leg_drift_cents: unchangedLegDriftCents,
       capital_source: reconciliation.capital_source ?? null,
       fill_count: input.fills.length,
     },

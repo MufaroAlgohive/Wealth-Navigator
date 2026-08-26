@@ -8,7 +8,7 @@ import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Button } from "@/components/ui/button";
 import { oemsStrategies, deals } from "@/lib/iress/seed";
-import { formatPct, formatZAR } from "@/lib/format";
+import { formatPct, formatZAR, formatZARExact } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
 const SALES_PITCH: Record<string, string> = {
@@ -53,7 +53,7 @@ export default function BusinessPage() {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <GlassKpi
             label="House-view AUM"
-            value={formatZAR(totalAum)}
+            value={formatZARExact(totalAum)}
             sub={`${oemsStrategies.length} strategies`}
             accent="primary"
           />
@@ -102,7 +102,7 @@ export default function BusinessPage() {
                         “{SALES_PITCH[s.id] ?? ""}”
                       </div>
                     </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZAR(s.aum)}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZARExact(s.aum)}</td>
                     <td className="px-2.5 py-1.5 text-right tabular-nums">{s.investorCount}</td>
                     <td className={cn("px-2.5 py-1.5 text-right tabular-nums", s.ytd >= 0 ? "text-up" : "text-down")}>
                       {formatPct(s.ytd, 2)}

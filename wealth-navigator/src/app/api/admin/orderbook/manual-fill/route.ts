@@ -4,7 +4,6 @@ import { NextResponse } from "next/server";
 import { buildTradeConfirmationHtml, sendEmail } from "@/lib/admin/email";
 import { requireMasterPassword } from "@/lib/admin/step-up";
 import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
-import { settleRebalanceCashForClients } from "@/lib/rebalance/settle-rebalance-cash";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { observedFillFromAudit, settleFill } from "@workers/iress-ingest/src/settlement";
 
@@ -281,10 +280,7 @@ export async function POST(req: Request) {
   let completion = null;
   if (rebalanceRequestId) {
     const outcome = await maybeCompleteRebalance(retailDb, institutionalDb, rebalanceRequestId, stepUp.email);
-    const cash = outcome.completed
-      ? await settleRebalanceCashForClients(retailDb, institutionalDb, rebalanceRequestId, outcome.settlementBatchId)
-      : null;
-    completion = { rebalance_request_id: rebalanceRequestId, ...outcome, cashSettlement: cash };
+    completion = { rebalance_request_id: rebalanceRequestId, ...outcome };
   }
 
   return NextResponse.json({

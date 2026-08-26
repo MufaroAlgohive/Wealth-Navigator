@@ -602,6 +602,42 @@ export async function publishCanonicalLedgerDraft(
           : [];
         const [reconciliation] = reconciliations;
         if (!reconciliation) throw new Error("REBALANCE_CA_RECONCILIATION_REQUIRED");
+        // Actual closes at both the boundary date AND the previous published
+        // date, so the boundary check can tell real price movement on
+        // untraded legs apart from unexplained cash — see
+        // unchangedLegCurrentPrices/unchangedLegPreviousPrices's doc comment
+        // on rebuildLegsAcrossSettledBoundary. Deliberately NOT derived from
+        // previousLegs' own entryPriceCents (a leg's original cost basis,
+        // not a rolling mark) — that was the bug in the first version of
+        // this fix. A small, separate fetch spanning both dates rather than
+        // reusing the wider `prices`/`lookup` built below: those cover this
+        // strategy's full history for the daily-return calc, not yet
+        // available at this point in the function.
+        const boundaryPrices = await fetchPriceHistory(
+          db,
+          currentHoldings.flatMap((holding) => [holding.ticker, `${holding.ticker}.JO`]),
+          previous.as_of_date < batch.effective_date ? previous.as_of_date : batch.effective_date,
+          previous.as_of_date > batch.effective_date ? previous.as_of_date : batch.effective_date,
+        );
+        const boundaryLookup = priceLookup(boundaryPrices);
+        const priceOnOrBefore = (ticker: string, date: string) =>
+          boundaryLookup.exact.get(`${date}:${ticker}`) ?? boundaryLookup.onOrBefore(ticker, date) ?? null;
+        const unchangedLegCurrentPrices = new Map(
+          currentHoldings
+            .map((holding) => {
+              const price = priceOnOrBefore(holding.ticker, batch.effective_date);
+              return price ? ([holding.ticker, price.cents] as const) : null;
+            })
+            .filter((entry): entry is readonly [string, number] => entry != null),
+        );
+        const unchangedLegPreviousPrices = new Map(
+          currentHoldings
+            .map((holding) => {
+              const price = priceOnOrBefore(holding.ticker, previous.as_of_date);
+              return price ? ([holding.ticker, price.cents] as const) : null;
+            })
+            .filter((entry): entry is readonly [string, number] => entry != null),
+        );
         const rebuilt = rebuildLegsAcrossSettledBoundary({
           previousDate: previous.as_of_date,
           previousHoldings: priorHoldings,
@@ -613,6 +649,8 @@ export async function publishCanonicalLedgerDraft(
           fills,
           securitySymbols: new Map(securities.map((security) => [security.id, security.symbol])),
           reconciliation,
+          unchangedLegCurrentPrices,
+          unchangedLegPreviousPrices,
         });
         boundaryLegs = rebuilt.legs;
         boundaryEvidence = rebuilt.evidence;

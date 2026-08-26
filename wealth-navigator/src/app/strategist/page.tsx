@@ -9,7 +9,7 @@ import { GlassKpi, GlassSection } from "@/components/oems/primitives/glass";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Button } from "@/components/ui/button";
 import { oemsStrategies, mandateTemplates } from "@/lib/iress/seed";
-import { formatPct, formatZAR } from "@/lib/format";
+import { formatPct, formatZARExact } from "@/lib/format";
 
 const STRATEGIST_ID = "st1";
 
@@ -46,7 +46,7 @@ export default function StrategistPage() {
           />
           <GlassKpi
             label="Mandate AUM"
-            value={formatZAR(totalAum)}
+            value={formatZARExact(totalAum)}
             sub="gross, live strategies"
             accent="primary"
           />
@@ -95,7 +95,7 @@ export default function StrategistPage() {
                         {s.kind === "equity" ? "EQUITY" : "MONEY MKT"}
                       </Pill>
                     </td>
-                    <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZAR(s.aum)}</td>
+                    <td className="px-2.5 py-1.5 text-right tabular-nums">{formatZARExact(s.aum)}</td>
                     <td className={`px-2.5 py-1.5 text-right tabular-nums ${s.ytd >= 0 ? "text-up" : "text-down"}`}>
                       {formatPct(s.ytd, 2)}
                     </td>

@@ -26,7 +26,6 @@ import {
   isRetailSupabaseConfigured,
   isSupabaseConfigured,
 } from "@/lib/supabase/server";
-import { computePeriodReturns, fetchYahooHistory } from "@/lib/yahoo/returns";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -185,33 +184,12 @@ const SELECT =
  * dashboard fetches) and reuse the same outlier-clamped computation as
  * `lib/yahoo/returns.ts`.
  *
- * Rotating cache PERSISTED in `equities_period_returns_cache_c` (RETAIL DB) —
- * not in-process memory. An earlier version of this cache lived in a
- * module-scope Map + rotation cursor, but Vercel serverless functions don't
- * keep that memory across cold starts, and concurrent requests can land on
- * separate instances that never share it — in production the "rotation" kept
- * restarting at the same ~56 names instead of ever progressing. Ordering by
- * `computed_at` in the DB fixes that: it IS the rotation state, and it
- * survives cold starts/redeploys/concurrent instances by construction.
- *
- * On each request:
- *   1. Read the cache row for every candidate symbol. Anything younger than
- *      RETURNS_CACHE_TTL_MS is served straight from the cache row — zero
- *      Yahoo calls for it.
- *   2. Whatever's left (never cached, or stale) gets ordered oldest-first —
- *      rows with no cache entry sort first via `computed_at IS NULL` — and
- *      only a bounded slice (RETURNS_BATCH_SIZE) is fetched from Yahoo this
- *      request, then upserted back into the cache table.
- *   3. A transient Yahoo failure for a symbol falls back to its last good
- *      cached value (if any) rather than nulling out a previously-working
- *      row; a symbol that has never resolved renders an honest "—".
- * Across enough page loads this eventually covers the whole board instead
- * of permanently favouring the same top-N. Returns how many rows carry a
- * value + the freshest as-of, so the UI can label coverage truthfully.
+ * The interactive request is deliberately READ-ONLY against
+ * `equities_period_returns_cache_c`. The after-market
+ * `/api/cron/yahoo-period-returns` job owns Yahoo history calls and persists
+ * successful values. This prevents a page load from competing with its own
+ * 60-name live-price fallback for Yahoo's per-IP allowance.
  */
-const RETURNS_BATCH_SIZE = Number.parseInt(process.env.EQUITIES_RETURNS_BATCH ?? "60", 10) || 60;
-const RETURNS_CACHE_TTL_MS = 15 * 60 * 1000;
-const EQUITIES_RETURNS_CONCURRENCY = 6;
 const RETURNS_CACHE_TABLE = "equities_period_returns_cache_c";
 
 interface ReturnsCacheRow {
@@ -243,101 +221,24 @@ async function attachPeriodReturns(
   if (ranked.length === 0) return { coverage: 0, asOf: null };
 
   const byKey = new Map(ranked.map((r) => [bareCode(r.symbol), r]));
-  const { data: cacheRows } = await db
+  const { data: cacheRows, error: cacheError } = await db
     .from(RETURNS_CACHE_TABLE)
     .select("symbol,return_1m,return_6m,bars_as_of,computed_at")
     .in("symbol", [...byKey.keys()]);
+  if (cacheError) {
+    console.warn(`[api/equities] period-return cache unavailable: ${cacheError.message}`);
+    return { coverage: 0, asOf: null };
+  }
 
-  const now = Date.now();
   let coverage = 0;
   let asOf: string | null = null;
-  const cacheByKey = new Map((cacheRows ?? []).map((c) => [c.symbol as string, c as ReturnsCacheRow]));
-
-  const stale: SecurityRow[] = [];
-  for (const [key, r] of byKey) {
-    const cached = cacheByKey.get(key);
-    const cachedAgeMs = cached ? now - new Date(cached.computed_at).getTime() : Infinity;
-    if (cached && cachedAgeMs < RETURNS_CACHE_TTL_MS) {
-      r.return_1m = cached.return_1m;
-      r.return_6m = cached.return_6m;
-      coverage += 1;
-      if (cached.bars_as_of) asOf = cached.bars_as_of;
-    } else {
-      stale.push(r);
-    }
-  }
-  if (stale.length === 0) return { coverage, asOf };
-
-  // Oldest cache entry first; never-cached (no row at all) sorts first of all.
-  stale.sort((a, b) => {
-    const ca = cacheByKey.get(bareCode(a.symbol))?.computed_at;
-    const cb = cacheByKey.get(bareCode(b.symbol))?.computed_at;
-    if (!ca && !cb) return 0;
-    if (!ca) return -1;
-    if (!cb) return 1;
-    return new Date(ca).getTime() - new Date(cb).getTime();
-  });
-  const batch = stale.slice(0, RETURNS_BATCH_SIZE);
-
-  const upserts: ReturnsCacheRow[] = [];
-  try {
-    for (let i = 0; i < batch.length; i += EQUITIES_RETURNS_CONCURRENCY) {
-      const slice = batch.slice(i, i + EQUITIES_RETURNS_CONCURRENCY);
-      const results = await Promise.all(
-        slice.map(async (r) => {
-          // Explicit .JO — every securities_c row IS a JSE listing (see the
-          // module doc comment above), so there's no cross-exchange
-          // ambiguity to resolve here. fetchYahooHistory's underlying
-          // toYahooSymbol() only auto-appends .JO for 3-4 letter codes or a
-          // short hardcoded ETF-root allowlist (it's a shared heuristic built
-          // for genuinely mixed-exchange callers); passing the bare code
-          // here sent long fund codes (27FGMF, 91DINC, AAGEET, FNBWDM, ...)
-          // to Yahoo with NO suffix at all, which 404s — confirmed live via
-          // Vercel logs: 3 successful history fetches followed by dozens of
-          // clean 404s in ~50ms each (not Yahoo rate-limiting, just an
-          // unresolvable bare symbol). Appending .JO explicitly short-
-          // circuits the heuristic (toYahooSymbol keeps any symbol that
-          // already contains a ".") for every row, regardless of length.
-          const {
-            bars,
-            asOf: barAsOf,
-            error,
-          } = await fetchYahooHistory(`${bareCode(r.symbol)}.JO`, {
-            range: "1y",
-            interval: "1d",
-          });
-          if (error || bars.length < 2) return { row: r, value: null, asOf: null, ok: false };
-          const { period } = computePeriodReturns(bars);
-          return { row: r, value: period, asOf: barAsOf, ok: true };
-        }),
-      );
-      for (const res of results) {
-        const key = bareCode(res.row.symbol);
-        if (!res.ok) {
-          const prev = cacheByKey.get(key);
-          if (prev) {
-            res.row.return_1m = prev.return_1m;
-            res.row.return_6m = prev.return_6m;
-            coverage += 1;
-          }
-          continue;
-        }
-        const v = res.value?.["1m_pct"] ?? null;
-        const v6 = res.value?.["6m_pct"] ?? null;
-        res.row.return_1m = v;
-        res.row.return_6m = v6;
-        const barsAsOf = res.asOf ? new Date(res.asOf).toISOString() : null;
-        upserts.push({ symbol: key, return_1m: v, return_6m: v6, bars_as_of: barsAsOf, computed_at: new Date(now).toISOString() });
-        if (v != null || v6 != null) coverage += 1;
-        if (barsAsOf) asOf = barsAsOf;
-      }
-    }
-    if (upserts.length > 0) {
-      await db.from(RETURNS_CACHE_TABLE).upsert(upserts, { onConflict: "symbol" });
-    }
-  } catch {
-    // Board must never break because Yahoo (or the cache write) is slow/down
-    // — rows keep whatever they already had (cache value or null).
+  for (const cached of (cacheRows ?? []) as ReturnsCacheRow[]) {
+    const row = byKey.get(bareCode(cached.symbol));
+    if (!row) continue;
+    row.return_1m = cached.return_1m;
+    row.return_6m = cached.return_6m;
+    if (cached.return_1m != null || cached.return_6m != null) coverage += 1;
+    if (cached.bars_as_of && (!asOf || cached.bars_as_of > asOf)) asOf = cached.bars_as_of;
   }
   return { coverage, asOf };
 }

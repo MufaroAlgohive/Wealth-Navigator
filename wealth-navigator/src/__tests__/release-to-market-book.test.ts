@@ -66,8 +66,14 @@ function makeMockSupabase(opts: {
         // update(...).eq("id", x) — resolve immediately, no data needed.
         return Promise.resolve({ data: null, error: null });
       }
-      // select(...).eq("status", "parked")
-      return Promise.resolve({ data: opts.parkedRows, error: null });
+      if (col === "status") return obj;
+      if (col === "payload->>book_id") {
+        return Promise.resolve({
+          data: opts.parkedRows.filter((row) => row.payload.book_id === val),
+          error: null,
+        });
+      }
+      return obj;
     };
     obj.update = (patch: { payload: Record<string, unknown> }) => {
       return {
@@ -120,6 +126,27 @@ beforeEach(() => {
 });
 
 describe("POST /api/admin/orderbook/release-to-market — order-book numbering", () => {
+  const releaseRequest = (bookId = "CLIENT-BUY") =>
+    new Request("http://x/release-to-market", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ book_id: bookId, admin_password: "test" }),
+    });
+
+  it("rejects an unscoped release", async () => {
+    const { POST } = await import("@/app/api/admin/orderbook/release-to-market/route");
+    const res = await POST(
+      new Request("http://x/release-to-market", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ admin_password: "test" }),
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ error: "book_id is required" });
+  });
+
   it("assigns sequence 1 on a fresh release and stamps every released row's payload", async () => {
     const mock = makeMockSupabase({
       parkedRows: [{ id: "row-1", order_id: "ORD-1", payload: { book_id: "CLIENT-BUY" } }],
@@ -137,7 +164,7 @@ describe("POST /api/admin/orderbook/release-to-market — order-book numbering",
     }));
 
     const { POST } = await import("@/app/api/admin/orderbook/release-to-market/route");
-    const res = await POST(new Request("http://x/release-to-market", { method: "POST" }));
+    const res = await POST(releaseRequest());
     const body = (await res.json()) as { order_book_seq: number | null; released: number };
 
     expect(body.order_book_seq).toBe(1);
@@ -157,7 +184,7 @@ describe("POST /api/admin/orderbook/release-to-market — order-book numbering",
     }));
 
     const { POST } = await import("@/app/api/admin/orderbook/release-to-market/route");
-    const res = await POST(new Request("http://x/release-to-market", { method: "POST" }));
+    const res = await POST(releaseRequest());
     const body = (await res.json()) as { order_book_seq?: number | null; released: number; notice?: string };
 
     // The pre-existing early-return path (no parked rows at all) returns its
@@ -168,7 +195,7 @@ describe("POST /api/admin/orderbook/release-to-market — order-book numbering",
 
   it("retries exactly once on a unique-violation and succeeds at the next sequence, without failing the underlying release", async () => {
     const mock = makeMockSupabase({
-      parkedRows: [{ id: "row-1", order_id: "ORD-1", payload: {} }],
+      parkedRows: [{ id: "row-1", order_id: "ORD-1", payload: { book_id: "CLIENT-BUY" } }],
       existingMaxSequence: 4,
       insertResponses: [{ error: { code: "23505", message: "duplicate key" } }, { error: null }],
     });
@@ -184,7 +211,7 @@ describe("POST /api/admin/orderbook/release-to-market — order-book numbering",
     }));
 
     const { POST } = await import("@/app/api/admin/orderbook/release-to-market/route");
-    const res = await POST(new Request("http://x/release-to-market", { method: "POST" }));
+    const res = await POST(releaseRequest());
     const body = (await res.json()) as {
       order_book_seq: number | null;
       released: number;

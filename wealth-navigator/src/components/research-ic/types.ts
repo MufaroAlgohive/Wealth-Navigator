@@ -141,7 +141,14 @@ export interface ResearchNote {
   approved_at: string | null;
 }
 
-export type RebalanceStatus = "pending" | "ic_approved" | "rejected" | "executed" | "cancelled";
+export type RebalanceStatus =
+  | "pending"
+  | "ic_approved"
+  | "rejected"
+  | "executed"
+  | "completing"
+  | "completed"
+  | "cancelled";
 
 export type VoteValue = "yes" | "no" | "abstain";
 
@@ -175,6 +182,8 @@ export interface RebalanceRequest {
   ic_session_id: string | null;
   research_note_id: string | null;
   executed_at: string | null;
+  completed_at?: string | null;
+  completion_error?: string | null;
   created_at: string;
   updated_at: string;
   /** IC votes + tally, enriched by /api/rebalance/requests. */

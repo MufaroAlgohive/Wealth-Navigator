@@ -40,7 +40,9 @@ export function calculateProceedsBridge(input: ProceedsBridgeInput) {
   const residualCents = safeMoney(input.residualCents ?? 0);
   const strategyCashDeltaCents =
     residualCents + grossSellCents - grossBuyCents - feeShortfallCents;
-  const strategyCashAfterCents = Math.max(0, strategyCashDeltaCents);
+  // Preserve the signed result. Clamping a shortfall to zero makes an
+  // unfundable buy look settled and silently destroys value.
+  const strategyCashAfterCents = strategyCashDeltaCents;
 
   return {
     grossSellCents,

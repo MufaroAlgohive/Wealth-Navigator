@@ -28,7 +28,7 @@
 import { NextResponse } from "next/server";
 
 import { can, getAdminContext } from "@/lib/admin/rbac";
-import { createInstitutionalServiceRoleClient } from "@/lib/supabase/server";
+import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
@@ -107,5 +107,49 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: updErr.message }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, status: "cancelled", rebalance_request_id: rebalanceRequestId });
+  // Client orders create an unfilled RETAIL placeholder before they are
+  // parked. Cancelling the institutional audit row must retire that
+  // placeholder as well, otherwise investor/AUM reads see a ghost holding.
+  // Never touch an already-filled lot, and never touch rebalance SELL source
+  // holdings whose avg_fill/Fill_date prove they pre-date this order.
+  const holdingId = typeof payload.holding_id === "string" ? payload.holding_id.trim() : "";
+  let holding_retired = false;
+  if (holdingId) {
+    let retail;
+    try {
+      retail = createRetailServiceRoleClient();
+    } catch (error) {
+      return NextResponse.json(
+        { ok: false, error: error instanceof Error ? error.message : "RETAIL Supabase not configured", status: "cancelled" },
+        { status: 503 },
+      );
+    }
+    const { data: holding, error: holdingReadError } = await retail
+      .from("stock_holdings_c")
+      .select("id,avg_fill,Fill_date,is_active")
+      .eq("id", holdingId)
+      .maybeSingle();
+    if (holdingReadError) {
+      return NextResponse.json(
+        { ok: false, error: `Order cancelled but holding cleanup failed: ${holdingReadError.message}`, status: "cancelled" },
+        { status: 500 },
+      );
+    }
+    if (holding?.is_active === true && !holding.Fill_date && !(Number(holding.avg_fill) > 0)) {
+      const { error: holdingUpdateError } = await retail
+        .from("stock_holdings_c")
+        .update({ is_active: false, quantity: 0, Status: "cancelled" })
+        .eq("id", holdingId)
+        .eq("is_active", true);
+      if (holdingUpdateError) {
+        return NextResponse.json(
+          { ok: false, error: `Order cancelled but holding cleanup failed: ${holdingUpdateError.message}`, status: "cancelled" },
+          { status: 500 },
+        );
+      }
+      holding_retired = true;
+    }
+  }
+
+  return NextResponse.json({ ok: true, status: "cancelled", rebalance_request_id: rebalanceRequestId, holding_retired });
 }

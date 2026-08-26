@@ -464,16 +464,17 @@
     mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent);
   }
 
-  /* ── Glassmorphism system (Research Lab + OEMS surfaces) ───────────── */
+  /* ── Panel system (Research Lab + OEMS surfaces) ───────────────────── */
+  /* Flat panels — solid theme card background, no blur, no gradient sheen.
+     Was a backdrop-blur-xl glassmorphism treatment (translucent gradient +
+     glow shadow); flattened 2026-08-24 per direct feedback that it read as
+     an unprofessional visual artifact on plain KPI/data cards. Class names
+     kept as-is (59 files reference them) so this is a single-definition fix
+     site-wide instead of a per-file hunt. --glass-border/--glass-bg-strong
+     etc. are untouched — those back ordinary divider/sticky-header styling
+     elsewhere and were never part of the complaint. */
   .glass-panel {
-    @apply relative overflow-hidden rounded-2xl backdrop-blur-xl;
-    background: linear-gradient(
-      145deg,
-      hsl(var(--glass-highlight)) 0%,
-      hsl(var(--glass-bg)) 40%,
-      hsl(var(--glass-bg-strong)) 100%
-    );
-    box-shadow: 0 20px 40px -12px hsl(var(--glass-shadow));
+    @apply relative overflow-hidden rounded-2xl border border-border bg-card;
   }
 
   .glass-kpi {
@@ -487,8 +488,7 @@
   }
 
   .glass-inset {
-    @apply rounded-xl backdrop-blur-md;
-    background: hsl(var(--foreground) / 0.04);
+    @apply rounded-xl border border-border/60 bg-card;
   }
 
   .mint-ambient {

@@ -11,19 +11,24 @@ import { publishClientEodReturns } from "@/lib/returns/publish-client-eod-return
  * across settled rebalance boundaries — see
  * src/lib/returns/publish-client-eod-returns.ts.
  *
- * Port of the CRM's client publisher, which runs from MyMintAdmin's
- * `/api/orderbook/cron-daily`. Unlike the strategy publisher, the CRM's is
- * still live at the time of writing, so this one stays OPT-IN
- * (CLIENT_RETURNS_PUBLISH_APPLY=1) rather than defaulting to write: two
- * publishers on the same (owner, as_of_date) row would race, and the losing
- * one's chain would fork. Turn the CRM's off in the same change that sets
- * this flag.
+ * Port of the CRM's client publisher, which used to run from MyMintAdmin's
+ * `/api/orderbook/cron-daily`. That call was removed there on 2026-08-24 (see
+ * "Hand client return publication to the OEM") the same way the strategy-level
+ * handoff was done on 2026-08-10: no flag left behind, because two publishers
+ * on the same (owner, as_of_date) row would race and fork the loser's chain.
+ * This route is now the sole live writer of
+ * client_strategy_return_publication_audit_c — the scheduled cron below
+ * always applies, no env flag required. A plain unauthenticated-admin GET
+ * (no ?apply=1) still dry-runs, so browsing this endpoint to sanity-check a
+ * date never accidentally writes.
  *
  * Runs after the strategy publisher so an owner's boundary batch is already
  * settled when their composition change is evaluated.
  *
- * Query flags mirror the CRM's env switches, for an admin verifying a run:
- *   ?apply=1        force a real write (admin session only)
+ * Query flags, for an admin verifying/forcing a run (see the "Publish Now"
+ * button on /admin/dev-tools):
+ *   ?apply=1        force a real write (admin session only; the real cron
+ *                    always applies regardless of this flag)
  *   ?includeUat=1   include UAT strategies (default: LIVE only)
  *   ?includeTest=1  include test accounts (default: excluded)
  *   ?asOf=          run for a specific date
@@ -50,8 +55,11 @@ export async function GET(req: Request) {
 
   const url = new URL(req.url);
   const asOfDate = url.searchParams.get("asOf") ?? undefined;
-  const apply =
-    process.env.CLIENT_RETURNS_PUBLISH_APPLY === "1" || (viaAdmin && url.searchParams.get("apply") === "1");
+  // The scheduled cron is the sole live writer now (CRM handoff complete,
+  // 2026-08-24) — it always applies. An admin browsing this route directly
+  // still needs an explicit ?apply=1 to write, so a sanity-check GET can
+  // never accidentally publish.
+  const apply = viaCron || (viaAdmin && url.searchParams.get("apply") === "1");
   const includeUat =
     process.env.CLIENT_RETURNS_INCLUDE_UAT === "1" || url.searchParams.get("includeUat") === "1";
   const includeTestUsers =

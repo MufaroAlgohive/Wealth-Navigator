@@ -8,6 +8,7 @@ import { isAdminRole } from "@/lib/admin/pages";
 import { Panel } from "@/components/oems/primitives/panel";
 import { Pill } from "@/components/oems/primitives/pill";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 type RecomputeStrategyResult = {
   strategy: string;
@@ -44,15 +45,32 @@ function formatPct(v: number | null) {
 function RecomputePanel() {
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<RecomputeResponse | null>(null);
+  // Scoping to one strategy trims the request to a fraction of the work —
+  // draft + certification run sequentially for every active strategy
+  // otherwise, and that full sweep has 502'd in practice (a platform
+  // function-duration ceiling below what the route's own maxDuration
+  // declares, most likely). Empty runs every strategy, same as before.
+  const [strategyName, setStrategyName] = useState("");
+  // Defaults to today (SAST) server-side when left blank — but "today" has
+  // no confirmed close until the market actually finishes trading, so a
+  // strategy stuck on an old published date can't bridge forward until
+  // then. Targeting an already-closed date (e.g. yesterday) directly lets
+  // that bridge happen immediately instead of waiting for tonight's cron.
+  const [asOfDate, setAsOfDate] = useState("");
 
   const runRecompute = async () => {
     setPending(true);
     setResult(null);
     try {
+      const trimmed = strategyName.trim();
+      const trimmedDate = asOfDate.trim();
       const res = await fetch("/api/admin/canonical-ledger/recompute", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          ...(trimmed ? { strategyName: trimmed } : {}),
+          ...(trimmedDate ? { asOfDate: trimmedDate } : {}),
+        }),
       });
       const body = (await res.json().catch(() => ({}))) as RecomputeResponse;
       setResult(body);
@@ -118,9 +136,23 @@ function RecomputePanel() {
       title="Canonical ledger recompute"
       endpoint="admin.canonical-ledger.recompute"
       right={
-        <Button size="sm" onClick={runRecompute} disabled={pending}>
-          {pending ? "Recomputing…" : "Recompute Now"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Input
+            value={strategyName}
+            onChange={(e) => setStrategyName(e.target.value)}
+            placeholder="All strategies"
+            className="h-8 w-40 text-xs"
+          />
+          <Input
+            value={asOfDate}
+            onChange={(e) => setAsOfDate(e.target.value)}
+            placeholder="Today (SAST)"
+            className="h-8 w-32 text-xs"
+          />
+          <Button size="sm" onClick={runRecompute} disabled={pending}>
+            {pending ? "Recomputing…" : "Recompute Now"}
+          </Button>
+        </div>
       }
     >
       <div className="space-y-3 text-xs">
@@ -129,7 +161,11 @@ function RecomputePanel() {
           sequence the 17:30 UTC daily cron runs automatically. Use this to pull corrected YTD figures forward
           immediately (e.g. after a ledger fix) instead of waiting for tonight&apos;s scheduled run. This can
           take a while — draft and certification run sequentially for every active strategy. Requires a
-          Dev or Master ★ account.
+          Dev or Master ★ account. Enter an exact strategy name (e.g. &quot;Yield Basket&quot;) to scope a run
+          to just that one — much less likely to time out than running all of them at once. Leaving the date
+          blank defaults to today (SAST), which has no confirmed close until the market finishes trading — a
+          strategy stuck on an old published date can&apos;t bridge forward until then. Enter an
+          already-closed date (YYYY-MM-DD, e.g. yesterday) to bridge it immediately instead of waiting.
         </p>
         {result && (
           <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
@@ -224,6 +260,151 @@ function RecomputePanel() {
   );
 }
 
+type ClientPublishRow = {
+  client: string;
+  strategy: string;
+  action: "published" | "plan" | "skip" | "failed";
+  reason?: string;
+  dailyPct?: number | null;
+  error?: string;
+};
+
+type ClientPublishResponse = {
+  ok: boolean;
+  asOf: string;
+  apply: boolean;
+  summary?: { published: number; skipped: number; failed: number; total: number };
+  results?: ClientPublishRow[];
+  note?: string;
+  error?: string;
+};
+
+function ClientReturnsPublishPanel() {
+  const [pending, setPending] = useState(false);
+  const [result, setResult] = useState<ClientPublishResponse | null>(null);
+
+  const runPublish = async () => {
+    setPending(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/cron/client-returns-publish?apply=1");
+      const body = (await res.json().catch(() => ({}))) as ClientPublishResponse;
+      setResult(body);
+      if (!res.ok || body.ok === false) {
+        toast.error(body.error ?? body.note ?? `Publish failed (${res.status}).`);
+      } else {
+        const s = body.summary;
+        toast.success(
+          s
+            ? `Published for ${body.asOf}: ${s.published} written, ${s.skipped} skipped, ${s.failed} failed.`
+            : `Published for ${body.asOf}.`,
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setResult({ ok: false, asOf: "", apply: true, error: msg });
+      toast.error(msg);
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <Panel
+      title="Client returns publish"
+      endpoint="cron.client-returns-publish"
+      right={
+        <Button size="sm" onClick={runPublish} disabled={pending}>
+          {pending ? "Publishing…" : "Publish Now"}
+        </Button>
+      }
+    >
+      <div className="space-y-3 text-xs">
+        <p className="text-muted-foreground">
+          Manually runs today&apos;s per-client EOD return publish — the same job that normally only fires
+          from the scheduled 17:20 UTC cron. This writes one guarded row per (client, family member,
+          strategy) into <span className="font-mono">client_strategy_return_publication_audit_c</span>,
+          which is what Day P&amp;L / per-client YTD read from.
+        </p>
+        <p className="text-muted-foreground">
+          The CRM (MyMintAdmin) handed this job to the OEM on 2026-08-24 — its own daily cron call was
+          removed rather than left behind a flag, so there is only one live writer now and this button is
+          safe to use any time. Useful for forcing today&apos;s figures forward immediately instead of
+          waiting for the scheduled run, or for spot-checking a specific date via{" "}
+          <span className="font-mono">?asOf=</span> in the API directly.
+        </p>
+        {result && (
+          <div className="rounded-md border border-border/60 bg-surface-2/30 p-2.5">
+            {result.error && <p className="text-destructive">{result.error}</p>}
+            {result.note && (
+              <p className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-amber-600 dark:text-amber-400">
+                {result.note}
+              </p>
+            )}
+            {result.asOf && (
+              <p className="mb-2 text-muted-foreground">
+                As of <span className="font-mono text-foreground">{result.asOf}</span>
+                {result.summary && (
+                  <>
+                    {" "}
+                    · <span className="font-mono text-foreground">{result.summary.published}</span> published,{" "}
+                    <span className="font-mono text-foreground">{result.summary.skipped}</span> skipped,{" "}
+                    <span className="font-mono text-foreground">{result.summary.failed}</span> failed
+                  </>
+                )}
+              </p>
+            )}
+            {result.results && result.results.length > 0 ? (
+              <table className="w-full font-mono text-[11px]">
+                <thead>
+                  <tr className="text-left text-muted-foreground">
+                    <th className="pb-1 pr-2 font-normal">Client</th>
+                    <th className="pb-1 pr-2 font-normal">Strategy</th>
+                    <th className="pb-1 pr-2 font-normal">Action</th>
+                    <th className="pb-1 text-right font-normal">1D</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {result.results.map((r, i) => (
+                    <tr key={`${r.client}-${r.strategy}-${i}`}>
+                      <td className="py-1 pr-2 font-sans">{r.client}</td>
+                      <td className="py-1 pr-2 font-sans">{r.strategy}</td>
+                      <td className="py-1 pr-2">
+                        <span title={r.reason ?? r.error} className="inline-flex items-center gap-1">
+                          <Pill
+                            tone={
+                              r.action === "published"
+                                ? "success"
+                                : r.action === "failed"
+                                  ? "destructive"
+                                  : "neutral"
+                            }
+                            size="xs"
+                          >
+                            {r.action}
+                          </Pill>
+                          {(r.reason || r.error) && (
+                            <span className="text-muted-foreground">({r.reason ?? r.error})</span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="py-1 text-right">
+                        {r.dailyPct == null ? "—" : `${r.dailyPct >= 0 ? "+" : ""}${r.dailyPct.toFixed(2)}%`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              !result.error && <p className="text-muted-foreground">No owners returned.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 export default function DevToolsPage() {
   const { ctx } = useAdmin();
   const admin = isAdminRole(ctx);
@@ -239,6 +420,7 @@ export default function DevToolsPage() {
       </p>
 
       <RecomputePanel />
+      <ClientReturnsPublishPanel />
     </div>
   );
 }

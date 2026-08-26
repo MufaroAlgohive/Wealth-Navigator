@@ -5,7 +5,6 @@ import { getAdminContext } from "@/lib/admin/rbac";
 import { isSupabaseSchemaMissing } from "@/lib/bff-reasons";
 import { reconcileBufferDrawdowns } from "@/lib/orderbook/reconcile-buffer-drawdowns";
 import { maybeCompleteRebalance } from "@/lib/rebalance/complete-rebalance";
-import { settleRebalanceCashForClients } from "@/lib/rebalance/settle-rebalance-cash";
 import { createInstitutionalServiceRoleClient, createRetailServiceRoleClient } from "@/lib/supabase/server";
 import { observedFillFromAudit, settleFill } from "@workers/iress-ingest/src/settlement";
 
@@ -531,10 +530,7 @@ export async function POST(req: Request) {
             // leftover) only make sense once the whole rebalance — every
             // leg, every client — has actually finished, same trigger as the
             // model flip above.
-            const cash = outcome.completed
-              ? await settleRebalanceCashForClients(retailDb as SupabaseClient, db, rid, outcome.settlementBatchId)
-              : null;
-            return { rebalance_request_id: rid, ...outcome, cashSettlement: cash };
+            return { rebalance_request_id: rid, ...outcome };
           }),
         )
       : [];

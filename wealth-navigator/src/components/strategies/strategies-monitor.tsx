@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { Route } from "next";
-import { ArrowDownRight, ArrowUpRight, ChevronDown, ExternalLink, Eye, Lock, Minus, Newspaper, ShieldCheck, TrendingUp } from "lucide-react";
+import { ArrowDownRight, ArrowUpRight, CalendarDays, ChevronDown, ExternalLink, Eye, Lock, Minus, Newspaper, ShieldCheck, TrendingUp } from "lucide-react";
 
 import { Pill } from "@/components/oems/primitives/pill";
 import { PanelSkeleton } from "@/components/oems/primitives/panel-skeleton";
@@ -14,8 +14,9 @@ import { DataSourceBadge } from "@/components/oems/primitives/data-source-badge"
 import { NewsArticleDialog, type NewsArticleDialogItem } from "@/components/oems/primitives/news-article-dialog";
 import { CashAssetIcon } from "@/components/strategies/cash-asset-icon";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { isRealDataOnlyClient } from "@/lib/data-policy";
-import { formatPct, formatZAR } from "@/lib/format";
+import { formatPct, formatZAR, formatZARExact } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { queryOpts } from "@/lib/store/query-provider";
 
@@ -63,6 +64,12 @@ interface StrategiesResponse {
   error?: string;
 }
 
+interface DayPnlResponse {
+  ok: boolean;
+  today: { date: string; pnl: number | null; byStrategy: Record<string, number>; status: "live" | "stale"; source: string; asOf: string | null; coveredHoldings: number; totalHoldings: number; directPositions: number; strategyPositions: number; coveredSecurities: number; totalSecurities: number; missingSymbols: string[]; feesIncluded: boolean };
+  history: Array<{ date: string; pnl: number; strategies: number; investors: number }>;
+}
+
 /** Asset-class label, defensive against a missing/unknown `kind`. */
 function kindLabel(kind: string | null | undefined): string {
   return (kind ?? "equity").replace("_", " ").toUpperCase();
@@ -72,14 +79,14 @@ function kindTone(kind: string | null | undefined): "primary" | "warning" | "neu
   return kind === "equity" ? "primary" : kind === "money_market" ? "warning" : "neutral";
 }
 
-function StrategiesHero({ strategies }: { strategies: StrategyRow[] }) {
+function StrategiesHero({ strategies, dayPnl, onOpenHistory }: { strategies: StrategyRow[]; dayPnl?: DayPnlResponse; onOpenHistory?: () => void }) {
   const stats = useMemo(() => {
     const live = strategies.filter((s) => s.status === "live").length;
     const totalAum = strategies.reduce((sum, s) => sum + s.aum, 0);
     const totalInvestors = strategies.reduce((sum, s) => sum + s.investorCount, 0);
-    const dayPnl = strategies.reduce((sum, s) => sum + s.dayPnl, 0);
-    return { live, totalAum, totalInvestors, dayPnl };
+    return { live, totalAum, totalInvestors };
   }, [strategies]);
+  const currentPnl = dayPnl?.today.status === "live" ? dayPnl.today.pnl : null;
 
   return (
     <header className="glass-panel relative overflow-hidden px-3 py-3 sm:px-4">
@@ -89,9 +96,11 @@ function StrategiesHero({ strategies }: { strategies: StrategyRow[] }) {
         <div className="grid grid-cols-5 divide-x divide-border/60 rounded-xl border border-border/70 bg-background/35">
           <SlimStat label="Mandates" value={String(strategies.length)} tone="primary" />
           <SlimStat label="Live" value={String(stats.live)} tone={stats.live > 0 ? "positive" : "default"} />
-          <SlimStat label="Total AUM" value={stats.totalAum > 0 ? formatZAR(stats.totalAum) : "—"} />
+          <SlimStat label="Total AUM" value={stats.totalAum > 0 ? formatZARExact(stats.totalAum) : "—"} />
           <SlimStat label="Investors" value={String(stats.totalInvestors)} />
-          <SlimStat label="Day P&L" value={stats.dayPnl !== 0 ? formatZAR(stats.dayPnl) : "—"} tone={stats.dayPnl > 0 ? "positive" : stats.dayPnl < 0 ? "negative" : "default"} />
+          <button type="button" onClick={onOpenHistory} className="transition-colors hover:bg-primary/5" title="Open daily P&L history">
+            <SlimStat label={currentPnl == null ? "Day P&L · pending" : "Day P&L · live"} value={currentPnl == null ? "—" : formatZAR(currentPnl)} tone={currentPnl == null ? "default" : currentPnl > 0 ? "positive" : currentPnl < 0 ? "negative" : "default"} />
+          </button>
         </div>
         </>
       )}
@@ -101,6 +110,34 @@ function StrategiesHero({ strategies }: { strategies: StrategyRow[] }) {
 
 function SlimStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "primary" | "positive" | "negative" }) {
   return <div className="flex min-w-0 flex-col items-center justify-center px-1 py-2 text-center sm:px-3"><span className="text-[8px] font-bold uppercase tracking-[.12em] text-muted-foreground sm:text-[9px]">{label}</span><span className={cn("mt-0.5 truncate font-mono text-xs font-bold sm:text-sm", tone === "positive" ? "text-success" : tone === "negative" ? "text-destructive" : tone === "primary" ? "text-primary" : "text-foreground")}>{value}</span></div>;
+}
+
+function DayPnlHistoryDialog({ open, onOpenChange, data }: { open: boolean; onOpenChange: (open: boolean) => void; data?: DayPnlResponse }) {
+  const [range, setRange] = useState<"7D" | "1M" | "3M" | "YTD">("1M");
+  const days = range === "7D" ? 7 : range === "1M" ? 31 : range === "3M" ? 93 : 370;
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const rows = (data?.history ?? []).filter((row) => row.date >= cutoff);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[82vh] max-w-3xl overflow-hidden">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><CalendarDays className="h-4 w-4 text-primary" />Daily P&amp;L history</DialogTitle>
+          <DialogDescription>Gross market P&amp;L across LIVE client assets. Opening units use previous close; intraday trades use actual fills. Earlier dates use stored return snapshots. Fees are currently excluded.</DialogDescription>
+        </DialogHeader>
+        <div className="flex gap-1">{(["7D", "1M", "3M", "YTD"] as const).map((item) => <button key={item} type="button" onClick={() => setRange(item)} className={cn("rounded-md border px-3 py-1 text-xs", range === item ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground")}>{item}</button>)}</div>
+        <div className="rounded-lg border border-border/70 bg-background/35 p-4">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Today · {data?.today.date ?? "—"}</p>
+          <p className={cn("mt-1 font-mono text-2xl font-bold", (data?.today.pnl ?? 0) > 0 ? "text-success" : (data?.today.pnl ?? 0) < 0 ? "text-destructive" : "text-foreground")}>{data?.today.pnl == null ? "Pending fresh market evidence" : formatZAR(data.today.pnl)}</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">{data?.today.status === "live" ? `All LIVE assets · ${data.today.strategyPositions} strategy + ${data.today.directPositions} direct positions · refreshes every 30 seconds` : data?.today ? `Pricing ${data.today.coveredSecurities}/${data.today.totalSecurities} securities across strategy and direct holdings${data.today.missingSymbols.length ? ` · waiting for ${data.today.missingSymbols.slice(0, 5).join(", ")}${data.today.missingSymbols.length > 5 ? "…" : ""}` : ""}. Coverage warms in bounded batches.` : "A previous-day value is never presented as today."}</p>
+        </div>
+        <div className="max-h-[45vh] overflow-y-auto rounded-lg border border-border/70">
+          <div className="grid grid-cols-[1fr_1fr_80px_80px] border-b border-border/70 px-3 py-2 text-[10px] uppercase text-muted-foreground"><span>Date</span><span className="text-right">P&amp;L</span><span className="text-right">Strategies</span><span className="text-right">Investors</span></div>
+          {rows.map((row) => <div key={row.date} className="grid grid-cols-[1fr_1fr_80px_80px] border-b border-border/40 px-3 py-2 text-xs last:border-0"><span>{row.date}</span><span className={cn("text-right font-mono font-semibold", row.pnl > 0 ? "text-success" : row.pnl < 0 ? "text-destructive" : "text-muted-foreground")}>{formatZAR(row.pnl)}</span><span className="text-right text-muted-foreground">{row.strategies}</span><span className="text-right text-muted-foreground">{row.investors}</span></div>)}
+          {rows.length === 0 && <p className="p-6 text-center text-xs text-muted-foreground">No stored P&amp;L rows in this range.</p>}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function MarketTicker({ items }: { items: Array<{ symbol: string; price: number | null; changePct: number | null }> }) {
@@ -138,9 +175,26 @@ export function StrategiesMonitor() {
     refetchInterval: 60_000,
     ...queryOpts("reference"),
   });
-  const strategies = strategiesQ.data?.strategies ?? [];
+  const dayPnlQ = useQuery<DayPnlResponse>({
+    queryKey: ["strategy-day-pnl"],
+    queryFn: async () => {
+      const r = await fetch("/api/strategies/day-pnl", { cache: "no-store" });
+      if (!r.ok) throw new Error(`Day P&L ${r.status}`);
+      return r.json();
+    },
+    enabled: realDataOnly,
+    refetchInterval: 30_000,
+    ...queryOpts("reference"),
+  });
+  const strategies = useMemo(() => {
+    const rows = strategiesQ.data?.strategies ?? [];
+    const today = dayPnlQ.data?.today;
+    if (today?.status !== "live") return rows.map((row) => ({ ...row, dayPnl: 0 }));
+    return rows.map((row) => ({ ...row, dayPnl: today.byStrategy[row.id] ?? 0 }));
+  }, [strategiesQ.data?.strategies, dayPnlQ.data]);
   const focusId = useSearchParams().get("focus");
   const [selected, setSelected] = useState("");
+  const [pnlHistoryOpen, setPnlHistoryOpen] = useState(false);
   const [firstReveal, setFirstReveal] = useState(false);
   const hasRevealed = useRef(false);
   const reveal = (id: string) => {
@@ -176,7 +230,8 @@ export function StrategiesMonitor() {
   return (
     <div className="space-y-5 pb-8">
       <div className="-mx-4 -mt-4 sm:-mx-6 sm:-mt-6"><MarketTicker items={marketQ.data?.market ?? []} /></div>
-      <StrategiesHero strategies={strategies} />
+      <StrategiesHero strategies={strategies} dayPnl={dayPnlQ.data} onOpenHistory={() => setPnlHistoryOpen(true)} />
+      <DayPnlHistoryDialog open={pnlHistoryOpen} onOpenChange={setPnlHistoryOpen} data={dayPnlQ.data} />
 
       {strategiesQ.isLoading ? (
         <div className="grid grid-cols-12 gap-3">
@@ -342,14 +397,67 @@ function StrategyDetail({ strategy, showSummary, firstReveal, onView }: { strate
   );
 }
 
-const RETURN_PERIODS = [["1D", "1d_pct"], ["5D", "5d_pct"], ["MTD", "1m_pct"], ["6M", "6m_pct"], ["YTD", "ytd_pct"], ["1Y", "1y_pct"]] as const;
+const RETURN_PERIODS = [["1D", "1d_pct"], ["5D", "5d_pct"], ["MTD", "mtd_pct"], ["6M", "6m_pct"], ["YTD", "ytd_pct"], ["1Y", "1y_pct"]] as const;
+type ReturnPeriodKey = (typeof RETURN_PERIODS)[number][1];
+type ReturnSet = Partial<Record<ReturnPeriodKey, number | null>>;
+interface StrategyReturnInsightsResponse {
+  ok: boolean;
+  strategy?: { name: string; asOf: string | null; source: string; returns: ReturnSet };
+  constituents?: Array<{ symbol: string; name: string | null; asOf: string | null; source: string; error?: string | null; returns: ReturnSet }>;
+  cash?: { symbol: string; name: string; source: string; returns: ReturnSet };
+  benchmark?: { symbol: string; asOf: string | null; source: string; returns: ReturnSet | null } | null;
+}
+
+function returnAlertFloor(period: ReturnPeriodKey): number {
+  return period === "1d_pct" ? -4 : period === "5d_pct" ? -7 : period === "mtd_pct" ? -10 : -20;
+}
+
 function ReturnInsightsCard({ strategy }: { strategy: StrategyRow }) {
-  const [period, setPeriod] = useState<(typeof RETURN_PERIODS)[number][1]>("1d_pct");
-  const query = useQuery<{ assetReturns?: Array<Record<string, unknown>> }>({ queryKey: ["strategy-return-insights"], queryFn: () => fetch("/api/admin/dashboard", { cache: "no-store" }).then((response) => response.json()), ...queryOpts("reference") });
-  const symbols = new Set(strategy.holdingsPreview.map((holding) => holding.symbol.replace(/\.JO$/i, "").toUpperCase()));
-  const rows = (query.data?.assetReturns ?? []).filter((row) => symbols.has(String(row.symbol ?? "").replace(/\.JO$/i, "").toUpperCase())).map((row) => ({ symbol: String(row.symbol ?? "—").replace(/\.JO$/i, ""), value: Number(row[period]) })).filter((row) => Number.isFinite(row.value)).sort((a, b) => b.value - a.value);
-  const alerts = rows.filter((row) => row.value <= -4);
-  return <section className="glass-panel overflow-hidden"><header className="flex items-center gap-2 border-b border-border px-3 py-2.5"><span className="flex h-6 w-6 items-center justify-center rounded-lg bg-success/10 text-success"><TrendingUp className="h-3.5 w-3.5"/></span><h3 className="text-xs font-bold">Return Insights</h3>{alerts.length > 0 && <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[9px] font-bold text-destructive">{alerts.length} alerts</span>}<DataSourceBadge source="supabase" db="retail" /><div className="ml-auto flex rounded-lg bg-muted/50 p-0.5">{RETURN_PERIODS.map(([label, key]) => <button type="button" key={key} onClick={() => setPeriod(key)} className={cn("rounded-md px-1.5 py-1 text-[8px] font-bold", period === key ? "bg-background text-primary shadow-sm" : "text-muted-foreground")}>{label}</button>)}</div></header><div className="p-3">{query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading returns…</p> : rows.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No return data for these strategy securities.</p> : <div className="grid grid-cols-2 gap-2">{rows.map((row) => <div key={row.symbol} className="flex items-center rounded-lg border border-border px-2.5 py-2"><span className="font-mono text-[10px] font-bold">{row.symbol}</span><span className={cn("ml-auto font-mono text-[10px] font-bold", row.value >= 0 ? "text-success" : "text-destructive")}>{row.value >= 0 ? "+" : ""}{row.value.toFixed(2)}%</span></div>)}</div>}</div></section>;
+  const [period, setPeriod] = useState<ReturnPeriodKey>("1d_pct");
+  const query = useQuery<StrategyReturnInsightsResponse>({
+    queryKey: ["strategy-return-insights", strategy.id],
+    queryFn: async () => {
+      const response = await fetch(`/api/strategies/${encodeURIComponent(strategy.id)}/return-insights`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`return insights ${response.status}`);
+      return response.json();
+    },
+    ...queryOpts("live"),
+    refetchInterval: 60_000,
+  });
+  const rows = (query.data?.constituents ?? [])
+    .map((row) => ({ ...row, value: row.returns[period] }))
+    .sort((a, b) => (b.value ?? Number.NEGATIVE_INFINITY) - (a.value ?? Number.NEGATIVE_INFINITY));
+  const alerts = rows.filter((row) => row.value != null && row.value <= returnAlertFloor(period));
+  const asOf = rows.map((row) => row.asOf).filter((value): value is string => Boolean(value)).sort().at(-1) ?? null;
+  const strategyAsOf = query.data?.strategy?.asOf ?? null;
+  const strategyIsAligned = period !== "1d_pct" || !asOf || !strategyAsOf || asOf.slice(0, 10) === strategyAsOf.slice(0, 10);
+  const strategyValue = strategyIsAligned ? query.data?.strategy?.returns[period] ?? null : null;
+  const benchmarkValue = query.data?.benchmark?.returns?.[period] ?? null;
+  const cashValue = query.data?.cash?.returns[period] ?? 0;
+  return (
+    <section className="glass-panel overflow-hidden">
+      <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
+        <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-success/10 text-success"><TrendingUp className="h-3.5 w-3.5"/></span>
+        <div><h3 className="text-xs font-bold">Return Insights</h3><p className="text-[8px] text-muted-foreground">Certified strategy · Yahoo constituents</p></div>
+        {alerts.length > 0 && <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[9px] font-bold text-destructive">{alerts.length} alerts</span>}
+        <DataSourceBadge source="supabase" db="retail" />
+        <Pill tone="neutral" size="xs">Yahoo</Pill>
+        <div className="ml-auto flex rounded-lg bg-muted/50 p-0.5">{RETURN_PERIODS.map(([label, key]) => <button type="button" key={key} onClick={() => setPeriod(key)} className={cn("rounded-md px-1.5 py-1 text-[8px] font-bold", period === key ? "bg-background text-primary shadow-sm" : "text-muted-foreground")}>{label}</button>)}</div>
+      </header>
+      <div className="p-3">
+        {query.isLoading ? <p className="py-5 text-center text-[10px] text-muted-foreground">Loading focused returns…</p> : rows.length === 0 ? <p className="py-5 text-center text-[10px] text-muted-foreground">No return data for these strategy securities.</p> : <>
+          <div className={cn("mb-3 grid gap-2 rounded-lg border border-border/70 bg-background/25 p-2.5", query.data?.benchmark ? "grid-cols-2" : "grid-cols-1")}>
+            <div><p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Certified strategy return · as of {strategyAsOf ?? "—"}</p><p className={cn("mt-1 font-mono text-sm font-bold", strategyValue == null ? "text-muted-foreground" : strategyValue >= 0 ? "text-success" : "text-destructive")}>{strategyValue == null ? (strategyIsAligned ? "—" : "Awaiting today's certification") : `${strategyValue >= 0 ? "+" : ""}${strategyValue.toFixed(2)}%`}</p></div>
+            {query.data?.benchmark ? <div className="text-right"><p className="text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Benchmark {query.data.benchmark.symbol}</p><p className={cn("mt-1 font-mono text-sm font-bold", benchmarkValue == null ? "text-muted-foreground" : benchmarkValue >= 0 ? "text-success" : "text-destructive")}>{benchmarkValue == null ? "—" : `${benchmarkValue >= 0 ? "+" : ""}${benchmarkValue.toFixed(2)}%`}</p></div> : null}
+          </div>
+          <p className="mb-1.5 text-[8px] font-bold uppercase tracking-wider text-muted-foreground">Constituent returns</p>
+          <div className="grid grid-cols-2 gap-2">{rows.map((row) => <div key={row.symbol} title={row.error ?? `${row.source} as of ${row.asOf ?? "unknown"}`} className="flex min-w-0 items-center rounded-lg border border-border px-2.5 py-2"><div className="min-w-0"><span className="font-mono text-[10px] font-bold">{row.symbol}</span><p className="truncate text-[8px] text-muted-foreground">{row.name ?? (row.source === "supabase-stored-close" ? "Stored-close fallback" : row.source === "unavailable" ? "No market history available" : "Yahoo")}</p></div><span className={cn("ml-auto font-mono text-[10px] font-bold", row.value == null ? "text-muted-foreground" : row.value >= 0 ? "text-success" : "text-destructive")}>{row.value == null ? "—" : `${row.value >= 0 ? "+" : ""}${row.value.toFixed(2)}%`}</span></div>)}</div>
+          {strategy.holdingsPreview.some((holding) => holding.isCash) ? <div className="mt-2 flex items-center rounded-lg border border-border px-2.5 py-2"><div><span className="font-mono text-[10px] font-bold">CA</span><p className="text-[8px] text-muted-foreground">Continuity cash · nominal return</p></div><span className="ml-auto font-mono text-[10px] font-bold text-muted-foreground">{`${cashValue >= 0 ? "+" : ""}${cashValue.toFixed(2)}%`}</span></div> : null}
+          <p className="mt-2 text-right font-mono text-[8px] text-muted-foreground">Yahoo as of {asOf ? new Date(asOf).toLocaleString("en-ZA") : "—"} · refreshes every 60s</p>
+        </>}
+      </div>
+    </section>
+  );
 }
 
 interface NewsCardItem { id: string; source: string; headline: string; body: string | null; url: string | null; publishedAt: string; ticker: string | null; tickers: string[]; category?: string | null; }

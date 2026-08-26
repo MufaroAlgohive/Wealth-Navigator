@@ -67,6 +67,9 @@ export async function POST(req: Request) {
   }
 
   const bookId = typeof body.book_id === "string" && body.book_id.trim() ? body.book_id.trim() : null;
+  if (!bookId) {
+    return NextResponse.json({ ok: false, error: "book_id is required" }, { status: 400 });
+  }
 
   let supabase;
   try {
@@ -82,7 +85,7 @@ export async function POST(req: Request) {
     .from("oems_order_audit")
     .select("id, order_id, payload")
     .eq("status", "parked");
-  if (bookId) query = query.eq("payload->>book_id", bookId);
+  query = query.eq("payload->>book_id", bookId);
 
   const { data: parkedRows, error: queryErr } = await query;
   if (queryErr) {

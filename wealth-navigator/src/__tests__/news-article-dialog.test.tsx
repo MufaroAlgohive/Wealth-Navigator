@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 /**
  * `<NewsArticleDialog/>` — the shared "full read" popup reused by the three
@@ -42,6 +44,11 @@ const headlineOnlyItem: NewsArticleDialogItem = {
 };
 
 describe("<NewsArticleDialog/>", () => {
+  it("keeps the API body when Cockpit maps live news into the shared popup", () => {
+    const cockpit = readFileSync(resolve("src/app/oems/cockpit-client.tsx"), "utf8");
+    expect(cockpit).toContain("body: n.body");
+  });
+
   it("renders nothing when there is no active item", () => {
     const { queryByText } = render(
       <NewsArticleDialog item={null} open={false} onOpenChange={() => {}} />,
@@ -64,8 +71,21 @@ describe("<NewsArticleDialog/>", () => {
       <NewsArticleDialog item={headlineOnlyItem} open onOpenChange={() => {}} />,
     );
     expect(getAllByText(headlineOnlyItem.headline).length).toBeGreaterThan(0);
-    expect(getByText(/Full article text isn't provided by this source/)).toBeInTheDocument();
+    expect(getByText(/This feed provided only the headline/)).toBeInTheDocument();
     expect(queryByText("Open source")).not.toBeInTheDocument();
+  });
+
+  it("directs a headline-only linked item to the publisher without claiming the article does not exist", () => {
+    const { getByText, queryByText } = render(
+      <NewsArticleDialog
+        item={{ ...headlineOnlyItem, url: "https://example.com/full-story" }}
+        open
+        onOpenChange={() => {}}
+      />,
+    );
+    expect(getByText(/This feed did not provide article text/)).toBeInTheDocument();
+    expect(queryByText(/isn't provided by this source/)).not.toBeInTheDocument();
+    expect(getByText("Open source")).toBeInTheDocument();
   });
 
   it("calls onOpenChange when dismissed", () => {

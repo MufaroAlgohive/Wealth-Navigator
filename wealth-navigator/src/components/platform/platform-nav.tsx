@@ -19,7 +19,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useAuth } from "@/lib/auth/store";
 import { cn } from "@/lib/cn";
 import { isBlockedForEmail } from "@/lib/platform/access";
-import { type NavItem, PLATFORM_NAV, activeHref, overviewItem, visibleFor } from "@/lib/platform/nav";
+import { type NavItem, PLATFORM_NAV, activeHref, activeSectionTitle, overviewItem, visibleFor } from "@/lib/platform/nav";
 import { usePersona } from "@/lib/store/session-provider";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
@@ -37,14 +37,16 @@ import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
  * Per-role page-access gating replaces the `showAll` shortcut once RBAC lands.
  */
 const FILTER_ALL = "All";
-/** Deliberate business default (not Overview, not All) — see the Filter dropdown. */
-const DEFAULT_FILTER = "Markets";
+/** Deliberate business default — see the Filter dropdown. */
+const DEFAULT_FILTER = FILTER_ALL;
+const FILTER_STORAGE_KEY = "mint-platform-nav-filter";
 /** Idle time within the sidebar before it auto-collapses to icon-only. */
-const IDLE_COLLAPSE_MS = 10_000;
+const IDLE_COLLAPSE_MS = 50_000;
 
 export function PlatformNav() {
   const pathname = usePathname() ?? "";
   const persona = usePersona();
+  const routeSection = activeSectionTitle(pathname);
   const { isAuthenticated } = useAuth();
   const [collapsed, setCollapsed] = React.useState(false);
   const [openSections, setOpenSections] = React.useState<Set<string> | null>(null);
@@ -54,7 +56,7 @@ export function PlatformNav() {
   // Section filter: "All" restores the current collapsible-groups behavior;
   // any other value shows only that section's items, flat, un-collapsible.
   // Defaults to "Markets" per an explicit business decision — see DEFAULT_FILTER.
-  const [filter, setFilter] = React.useState<string>(DEFAULT_FILTER);
+  const [filter, setFilter] = React.useState<string>(() => routeSection ?? DEFAULT_FILTER);
   const filterTouchedRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -91,22 +93,44 @@ export function PlatformNav() {
 
   const filterOptions = React.useMemo(() => sections.map((s) => s.title), [sections]);
 
-  // Resolve the default filter to "Markets" once its section is known to have
-  // visible items; fall back to "All" if it never does (e.g. a role that can't
-  // see Markets). Only runs until the user makes an explicit choice, so it
-  // doesn't fight a deliberate "All" selection made before sections settle.
+  // On first load (and across route changes while the user has not deliberately
+  // chosen a filter), follow the route's owning section. This matters when a
+  // navigation crosses layout boundaries and remounts the sidebar: /oems/models
+  // must restore Strategies, not the generic Markets default.
   React.useEffect(() => {
     if (filterTouchedRef.current) return;
-    if (filterOptions.includes(DEFAULT_FILTER)) {
+    const stored = (() => {
+      try {
+        return window.sessionStorage.getItem(FILTER_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+    })();
+    const storedOwnsRoute = stored
+      ? sections.some(
+          (section) =>
+            section.title === stored && section.items.some((item) => item.href === active),
+        )
+      : false;
+    if (stored && filterOptions.includes(stored) && (storedOwnsRoute || !routeSection)) {
+      setFilter(stored);
+    } else if (routeSection && filterOptions.includes(routeSection)) {
+      setFilter(routeSection);
+    } else if (filterOptions.includes(DEFAULT_FILTER)) {
       setFilter(DEFAULT_FILTER);
     } else if (filterOptions.length > 0 && !filterOptions.includes(filter)) {
       setFilter(FILTER_ALL);
     }
-  }, [filterOptions, filter]);
+  }, [active, filterOptions, filter, routeSection, sections]);
 
   const selectFilter = React.useCallback((next: string) => {
     filterTouchedRef.current = true;
     setFilter(next);
+    try {
+      window.sessionStorage.setItem(FILTER_STORAGE_KEY, next);
+    } catch {
+      /* Navigation still works when storage is unavailable. */
+    }
   }, []);
 
   const visibleSections = React.useMemo(

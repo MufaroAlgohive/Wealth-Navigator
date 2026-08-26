@@ -150,19 +150,50 @@ export function CockpitPortfolioAccounts({
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
+          {!rowTag ? (
+            <div className="grid grid-cols-[minmax(0,1fr)_90px_70px_64px] items-end gap-2 border-b border-[hsl(var(--glass-border))]/60 px-3.5 py-2">
+              <div>
+                <p className="text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Investor</p>
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  Ranked by contribution to total AUM
+                </p>
+              </div>
+              <span className="text-right text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">AUM</span>
+              <span className="text-right text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Share</span>
+              <span className="text-right text-[9px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{active}</span>
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto scrollbar-thin">
             <ul className="divide-y divide-[hsl(var(--glass-border))]/60">
-              {rows.map((r) => {
+              {rows.map((r, index) => {
                 const perf = r.perf;
                 const up = perf != null && perf > 0;
                 const down = perf != null && perf < 0;
+                const contribution = totalHoldings > 0 && r.holdings != null
+                  ? Math.max(0, (r.holdings / totalHoldings) * 100)
+                  : 0;
                 return (
                   <li
                     key={r.id ?? `${r.name}-${r.sublabel ?? ""}`}
-                    className="flex items-center gap-2 px-3.5 py-2.5 transition-colors hover:bg-muted/30"
+                    className={cn(
+                      "relative grid items-center gap-2 overflow-hidden px-3.5 py-2.5 transition-colors hover:bg-muted/30",
+                      rowTag
+                        ? "grid-cols-[minmax(0,1fr)_90px_64px_auto]"
+                        : "grid-cols-[minmax(0,1fr)_90px_70px_64px]",
+                    )}
                   >
-                    <div className="min-w-0 flex-1">
+                    {!rowTag ? (
+                      <div
+                        aria-hidden="true"
+                        className="absolute inset-y-0 left-0 bg-primary/[0.055]"
+                        style={{ width: `${Math.min(100, contribution)}%` }}
+                      />
+                    ) : null}
+                    <div className="relative min-w-0">
                       <p className="flex items-center gap-1.5 truncate text-xs font-medium">
+                        {!rowTag ? (
+                          <span className="w-4 shrink-0 font-mono text-[9px] text-muted-foreground">{index + 1}</span>
+                        ) : null}
                         <span className="truncate">{r.name}</span>
                         {rowTag && (
                           <Pill tone="neutral" size="xs">{rowTag}</Pill>
@@ -174,12 +205,17 @@ export function CockpitPortfolioAccounts({
                         </p>
                       )}
                     </div>
-                    <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
+                    <span className="relative shrink-0 text-right font-mono text-[11px] tabular-nums text-foreground">
                       {r.holdings != null ? formatZAR(r.holdings) : "—"}
                     </span>
+                    {!rowTag ? (
+                      <span className="relative text-right font-mono text-[11px] font-semibold tabular-nums text-primary">
+                        {totalHoldings > 0 ? `${contribution.toFixed(1)}%` : "—"}
+                      </span>
+                    ) : null}
                     <span
                       className={cn(
-                        "ml-1 w-16 shrink-0 text-right font-mono text-[11px] tabular-nums",
+                        "relative shrink-0 text-right font-mono text-[11px] tabular-nums",
                         perf == null
                           ? "text-muted-foreground"
                           : up

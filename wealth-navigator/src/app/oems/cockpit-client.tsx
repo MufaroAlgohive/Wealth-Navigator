@@ -7,6 +7,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Banknote,
+  CalendarDays,
   FileText,
   Layers,
   Lock,
@@ -55,10 +56,11 @@ import { Sparkline } from "@/components/oems/primitives/sparkline";
 import { StrategyPerfChart } from "@/components/oems/primitives/strategy-perf-chart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/cn";
 import { FEED_NOT_CONFIGURED, isRealDataOnlyClient } from "@/lib/data-policy";
 import { mapSource } from "@/lib/data-source";
-import { formatPct, formatTime, formatZAR } from "@/lib/format";
+import { formatPct, formatTime, formatZAR, formatZARExact } from "@/lib/format";
 import { deriveDbFresh, isWorkerAlive, resolveActiveDataSource } from "@/lib/market-prices/active-source";
 import { deriveDataSource } from "@/lib/hooks/quote-routing";
 import { useAuditOrders } from "@/lib/hooks/use-audit-orders";
@@ -71,6 +73,7 @@ import { useWorkerHealth } from "@/lib/hooks/use-worker-health";
 import { useIress } from "@/lib/iress/provider";
 import { isRestrictedEmail } from "@/lib/platform/access";
 import { queryOpts } from "@/lib/store/query-provider";
+import { classifyNewsWire } from "@/lib/news-source";
 import { useTick } from "@/lib/store/tick-stream-provider";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { isSupabaseAuthConfigured } from "@/lib/supabase/config";
@@ -150,8 +153,66 @@ interface ClientBookBffResponse {
   investors: number;
   holdings: number;
   asOf: string | null;
+  investorRows?: Array<{
+    id: string;
+    name: string;
+    accountCode: string | null;
+    aum: number;
+    dayPnl: number;
+    ytdPnl: number;
+    holdings: number;
+    strategies: string[];
+  }>;
   reason?: string;
   error?: string;
+}
+
+interface DayPnlResponse {
+  ok: boolean;
+  today: {
+    date: string;
+    pnl: number | null;
+    status: "live" | "stale";
+    source: string;
+    asOf: string | null;
+    coveredHoldings: number;
+    totalHoldings: number;
+    directPositions: number;
+    strategyPositions: number;
+    coveredSecurities: number;
+    totalSecurities: number;
+    missingSymbols: string[];
+    feesIncluded: boolean;
+  };
+  history: Array<{ date: string; pnl: number; strategies: number; investors: number }>;
+}
+
+function CockpitDayPnlHistory({ open, onOpenChange, data }: { open: boolean; onOpenChange: (open: boolean) => void; data?: DayPnlResponse }) {
+  const [range, setRange] = useState<"7D" | "1M" | "3M" | "YTD">("1M");
+  const days = range === "7D" ? 7 : range === "1M" ? 31 : range === "3M" ? 93 : 370;
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+  const rows = (data?.history ?? []).filter((row) => row.date >= cutoff);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[82vh] max-w-3xl overflow-hidden">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><CalendarDays className="h-4 w-4 text-primary" />Daily P&amp;L history</DialogTitle>
+          <DialogDescription>Gross market P&amp;L across LIVE client assets. Today ticks from current prices; prior days use stored return snapshots. Fees are currently excluded.</DialogDescription>
+        </DialogHeader>
+        <div className="flex gap-1">{(["7D", "1M", "3M", "YTD"] as const).map((item) => <button key={item} type="button" onClick={() => setRange(item)} className={cn("rounded-md border px-3 py-1 text-xs", range === item ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground")}>{item}</button>)}</div>
+        <div className="rounded-lg border border-border/70 bg-background/35 p-4">
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Today · {data?.today.date ?? "—"}</p>
+          <p className={cn("mt-1 font-mono text-2xl font-bold", (data?.today.pnl ?? 0) > 0 ? "text-success" : (data?.today.pnl ?? 0) < 0 ? "text-destructive" : "text-foreground")}>{data?.today.pnl == null ? "Pending complete market coverage" : formatZAR(data.today.pnl)}</p>
+          <p className="mt-1 text-[10px] text-muted-foreground">{data?.today.status === "live" ? `Gross · all LIVE investors · ${data.today.strategyPositions} strategy + ${data.today.directPositions} direct positions · refreshes every 30 seconds` : data?.today ? `Pricing ${data.today.coveredSecurities}/${data.today.totalSecurities} securities across strategy and direct holdings${data.today.missingSymbols.length ? ` · waiting for ${data.today.missingSymbols.slice(0, 5).join(", ")}${data.today.missingSymbols.length > 5 ? "…" : ""}` : ""}. No partial P&L is shown.` : "A stale or partial value is never presented as today."}</p>
+        </div>
+        <div className="max-h-[45vh] overflow-y-auto rounded-lg border border-border/70">
+          <div className="grid grid-cols-[1fr_1fr_80px_80px] border-b border-border/70 px-3 py-2 text-[10px] uppercase text-muted-foreground"><span>Date</span><span className="text-right">P&amp;L</span><span className="text-right">Strategies</span><span className="text-right">Investors</span></div>
+          {rows.map((row) => <div key={row.date} className="grid grid-cols-[1fr_1fr_80px_80px] border-b border-border/40 px-3 py-2 text-xs last:border-0"><span>{row.date}</span><span className={cn("text-right font-mono font-semibold", row.pnl > 0 ? "text-success" : row.pnl < 0 ? "text-destructive" : "text-muted-foreground")}>{formatZAR(row.pnl)}</span><span className="text-right text-muted-foreground">{row.strategies}</span><span className="text-right text-muted-foreground">{row.investors}</span></div>)}
+          {rows.length === 0 && <p className="p-6 text-center text-xs text-muted-foreground">No stored P&amp;L rows in this range.</p>}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 /** Strip the JSE `.JO` suffix for display (`NPN.JO` → `NPN`). */
@@ -434,6 +495,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // Portfolio Accounts horizon — investor-snippet performance window.
   // Defaults to YTD per Lonwabo (1D / MTD / YTD).
   const [accountsHorizon, setAccountsHorizon] = useState<AccountsHorizon>("YTD");
+  const [dayPnlHistoryOpen, setDayPnlHistoryOpen] = useState(false);
   // JSE All Share panel view: intraday tape vs normalized strategy performance.
   const [alsiView, setAlsiView] = useState<"intraday" | "strategies">("intraday");
   // Restricted external accounts (e.g. IRESS) must not see strategy data, so
@@ -620,6 +682,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       source: string;
       category: string;
       tickers: string[];
+      body: string | null;
       url: string | null;
     }>;
     source: string;
@@ -733,11 +796,19 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   });
   // Official SARB rates + macro (repo / prime / ZARONIA / Sabor / CPI / PPI).
   // IRESS V4 on DFM@MINT has no rates or macro feed; SARB's free Web API does.
-  type SaRate = { label: string; value: number | null; asOf: string | null } | null;
+  type SaRate = {
+    label: string;
+    value: number | null;
+    asOf: string | null;
+    freshness: "current" | "delayed" | "stale" | "unavailable";
+    ageDays: number | null;
+  } | null;
   const saRatesQ = useQuery<{
     source: string;
     sourceLabel?: string;
     asOf: string | null;
+    fetchedAt?: string;
+    refreshSeconds?: number;
     rates: Record<string, SaRate>;
   }>({
     queryKey: ["bff-sa-rates"],
@@ -747,7 +818,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       return r.json();
     },
     enabled: realDataOnly,
-    refetchInterval: 3_600_000,
+    refetchInterval: 300_000,
     ...queryOpts("reference"),
   });
   const saRates = saRatesQ.data?.rates;
@@ -801,10 +872,18 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     enabled: realDataOnly,
     ...queryOpts("live"),
   });
+  const dayPnlQ = useQuery<DayPnlResponse>({
+    queryKey: ["cockpit-live-day-pnl"],
+    queryFn: () => fetchJson<DayPnlResponse>("/api/strategies/day-pnl"),
+    enabled: realDataOnly,
+    refetchInterval: 30_000,
+    ...queryOpts("live"),
+  });
   const equitiesData = equitiesQ.data;
   const equitiesAvailable = !!equitiesData && equitiesData.source !== "unavailable";
   const clientBook = clientBookQ.data;
   const clientBookAvailable = clientBook?.source === "retail-supabase";
+  const liveDayPnl = dayPnlQ.data?.today.status === "live" ? dayPnlQ.data.today.pnl : null;
   // Cap-weighted broad-market proxy from the JSE constituent universe (real data
   // already loaded). IRESS has no official J203/ALSI index on this account, so
   // we surface this clearly-labelled proxy rather than an empty index panel.
@@ -928,7 +1007,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       headline: n.headline,
       ts: n.ts,
       source: n.source,
-      wire: n.source === "SENS" ? "SENS" : "ALLIANCE",
+      wire: classifyNewsWire(n.source, n.category),
       category: n.category,
       tickers: n.tickers,
       regulatory: n.source === "SENS",
@@ -949,18 +1028,20 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
   // News Flow (real-data) — from the `/api/news` BFF. The BFF already merges
   // live RSS (Moneyweb / BusinessTech) + the Alliance wire; SENS regulatory
   // announcements still need the paid feed, so any item whose source reads
-  // "SENS" is tagged accordingly and everything else is the Alliance wire.
+  // Preserve each publisher wire so the feed can be filtered accurately.
   const realNewsFlow = useMemo<NewsFlowItem[]>(() => {
     return (newsBffQ.data?.items ?? []).map((n) => {
-      const isSens = /sens/i.test(n.source);
+      const wire = classifyNewsWire(n.source, n.category);
+      const isSens = wire === "SENS";
       return {
         id: n.id,
         headline: n.headline,
         ts: n.ts,
         source: n.source,
-        wire: isSens ? "SENS" : "ALLIANCE",
+        wire,
         category: n.category,
         tickers: n.tickers,
+        body: n.body,
         url: n.url,
         regulatory: isSens,
       };
@@ -1055,34 +1136,26 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
     });
   }, [strategies, accountsHorizon]);
 
-  // Real-data Portfolio Accounts. The per-investor list (≈3,000 investors with
-  // their own holdings + returns) is a genuine data-phase wire-up — the
-  // client-book BFF only exposes book-level aggregates today, so we render a
-  // SINGLE honest aggregate "book" row from the already-live client-book feed
-  // (AUM, investor / holding counts, and a real performance figure for the
-  // selected horizon) rather than an empty panel. 1D ← dayPnl as % of AUM;
-  // YTD ← ytdPnl as % of AUM; MTD has no month-to-date field yet → null ("—").
+  // Each investor row uses the same canonical LIVE AUM calculation as the
+  // book-level KPI. Performance comes from that investor's guarded returns.
   const realAccountRows = useMemo<PortfolioAccountRow[]>(() => {
     if (!clientBookAvailable || !clientBook) return [];
-    const aum = clientBook.aum;
-    const perf =
-      accountsHorizon === "YTD"
-        ? aum > 0
-          ? (clientBook.ytdPnl / aum) * 100
-          : null
-        : accountsHorizon === "1D"
-          ? aum > 0
-            ? (clientBook.dayPnl / aum) * 100
-            : null
-          : null; // MTD — no month-to-date field on the client book yet
-    return [
-      {
-        name: "All investors",
-        sublabel: `${clientBook.investors.toLocaleString()} investors · ${clientBook.holdings.toLocaleString()} holdings`,
-        holdings: aum,
-        perf,
-      },
-    ];
+    return (clientBook.investorRows ?? []).map((investor) => ({
+      id: investor.id,
+      name: investor.name,
+      sublabel: [
+        investor.accountCode,
+        `${investor.holdings.toLocaleString()} holding${investor.holdings === 1 ? "" : "s"}`,
+        investor.strategies.join(", "),
+      ].filter(Boolean).join(" · "),
+      holdings: investor.aum,
+      perf:
+        accountsHorizon === "YTD"
+          ? investor.aum > 0 ? (investor.ytdPnl / investor.aum) * 100 : null
+          : accountsHorizon === "1D"
+            ? investor.aum > 0 ? (investor.dayPnl / investor.aum) * 100 : null
+            : null,
+    }));
   }, [clientBook, clientBookAvailable, accountsHorizon]);
 
   const intraday = useMemo(() => {
@@ -1171,7 +1244,11 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             </span>
           </div>
 
-          <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {/* Merge conflict resolved 2026-08-23: kept the compact single-line
+                title row from PR #158, folded in the DataSourceBadge/Yahoo-
+                fallback indicator from the other side (real functionality,
+                not decorative) as part of the right-side action cluster. */}
             <span
               className="inline-flex items-center gap-1"
               title={activeSource.reason}
@@ -1259,7 +1336,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               label="Platform AUM"
               dataSource="supabase"
               db="retail"
-              value={clientBookAvailable ? formatZAR(clientBook!.aum) : "—"}
+              value={clientBookAvailable ? formatZARExact(clientBook!.aum) : "—"}
               sub={
                 clientBookAvailable
                   ? `${clientBook!.investors} investors · ${clientBook!.holdings} holdings`
@@ -1273,19 +1350,19 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
               aggregate); the sub-label calls out the scope, then the as-of
               timestamp. Honest "—" when the client book is unavailable.
             */}
-            <CockpitKpi
-              icon={<Activity className="h-3.5 w-3.5" />}
-              label="Day P&L"
-              dataSource="supabase"
-              db="retail"
-              value={clientBookAvailable ? formatZAR(clientBook!.dayPnl) : "—"}
-              sub={
-                clientBookAvailable
-                  ? `across all strategies · as of ${clientBook!.asOf ?? "—"}`
-                  : "Across all strategies — client book unavailable"
-              }
-              accent={clientBookAvailable ? (clientBook!.dayPnl >= 0 ? "positive" : "negative") : "default"}
-            />
+            <button type="button" onClick={() => setDayPnlHistoryOpen(true)} className="min-w-0 text-left" title="Open daily P&L history">
+              <CockpitKpi
+                icon={<Activity className="h-3.5 w-3.5" />}
+                label={liveDayPnl == null ? "Day P&L · pending" : "Day P&L · live"}
+                dataSource="supabase"
+                db="retail"
+                value={liveDayPnl == null ? "—" : formatZAR(liveDayPnl)}
+                sub={liveDayPnl == null
+                  ? "Awaiting complete current-price coverage"
+                  : `all LIVE assets · ${dayPnlQ.data?.today.strategyPositions ?? 0} strategy + ${dayPnlQ.data?.today.directPositions ?? 0} direct · 30s`}
+                accent={liveDayPnl == null ? "default" : liveDayPnl >= 0 ? "positive" : "negative"}
+              />
+            </button>
             <CockpitKpi
               icon={<Lock className="h-3.5 w-3.5" />}
               label="Rebalance Locked"
@@ -1375,7 +1452,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             <CockpitKpi
               icon={<Layers className="h-3.5 w-3.5" />}
               label="Platform AUM"
-              value={formatZAR(totalAum)}
+              value={formatZARExact(totalAum)}
               sub={`${strategies.length} strategies · ${liveStrats} live`}
             />
             {/*
@@ -2385,7 +2462,18 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
             dataSource={saRatesQ.data?.source === "sarb" ? "external" : "unconfigured"}
             noPadding
             className="col-span-12 lg:col-span-4 flex h-[340px] flex-col min-h-0"
-            right={<span className="text-caption font-mono">{saRatesQ.data?.sourceLabel ?? "SARB"}</span>}
+            right={
+              <span className="text-caption font-mono">
+                {saRatesQ.data?.sourceLabel ?? "SARB"}
+                {saRatesQ.data?.fetchedAt
+                  ? ` · fetched ${new Date(saRatesQ.data.fetchedAt).toLocaleTimeString("en-ZA", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      timeZone: "Africa/Johannesburg",
+                    })}`
+                  : ""}
+              </span>
+            }
           >
             {saRatesQ.isLoading ? (
               <div className="p-5">
@@ -2412,9 +2500,27 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
                     ] as const
                   ).map(([k, r]) => (
                     <div key={k} className="glass-inset p-3">
-                      <p className="text-caption">{k}</p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-caption">{k}</p>
+                        {r?.freshness && (
+                          <span
+                            className={cn(
+                              "rounded-full px-1.5 py-0.5 font-mono text-[8px] uppercase",
+                              r.freshness === "current"
+                                ? "bg-success/10 text-success"
+                                : r.freshness === "delayed"
+                                  ? "bg-warning/10 text-warning"
+                                  : "bg-destructive/10 text-destructive",
+                            )}
+                          >
+                            {r.freshness}
+                          </span>
+                        )}
+                      </div>
                       <p className="text-metric mt-1">{r?.value != null ? `${r.value.toFixed(2)}%` : "—"}</p>
-                      {r?.asOf && <p className="mt-0.5 text-caption opacity-70">{r.asOf.slice(0, 10)}</p>}
+                      {r?.asOf && (
+                        <p className="mt-0.5 text-caption opacity-70">observed {r.asOf.slice(0, 10)}</p>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -2581,11 +2687,8 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
       {/* Row 5: Portfolio Accounts — investor snippet (name + holdings +
           performance) with a 1D / MTD / YTD horizon toggle defaulting to YTD.
           Mock mode derives rows from the strategy seed (one row per strategy);
-          real-data mode renders a single aggregate "book" row from the live
-          client-book feed (AUM + investor/holding counts + real horizon
-          performance) and falls back to an honest empty state when that feed
-          is unconfigured. The per-investor ≈3,000-row breakdown is a
-          data-phase wire-up — we never fabricate investor numbers. */}
+          real-data mode renders every canonical LIVE investor with their AUM
+          contribution and guarded horizon performance. */}
       <div className="grid grid-cols-12 gap-2">
         <CockpitPortfolioAccounts
           rows={realDataOnly ? realAccountRows : mockAccountRows}
@@ -2595,20 +2698,18 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           dataSource={realDataOnly ? (clientBookAvailable ? "supabase" : "unconfigured") : "seed"}
           endpoint={realDataOnly ? "GET /api/client-book" : "Investors view (seed)"}
           // Mock mode shows strategies as investor stand-ins; tag each row
-          // "strategy" so the list isn't mistaken for the real per-investor
-          // book. Real-data mode shows one genuine "All investors" aggregate
-          // row from the live client book.
+          // "strategy" so the list isn't mistaken for the real investor book.
           rowTag={realDataOnly ? undefined : "strategy"}
           note={
             realDataOnly
               ? clientBookAvailable && clientBook
-                ? `Book-level aggregate. Per-investor breakdown (≈${clientBook.investors.toLocaleString()} investors) wires in the data phase.`
+                ? `${clientBook.investors.toLocaleString()} LIVE investors · contribution measured against ${formatZARExact(clientBook.aum)} canonical AUM.`
                 : undefined
               : "Showing strategies as stand-ins — per-investor list wires in the data phase."
           }
           emptyMessage={
             realDataOnly
-              ? "Per-investor holdings + returns wire in the data phase from the client book (≈3,000 investors). The aggregate AUM / Day P&L tiles above are already live."
+              ? "No canonical LIVE investor positions are available for this book."
               : undefined
           }
           className="col-span-12 lg:col-span-6"
@@ -2781,6 +2882,7 @@ export function CockpitClient({ mastheadDate }: CockpitClientProps) {
           )}
         </div>
       )}
+      <CockpitDayPnlHistory open={dayPnlHistoryOpen} onOpenChange={setDayPnlHistoryOpen} data={dayPnlQ.data} />
     </ResearchLabCanvas>
   );
 }
