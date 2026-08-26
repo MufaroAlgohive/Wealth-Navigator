@@ -423,8 +423,48 @@ function InvestorDetail({ inv, siblingStrategies, onSelectInvestor, tab, setTab 
           investor's own value — comfortably covers ordinary same-day price
           movement while still surfacing a genuine problem (a missing lot,
           a wrong-by-orders-of-magnitude price, double-counted cash), which
-          in practice run far larger than a day's normal drift. */}
-      {Math.abs(inv.reconciliationDeltaCents) > Math.max(2000, inv.valueCents * 0.02) ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">Accounting mismatch: value differs from basis plus P&amp;L by {R(inv.reconciliationDeltaCents)}.</div> : null}
+          in practice run far larger than a day's normal drift.
+
+          Rendered collapsed, not as an alert banner: a red "Accounting
+          mismatch" alert read as "something is broken in the backend" even
+          after the threshold fix (reported again 2026-08-26, on a small
+          account where ordinary morning price movement alone cleared the
+          bar). The number itself is accurate and worth keeping visible —
+          the presentation was what misled. An amber tag that only expands
+          to the breakdown on click keeps the same information without the
+          implied severity. */}
+      {Math.abs(inv.reconciliationDeltaCents) > Math.max(2000, inv.valueCents * 0.02) ? (
+        <details className="group rounded-lg border border-amber-400/30 bg-amber-400/5 text-xs">
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 text-amber-300">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400" />
+            Value vs. published P&amp;L differ by {R(inv.reconciliationDeltaCents)}
+            <span className="ml-auto text-[10px] text-amber-300/70 group-open:hidden">click for details</span>
+          </summary>
+          <div className="space-y-1.5 border-t border-amber-400/20 px-3 py-2 text-muted-foreground">
+            <div className="flex justify-between gap-4">
+              <span>Live value (recomputed on every load)</span>
+              <span className="tabular-nums text-foreground">{R(inv.valueCents)}</span>
+            </div>
+            <div className="flex justify-between gap-4">
+              <span>Reconciled basis</span>
+              <span className="tabular-nums text-foreground">{R(inv.investedCents)}</span>
+            </div>
+            <div className="flex justify-between gap-4">
+              <span>Published P&amp;L (as of {inv.returnAsOf || "unavailable"})</span>
+              <span className="tabular-nums text-foreground">{R(inv.pnlCents)}</span>
+            </div>
+            <div className="flex justify-between gap-4 border-t border-amber-400/20 pt-1.5 font-semibold">
+              <span>Difference (value − basis − published P&amp;L)</span>
+              <span className="tabular-nums text-amber-300">{R(inv.reconciliationDeltaCents)}</span>
+            </div>
+            <p className="pt-1 text-[10px] leading-relaxed">
+              Value is live; P&amp;L is published once a day. On most days this gap is just price movement since
+              the last publish, not a bookkeeping error — it only needs investigating if it keeps growing across
+              multiple days or is far larger than the day's actual market movement.
+            </p>
+          </div>
+        </details>
+      ) : null}
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex-wrap">
