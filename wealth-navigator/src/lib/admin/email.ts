@@ -72,6 +72,44 @@ ${inner}
 <p style="font-size:10px;color:#94a3b8;margin:16px 0 0;">&copy; ${new Date().getFullYear()} MINT (Pty) Ltd · FSP 55118 · NCRCP22892</p>
 </td></tr></table></body></html>`;
 
+export function buildEmailLayout(opts: { preheader?: string; headerSubtitle?: string; headerTitle: string; bodyHtml: string }): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body style="margin:0;padding:40px 20px;background:#f4f4f7;font-family:'Outfit', -apple-system, sans-serif;">
+${opts.preheader ? `<div style="display:none;font-size:1px;color:#333333;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;">${opts.preheader}</div>` : ''}
+
+<div style="max-width:520px;margin:0 auto;background:#ffffff;overflow:hidden;border:1px solid #E4E0EC;border-radius:8px;">
+  <!-- HEADER BLOCK -->
+  <div style="background:#31005E; border-bottom:3px solid #DDC357;">
+    <div style="padding:32px 36px; text-align:center;">
+      <img src="https://auth.mymint.co.za/storage/v1/object/public/Mint%20Assets/myMINT%20Logo%20White.png" alt="MINT Logo" style="height: 32px; margin-bottom: 24px; display: block; margin-left: auto; margin-right: auto;" />
+      ${opts.headerSubtitle ? `<p style="font-family:'Outfit', -apple-system, sans-serif; font-size:11px; font-weight:600; color:#DDC357; margin:0 0 10px; text-transform:uppercase; letter-spacing:3px;">${opts.headerSubtitle}</p>` : ''}
+      <h1 style="font-family:'Inter', -apple-system, sans-serif; font-size:28px; font-weight:300; color:#ffffff; margin:0; letter-spacing:-0.5px; line-height:1.2;">${opts.headerTitle}</h1>
+    </div>
+  </div>
+
+  <!-- BODY CONTENT -->
+  <div style="padding:40px 36px 36px;">
+    ${opts.bodyHtml}
+
+    <!-- FOOTER DISCLAIMER -->
+    <div style="text-align:center; border-top:1px solid #F0EDF5; padding-top:24px; margin-top:24px;">
+      <p style="font-family:'Outfit', -apple-system, sans-serif; font-size:11px; color:#8A8398; line-height:1.6; margin:0; font-weight:300;">
+        MINT, Money In Transit.<br>
+        MINT Platforms (Pty) Ltd is an authorised Financial Services Provider (FSP 55118) regulated by the Financial Sector Conduct Authority and a registered Credit Provider (NCRCP22892) under the National Credit Act.
+      </p>
+    </div>
+  </div>
+</div>
+</body>
+</html>`;
+}
+
 export function buildWelcomeHtml(firstName?: string): string {
   return shell(`
   <tr><td style="padding:0;line-height:0;"><img src="${WELCOME_BANNER}" alt="Welcome to MINT" width="600" style="display:block;width:100%;max-width:600px;height:auto;border:0;" /></td></tr>
@@ -93,32 +131,41 @@ export function buildWelcomeHtml(firstName?: string): string {
   </td></tr>`);
 }
 
-export function buildWalletFundedHtml(opts: { firstName?: string; amount: number }): string {
+export function buildWalletFundedHtml(opts: { firstName?: string; previousBalance: number; amount: number; newBalance: number }): string {
   const fmt = (n: number) => "R " + Number(n).toLocaleString("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return shell(`
-  <!-- Brand fonts -->
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@700;800&family=Outfit:wght@300;600&display=swap" rel="stylesheet" />
   
-  <tr><td style="background:#31005E;padding:36px;text-align:center;">
-    <h1 style="margin:0;color:#FFFFFF;font-family:'Inter', -apple-system, sans-serif;font-size:26px;font-weight:800;letter-spacing:-0.5px;">Funds Received</h1>
-  </td></tr>
-  <tr><td style="padding:32px 36px;background:#FFFFFF;">
-    <p style="margin:0 0 16px;font-family:'Outfit', -apple-system, sans-serif;font-size:16px;font-weight:600;color:#3A3448;">Hi ${opts.firstName || "there"},</p>
-    <p style="margin:0 0 24px;font-family:'Outfit', -apple-system, sans-serif;font-size:16px;color:#3A3448;line-height:1.6;font-weight:300;">Your myMINT wallet has been funded. The amount is now ready to invest.</p>
-    
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#F9F8FB;border:1px solid #E4E0EC;border-radius:12px;margin-bottom:32px;">
-      <tr><td style="padding:24px;text-align:center;">
-        <div style="font-family:'Outfit', -apple-system, sans-serif;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#31005E;margin-bottom:8px;">Amount Added</div>
-        <div style="font-family:'Inter', -apple-system, sans-serif;font-size:32px;font-weight:800;color:#3A3448;">${fmt(opts.amount)}</div>
-      </td></tr>
-    </table>
-    
-    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
-      <tr><td align="center">
-        <a href="https://app.mymint.co.za" style="display:inline-block;background:#31005E;color:#DDC357;text-decoration:none;text-align:center;padding:16px 32px;border-radius:6px;font-family:'Outfit', -apple-system, sans-serif;font-size:14px;font-weight:600;letter-spacing:1px;text-transform:uppercase;transition:opacity 0.2s ease;">Open myMINT</a>
-      </td></tr>
-    </table>
-  </td></tr>`);
+  return buildEmailLayout({
+    preheader: "Your myMINT wallet has been funded",
+    headerSubtitle: "Transfer Completed",
+    headerTitle: "Wallet Top-Up Successful",
+    bodyHtml: `
+      <p style="font-family:'Outfit', -apple-system, sans-serif; font-size:16px; color:#3A3448; line-height:1.6; margin:0 0 16px; font-weight:300;">
+        Hi ${opts.firstName || "there"},
+      </p>
+      <p style="font-family:'Outfit', -apple-system, sans-serif; font-size:16px; color:#3A3448; line-height:1.6; margin:0 0 24px; font-weight:300;">
+        Your myMINT wallet has been funded. The amount is now ready to invest.
+      </p>
+      
+      <div style="background:#F9F8FB; border:1px solid #E4E0EC; border-radius:8px; padding:24px; margin-bottom:24px;">
+        <table style="width:100%; border-collapse:collapse; font-family:'Outfit', -apple-system, sans-serif; font-size:14.5px; color:#2C2738; font-weight:300;">
+          <tr>
+            <td style="padding:6px 0; color:#64748B;">Previous balance</td>
+            <td style="padding:6px 0; text-align:right; font-weight:600;">${fmt(opts.previousBalance)}</td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0; border-top:1px solid #E2E8F0; margin-top:6px; color:#64748B;">Amount added</td>
+            <td style="padding:6px 0; border-top:1px solid #E2E8F0; margin-top:6px; text-align:right; font-weight:600; color:#5C3BCF;">+ ${fmt(opts.amount)}</td>
+          </tr>
+          <tr>
+            <td style="padding:12px 0 6px 0; border-top:1px solid #E2E8F0; margin-top:6px; color:#64748B; font-weight:600;">New balance</td>
+            <td style="padding:12px 0 6px 0; border-top:1px solid #E2E8F0; margin-top:6px; text-align:right; font-weight:800; color:#31005E; font-size:18px;">${fmt(opts.newBalance)}</td>
+          </tr>
+        </table>
+      </div>
+      
+      <a href="https://app.mymint.co.za" style="display:block; background:#31005E; color:#DDC357; text-decoration:none; text-align:center; padding:18px 24px; border-radius:6px; font-family:'Outfit', -apple-system, sans-serif; font-size:13px; font-weight:600; letter-spacing:2px; text-transform:uppercase; margin-bottom:24px; transition: opacity 0.2s ease;">Open myMINT</a>
+    `
+  });
 }
 
 export function buildInviteHtml(opts: { link: string; role: string }): string {

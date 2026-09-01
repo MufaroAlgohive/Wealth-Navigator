@@ -90,7 +90,13 @@ export async function POST(req: Request) {
         const { data: profs } = await db.from("profiles").select("email, first_name").eq("id", userId).limit(1);
         const profile = profs?.[0];
         if (!profile?.email) throw new Error("No profile/email for user");
-        await sendEmail({ to: profile.email as string, subject: `Funds received — R ${Number(rec.amount || 0).toLocaleString("en-ZA", { minimumFractionDigits: 2 })}`, html: buildWalletFundedHtml({ firstName: profile.first_name as string, amount: Number(rec.amount) || 0 }), emailType: "wallet_funded", source: "webhook", metadata: { user_id: userId, amount: rec.amount } });
+        
+        const { data: wallets } = await db.from("wallets").select("balance").eq("user_id", userId).limit(1);
+        const amount = Number(rec.amount) || 0;
+        const newBalance = Number(wallets?.[0]?.balance) || 0;
+        const previousBalance = Math.max(0, newBalance - amount);
+        
+        await sendEmail({ to: profile.email as string, subject: `Funds received — R ${amount.toLocaleString("en-ZA", { minimumFractionDigits: 2 })}`, html: buildWalletFundedHtml({ firstName: profile.first_name as string, previousBalance, amount, newBalance }), emailType: "wallet_funded", source: "webhook", metadata: { user_id: userId, amount: rec.amount } });
       } else if (t.email_type === "trade_confirmation") {
         const userId = rec[t.user_id_field || "user_id"] as string | undefined;
         if (!userId) throw new Error("No user_id in record");

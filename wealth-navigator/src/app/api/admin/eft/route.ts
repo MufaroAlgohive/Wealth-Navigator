@@ -213,13 +213,16 @@ async function handleApprove(db: SupabaseClient, transactionId: string): Promise
 
   const wallet = wallets?.[0];
 
+  let currentBalance = 0;
+  let newBalance = amountRands;
+
   if (walletReadErr) {
     walletNotice = `Wallet read failed: ${walletReadErr.message}`;
   } else if (!wallet) {
     walletNotice = "No wallet row found for this user — balance not credited.";
   } else {
-    const currentBalance = Number(wallet.balance) || 0;
-    const newBalance = currentBalance + amountRands;
+    currentBalance = Number(wallet.balance) || 0;
+    newBalance = currentBalance + amountRands;
     const { error: walletUpdErr } = await db
       .from("wallets")
       .update({ balance: newBalance, mailer: "not sent", updated_at: now })
@@ -243,7 +246,7 @@ async function handleApprove(db: SupabaseClient, transactionId: string): Promise
       await sendEmail({
         to: prof.email,
         subject: "Your MINT wallet has been funded",
-        html: buildWalletFundedHtml({ firstName: prof.first_name ?? undefined, amount: amountRands }),
+        html: buildWalletFundedHtml({ firstName: prof.first_name ?? undefined, previousBalance: currentBalance, amount: amountRands, newBalance: newBalance }),
         emailType: "wallet_funded",
         source: "eft_approve",
         metadata: { transaction_id: transactionId, amount_rands: amountRands, user_id: row.user_id },
